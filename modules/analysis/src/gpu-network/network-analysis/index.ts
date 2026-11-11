@@ -27,3 +27,29 @@ export type {
   GPUNetworkAnalyticsColumn,
   GPUNetworkAnalyticsColumnsProps
 } from './gpu-network-analytics-columns';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeNetworkPathExtractionOnCPU,
+  CPUNetworkPathExtractionOperation
+} from './cpu-network-path-extraction-operation';
+export type {
+  CPUNetworkPathExtractionInput,
+  CPUNetworkPathExtractionCompactResult,
+  CPUNetworkPathExtractionResult
+} from './cpu-network-path-extraction-operation';
+export {GPUNetworkPathExtractionOperation} from './gpu-network-path-extraction-operation';
+export type {
+  NetworkPathExtractionCompactOperationOutput,
+  NetworkPathExtractionOperationProps
+} from './gpu-network-path-extraction-operation';
+export {
+  computeNetworkServiceAreasOnCPU,
+  CPUNetworkServiceAreasOperation
+} from './cpu-network-service-areas-operation';
+export type {
+  CPUNetworkServiceAreasInput,
+  CPUNetworkServiceAreasResult
+} from './cpu-network-service-areas-operation';
+export {GPUNetworkServiceAreasOperation} from './gpu-network-service-areas-operation';
+export type {NetworkServiceAreasOperationProps} from './gpu-network-service-areas-operation';

@@ -14,7 +14,7 @@ import {
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -38,12 +38,12 @@ export class GPUCanonicalGeometryEquality implements GPUCommandNodeProducer {
     this.id = props.id ?? 'canonical-geometry-equality';
     this.props = props;
     for (const tree of [props.left, props.right]) {
-      validatePackedView(tree.positions, ['float32x2'], this.id);
-      validatePackedView(tree.nodes, ['uint32x4'], this.id);
-      validatePackedView(tree.children, ['uint32'], this.id);
+      validateSinglePackedView(tree.positions, ['float32x2'], this.id);
+      validateSinglePackedView(tree.nodes, ['uint32x4'], this.id);
+      validateSinglePackedView(tree.children, ['uint32'], this.id);
     }
-    validatePackedView(props.pairs, ['uint32x2'], this.id);
-    validatePackedView(props.output, ['uint32'], this.id);
+    validateSinglePackedView(props.pairs, ['uint32x2'], this.id);
+    validateSinglePackedView(props.output, ['uint32'], this.id);
     if (
       props.output.length !== props.pairs.length ||
       !(Number.isFinite(props.tolerance ?? 0) && (props.tolerance ?? 0) >= 0)

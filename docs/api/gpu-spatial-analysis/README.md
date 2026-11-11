@@ -34,7 +34,8 @@ primitive fits.
 
 ```ts
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer, GPUPointDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUPointDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'map'});
 const viewport = new GPUParameterBuffer(device, {id: 'viewport', format: 'float32', length: 4});
@@ -58,7 +59,7 @@ contributors by task; the [operators index](./operators.md) lists them all.
 | Section | Contributors |
 | --- | --- |
 | [Spatial weights](./operators-weights.md) | `GPUNeighborSearch`, `GPUContiguityWeights`, `GPULatticeWeights`, `GPUSpatialWeightsTransform`, `GPUSpatialWeightsAlgebra`, `GPUSpatialWeightsSummary`, `GPUSpatialWeightsTranspose`, `GPUSpatialWeightsValidation`, `GPUSpatialLag`, `GPUMapColoring` |
-| [Spatial statistics](./operators-statistics.md) | `GPUGlobalSpatialStatistics`, `GPUMultipleTestingAdjustment`, `GPUAssuncaoReisStandardization`, `GPUHotSpotAnalysis`, `GPULocalMoran`, `GPULocalGeary`, `GPUSpatialPearson`, `GPUGammaStatistic`, `GPURoseStatistic`, `GPULocalPermutationTest`, `GPUGlobalPermutationTest`, `GPUNeighborhoodSummary`, `GPUEmpiricalBayesRates`, `GPUSpatialEmpiricalBayesRates`, `GPUSpatialClustering`, `GPUHierarchicalDensityClustering`, `GPUKMeans`, `GPUSpatialWeightsMinimumSpanningTree`, `GPUSkaterRegions`, `GPUAZPRegions`, `GPUMaxPRegions`, `GPUWardRegions`, `GPULocationAllocation`, `GPURegionPartitionEvaluation`, `GPUGroupGeometry`, `GPUGroupConvexHull`, `GPUEmergingHotSpots`, `GPUGeographicDistribution`, `GPURegionStatistics`, `GPUZonalStatistics`, `GPUFocalStatistics`, `GPUSimilarLocations` |
+| [Spatial statistics](./operators-statistics.md) | `GPUGlobalSpatialStatistics`, `GPUMultipleTestingAdjustment`, `GPUAssuncaoReisStandardization`, `GPUHotSpotAnalysis`, `GPULocalMoran`, `GPULocalGeary`, `GPUSpatialPearson`, `GPUGammaStatistic`, `GPURoseStatistic`, `GPULocalPermutationTest`, `GPUGlobalPermutationTest`, `GPUNeighborhoodSummary`, `GPUEmpiricalBayesRates`, `GPUSpatialEmpiricalBayesRates`, `GPUSpatialClustering`, `GPUHierarchicalDensityClustering`, `GPUSpatialKMeans`, `GPUSpatialWeightsMinimumSpanningTree`, `GPUSkaterRegions`, `GPUAZPRegions`, `GPUMaxPRegions`, `GPUWardRegions`, `GPULocationAllocation`, `GPURegionPartitionEvaluation`, `GPUGroupGeometry`, `GPUGroupConvexHull`, `GPUEmergingHotSpots`, `GPUGeographicDistribution`, `GPURegionStatistics`, `GPUZonalStatistics`, `GPUFocalStatistics`, `GPUSimilarLocations` |
 | [Distribution dynamics and space-time tests](./operators-dynamics.md) | `GPUClassAssignment`, `GPUClassificationFit`, `GPUTransitionMatrix`, `GPUSpatialMarkov`, `GPULISAMarkov`, `GPUTransitionDiagnostics`, `GPUKnoxTest`, `GPUMantelTest`, `GPUSpatialScanStatistic` |
 | [Space-time statistics](./space-time-statistics.md) | `GPUSpatialWeightsAlgebra` operation `'spaceTime'`, `GPUSpaceTimeLocalMoran`, `GPUSpaceTimeCrossCorrelation` |
 | [Space-time clustering](./space-time-clustering.md) | ST-DBSCAN and ST-OPTICS through `times` on `GPUSpatialClustering` and `GPUOPTICS` |
@@ -125,7 +126,7 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | `isolines`, `isobands` | `GPUIsolines`, `GPUIsobands` (raster) |
 | `convex` | `GPUGroupConvexHull`; recipe `addClusterAndOutlineRecipe` |
 | `clustersDbscan` | `GPUSpatialClustering` |
-| `clustersKmeans` | `GPUKMeans` |
+| `clustersKmeans` | `GPUSpatialKMeans` |
 | `randomPoint` inside polygons, `sample` | `GPURandomPointsInPolygon`, `GPUDotDensity` |
 | `hexbin`-style counting, `pointsWithinPolygon` + count | `GPUPointDensity`; `GPUCellAggregation` for H3 or Quadbin cells |
 | `standardDeviationalEllipse`, `centralMean`, `medianCenter` (turf-extra) | `GPUGeographicDistribution`, `GPUGroupGeometry` |
@@ -144,7 +145,7 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | `ST_Within`, `ST_Contains`, `ST_Intersects`, `ST_Covers`, `ST_Touches` joins | `GPUPointInPolygonJoin` (points), `GPUSpatialPredicateJoin` (features); `GPUSpatialJoinCandidates` for the bounding-box stage alone |
 | `ST_Distance` KNN (`<->`) | `GPUNeighborSearch` (knn), `GPUNearestFeatureJoin` |
 | `ST_ClusterDBSCAN` | `GPUSpatialClustering` |
-| `ST_ClusterKMeans` | `GPUKMeans` |
+| `ST_ClusterKMeans` | `GPUSpatialKMeans` |
 | `ST_ConvexHull` per group | `GPUGroupConvexHull` |
 | `ST_Segmentize` | `GPULineSegmentize` |
 | `ST_Simplify`, `ST_SimplifyVW` | `GPULineSimplification` (`method: 'visvalingam'` is approximate) |
@@ -222,7 +223,7 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | `momepy.describe_agg`, `libpysal.weights.lag_categorical` | `GPUNeighborhoodSummary` |
 | `mapclassify.classify` (`Quantiles`, `EqualInterval`, `FisherJenks`, `HeadTailBreaks`, `BoxPlot`, `StdMean`, `MaximumBreaks`, `UserDefined`) | `GPUClassBreaks` (dataframe); `GPUClassAssignment`; `GPUColorScale` (dataframe) |
 | `mapclassify` bivariate / `geoplot` choropleth | `GPUBivariateClassification` (dataframe) |
-| `sklearn.cluster.DBSCAN`, `KMeans` on coordinates | `GPUSpatialClustering`, `GPUKMeans` |
+| `sklearn.cluster.DBSCAN`, `KMeans` on coordinates | `GPUSpatialClustering`, `GPUSpatialKMeans` |
 | `movingpandas` stop detection, trajectory stats | `GPUTrajectoryMetrics`; `GPUZoneEvents` for zone entry/exit; recipe `addFleetDwellRecipe` |
 | `movingpandas` interpolation / resample | `GPUTrajectoryPlayhead`, `GPUTrajectoryResample` |
 | `gstat` / `scikit-gstat` `Variogram` | `GPUVariogram` (dataframe) |
@@ -302,7 +303,7 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | Line intersections | `GPUSegmentIntersection` |
 | Check validity | `GPUGeometryValidity` |
 | Line density, Sum line lengths | `GPULineDensity` |
-| DBSCAN clustering, K-means clustering | `GPUSpatialClustering`, `GPUKMeans` |
+| DBSCAN clustering, K-means clustering | `GPUSpatialClustering`, `GPUSpatialKMeans` |
 | Cluster-and-outline workflow (cluster, hull, area) | recipe `addClusterAndOutlineRecipe` |
 | Moran's I, Getis-Ord Gi*, LISA (SAGA, GeoDa plugin) | `GPUGlobalSpatialStatistics`, `GPUHotSpotAnalysis`, `GPULocalMoran` |
 | Graduated symbology modes (Quantile, Natural Breaks, Pretty, Std Dev, Equal) | `GPUClassBreaks`, `GPUColorScale` (dataframe) |
@@ -323,7 +324,7 @@ These defaults differ from the reference library or a common expectation. Each i
 | --- | --- | --- | --- |
 | Islands (rows with no neighbor) | `islands: 'exclude'` removes them from `n` and the moments (`GPU_DEFAULT_ISLAND_POLICY`) | esda keeps islands in `n` and the moments | `islands: 'keep'` |
 | Two-sided permutation p-value | `alternative: 'two-sided'` reports `min(2 (min(g, l) + 1), P + 1) / (P + 1)` | esda's undirected test is percentile based and differs under ties; its legacy default `'directed'` is anti-conservative | `'folded'` matches esda's undirected test; `'greater'` and `'lesser'` match esda's one-sided tests |
-| k-means coordinates | `GPUKMeans` sums raw float32 coordinates (`centerCoordinates` defaults to `false`) | Raw float32 sums lose precision for coordinates far from the origin | `centerCoordinates: true` for coordinates far from the origin |
+| k-means coordinates | `GPUSpatialKMeans` sums raw float32 coordinates (`centerCoordinates` defaults to `false`) | Raw float32 sums lose precision for coordinates far from the origin | `centerCoordinates: true` for coordinates far from the origin |
 | KDE edge correction | `'uniform'` divides each cell by the kernel mass inside the window | Uncorrected estimate, or spatstat `diggle = TRUE` | `'none'` or `'diggle'` |
 | Line density | `GPULineDensity` writes line length per grid cell (`lengths`); `densities` (length per area) is optional | A density raster, or per-polygon length (`GPULineLengthPerPolygon`) | Read `lengths`, or divide by cell area |
 

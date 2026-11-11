@@ -48,3 +48,27 @@ export type {
 } from './gpu-trajectory-thinning';
 export {GPUTrajectoryTrackRelativeTimes} from './gpu-trajectory-track-relative-times';
 export type {GPUTrajectoryTrackRelativeTimesProps} from './gpu-trajectory-track-relative-times';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeTrajectorySplitOnCPU,
+  CPUTrajectorySplitOperation
+} from './cpu-trajectory-split-operation';
+export type {
+  CPUTrajectorySplitInput,
+  CPUTrajectorySplitOptions,
+  CPUTrajectorySplitResult
+} from './cpu-trajectory-split-operation';
+export {
+  computeTrajectoryThinningOnCPU,
+  CPUTrajectoryThinningOperation
+} from './cpu-trajectory-thinning-operation';
+export type {
+  CPUTrajectoryThinningInput,
+  CPUTrajectoryThinningOptions,
+  CPUTrajectoryThinningResult
+} from './cpu-trajectory-thinning-operation';
+export {GPUTrajectorySplitOperation} from './gpu-trajectory-split-operation';
+export type {TrajectorySplitOperationProps} from './gpu-trajectory-split-operation';
+export {GPUTrajectoryThinningOperation} from './gpu-trajectory-thinning-operation';
+export type {TrajectoryThinningOperationProps} from './gpu-trajectory-thinning-operation';

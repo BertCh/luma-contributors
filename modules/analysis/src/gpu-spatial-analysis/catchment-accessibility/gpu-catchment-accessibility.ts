@@ -14,7 +14,8 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -41,6 +42,12 @@ export type GPUCatchmentAccessibilityOutput = {
    * whose neighbor is a facility, whatever their weight.
    */
   reachableFacilities?: GraphDataView<'uint32'>;
+  /**
+   * Optional flag per demand location: 1 when its `demand` is finite, 0 when it is NaN or infinite
+   * and was left out of every facility's ratio. The accessibility of a flagged row does not read
+   * its own demand and remains valid. The same output as `GPUHuffTradeAreas`.
+   */
+  validity?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -101,7 +108,8 @@ export type GPUCatchmentAccessibilityProps = {
  * Each output row accumulates its neighbors in slot order in one invocation, so results are
  * deterministic and match a sequential CPU sum within f32 rounding. Neighbor IDs outside the
  * partner row space are skipped, and a non-finite demand or ratio (from a non-finite supply) is
- * missing: it adds nothing to a sum.
+ * missing: it adds nothing to a sum. The optional `validity` output flags the demand rows whose
+ * demand was missing.
  *
  * Network costs: `GPUNetworkCostWeights` turns a network cost matrix into the facility weights and
  * their transpose, which is how the `catchment` option of `GPUNetworkAccessibility` runs.
@@ -152,11 +160,11 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
       ['output.ratios', output.ratios]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
     if (output.reachableFacilities) {
-      validatePackedView(
+      validateSinglePackedView(
         output.reachableFacilities,
         ['uint32'],
         `${id} output.reachableFacilities`
@@ -177,8 +185,21 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
     if (output.reachableFacilities && output.reachableFacilities.length !== this.demandCount) {
       throw new Error(`${id} output.reachableFacilities length must equal the demand count`);
     }
+    if (output.validity) {
+      validateSinglePackedView(output.validity, ['uint32'], `${id} output.validity`);
+      validateRequirement(
+        id,
+        output.validity.length === this.demandCount,
+        'output.validity must have one row per demand location'
+      );
+    }
     const weightViews = getWeightViews(props);
-    const outputs = [output.accessibility, output.ratios, output.reachableFacilities];
+    const outputs = [
+      output.accessibility,
+      output.ratios,
+      output.reachableFacilities,
+      output.validity
+    ];
     validateGraphOutputsDisjointFromInputs(id, outputs, [
       props.supply,
       props.demand,
@@ -191,8 +212,8 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns the nodes in order: `selection` (3SFCA only), `ratios`, `scores`, and `reachable` when
-   * requested.
+   * Returns the nodes in order: `selection` (3SFCA only), `ratios`, `scores`, and `reachable` and
+   * `validity` when requested.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -207,6 +228,7 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
       accessibility,
       output.ratios,
       output.reachableFacilities,
+      output.validity,
       ...getWeightViews(props)
     ]);
     const isThreeStep = props.method === '3sfca';
@@ -338,6 +360,22 @@ ${IS_FINITE_BITS_WGSL}`,
     }
   }
   reachable[reachableOffset + index] = count;`
+        })
+      );
+    }
+    if (output.validity) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-validity`,
+          operation: OPERATION,
+          variant: 'validity',
+          bindings: [
+            {name: 'demand', view: demand, type: 'f32', access: 'read'},
+            {name: 'validity', view: output.validity, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: demandCount,
+          declarations: IS_FINITE_BITS_WGSL,
+          body: 'validity[validityOffset + index] = u32(isFiniteBits(demand[demandOffset + index]));'
         })
       );
     }

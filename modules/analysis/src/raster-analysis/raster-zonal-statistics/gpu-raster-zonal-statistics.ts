@@ -23,7 +23,7 @@ import {
   getStorageBindingElementLimit,
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
@@ -153,7 +153,10 @@ export type GPURasterZonalStatisticsMomentOutput = {
    * or for a non-positive denominator.
    */
   variances?: GraphDataView<'float32'>;
-  /** Per zone: `sqrt(variances)`; NaN where the variance is NaN. */
+  /**
+   * Per zone: `sqrt(variances)`, the sample standard deviation (divisor `n - 1`); NaN where the
+   * variance is NaN. `GPURasterCellStatistics` divides by `n`.
+   */
   standardDeviations?: GraphDataView<'float32'>;
 };
 
@@ -307,6 +310,13 @@ function hasSortedSums(
  * `means` `sum(a * v) / sum(a)` and `variances` reliability-weighted, with `a` the cell area in
  * square meters on the authalic sphere. Counts, minimums and maximums are never weighted.
  *
+ * Variance and standard deviation divisor: `n - 1`, the unbiased sample form (`numpy.var` with
+ * `ddof=1`), also for a zone that is a whole population. Two cells with values 1 and 3 give a
+ * standard deviation of 1.414. ArcGIS Zonal Statistics, rasterstats `std`, exactextract `stdev`
+ * and `GPURasterCellStatistics` use the population form (`n`), which gives 1 for the same two
+ * cells: multiply a variance by `(n - 1) / n` to convert. Published luma.gl raster statistics
+ * state no divisor, so each class keeps and documents its own.
+ *
  * Variances and standard deviations take a second pass over the cells after the means (and, with
  * `sumOrder: 'sorted'`, a second sort), so they are only computed when requested.
  *
@@ -353,7 +363,7 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
       throw new Error(`${id} sumOrder must be atomic or sorted`);
     }
     const cellCount = validateRasterGrid(id, props.grid);
-    validatePackedView(props.zones, ['uint32'], `${id} zones`);
+    validateSinglePackedView(props.zones, ['uint32'], `${id} zones`);
     if (props.zones.length !== cellCount) {
       throw new Error(`${id} zones must contain one value per cell`);
     }
@@ -394,9 +404,9 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
         continue;
       }
       if (operation === 'count') {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
       } else {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
       }
       if (view.length !== props.zoneCapacity) {
         throw new Error(`${id} output.${name} must contain zoneCapacity rows`);
@@ -405,7 +415,7 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
     for (const name of MOMENT_COLUMNS) {
       const view = props.output[name];
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== props.zoneCapacity) {
           throw new Error(`${id} output.${name} must contain zoneCapacity rows`);
         }
@@ -413,7 +423,7 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
     }
     const overflow = output.status?.overflow;
     if (overflow) {
-      validatePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
+      validateSinglePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
       if (overflow.length !== 1) {
         throw new Error(`${id} output.status.overflow must contain one uint32 row`);
       }

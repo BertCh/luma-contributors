@@ -26,13 +26,14 @@ export * from './polygon-rasterization/index';
 export * from './raster-algebra/index';
 export * from './raster-embeddings/index';
 export * from './raster-grid/index';
-export * from './raster-medial-axis';
 export type {RasterIterationStatusOutputs} from './raster-expansion-utils';
 export * from './raster-patches/index';
 export * from './raster-pyramid/index';
 export * from './raster-sampling/index';
 export * from './raster-stretch/index';
-export * from './raster-watershed-forest';
 export * from './raster-zonal-statistics/index';
 export * from './remote-sensing/index';
 export * from './raster-time-series/index';
+
+export * from './raster-watershed/index';
+export * from './raster-morphology/index';

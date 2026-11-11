@@ -17,7 +17,7 @@ import {
 } from '../polygon-triangulation/gpu-polygon-triangulation';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -72,9 +72,9 @@ export class GPUSubdividePolygons implements GPUCommandNodeProducer {
     );
     validateCapacity(this.id, 'maximumSplits', props.maximumSplits ?? 4096, 1, 65536);
     validateCapacity(this.id, 'positions', props.positions.length, 1, 0x7fffffff);
-    validatePackedView(props.output.positions, ['float32x2'], this.id);
-    validatePackedView(props.output.pieces, ['uint32x4'], this.id);
-    validatePackedView(props.output.status, ['uint32x4'], this.id);
+    validateSinglePackedView(props.output.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.output.pieces, ['uint32x4'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32x4'], this.id);
     if (
       props.output.positions.length !== props.output.pieces.length * this.maximumVertices ||
       props.output.status.length !== 1

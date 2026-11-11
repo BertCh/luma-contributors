@@ -13,11 +13,15 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
-import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  GET_NAN_WGSL,
+  IS_FINITE_BITS_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 import {
   resolveGPUTemporalContext,
   type GPUTemporalContext
@@ -100,7 +104,8 @@ export type GPUGeographicallyTemporallyWeightedRegressionOutput = {
    * Global summary with the layout of `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY`
    * (12 values): residual sum of squares, trace of the hat matrix, AICc, R squared, observation
    * count, singular row count, sigma squared, log-likelihood and included row count; the slots of
-   * the significance-test fields are NaN.
+   * the significance-test fields are NaN. The AICc is NaN when `n - tr(S) - 2 <= 0` (the
+   * correction is undefined there; see the class documentation for the formula).
    */
   summary: GraphDataView<'float32'>;
 };
@@ -144,6 +149,16 @@ const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
  * `summary` AICc, the profile approach of the mgtwr two-step search without its adaptive
  * bandwidth. The fit is exhaustive over rows, float32, deterministic for a given adapter, and the
  * caller's data are never reordered.
+ *
+ * The summary AICc is the one `GPUGeographicallyWeightedRegression` publishes (the mgwr formula),
+ * `-2 llf + 2 n (tr(S) + 1) / (n - tr(S) - 2)`, so a GWR fit and a GTWR fit of the same data are
+ * comparable: with `timeScale = 0` the two classes fit the same model and report the same AICc.
+ * It is NaN when `n - tr(S) - 2 <= 0`, as in GWR, so a degenerate bandwidth whose hat trace
+ * approaches the row count cannot win a profile search. mgtwr's own `aicc` is
+ * `-2 llf + 2 (tr(S) + 1) (n - 1) / (n - tr(S) - 1)`; the value here is larger by
+ * `2 n (k + 1) / (n - k - 2) - 2 (k + 1) (n - 1) / (n - k - 1)` with `k = tr(S)` (2.15 at
+ * `n = 200`, `k = 60`; 0.05 at `n = 200`, `k = 10`). Residual sum of squares, trace, R squared,
+ * sigma squared and log-likelihood are mgtwr's.
  */
 export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommandNodeProducer {
   readonly id: string;
@@ -154,20 +169,20 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
     const columns = props.predictorCount;
     validateCapacity(id, 'predictorCount', columns, 1, GPU_GTWR_MAXIMUM_PREDICTOR_COUNT);
     resolveGPUTemporalContext(id, props.temporalContext, {encodings: ['float32-relative']});
-    validatePackedView(props.response, ['float32'], `${id} response`);
+    validateSinglePackedView(props.response, ['float32'], `${id} response`);
     this.rows = props.response.length;
     validateCapacity(id, 'rows', this.rows, 2, GPU_GTWR_MAXIMUM_ROW_COUNT);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateViewLength(id, 'positions', props.positions, this.rows);
-    validatePackedView(props.times, ['float32'], `${id} times`);
+    validateSinglePackedView(props.times, ['float32'], `${id} times`);
     validateViewLength(id, 'times', props.times, this.rows);
-    validatePackedView(props.predictors, ['float32'], `${id} predictors`);
+    validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
     validateViewLength(id, 'predictors', props.predictors, this.rows * columns);
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       validateViewLength(id, 'mask', props.mask, this.rows);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_GTWR_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must have at least ${GPU_GTWR_PARAMETER_LENGTH} values`);
     }
@@ -179,11 +194,11 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
       ['hatDiagonal', output.hatDiagonal, 'float32', this.rows],
       ['summary', output.summary, 'float32', GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH]
     ] as const) {
-      validatePackedView(view, [format], `${id} output.${name}`);
+      validateSinglePackedView(view, [format], `${id} output.${name}`);
       validateViewLength(id, `output.${name}`, view, length);
     }
     if (output.residuals) {
-      validatePackedView(output.residuals, ['float32'], `${id} output.residuals`);
+      validateSinglePackedView(output.residuals, ['float32'], `${id} output.residuals`);
       validateViewLength(id, 'output.residuals', output.residuals, this.rows);
     }
     validatePredictionViews(id, this.getInputViews(), Object.values(output).filter(Boolean));
@@ -233,6 +248,7 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
           {name: 'localStatus', view: output.localStatus, type: 'u32', access: 'read_write'}
         ],
         declarations: `${IS_FINITE_BITS_WGSL}
+${IS_FINITE_VALUE_WGSL}
 ${GET_NAN_WGSL}
 ${getCholeskyWGSL(size, size)}
 ${getEquilibratedCholeskyWGSL(size)}
@@ -367,14 +383,17 @@ ${getLocalKernelWeightWGSL()}`,
     }
   }
   let logLikelihood = -0.5 * count * (log(6.283185307179586 * residualSquares / count) + 1.0);
-  let akaike = -2.0 * logLikelihood + 2.0 * (trace + 1.0);
-  let corrected = akaike + 2.0 * trace * (trace + 1.0) / (count - trace - 1.0);
+  // The AICc of GPUGeographicallyWeightedRegression (mgwr): -2 llf + 2 n (tr + 1) / (n - tr - 2),
+  // defined only while n - tr - 2 > 0. mgtwr's own aicc is 2 (tr + 1) (n - 1) / (n - tr - 1) in
+  // the penalty and is not published here.
+  let correctedDenominator = count - trace - 2.0;
+  let corrected = -2.0 * logLikelihood + 2.0 * count * (trace + 1.0) / correctedDenominator;
   for (var slot = 0u; slot < ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH}u; slot++) {
     summary[summaryOffset + slot] = getNaN();
   }
   summary[summaryOffset] = residualSquares;
   summary[summaryOffset + 1u] = trace;
-  summary[summaryOffset + 2u] = select(getNaN(), corrected, count > 0.0);
+  summary[summaryOffset + 2u] = select(getNaN(), corrected, count > 0.0 && correctedDenominator > 0.0);
   summary[summaryOffset + 3u] = select(getNaN(), 1.0 - residualSquares / totalSquares, totalSquares > 0.0);
   summary[summaryOffset + 4u] = count;
   summary[summaryOffset + 6u] = singular;

@@ -28,8 +28,9 @@ import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
   validateCapacity,
-  validatePackedView,
-  validatePowerOfTwo
+  validateSinglePackedView,
+  validatePowerOfTwo,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUNearestFeatureJoin} from './gpu-nearest-feature-join';
 import {validateStatusScalars} from './spatial-join-geometry';
@@ -72,10 +73,24 @@ export type GPUBufferSelectionOutput = {
   distances?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   /** Optional per-point nearest feature row, or `GPU_SPATIAL_JOIN_NO_FEATURE`. Chunked like the points. */
   nearestFeatureIds?: GPUUint32Rows;
+  /**
+   * Optional per-point flag, one packed `uint32` per point in row order across chunks, 1 when that
+   * point's nearest-feature search may be incomplete because the join dropped candidates
+   * (`candidateCapacity`, planar only) or BVH leaves (`leafCapacity`, every point). A flagged point
+   * may be left out of the selection although a feature lies within the distance. It is
+   * `GPUNearestFeatureJoinOutput.candidateTruncated` passed through.
+   */
+  candidateTruncated?: GraphDataView<'uint32'>;
   /** Completeness scalars. */
   status?: {
     /** Optional one-row flag: 1 when the join's BVH leaf or candidate capacity overflowed. */
     overflow?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row flag under the shared status name: 1 when the join's BVH leaf or candidate
+     * capacity was too small (the join's `candidateOverflow`). `candidateTruncated` names the
+     * points affected.
+     */
+    candidateOverflow?: GraphDataView<'uint32'>;
   };
 };
 
@@ -199,9 +214,9 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one point`);
     }
     for (const chunk of getGraphViewChunks(points)) {
-      validatePackedView(chunk, ['float32x2'], `${id} points.positions`);
+      validateSinglePackedView(chunk, ['float32x2'], `${id} points.positions`);
     }
-    validatePackedView(props.distance, ['float32'], `${id} distance`);
+    validateSinglePackedView(props.distance, ['float32'], `${id} distance`);
     if (props.distance.length !== 1) {
       throw new Error(`${id} distance needs one float32 row`);
     }
@@ -211,20 +226,35 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
       ['output.nearestFeatureIds', nearestFeatureIds]
     ] as const) {
       for (const chunk of view ? getGraphViewChunks(view) : []) {
-        validatePackedView(chunk, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(chunk, ['uint32'], `${id} ${name}`);
       }
       validateGraphViewTopology(id, name, points, view);
     }
     for (const chunk of distances ? getGraphViewChunks(distances) : []) {
-      validatePackedView(chunk, ['float32'], `${id} output.distances`);
+      validateSinglePackedView(chunk, ['float32'], `${id} output.distances`);
     }
     validateGraphViewTopology(id, 'output.distances', points, distances);
-    validateStatusScalars(id, {overflow: props.output.status?.overflow});
+    validateStatusScalars(id, {
+      overflow: props.output.status?.overflow,
+      candidateOverflow: props.output.status?.candidateOverflow
+    });
+    if (props.output.candidateTruncated) {
+      validateSinglePackedView(
+        props.output.candidateTruncated,
+        ['uint32'],
+        `${id} output.candidateTruncated`
+      );
+      validateRequirement(
+        id,
+        props.output.candidateTruncated.length === this.pointCount,
+        `output.candidateTruncated needs one row per point (${this.pointCount})`
+      );
+    }
     if (drawInstanceCount) {
       if (!matches) {
         throw new Error(`${id} drawInstanceCount needs matches`);
       }
-      validatePackedView(drawInstanceCount, ['uint32'], `${id} output.drawInstanceCount`);
+      validateSinglePackedView(drawInstanceCount, ['uint32'], `${id} output.drawInstanceCount`);
       if (drawInstanceCount.length < 1) {
         throw new Error(`${id} output.drawInstanceCount needs one row`);
       }
@@ -277,7 +307,11 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
         output: {
           nearestFeatureIds,
           nearestDistances: props.output.distances,
-          status: {overflow: joinOverflow}
+          candidateTruncated: props.output.candidateTruncated,
+          status: {
+            overflow: joinOverflow,
+            candidateOverflow: props.output.status?.candidateOverflow
+          }
         }
       }).getCommandNodes(graph)
     );
@@ -359,6 +393,8 @@ function getOutputs(
     output.distances,
     output.nearestFeatureIds,
     output.status?.overflow,
+    output.status?.candidateOverflow,
+    output.candidateTruncated,
     output.drawInstanceCount,
     matches?.ids,
     matches?.status.count,

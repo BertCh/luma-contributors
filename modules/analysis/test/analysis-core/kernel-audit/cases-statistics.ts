@@ -105,7 +105,6 @@ import {
   type GPUGlobalPermutationStatistic,
   type GPUGlobalSpatialStatistic,
   type GPULocalPermutationStatistic,
-  type GPUMultipleTestingMethod,
   type GPUNeighborhoodSummaryStatistic,
   type GPURegionSelection,
   type GPURegionStatisticsProps,
@@ -117,6 +116,7 @@ import {
   type GPUZonalStatisticsExtentStatistic,
   type GPUZonalStatisticsProps
 } from '../../../src/gpu-spatial-analysis/index';
+import {type GPUMultipleTestingMethod} from '../../../src/analysis-core/index';
 import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
 
 type View = KernelAuditContext['view'];

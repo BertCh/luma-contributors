@@ -5,6 +5,10 @@
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {
+  GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH,
+  getGPURasterFractionalCoverageParameterValues
+} from '../../../src/raster-analysis/gpu-raster-fractional-coverage';
 import {addDasymetricRedistributionRecipe} from '../../../src/gpu-spatial-analysis/recipes/dasymetric-redistribution-recipe';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
@@ -201,6 +205,12 @@ it('dasymetric polygon-source composition preserves fractional boundaries before
       source: {
         kind: 'polygons',
         tupleCapacity: 8,
+        parameters: fixture.input(
+          'coverage-parameters',
+          getGPURasterFractionalCoverageParameterValues(GRID),
+          'float32',
+          GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH
+        ),
         zones: {
           positions: fixture.input(
             'positions',

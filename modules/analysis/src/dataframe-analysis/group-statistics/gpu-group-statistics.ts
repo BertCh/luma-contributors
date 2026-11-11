@@ -20,7 +20,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPU_CELL_DEFAULT_SUM_SCALE, validateSumScale} from '../../analysis-core/cell-key-wgsl';
 import {readBinding, writeBinding} from './group-statistics-common';
@@ -77,11 +77,24 @@ export type GPUGroupStatistic =
 export type GPUGroupStatisticsColumnOutput = {
   /** Finite values per group (`count`). */
   counts?: GraphDataView<'uint32'>;
-  /** Exact fixed-point sums, signed 64-bit `(low, high)` words with the cell-table semantics. */
+  /**
+   * Fixed-point sums in units of `1 / sumScale`, signed 64-bit `(low, high)` words with the
+   * cell-table semantics: the sum of `roundHalfEven(value * sumScale)`. Each value is rounded
+   * to `1 / sumScale` first, so these words are exact only for values that are multiples of
+   * that unit; a value below half a unit adds nothing. Use `sumValues` for the sum of a column
+   * of any magnitude.
+   */
   sums?: GraphDataView<'uint32x2'>;
-  /** `sums / sumScale` as f32 (`sum`). */
+  /**
+   * Sum of the finite values as f32 (`sum`): the exact sum in a 96-bit fixed-point accumulator
+   * whose unit follows the largest value of the column, rounded once to float32. It does not
+   * depend on `sumScale`.
+   */
   sumValues?: GraphDataView<'float32'>;
-  /** Exact fixed-point sum divided by the finite count (`mean`); NaN for empty groups. */
+  /**
+   * `sumValues` divided by the finite count (`mean`), within a few float32 units in the last
+   * place of the true mean at any magnitude; NaN for empty groups.
+   */
   means?: GraphDataView<'float32'>;
   /** Minimum finite value (`minimum`); NaN for empty groups. `-0` is reported as `+0`. */
   minimums?: GraphDataView<'float32'>;
@@ -183,7 +196,10 @@ export type GPUGroupStatisticsProps = {
    * rebuild.
    */
   percentiles?: GraphDataView<'float32'>;
-  /** Fixed-point scale of the sums and means, a positive float32. Defaults to 65536. */
+  /**
+   * Fixed-point scale of the `sums` words only, a positive float32: one unit is `1 / sumScale`.
+   * Defaults to 65536. `sumValues`, `means` and the moments do not use it.
+   */
   sumScale?: number;
   /** Caller-owned group table. Capacity is `output.keys.length`. */
   output: GPUGroupStatisticsOutput;
@@ -233,11 +249,23 @@ const FLOAT_OUTPUTS = [
  * kurtosis, median, percentiles, mode, unique count, and a per-row group z-score.
  *
  * Algorithm: rows are stable-sorted by key (LSD radix passes over the 32-bit words) and group
- * ranges come from head flags and a scan. Counts, fixed-point sums (64-bit, explicit carry) and
- * extremes (order-preserving keys) use integer atomics, so they are exact and independent of
- * thread order. Moments are corrected two-pass: `d = v - mean` is reduced in a fixed order (one
- * 256-thread workgroup per group, strided partial sums plus a fixed binary tree), and the central
- * sums about the true mean come from the shifted sums, so the result is bitwise reproducible.
+ * ranges come from head flags and a scan. Counts, fixed-point sums and extremes (order-preserving
+ * keys) use integer atomics, so they are independent of thread order. The float sum and the mean
+ * use the shared 96-bit fixed-point accumulator (`analysis-core/kernels/fixed-point-accumulator.ts`)
+ * with a data-derived unit: a power of two set by the largest finite value of the column among
+ * the rows of kept groups and by the bit length of the row count. A value keeps all 24
+ * significand bits while its magnitude is at least `max * 2^(h - 71)` (`h` is that bit length;
+ * about 1e15 of dynamic range at a million rows), so a column of 1e-4 and a column of 1e6 both
+ * sum to float32 accuracy; smaller values round to the unit. The optional `sums` words are a
+ * second, 64-bit accumulator in the caller's unit `1 / sumScale`. Moments are corrected two-pass:
+ * `d = v - mean` is reduced in a fixed order (one 256-thread workgroup per group, strided partial
+ * sums plus a fixed binary tree), and the central sums about the true mean come from the shifted
+ * sums, so the result is bitwise reproducible. The z-score is centred on that same corrected mean.
+ *
+ * The official `GPUGroupAggregation` of `@luma.gl/graph/gpu-core` publishes count, sum, mean,
+ * minimum and maximum for dense `uint32` keys with float compare-exchange sums. This contributor
+ * is separate because it needs sparse and 64-bit keys, order statistics and moments, and sums
+ * that do not depend on thread order.
  * Order statistics re-sort each requested column by value, then by key, so each group's finite
  * values are ascending; quantiles are direct lookups (`lo + (hi - lo) * frac`, numpy `linear`,
  * the order-statistic policy shared with `GPUColumnQuantiles`: finite values only),
@@ -253,7 +281,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
   readonly props: GPUGroupStatisticsProps;
   /** Variance kind used by variance, standard deviation and z-scores. */
   readonly variance: 'sample' | 'population';
-  /** Fixed-point scale of the sums. */
+  /** Fixed-point scale of the `sums` words. */
   readonly sumScale: number;
 
   constructor(props: GPUGroupStatisticsProps) {
@@ -271,13 +299,13 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     if (columns.length > MAXIMUM_COLUMN_COUNT) {
       throw new Error(`${id} supports at most ${MAXIMUM_COLUMN_COUNT} columns`);
     }
-    validatePackedView(keys, ['uint32', 'uint32x2'], `${id} keys`);
+    validateSinglePackedView(keys, ['uint32', 'uint32x2'], `${id} keys`);
     const rowCount = keys.length;
     if (rowCount < 1) {
       throw new Error(`${id} keys must hold at least one row`);
     }
     if (mask) {
-      validatePackedView(mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(mask, ['uint32'], `${id} mask`);
       if (mask.length !== rowCount) {
         throw new Error(`${id} mask must have the same length as keys`);
       }
@@ -293,12 +321,16 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
         throw new Error(`${id} output.keys must hold exactly keyCount rows`);
       }
     }
-    validatePackedView(output.keys, [keys.format as 'uint32' | 'uint32x2'], `${id} output.keys`);
+    validateSinglePackedView(
+      output.keys,
+      [keys.format as 'uint32' | 'uint32x2'],
+      `${id} output.keys`
+    );
     const capacity = output.keys.length;
     if (capacity < 1) {
       throw new Error(`${id} output.keys must hold at least one row`);
     }
-    validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
+    validateSinglePackedView(output.counts, ['uint32'], `${id} output.counts`);
     if (output.counts.length !== capacity) {
       throw new Error(`${id} output.counts must have the same length as output.keys`);
     }
@@ -307,7 +339,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
       if (view.length < 1) {
         throw new Error(`${id} output.status.${name} must contain one uint32 row`);
       }
@@ -316,7 +348,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     let percentileColumnCount = 0;
     for (const [columnIndex, column] of columns.entries()) {
       const name = `columns[${columnIndex}]`;
-      validatePackedView(column.values, ['float32'], `${id} ${name}.values`);
+      validateSinglePackedView(column.values, ['float32'], `${id} ${name}.values`);
       if (column.values.length !== rowCount) {
         throw new Error(`${id} ${name}.values must have the same length as keys`);
       }
@@ -355,16 +387,16 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
       for (const field of ['counts', 'uniqueCounts'] as const) {
         const view = columnOutput[field];
         if (view) {
-          validatePackedView(view, ['uint32'], `${id} ${name}.output.${field}`);
+          validateSinglePackedView(view, ['uint32'], `${id} ${name}.output.${field}`);
         }
       }
       if (columnOutput.sums) {
-        validatePackedView(columnOutput.sums, ['uint32x2'], `${id} ${name}.output.sums`);
+        validateSinglePackedView(columnOutput.sums, ['uint32x2'], `${id} ${name}.output.sums`);
       }
       for (const field of FLOAT_OUTPUTS) {
         const view = columnOutput[field];
         if (view) {
-          validatePackedView(view, ['float32'], `${id} ${name}.output.${field}`);
+          validateSinglePackedView(view, ['float32'], `${id} ${name}.output.${field}`);
         }
       }
       const expectedLengths: [keyof GPUGroupStatisticsColumnOutput, number][] = [
@@ -411,7 +443,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
       }
     }
     if (props.percentiles) {
-      validatePackedView(props.percentiles, ['float32'], `${id} percentiles`);
+      validateSinglePackedView(props.percentiles, ['float32'], `${id} percentiles`);
       if (props.percentiles.length < 1) {
         throw new Error(`${id} percentiles must hold at least one fraction`);
       }

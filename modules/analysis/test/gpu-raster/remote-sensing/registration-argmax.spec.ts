@@ -74,8 +74,8 @@ it('RS07 masked peak search spans several workgroups (25 x 25 search cells)', as
       grid: makeGPURasterMetadata({width, height}),
       reference: harness.input(referenceValues),
       moving: harness.input(moving),
-      referenceValidity: harness.mask(new Array(width * height).fill(1)),
-      movingValidity: harness.mask(new Array(width * height).fill(1)),
+      referenceMask: harness.mask(new Array(width * height).fill(1)),
+      movingMask: harness.mask(new Array(width * height).fill(1)),
       maximumShift: [12, 12],
       upsampleFactor: 1,
       output: {

@@ -22,6 +22,8 @@ import {
   GPU_SPATIAL_SCAN_STATISTIC_SUMMARY,
   GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH
 } from '../../../src/gpu-spatial-analysis/scan-statistics/index';
+import {EXPECTATION_BASED_SCAN_POISSON_WGSL} from '../../../src/gpu-spatial-analysis/scan-statistics/expectation-based-scan-poisson-wgsl';
+import {getPhiloxOpenUnitFloat} from '../../../src/analysis-core/kernels/philox-random';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {AnalysisRig, createSeededRandom} from '../catchment-accessibility/rig';
 import {
@@ -126,6 +128,54 @@ function createScene(): ExpectationBasedScanScene {
 }
 
 describe('GPUExpectationBasedSpaceTimeScan', () => {
+  // A case small enough to work by hand. Four zones on a line at x = 0, 10, 18, 40, one window
+  // bucket, neighborhoods of two (the center and its nearest zone): {0, 1}, {1, 2}, {2, 1}, {3, 2}.
+  // Baseline 2 everywhere; cases in the last bucket 2, 8, 6, 1. With F = C ln(C / B) + B - C:
+  // - {1}: 8 ln 4 + 2 - 8 = 5.090355; {2}: 6 ln 3 + 2 - 6 = 2.591674;
+  // - {1, 2}: 14 ln 3.5 + 4 - 14 = 7.538682; {0, 1}: 10 ln 2.5 + 4 - 10 = 3.162907;
+  // - {3, 2}: 7 ln 1.75 + 4 - 7 = 0.917310; {0}, {3}: cases at or below the baseline, 0.
+  // Best subset per center: 5.090355, 7.538682, 7.538682, 2.591674; overall {1, 2}.
+  it('matches a hand-computed best subset on four zones', async () => {
+    const scene: ExpectationBasedScanScene = {
+      positions: new Float32Array([0, 0, 10, 0, 18, 0, 40, 0]),
+      cases: new Uint32Array([2, 2, 2, 8, 2, 6, 2, 1]),
+      baseline: new Float32Array(8).fill(2),
+      timeBuckets: 2,
+      maximumNeighbors: 2,
+      maximumWindowLength: 1
+    };
+    const result = await runEB(scene, {replicateCount: 9});
+    if (!result.zones) return;
+    const expectedScores = [5.090355, 7.538682, 7.538682, 2.591674];
+    result.zoneStatistics.forEach((score, zone) => {
+      expect(score, `center ${zone}`).toBeCloseTo(expectedScores[zone], 4);
+    });
+    const {found, memberCount, windowLength, centerZone} = GPU_EXPECTATION_BASED_SCAN_SUMMARY;
+    expect(result.summary[found]).toBe(1);
+    expect(result.summary[windowLength]).toBe(1);
+    expect([1, 2]).toContain(result.summary[centerZone]);
+    expect(result.summary[memberCount]).toBe(2);
+    expect(result.zones.slice(0, 2).sort((a, b) => a - b)).toEqual([1, 2]);
+    const {observedCases, expectedCases, logLikelihoodRatio} = GPU_EXPECTATION_BASED_SCAN_CLUSTER;
+    expect(result.cluster[observedCases]).toBe(14);
+    expect(result.cluster[expectedCases]).toBeCloseTo(4, 6);
+    expect(result.cluster[logLikelihoodRatio]).toBeCloseTo(7.538682, 4);
+    expect(result.statistics[0]).toBeCloseTo(7.538682, 4);
+  });
+
+  // The 24-bit midpoint uniform (f32(word >> 8) + 0.5) / 2^24 reaches exactly 1 for the largest
+  // word, because 16777215.5 is not an f32. The sampler now uses the shared open-interval form.
+  it('draws its uniforms from the open interval (0, 1)', () => {
+    expect(Math.fround(Math.fround(0xffffffff >>> 8) + 0.5) / 16777216).toBe(1);
+    expect(getPhiloxOpenUnitFloat(0xffffffff)).toBeLessThan(1);
+    expect(Math.fround(getPhiloxOpenUnitFloat(0xffffffff))).toBeLessThan(1);
+    expect(getPhiloxOpenUnitFloat(0)).toBeGreaterThan(0);
+    expect(EXPECTATION_BASED_SCAN_POISSON_WGSL).toContain(
+      'philoxOpenUnitFloat(nextPhiloxUint32(stream))'
+    );
+    expect(EXPECTATION_BASED_SCAN_POISSON_WGSL).not.toContain('16777216.0');
+  });
+
   it('finds the same best subset as exhaustive enumeration, per center and overall', async () => {
     const scene = createScene();
     const reference = computeExpectationBasedScanReference(scene, 3);

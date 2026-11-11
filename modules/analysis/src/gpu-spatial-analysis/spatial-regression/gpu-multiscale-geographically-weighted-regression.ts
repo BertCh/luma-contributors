@@ -11,11 +11,15 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createMultiscaleInference} from './multiscale-inference';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  GET_NAN_WGSL,
+  IS_FINITE_BITS_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -123,7 +127,7 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
       const count = props.bandwidthCandidateCount;
       if (!count || !Number.isInteger(count) || count > 32)
         throw new Error(`${this.id}: candidate count must be 1 to 32`);
-      validatePackedView(props.bandwidthCandidates, ['float32'], this.id);
+      validateSinglePackedView(props.bandwidthCandidates, ['float32'], this.id);
       if (props.bandwidthCandidates.length !== (props.predictorCount + 1) * count)
         throw new Error(`${this.id}: candidate grid shape mismatch`);
     } else if (props.bandwidthCandidateCount !== undefined)
@@ -131,13 +135,13 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
     if (props.output.conditionalStandardErrors && !props.noiseVariance)
       throw new Error(`${this.id}: conditional inference requires known noise variance`);
     if (props.noiseVariance) {
-      validatePackedView(props.noiseVariance, ['float32'], this.id);
+      validateSinglePackedView(props.noiseVariance, ['float32'], this.id);
       if (props.noiseVariance.length !== 1)
         throw new Error(`${this.id}: noise variance must be scalar`);
     }
     for (const [name, view] of Object.entries(getOutputColumns(props.output))) {
       if (!view) continue;
-      validatePackedView(
+      validateSinglePackedView(
         view,
         [
           ['coefficients', 'fitted', 'selectedBandwidths', 'conditionalStandardErrors'].includes(
@@ -173,7 +177,7 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
       )
         throw new Error(`${this.id}: unsupported variance convention`);
       for (const [name, view] of Object.entries(props.inference.output)) {
-        validatePackedView(view, [name === 'status' ? 'uint32' : 'float32'], this.id);
+        validateSinglePackedView(view, [name === 'status' ? 'uint32' : 'float32'], this.id);
         const length =
           name === 'standardErrors'
             ? props.response.length * (props.predictorCount + 1)
@@ -271,7 +275,10 @@ fn isActive(row: u32) -> bool { return isFiniteBits(pairs[pairsOffset + 2u * row
       props.noiseVariance
     ]);
     // Full-inference propagation starts from zero surfaces, so only fits without it start every
-    // surface at the global ordinary least squares coefficients, as mgwr does.
+    // surface at the global ordinary least squares coefficients. This is this kernel's starting
+    // point, not a claim about a reference package: a package that starts from a single-bandwidth
+    // GWR fit reaches the same fixed point when it is unique, with different iteration counts and
+    // a different result when the iteration limit stops the backfitting first.
     const globalFit = props.inference
       ? undefined
       : createTransientView(graph, `${id}-global-fit`, 'float32', columns);
@@ -287,7 +294,7 @@ fn isActive(row: u32) -> bool { return isFiniteBits(pairs[pairsOffset + 2u * row
             ...bindings.filter(binding => binding.name !== 'parameters'),
             {name: 'globalFit', view: globalFit, type: 'f32', access: 'read_write'}
           ],
-          declarations: `${common}\n${getCholeskyWGSL(props.predictorCount, GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT + 1)}`,
+          declarations: `${common}\n${IS_FINITE_VALUE_WGSL}\n${getCholeskyWGSL(props.predictorCount, GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT + 1)}`,
           body: `// Centered, equilibrated normal equations of the included rows; zeros when singular.
 for (var column = 0u; column < ${columns}u; column++) { globalFit[globalFitOffset + column] = 0.0; }
 var means: array<f32, ${props.predictorCount}>;

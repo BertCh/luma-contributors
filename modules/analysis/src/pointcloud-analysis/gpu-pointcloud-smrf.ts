@@ -19,7 +19,8 @@ import {
   GPU_POINT_CLOUD_MAXIMUM_SMRF_CUT_CELLS,
   GPU_POINT_CLOUD_MAXIMUM_SMRF_WINDOW_CELLS
 } from './pointcloud-limits';
-import {createPointCloudGridIndex} from './pointcloud-grid-index';
+import {getPointCloudDiamondMorphologyNodes} from './pointcloud-diamond-morphology';
+import {createPointCloudGridIndex, getPointCloudRowDirection} from './pointcloud-grid-index';
 import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 import {getPointCloudCellSource, validatePointCloudGrid} from './gpu-pointcloud-surfaces';
 import type {PointCloudRasterGrid} from './gpu-pointcloud-surfaces';
@@ -74,7 +75,9 @@ type RasterViews = Record<
 /**
  * Simple morphological filtering following the PDAL 2.8.4 SMRF stages: diamond openings,
  * low outliers, optional net cuts, eight-neighbor inpainting and slope-scaled classification.
- * Independently implemented WGSL; no CPU numerical fallback or intermediate readback.
+ * The diamond minimum and maximum windows are the published `GPURasterErosion` and
+ * `GPURasterDilation` (`pointcloud-diamond-morphology.ts`); the other stages are independently
+ * implemented WGSL. No CPU numerical fallback or intermediate readback.
  */
 export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
   readonly id: string;
@@ -180,7 +183,8 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
         dimensions: [grid.width, grid.height, 1],
         cellSize: grid.cellSize
       },
-      true
+      true,
+      getPointCloudRowDirection(grid)
     );
     nodes.push(...indexed.nodes);
     const minimum = allocate('float32', 'minimum');
@@ -270,27 +274,16 @@ writeResult(index,mean); writeAvailability(index,select(0u,2u,count>0u));`
       radius: number,
       operation: 'min' | 'max'
     ) => {
-      let previous = input;
-      // A diamond is the Minkowski sum of radius-one crosses. Clipping to a rectangular domain
-      // preserves shortest paths, so repeated crosses equal the full clipped diamond exactly.
-      for (let step = 0; step < radius; step++) {
-        const output = allocate('float32', `${name}-${step}`);
-        emit(
-          `${name}-${step}`,
-          {surface: previous},
-          {result: output},
-          `
-let column=index%${grid.width}u;let row=index/${grid.width}u;
-var value=readSurface(index);
-if(column>0u){value=${operation}(value,readSurface(index-1u));}
-if(column+1u<${grid.width}u){value=${operation}(value,readSurface(index+1u));}
-if(row>0u){value=${operation}(value,readSurface(index-${grid.width}u));}
-if(row+1u<${grid.height}u){value=${operation}(value,readSurface(index+${grid.width}u));}
-writeResult(index,value);`
-        );
-        previous = output;
-      }
-      return previous;
+      const result = getPointCloudDiamondMorphologyNodes(
+        graph,
+        `${this.id}-${name}`,
+        input,
+        grid,
+        radius,
+        operation
+      );
+      nodes.push(...result.nodes);
+      return result.output;
     };
     const inverted = allocate('float32', 'inverted');
     emit('invert', {filled}, {inverted}, 'writeInverted(index,-readFilled(index));');

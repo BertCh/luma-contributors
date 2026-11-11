@@ -5,6 +5,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {getGPUClassBreaksParameterValues} from '../../../src/dataframe-analysis/column-classification/class-breaks-parameters';
+import {GPUClassBreaks} from '../../../src/dataframe-analysis/column-classification/gpu-class-breaks';
 import {
   getGPUSpatialAutocorrelationParameterValues,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
@@ -31,7 +32,28 @@ import {
   getOracleQuantile
 } from './distribution-oracle';
 import * as giddy from './markov-giddy-fixture';
+import digitizeFixtureJson from '../../oracles/fixtures/distribution-class-assignment-numpy.json';
+import {decodeOracleFixture} from '../../oracles/oracle-fixture';
 import {requireTestDevice} from '../../utils/require-test-device';
+
+type DigitizeClosureCase = {classes: number[]; counts: number[]};
+/** NumPy `digitize` references, see `test/oracles/distribution-class-assignment-numpy.py`. */
+const digitizeFixture = decodeOracleFixture<{
+  versions: Record<string, string>;
+  reference: {
+    edges: {edges: number[]; values: number[]; right: number[]; left: number[]};
+    pooled: {
+      rows: number;
+      periods: number;
+      classCount: number;
+      values: number[];
+      edges: number[];
+      tiedRowCount: number;
+      right: DigitizeClosureCase;
+      left: DigitizeClosureCase;
+    };
+  };
+}>(digitizeFixtureJson);
 
 const NO_CLASS = 0xffffffff;
 
@@ -111,6 +133,332 @@ it('GPUClassAssignment follows the shared class rule with ties, NaN, infinities 
   );
   expect(actual).toEqual(expected);
   expect(new Set(actual).size).toBeGreaterThan(3);
+  rig.destroy();
+});
+
+it("GPUClassAssignment intervalClosure 'right' keeps a value equal to an edge in the lower class", async () => {
+  // Math review point-process-clustering-03. The rule of mapclassify and giddy is
+  // numpy.digitize(values, bins, right=True): class j holds bins[j - 1] < x <= bins[j], so a value
+  // equal to an edge stays below it and the minimum is in class 0. Expected classes are written
+  // by hand from that rule for edges [0, 10, 20, 30, 40]; nothing here calls the oracle.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const edges = [0, 10, 20, 30, 40];
+  const cases: [value: number, rightClosed: number, leftClosed: number][] = [
+    [-5, 0, 0],
+    [0, 0, 0],
+    [9.99, 0, 0],
+    [10, 0, 1],
+    [10.01, 1, 1],
+    [20, 1, 2],
+    [29, 2, 2],
+    [30, 2, 3],
+    [39.9, 3, 3],
+    [40, 3, 3],
+    [100, 3, 3],
+    [NaN, NO_CLASS, NO_CLASS],
+    [Infinity, 3, 3],
+    [-Infinity, 0, 0]
+  ];
+  const values = Float32Array.from(cases.map(([value]) => value));
+  const rig = new AnalysisRig(device);
+  const rightClosed = rig.output('uint32', values.length);
+  const leftClosed = rig.output('uint32', values.length);
+  const breaks = rig.input(Float32Array.from(edges), 'float32');
+  const classCount = rig.input(Uint32Array.of(4), 'uint32');
+  const input = rig.input(values, 'float32');
+  rig.run(
+    new GPUClassAssignment({
+      id: 'right-closed',
+      values: input,
+      breaks,
+      classCount,
+      intervalClosure: 'right',
+      output: rightClosed
+    }),
+    new GPUClassAssignment({
+      id: 'left-closed',
+      values: input,
+      breaks,
+      classCount,
+      output: leftClosed
+    })
+  );
+  expect(await rig.readUint(rightClosed)).toEqual(cases.map(([, expected]) => expected));
+  // The default is unchanged: an edge is the lower edge of the class above it.
+  expect(await rig.readUint(leftClosed)).toEqual(cases.map(([, , expected]) => expected));
+  rig.destroy();
+  expect(
+    () =>
+      new GPUClassAssignment({
+        values: input,
+        breaks,
+        classCount,
+        intervalClosure: 'both' as 'left',
+        output: rightClosed
+      })
+  ).toThrow(/intervalClosure/);
+});
+
+it("pooled quantile breaks with rows tied at a break count giddy's transitions with 'right'", async () => {
+  // Five rows over three periods, period-major. Sorted, the pooled values are
+  //   1 2 3 4 5 5 6 7 8 9 9 10 11 12 13
+  // so the R-7 terciles sit at positions 14/3 and 28/3, between two 5s and between two 9s: the
+  // inner edges are exactly 5 and 9 and two rows are tied at each. mapclassify.Quantiles(k=3)
+  // has bins [5, 9, 13] and yb = (x <= 5 -> 0, x <= 9 -> 1, else 2); giddy.Markov counts the
+  // transitions of those classes between consecutive periods. By hand:
+  //   classes  period 0: 0 0 1 1 2   period 1: 0 0 1 1 2   period 2: 0 0 1 2 2
+  //   counts   0->0: 4, 1->1: 3, 1->2: 1, 2->2: 2
+  // With the default 'left' the tied rows sit one class higher:
+  //   classes  period 0: 0 1 1 2 2   period 1: 0 1 1 2 2   period 2: 0 0 1 2 2
+  //   counts   0->0: 2, 1->0: 1, 1->1: 3, 2->2: 4
+  // (mapclassify and giddy are not installed on the machine these were written on, so they are
+  // from the documented rule, not from a giddy run. The next case checks the same rule against
+  // numpy.digitize, which is installed.)
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const pooled = Float32Array.of(1, 5, 6, 9, 13, 2, 5, 7, 9, 12, 3, 4, 8, 10, 11);
+  const expected = {
+    right: {
+      classes: [0, 0, 1, 1, 2, 0, 0, 1, 1, 2, 0, 0, 1, 2, 2],
+      counts: [4, 0, 0, 0, 3, 1, 0, 0, 2]
+    },
+    left: {
+      classes: [0, 1, 1, 2, 2, 0, 1, 1, 2, 2, 0, 0, 1, 2, 2],
+      counts: [2, 0, 0, 1, 3, 0, 0, 0, 4]
+    }
+  };
+  for (const intervalClosure of ['right', 'left'] as const) {
+    const rig = new AnalysisRig(device);
+    const values = rig.input(pooled, 'float32');
+    const breaks = rig.output('float32', 4);
+    const classCount = rig.output('uint32', 1);
+    const classes = rig.output('uint32', pooled.length);
+    const counts = rig.output('uint32', 9);
+    rig.run(
+      new GPUClassBreaks({
+        values,
+        maximumClassCount: 3,
+        methods: ['quantile'],
+        parameters: rig.input(
+          getGPUClassBreaksParameterValues({method: 'quantile', classCount: 3}, 3),
+          'float32'
+        ),
+        output: {breaks, classCount}
+      }),
+      new GPUClassAssignment({values, breaks, classCount, intervalClosure, output: classes}),
+      new GPUTransitionMatrix({classes, periodCount: 3, classCount: 3, output: {counts}})
+    );
+    expect(await rig.readFloat(breaks), intervalClosure).toEqual([1, 5, 9, 13]);
+    expect(await rig.readUint(classes), intervalClosure).toEqual(expected[intervalClosure].classes);
+    expect(await rig.readUint(counts), intervalClosure).toEqual(expected[intervalClosure].counts);
+    rig.destroy();
+  }
+});
+
+it('GPUClassAssignment matches numpy.digitize for both closures, on fixed edges and pooled quantiles', async () => {
+  // Fix review fr-models-09: an independent reference for the two closures. The fixture is
+  // NumPy 2.0.2 (`test/oracles/distribution-class-assignment-numpy.py`): `digitize(right=True)`
+  // is the right-closed rule of mapclassify's bins, `digitize(right=False)` the left-closed one.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {edges: fixed, pooled} = digitizeFixture.reference;
+  expect(pooled.tiedRowCount).toBeGreaterThan(2);
+  for (const intervalClosure of ['right', 'left'] as const) {
+    const rig = new AnalysisRig(device);
+    const fixedClasses = rig.output('uint32', fixed.values.length);
+    const pooledValues = rig.input(Float32Array.from(pooled.values), 'float32');
+    const breaks = rig.output('float32', pooled.classCount + 1);
+    const classCount = rig.output('uint32', 1);
+    const pooledClasses = rig.output('uint32', pooled.values.length);
+    const counts = rig.output('uint32', pooled.classCount * pooled.classCount);
+    rig.run(
+      new GPUClassAssignment({
+        id: 'fixed-edges',
+        values: rig.input(Float32Array.from(fixed.values), 'float32'),
+        breaks: rig.input(Float32Array.from(fixed.edges), 'float32'),
+        classCount: rig.input(Uint32Array.of(fixed.edges.length - 1), 'uint32'),
+        intervalClosure,
+        output: fixedClasses
+      }),
+      new GPUClassBreaks({
+        values: pooledValues,
+        maximumClassCount: pooled.classCount,
+        methods: ['quantile'],
+        parameters: rig.input(
+          getGPUClassBreaksParameterValues(
+            {method: 'quantile', classCount: pooled.classCount},
+            pooled.classCount
+          ),
+          'float32'
+        ),
+        output: {breaks, classCount}
+      }),
+      new GPUClassAssignment({
+        id: 'pooled-quantiles',
+        values: pooledValues,
+        breaks,
+        classCount,
+        intervalClosure,
+        output: pooledClasses
+      }),
+      new GPUTransitionMatrix({
+        classes: pooledClasses,
+        periodCount: pooled.periods,
+        classCount: pooled.classCount,
+        output: {counts}
+      })
+    );
+    expect(await rig.readUint(fixedClasses), intervalClosure).toEqual(fixed[intervalClosure]);
+    expect(await rig.readFloat(breaks), intervalClosure).toEqual(pooled.edges);
+    expect(await rig.readUint(pooledClasses), intervalClosure).toEqual(
+      pooled[intervalClosure].classes
+    );
+    expect(await rig.readUint(counts), intervalClosure).toEqual(pooled[intervalClosure].counts);
+    rig.destroy();
+  }
+  // The two closures count different transitions on this data.
+  expect(pooled.right.counts).not.toEqual(pooled.left.counts);
+});
+
+it("GPUSpatialMarkov lagIntervalClosure 'right' keeps a lag equal to a lag edge in the lower lag class", async () => {
+  // Fix review fr-models-04. Six rows in three pairs (0-1, 2-3, 4-5), each row's only neighbor
+  // its partner with weight 1 and `normalize: false`, so the lag of a row is exactly its
+  // partner's value. Values, period-major:
+  //   period 0: 0 8 9 1 2 10    period 1: 3 8 11 4 12 5    period 2: 13 6 7 14 15 16
+  // The 18 pooled lags are the same numbers; sorted, positions 8 and 9 are both 8, so the median
+  // (the one inner edge of two quantile lag classes) is exactly 8 and two lags are tied at it:
+  // row 0 in periods 0 and 1 (its partner, row 1, holds 8 in both).
+  //   lags     period 0: 8 0 1 9 10 2    period 1: 8 3 4 11 5 12
+  // Classes of the values are given (0 for a value up to 7, else 1):
+  //   period 0: 0 1 1 0 0 1    period 1: 0 1 1 0 1 0    period 2: 1 0 0 1 1 1
+  // so the transitions are, by row, 0->0 1->1 1->1 0->0 0->1 1->0 from period 0 and
+  // 0->1 1->0 1->0 0->1 1->1 0->1 from period 1.
+  // 'right' (lag <= 8 is lag class 0, as giddy): lag classes 0 0 0 1 1 0 and 0 0 0 1 0 1.
+  //   lag class 0: 0->0 1, 0->1 1, 1->0 3, 1->1 3    lag class 1: 0->0 1, 0->1 3
+  // 'left' (default, lag >= 8 is lag class 1): row 0 moves to lag class 1 in both periods.
+  //   lag class 0: 1->0 3, 1->1 3                     lag class 1: 0->0 2, 0->1 4
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const values = Float32Array.of(0, 8, 9, 1, 2, 10, 3, 8, 11, 4, 12, 5, 13, 6, 7, 14, 15, 16);
+  const classes = Uint32Array.of(0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1);
+  const pairs = {
+    offsets: [0, 1, 2, 3, 4, 5, 6],
+    neighbors: [1, 0, 3, 2, 5, 4],
+    weights: [1, 1, 1, 1, 1, 1]
+  };
+  const expected = {
+    right: {
+      lagClasses: [0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1],
+      counts: [1, 1, 3, 3, 1, 3, 0, 0]
+    },
+    left: {
+      lagClasses: [1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1],
+      counts: [0, 0, 3, 3, 2, 4, 0, 0]
+    }
+  };
+  for (const lagIntervalClosure of ['right', 'left', undefined] as const) {
+    const rig = new AnalysisRig(device);
+    const counts = rig.output('uint32', 8);
+    const lagBreaks = rig.output('float32', 3);
+    const lagClassCount = rig.output('uint32', 1);
+    const lagValues = rig.output('float32', 18);
+    const lagClasses = rig.output('uint32', 18);
+    rig.run(
+      new GPUSpatialMarkov({
+        values: rig.input(values, 'float32'),
+        classes: rig.input(classes, 'uint32'),
+        classCount: 2,
+        weights: rig.weights(pairs),
+        periodCount: 3,
+        normalize: false,
+        maximumLagClassCount: 2,
+        lagParameters: rig.input(
+          getGPUClassBreaksParameterValues({method: 'quantile', classCount: 2}, 2),
+          'float32'
+        ),
+        ...(lagIntervalClosure ? {lagIntervalClosure} : {}),
+        output: {counts, lagBreaks, lagClassCount, lagValues, lagClasses}
+      })
+    );
+    const closure = lagIntervalClosure ?? 'left';
+    expect(await rig.readFloat(lagValues), closure).toEqual([
+      8, 0, 1, 9, 10, 2, 8, 3, 4, 11, 5, 12, 6, 13, 14, 7, 16, 15
+    ]);
+    expect(await rig.readFloat(lagBreaks), closure).toEqual([0, 8, 16]);
+    expect(await rig.readUint(lagClassCount), closure).toEqual([2]);
+    // The lag classes of the last period condition no transition; the first two are checked.
+    expect((await rig.readUint(lagClasses)).slice(0, 12), closure).toEqual(
+      expected[closure].lagClasses
+    );
+    expect(await rig.readUint(counts), closure).toEqual(expected[closure].counts);
+    rig.destroy();
+  }
+  // A wrong value is refused at construction, under the contributor's own ID.
+  const rig = new AnalysisRig(device);
+  expect(
+    () =>
+      new GPUSpatialMarkov({
+        id: 'tied-lag',
+        values: rig.input(values, 'float32'),
+        classes: rig.input(classes, 'uint32'),
+        classCount: 2,
+        weights: rig.weights(pairs),
+        periodCount: 3,
+        maximumLagClassCount: 2,
+        lagParameters: rig.input(
+          getGPUClassBreaksParameterValues({method: 'quantile', classCount: 2}, 2),
+          'float32'
+        ),
+        lagIntervalClosure: 'both' as 'left',
+        output: {
+          counts: rig.output('uint32', 8),
+          lagBreaks: rig.output('float32', 3),
+          lagClassCount: rig.output('uint32', 1)
+        }
+      })
+  ).toThrow(/tied-lag lagIntervalClosure/);
+  rig.destroy();
+});
+
+it("natural-breaks lower edges with 'left' keep the smallest value of each class in its class", async () => {
+  // Three clusters. GPUClassBreaks natural breaks returns lower edges: each inner edge is the
+  // smallest value of its class, here 10 and 20. With the default 'left' rule 10 and 20 open
+  // their classes; with 'right' each would fall into the class below, which is why the closure is
+  // an option and not a new default.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const clustered = Float32Array.of(1, 2, 3, 10, 11, 12, 20, 21, 22);
+  const rig = new AnalysisRig(device);
+  const values = rig.input(clustered, 'float32');
+  const breaks = rig.output('float32', 4);
+  const classCount = rig.output('uint32', 1);
+  const leftClosed = rig.output('uint32', clustered.length);
+  const rightClosed = rig.output('uint32', clustered.length);
+  rig.run(
+    new GPUClassBreaks({
+      values,
+      maximumClassCount: 3,
+      methods: ['natural-breaks'],
+      parameters: rig.input(
+        getGPUClassBreaksParameterValues({method: 'natural-breaks', classCount: 3}, 3),
+        'float32'
+      ),
+      output: {breaks, classCount}
+    }),
+    new GPUClassAssignment({id: 'left-closed', values, breaks, classCount, output: leftClosed}),
+    new GPUClassAssignment({
+      id: 'right-closed',
+      values,
+      breaks,
+      classCount,
+      intervalClosure: 'right',
+      output: rightClosed
+    })
+  );
+  expect(await rig.readFloat(breaks)).toEqual([1, 10, 20, 22]);
+  expect(await rig.readUint(leftClosed)).toEqual([0, 0, 0, 1, 1, 1, 2, 2, 2]);
+  expect(await rig.readUint(rightClosed)).toEqual([0, 0, 0, 0, 1, 1, 1, 2, 2]);
   rig.destroy();
 });
 

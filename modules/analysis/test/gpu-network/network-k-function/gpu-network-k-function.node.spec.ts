@@ -8,6 +8,7 @@ import {
   getGPUNetworkKFunctionParameterValues,
   GPUNetworkKFunction
 } from '../../../src/gpu-network/network-k-function/index';
+import {GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK} from '../../../src/gpu-network/network-accessibility/index';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 let serial = 0;
@@ -162,4 +163,33 @@ it('GPUNetworkKFunction rejects configurations above the command node budget', (
         ) as never
       )
   ).toThrow(/^k estimated command node count must be at most 32768$/);
+});
+
+it('GPUNetworkKFunction schedules events times edges above the unindexed snapping limit', () => {
+  // 2^21 events on 128 edges are 2^28 point-edge tests, above the 2^27 a direct GPUNetworkSnapping
+  // accepts without candidateCapacity. This configuration built before the limit existed, so the
+  // K function must still construct and schedule it, with no error under the nested snapping id.
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const events = 2 ** 21;
+  const edgeCount = 128;
+  const props = createProps(
+    graph,
+    {
+      positions: createTransientView(graph, 'many-events', 'float32x2', events),
+      simulationCount: 0,
+      rowsPerBlock: 2047,
+      maximumIterations: 1
+    },
+    {kValues: createTransientView(graph, 'many-k-values', 'float32', 8)},
+    {
+      neighbors: createTransientView(graph, 'many-neighbors', 'uint32', edgeCount),
+      weights: createTransientView(graph, 'many-weights', 'float32', edgeCount)
+    }
+  );
+  const contributor = new GPUNetworkKFunction(props);
+  expect(contributor.props.positions.length * edgeCount).toBeGreaterThan(
+    GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK
+  );
+  const nodes = contributor.getCommandNodes(graph);
+  expect(nodes.some(node => node.id === 'k-snap-scan')).toBe(true);
 });

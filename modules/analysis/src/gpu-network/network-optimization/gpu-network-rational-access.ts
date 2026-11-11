@@ -11,11 +11,12 @@ import type {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /** Largest demand (origin) row count: the single invocation keeps per-origin state in private arrays. */
 const MAXIMUM_ORIGIN_COUNT = 64;
@@ -101,8 +102,8 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
       props.output.scores,
       props.output.unservedDemand
     ])
-      validatePackedView(view, ['float32'], this.id);
-    validatePackedView(props.output.status, ['uint32'], this.id);
+      validateSinglePackedView(view, ['float32'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32'], this.id);
     validateRequirement(
       id,
       props.costs.length === props.demand.length * props.supply.length,
@@ -169,7 +170,7 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
         ],
         declarations: `const ORIGIN_COUNT: u32 = ${props.demand.length}u; const FACILITY_COUNT: u32 = ${props.supply.length}u;
-fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
+${IS_FINITE_VALUE_WGSL}
 fn roundEven(value: f32) -> f32 { let lower = floor(value); let fraction = value - lower; return lower + select(0.0, 1.0, fraction > 0.5 || (fraction == 0.5 && u32(lower) % 2u == 1u)); }`,
         body: `var nanBits = 0x7fc00000u; let missing = bitcast<f32>(nanBits); var infinityBits = 0x7f800000u; let infinity = bitcast<f32>(infinityBits);
 for (var word = 0u; word < 4u; word++) { status[statusOffset + word] = 0u; }
@@ -177,12 +178,12 @@ for (var entry = 0u; entry < ORIGIN_COUNT * FACILITY_COUNT; entry++) { assignmen
 for (var origin = 0u; origin < ORIGIN_COUNT; origin++) { scores[scoresOffset + origin] = missing; unserved[unservedOffset + origin] = demand[demandOffset + origin]; }
 let travelScale = parameters[parametersOffset]; let supplyScale = parameters[parametersOffset + 1u];
 let initialStep = parameters[parametersOffset + 2u]; let minimumStep = parameters[parametersOffset + 3u]; let halfLife = parameters[parametersOffset + 4u]; let tolerance = parameters[parametersOffset + 5u];
-if (!finite(travelScale) || travelScale <= 0.0 || !finite(supplyScale) || supplyScale <= 0.0 || !finite(initialStep) || initialStep < 0.0 || ${props.stepMode === 'absolute' ? 'false' : 'initialStep > 1.0'} || !finite(minimumStep) || minimumStep < 0.0 || ${props.stepMode === 'absolute' ? 'false' : 'minimumStep > 1.0'} || !finite(halfLife) || halfLife <= 0.0 || !finite(tolerance) || tolerance < 0.0) { return; }
+if (!isFiniteValue(travelScale) || travelScale <= 0.0 || !isFiniteValue(supplyScale) || supplyScale <= 0.0 || !isFiniteValue(initialStep) || initialStep < 0.0 || ${props.stepMode === 'absolute' ? 'false' : 'initialStep > 1.0'} || !isFiniteValue(minimumStep) || minimumStep < 0.0 || ${props.stepMode === 'absolute' ? 'false' : 'minimumStep > 1.0'} || !isFiniteValue(halfLife) || halfLife <= 0.0 || !isFiniteValue(tolerance) || tolerance < 0.0) { return; }
 var capacities: array<f32, ${props.supply.length}>;
-for (var facility = 0u; facility < FACILITY_COUNT; facility++) { capacities[facility] = supply[supplyOffset + facility] * supplyScale; if (!finite(capacities[facility]) || capacities[facility] <= 0.0) { return; } }
+for (var facility = 0u; facility < FACILITY_COUNT; facility++) { capacities[facility] = supply[supplyOffset + facility] * supplyScale; if (!isFiniteValue(capacities[facility]) || capacities[facility] <= 0.0) { return; } }
 var totalDemand = 0.0;
 for (var origin = 0u; origin < ORIGIN_COUNT; origin++) {
-  let amount = demand[demandOffset + origin]; if (!finite(amount) || amount < 0.0 || ${props.demandMode === 'fractional' ? 'false' : 'floor(amount) != amount'} || amount > 16777216.0 - totalDemand) { return; } totalDemand += amount;
+  let amount = demand[demandOffset + origin]; if (!isFiniteValue(amount) || amount < 0.0 || ${props.demandMode === 'fractional' ? 'false' : 'floor(amount) != amount'} || amount > 16777216.0 - totalDemand) { return; } totalDemand += amount;
   var nearest = 0xffffffffu; var nearestCost = infinity;
   for (var facility = 0u; facility < FACILITY_COUNT; facility++) {
     let cost = costs[costsOffset + origin * FACILITY_COUNT + facility];
@@ -203,9 +204,9 @@ for (var cycle = 0u; cycle <= ${props.maximumCycles ?? 150}u; cycle++) {
   for (var origin = 0u; origin < ORIGIN_COUNT; origin++) {
     shifts[origin] = 0.0; var lowest = infinity; var highest = -1.0; var minimum = 0u; var maximum = 0u; var weightedCost = 0.0;
     for (var facility = 0u; facility < FACILITY_COUNT; facility++) {
-      let travel = costs[costsOffset + origin * FACILITY_COUNT + facility]; if (!finite(travel)) { continue; }
+      let travel = costs[costsOffset + origin * FACILITY_COUNT + facility]; if (!isFiniteValue(travel)) { continue; }
       let cost = travel / travelScale + loads[facility] / capacities[facility];
-      if (!finite(cost)) { status[statusOffset] = 0u; return; }
+      if (!isFiniteValue(cost)) { status[statusOffset] = 0u; return; }
       let amount = assignments[assignmentsOffset + origin * FACILITY_COUNT + facility];
       if (cost < lowest) { lowest = cost; minimum = facility; }
       if (amount > 0.0 && cost > highest) { highest = cost; maximum = facility; }
@@ -213,7 +214,7 @@ for (var cycle = 0u; cycle <= ${props.maximumCycles ?? 150}u; cycle++) {
     }
     let amount = demand[demandOffset + origin];
     if (highest < 0.0 || amount == 0.0) { continue; }
-    if (!finite(weightedCost)) { status[statusOffset] = 0u; return; }
+    if (!isFiniteValue(weightedCost)) { status[statusOffset] = 0u; return; }
     scores[scoresOffset + origin] = weightedCost / amount;
     maximumGap = max(maximumGap, highest - lowest);
     minima[origin] = minimum; maxima[origin] = maximum;

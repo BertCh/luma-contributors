@@ -11,7 +11,7 @@ import type {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSpatialWeightsOrChunksViews,
@@ -121,7 +121,7 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
       }
     });
     if (props.operation === 'selfWeight' && typeof props.selfWeight !== 'number') {
-      validatePackedView(props.selfWeight, ['float32'], `${id} selfWeight`);
+      validateSinglePackedView(props.selfWeight, ['float32'], `${id} selfWeight`);
       if (props.selfWeight.length !== rows) {
         throw new Error(`${id} selfWeight view length must equal the row count`);
       }
@@ -132,7 +132,7 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
       }
     }
     if (props.operation === 'subgraph') {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal the row count`);
       }

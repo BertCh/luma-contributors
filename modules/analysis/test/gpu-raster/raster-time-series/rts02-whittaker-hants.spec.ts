@@ -36,12 +36,13 @@ async function getDevice() {
   return device;
 }
 
-// float32 banded Cholesky against SciPy binary64; tolerance from RTS-02 (roadmap accuracy note).
+// float32 banded QR on centred values against SciPy binary64. Before the math correctness pass
+// (raster-imagery-02) the kernel factored the normal equations and needed 1e-3 to 2.5e-2 here.
 const TOLERANCE_BY_SMOOTHING: Record<number, number> = {
-  20: 1e-3,
-  50: 2e-3,
-  200: 2e-3,
-  5000: 2.5e-2
+  20: 2e-5,
+  50: 2e-5,
+  200: 2e-5,
+  5000: 2e-5
 };
 
 for (const entry of reference.whittaker) {

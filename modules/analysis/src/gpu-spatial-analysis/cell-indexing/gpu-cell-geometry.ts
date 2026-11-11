@@ -21,7 +21,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {H3_BOUNDARY_WGSL} from './h3-boundary-wgsl';
@@ -73,6 +73,13 @@ export type GPUCellGeometryOutput = {
    * distortion vertices) and are clamped to `maximumVertexCount`. Requires `boundaries`.
    */
   vertexCounts?: GraphDataView<'uint32'>;
+  /**
+   * One flag per cell: 1 when the key is a valid cell of the family, 0 otherwise (the zero key
+   * included), the convention of published `GPUDGGSCellProjection` (`uint32`, nonzero is valid).
+   * It is the test that decides the NaN centres and zero vertex counts, so those outputs are the
+   * same with or without it.
+   */
+  validity?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -121,7 +128,10 @@ export type GPUCellGeometryProps = {
  *   (hexagons, pentagons, cells across icosahedron edges, with the extra edge-crossing vertices)
  *   in h3-js `cellToBoundary` order, up to 10 vertices. Set `maximumVertexCount: 10` to keep them.
  * - A5 boundaries have five vertices (three at resolution 1), in the order of the dggs decoder.
- * - Invalid keys (including the zero key): center `NaN`, vertex count 0, boundary rows zero.
+ * - Invalid keys (including the zero key): center `NaN`, vertex count 0, boundary rows zero, and
+ *   0 in the optional `output.validity` (1 for a valid cell). Published `GPUDGGSCellProjection`
+ *   decodes H3 and A5 centres with the same shader functions and the same validity test; it
+ *   writes a zero centre for an invalid cell where this class writes `NaN`.
  * - Precision is f32: Quadbin and quadkey coordinates lose precision above zoom 24 (the tile
  *   column itself exceeds the f32 mantissa), H3, S2 and A5 inherit the accuracy of WGSL `sin`,
  *   `cos` and `atan2`, which the WGSL spec leaves implementation defined.
@@ -177,7 +187,7 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
       );
     }
     const {output} = props;
-    validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
+    validateSinglePackedView(props.cells, ['uint32x2'], `${id} cells`);
     const rows = props.cells.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -189,13 +199,13 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
       throw new Error(`${id} needs output.centers or output.boundaries`);
     }
     if (output.centers) {
-      validatePackedView(output.centers, ['float32x2'], `${id} output.centers`);
+      validateSinglePackedView(output.centers, ['float32x2'], `${id} output.centers`);
       if (output.centers.length !== rows) {
         throw new Error(`${id} output.centers length must equal the row count`);
       }
     }
     if (output.boundaries) {
-      validatePackedView(output.boundaries, ['float32x2'], `${id} output.boundaries`);
+      validateSinglePackedView(output.boundaries, ['float32x2'], `${id} output.boundaries`);
       if (output.boundaries.length !== rows * this.maximumVertexCount) {
         throw new Error(
           `${id} output.boundaries length must equal rows * maximumVertexCount (${rows * this.maximumVertexCount})`
@@ -203,14 +213,20 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
       }
     }
     if (output.vertexCounts) {
-      validatePackedView(output.vertexCounts, ['uint32'], `${id} output.vertexCounts`);
+      validateSinglePackedView(output.vertexCounts, ['uint32'], `${id} output.vertexCounts`);
       if (output.vertexCounts.length !== rows) {
         throw new Error(`${id} output.vertexCounts length must equal the row count`);
       }
     }
+    if (output.validity) {
+      validateSinglePackedView(output.validity, ['uint32'], `${id} output.validity`);
+      if (output.validity.length !== rows) {
+        throw new Error(`${id} output.validity length must equal the row count`);
+      }
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.centers, output.boundaries, output.vertexCounts],
+      [output.centers, output.boundaries, output.vertexCounts, output.validity],
       [props.cells]
     );
   }
@@ -225,7 +241,8 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
       props.cells,
       output.centers,
       output.boundaries,
-      output.vertexCounts
+      output.vertexCounts,
+      output.validity
     ]);
     const bindings: WGSLKernelBinding[] = [
       {name: 'cells', view: props.cells, type: 'u32', access: 'read'}
@@ -245,6 +262,14 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
       bindings.push({
         name: 'vertexCountsOut',
         view: output.vertexCounts,
+        type: 'u32',
+        access: 'read_write'
+      });
+    }
+    if (output.validity) {
+      bindings.push({
+        name: 'validityOut',
+        view: output.validity,
         type: 'u32',
         access: 'read_write'
       });
@@ -289,6 +314,7 @@ ${family === 'h3' ? '' : GENERIC_FILL_BOUNDARY_WGSL}`,
         body: `let words = vec2u(cells[cellsOffset + 2u * index], cells[cellsOffset + 2u * index + 1u]);
   let key = ${props.wordOrder === 'high-low' ? 'words' : 'words.yx'};
   let isValid = geometryIsValid(key);
+  ${output.validity ? 'validityOut[validityOutOffset + index] = select(0u, 1u, isValid);' : ''}
   ${centerBody}
   ${boundaryBody}`
       })

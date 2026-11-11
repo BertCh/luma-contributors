@@ -155,25 +155,23 @@ it('GPUPolygonOverlay validates fillRule and defaults to even-odd', () => {
     ringOffsets: view('uint32', 2)
   });
   const scalar = () => view('uint32', 1);
-  const status = () => ({
+  // The overlay result has no `requiredCount` (rule 8); its boundary has one.
+  const geometryStatus = () => ({
     count: scalar(),
-    requiredCount: scalar(),
     overflow: scalar(),
     candidateOverflow: scalar()
   });
+  const status = () => ({...geometryStatus(), requiredCount: scalar()});
   const makeOutput = () => {
-    const sourceIds = view('uint32', 4);
     return {
       geometry: {
         kind: 'polygons' as const,
         positions: view('float32x2', 16),
         featureOffsets: view('uint32', 5),
         polygonOffsets: view('uint32', 5),
-        ringOffsets: view('uint32', 5),
-        sourceIds
+        ringOffsets: view('uint32', 5)
       },
-      sourceIds,
-      status: status(),
+      status: geometryStatus(),
       boundary: {
         endpoints: view('float32x4', 16),
         operandIds: view('uint32', 16),
@@ -203,10 +201,22 @@ it('GPUPolygonOverlay validates fillRule and defaults to even-odd', () => {
   const nodeIds = new GPUPolygonOverlay({...props, fillRule: 'nonzero', output: makeOutput()})
     .getCommandNodes(graph)
     .map(node => node.id);
-  // Unclamped ring requirements are published with source IDs.
-  expect(nodeIds).toContain('polygon-overlay-source-ids');
+  // The output row index is no longer written as `geometry.sourceIds` (rule 8, wave 2).
+  expect(nodeIds).not.toContain('polygon-overlay-source-ids');
   expect(nodeIds).not.toContain('polygon-overlay-publish-required');
   expect(nodeIds.at(-1)).toBe('polygon-overlay-publish');
+  // A view passed as `geometry.sourceIds` would stay unwritten, so it is rejected.
+  const withSourceIds = makeOutput();
+  expect(
+    () =>
+      new GPUPolygonOverlay({
+        ...props,
+        output: {
+          ...withSourceIds,
+          geometry: {...withSourceIds.geometry, sourceIds: view('uint32', 4)} as never
+        }
+      })
+  ).toThrow('polygon-overlay output.geometry.sourceIds is not written');
 });
 
 function createPolygonBufferNodes(
@@ -221,13 +231,12 @@ function createPolygonBufferNodes(
     length: number
   ) => createTransientView(graph, `buffer-prepare-${serial++}`, format, length);
   const scalar = () => view('uint32', 1);
-  const status = () => ({
+  const geometryStatus = () => ({
     count: scalar(),
-    requiredCount: scalar(),
     overflow: scalar(),
     candidateOverflow: scalar()
   });
-  const sourceIds = view('uint32', 8);
+  const status = () => ({...geometryStatus(), requiredCount: scalar()});
   const surface = new GPUBufferSurface({
     spatialContext,
     geometry: {
@@ -247,10 +256,9 @@ function createPolygonBufferNodes(
         positions: view('float32x2', 64),
         featureOffsets: view('uint32', 9),
         polygonOffsets: view('uint32', 9),
-        ringOffsets: view('uint32', 9),
-        sourceIds
+        ringOffsets: view('uint32', 9)
       },
-      status: status(),
+      status: geometryStatus(),
       boundary: {
         endpoints: view('float32x4', 64),
         operandIds: view('uint32', 64),
@@ -302,13 +310,12 @@ it('GPUBufferSurface buffers polygons as the polygon and its ring strokes (D-02)
     format: Format,
     length: number
   ) => createTransientView(graph, `buffer-pieces-${serial++}`, format, length);
-  const status = () => ({
+  const geometryStatus = () => ({
     count: view('uint32', 1),
-    requiredCount: view('uint32', 1),
     overflow: view('uint32', 1),
     candidateOverflow: view('uint32', 1)
   });
-  const sourceIds = view('uint32', 8);
+  const status = () => ({...geometryStatus(), requiredCount: view('uint32', 1)});
   const surface = new GPUBufferSurface({
     geometry: {
       kind: 'polygons',
@@ -327,10 +334,9 @@ it('GPUBufferSurface buffers polygons as the polygon and its ring strokes (D-02)
         positions: view('float32x2', 64),
         featureOffsets: view('uint32', 9),
         polygonOffsets: view('uint32', 9),
-        ringOffsets: view('uint32', 9),
-        sourceIds
+        ringOffsets: view('uint32', 9)
       },
-      status: status(),
+      status: geometryStatus(),
       boundary: {
         endpoints: view('float32x4', 64),
         operandIds: view('uint32', 64),

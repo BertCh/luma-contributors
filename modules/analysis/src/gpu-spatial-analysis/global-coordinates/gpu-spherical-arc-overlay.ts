@@ -12,7 +12,7 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateMaximumCount,
   validateRequirement,
   validateGraphViewsBelongToGraph,
@@ -22,6 +22,7 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES,
   GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES,
@@ -97,8 +98,8 @@ export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
       GPU_SPHERICAL_MAXIMUM_ARRANGEMENT_TOLERANCE
     );
     for (const operand of [props.left, props.right]) {
-      validatePackedView(operand.positions, ['float32x3'], this.id);
-      validatePackedView(operand.ringOffsets, ['uint32'], this.id);
+      validateSinglePackedView(operand.positions, ['float32x3'], this.id);
+      validateSinglePackedView(operand.ringOffsets, ['uint32'], this.id);
       validateRequirement(
         this.id,
         operand.ringOffsets.length >= 1,
@@ -111,9 +112,9 @@ export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
       props.left.positions.length + props.right.positions.length,
       GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES
     );
-    validatePackedView(props.output.positions, ['float32x3'], this.id);
+    validateSinglePackedView(props.output.positions, ['float32x3'], this.id);
     for (const view of [props.output.ringOffsets, props.output.counts, props.output.status])
-      validatePackedView(view, ['uint32'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
     validateRequirement(
       this.id,
       props.output.positions.length >= 3 &&
@@ -203,13 +204,14 @@ export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
         ],
         declarations: `const ARC_TOLERANCE:f32=${props.tolerance ?? 1e-6};
+${GUARDED_ATAN2_WGSL}
 const ARC_REFERENCE=vec3f(${props.referencePoint.join(',')});
 fn arcStart(row:u32)->vec3f{let offset=scratchOffset+row*7u;return vec3f(scratch[offset],scratch[offset+1u],scratch[offset+2u]);}
 fn arcEnd(row:u32)->vec3f{let offset=scratchOffset+row*7u+3u;return vec3f(scratch[offset],scratch[offset+1u],scratch[offset+2u]);}
 fn arcStore(row:u32,start:vec3f,end:vec3f){let offset=scratchOffset+row*7u;scratch[offset]=start.x;scratch[offset+1u]=start.y;scratch[offset+2u]=start.z;scratch[offset+3u]=end.x;scratch[offset+4u]=end.y;scratch[offset+5u]=end.z;}
 fn arcUsed(row:u32)->bool{return scratch[scratchOffset+row*7u+6u]!=0.0;}
 
-fn arcLength(first:vec3f,second:vec3f)->f32{return atan2(length(cross(first,second)),dot(first,second));}
+fn arcLength(first:vec3f,second:vec3f)->f32{return guardedAtan2(length(cross(first,second)),dot(first,second));}
 fn arcVertexCount(operand:u32)->u32{return select(${props.left.positions.length}u,${props.right.positions.length}u,operand==1u);}
 fn arcRingCount(operand:u32)->u32{return select(${props.left.ringOffsets.length - 1}u,${props.right.ringOffsets.length - 1}u,operand==1u);}
 fn arcOffset(operand:u32,row:u32)->u32{if(operand==0u){return offsets[offsetsOffset+row];}return offsets[offsetsOffset+${props.left.ringOffsets.length}u+row];}
@@ -293,7 +295,7 @@ if(failure==0u){for(var seed=0u;seed<required&&failure==0u;seed++){
     let junction=arcEnd(current);let incoming=normalize(junction*dot(arcStart(current),junction)-arcStart(current));
     var next=0xffffffffu;var bestTurn=-4.0;
     for(var candidate=0u;candidate<required;candidate++){if((!arcUsed(candidate)||candidate==seed)&&distance(arcStart(candidate),junction)<=4.0*ARC_TOLERANCE){
-      let outgoing=normalize(arcEnd(candidate)-junction*dot(junction,arcEnd(candidate)));let turn=atan2(dot(junction,cross(incoming,outgoing)),dot(incoming,outgoing));
+      let outgoing=normalize(arcEnd(candidate)-junction*dot(junction,arcEnd(candidate)));let turn=guardedAtan2(dot(junction,cross(incoming,outgoing)),dot(incoming,outgoing));
       if(abs(turn-bestTurn)<=ARC_TOLERANCE){failure=4u;}if(turn>bestTurn){bestTurn=turn;next=candidate;}
     }}
     if(next==seed){closed=true;break;}

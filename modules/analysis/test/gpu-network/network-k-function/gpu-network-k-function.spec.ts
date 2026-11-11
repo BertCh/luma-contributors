@@ -341,3 +341,64 @@ it('GPUNetworkKFunction never draws simulated events from CSR rows past offsets[
   expect(result.envelope).toEqual(expected.envelope);
   expect(result.snappedEventCount).toBe(expected.snappedEventCount);
 });
+
+it('GPUNetworkKFunction draws short edges in proportion to their length (network-paths-04)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Review network-paths-04. One long road of length 65,536 and 34,999 separate short roads of
+  // length 1, 70,000 CSR slots in all. The draw used to quantize every edge against the longest
+  // one with 2^15 units at this slot count, so a short edge got u32(0.5) = 0 units and was never
+  // drawn, although the short roads hold 69,998 / 201,070 = 34.8% of the directed length.
+  const longLength = 65536;
+  const shortRoadCount = 34999;
+  const nodeCount = 2 + 2 * shortRoadCount;
+  const positions = new Float32Array(2 * nodeCount);
+  positions.set([0, 0, 1000, 0]);
+  const edges: [number, number, number][] = [
+    [0, 1, longLength],
+    [1, 0, longLength]
+  ];
+  for (let road = 0; road < shortRoadCount; road++) {
+    const first = 2 + 2 * road;
+    const x = 5000 + 10 * (road % 200);
+    const y = 5000 + 10 * Math.floor(road / 200);
+    positions.set([x, y, x + 1, y], 2 * first);
+    edges.push([first, first + 1, 1], [first + 1, first, 1]);
+  }
+  const csr = buildCSR(nodeCount, edges);
+  const eventCount = 100;
+  const simulationCount = 8;
+  // The observed events all lie on the long road.
+  const points = Float32Array.from(
+    Array.from({length: eventCount}, (_, event) => [5 + 9.9 * event, 0]).flat()
+  );
+  const result = await runKFunction(device, {
+    csr,
+    positions,
+    points,
+    networkLength: (2 * longLength + 2 * shortRoadCount) / 2,
+    // Above the long road's length: every pair of events on the long road is counted in band 1.
+    maximumDistance: 70000,
+    bandCount: 2,
+    simulationCount,
+    seed: 20261110,
+    maximumIterations: 8
+  });
+  expect(result.converged).toBe(1);
+  expect(result.snappedEventCount).toBe(eventCount);
+  expect(result.pairCounts[1]).toBe((eventCount * (eventCount - 1)) / 2);
+  // A simulated pattern with m events on the long road has m (m - 1) / 2 pairs there. Short roads
+  // are separate components, so they add a pair only when two events share one road (fewer than m
+  // extra pairs, which the floor removes).
+  let longRoadEvents = 0;
+  for (let pattern = 1; pattern <= simulationCount; pattern++) {
+    const pairs = result.pairCounts[2 * pattern + 1];
+    longRoadEvents += Math.floor((1 + Math.sqrt(1 + 8 * pairs)) / 2);
+  }
+  // Binomial with the exact length share: mean 521.5 of 800 draws, standard deviation 13.5.
+  const drawCount = simulationCount * eventCount;
+  const longShare = (2 * longLength) / (2 * longLength + 2 * shortRoadCount);
+  const expectedEvents = drawCount * longShare;
+  const standardDeviation = Math.sqrt(drawCount * longShare * (1 - longShare));
+  expect(Math.abs(longRoadEvents - expectedEvents)).toBeLessThan(5 * standardDeviation);
+});

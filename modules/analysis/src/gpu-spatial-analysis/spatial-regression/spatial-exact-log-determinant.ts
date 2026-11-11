@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validatePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateSinglePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
 
 /**
  * Largest row count of `logDeterminant: 'exact'`. The eigenvalues of `W` come from a dense
@@ -212,7 +213,7 @@ export function validateExactLogDeterminant(
       `${id} logDeterminant 'exact' needs eigenvalues (getSpatialWeightsEigenvalues)`
     );
   }
-  validatePackedView(props.eigenvalues, ['float32'], `${id} eigenvalues`);
+  validateSinglePackedView(props.eigenvalues, ['float32'], `${id} eigenvalues`);
   if (props.eigenvalues.length !== rows) {
     throw new Error(`${id} eigenvalues must hold one value per row`);
   }
@@ -224,19 +225,16 @@ export function validateExactLogDeterminant(
  * `bindingName` of the `rowCount` eigenvalues of `W`: `getSpatialLogDeterminant(rho) = sum
  * ln(1 - rho lambda)`, `getTraceOne(rho) = sum lambda / (1 - rho lambda)`,
  * `getLogDeterminantDerivative(rho) = -getTraceOne(rho)` and `getTraceTwo(rho) = sum (lambda /
- * (1 - rho lambda))^2`. Kahan-compensated.
+ * (1 - rho lambda))^2`. Each is a fixed pairwise sum over the eigenvalues (`getPairwiseSumWGSL`).
  */
 export function getExactLogDeterminantWGSL(bindingName: string, rowCount: number): string {
-  const sum = (term: string) => `var total = 0.0;
-  var compensation = 0.0;
-  for (var item = 0u; item < ${rowCount}u; item++) {
-    let lambda = ${bindingName}[${bindingName}Offset + item];
-    let ratio = lambda / (1.0 - rho * lambda);
-    let term = (${term}) - compensation;
-    let next = total + term;
-    compensation = (next - total) - term;
-    total = next;
-  }
+  const sum = (term: string) => `${getPairwiseSumWGSL({
+    count: `${rowCount}u`,
+    name: 'total',
+    setup: `let lambda = ${bindingName}[${bindingName}Offset + totalItem];
+    let ratio = lambda / (1.0 - rho * lambda);`,
+    term: `(${term})`
+  })}
   return total;`;
   return /* wgsl */ `
 fn getSpatialLogDeterminant(rho: f32) -> f32 {

@@ -63,7 +63,7 @@ for (const method of ['nearest', 'inverse-distance'] as const)
         output: {
           ...rasterOutput(context),
           filled: context.view('uint32', CELL_COUNT),
-          unresolvedCount: context.view('uint32', 1)
+          status: {invalidCount: context.view('uint32', 1)}
         }
       })
     );
@@ -208,9 +208,29 @@ for (const model of [
         elevation: band(context),
         friction: band(context, 'sint32'),
         sources: context.view('uint32', CELL_COUNT),
+        parameters: context.view('float32', raster.GPU_RASTER_WALKING_COST_PARAMETER_LENGTH),
         model,
-        frictionWeight: 2,
         maximumIterations: 128,
+        output: {
+          costs: context.view('float32', CELL_COUNT),
+          validity: context.view('uint32', CELL_COUNT),
+          status: convergence(context)
+        }
+      })
+    );
+  });
+for (const cellSizeMode of ['uniform', 'web-mercator', 'geographic'] as const)
+  add('GPURasterWalkingCost', `per-frame parameters, ${cellSizeMode} cells`, context => {
+    context.graph.add(
+      new raster.GPURasterWalkingCost({
+        grid: GRID,
+        elevation: band(context),
+        friction: band(context, 'sint32'),
+        sources: context.view('uint32', CELL_COUNT),
+        parameters: context.view('float32', raster.GPU_RASTER_WALKING_COST_PARAMETER_LENGTH),
+        cellSizeMode,
+        model: {kind: 'grass', coefficients: [1, 2, 3, 4], downhillSlopeThreshold: -0.2},
+        maximumIterations: 16,
         output: {
           costs: context.view('float32', CELL_COUNT),
           validity: context.view('uint32', CELL_COUNT),
@@ -313,11 +333,27 @@ add(
           polygonOffsets: context.view('uint32', 513),
           ringOffsets: context.view('uint32', 1025)
         },
+        parameters: context.view('float32', raster.GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH),
         output: coverage(context)
       })
     );
   }
 );
+add('GPURasterFractionalCoverage', 'per-frame georeference parameters', context => {
+  context.graph.add(
+    new raster.GPURasterFractionalCoverage({
+      grid: {...GRID, affine: [0.5, 0, -120, 0, -0.5, -30]},
+      zones: {
+        positions: context.view('float32x2', 4096),
+        featureOffsets: context.view('uint32', 257),
+        polygonOffsets: context.view('uint32', 513),
+        ringOffsets: context.view('uint32', 1025)
+      },
+      parameters: context.view('float32', raster.GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH),
+      output: coverage(context)
+    })
+  );
+});
 for (const quantity of ['extensive', 'intensive', 'density'] as const)
   add(
     'GPURasterFractionalZonalStatistics',
@@ -390,6 +426,27 @@ add('GPUCrossVariogram', 'spatial maximum16384rows128bins,allcomplete-caseinputs
     })
   );
 });
+// Grid path: 2^24 / 128 rows fill one 128 MiB partial binding.
+add('GPUCrossVariogram', 'grid space-time 131072rows128bins,allcomplete-caseinputs', context => {
+  context.graph.add(
+    new GPUCrossVariogram({
+      positions: context.view('float32x2', 131072),
+      values: context.view('float32', 131072),
+      secondValues: context.view('float32', 131072),
+      times: context.view('float32', 131072),
+      mask: context.view('uint32', 131072),
+      parameters: context.view('float32', 2),
+      lagCount: 32,
+      temporalLagCount: 4,
+      gridSize: [512, 512],
+      output: {
+        semivariances: context.view('float32', 128),
+        pairCounts: context.view('uint32', 128),
+        status: context.view('uint32', 128)
+      }
+    })
+  );
+});
 // 19 + 1 spatial and 19 + 1 temporal classes: 400 bins of the 409 the five-channel pair histogram holds.
 add(
   'GPUSpaceTimeVariogram',
@@ -410,6 +467,31 @@ add(
           semivariances: context.view('float32', 400),
           pairCounts: context.view('uint32', 400),
           status: context.view('uint32', 400)
+        }
+      })
+    );
+  }
+);
+// Grid path: 2^24 / (3 * 128) rows fill one partial binding of six float32 per row and radius.
+add(
+  'GPUMarkedPointStatistics',
+  'grid translation 43690rows128radii,types marks intensities mask',
+  context => {
+    context.graph.add(
+      new GPUMarkedPointStatistics({
+        positions: context.view('float32x2', 43690),
+        radiusCount: 128,
+        parameters: context.view('float32', 6),
+        types: context.view('uint32', 43690),
+        typePair: [0, 1],
+        marks: context.view('float32', 43690),
+        intensities: context.view('float32', 43690),
+        mask: context.view('uint32', 43690),
+        gridSize: [256, 256],
+        output: {
+          statistics: context.view('float32', 512),
+          pairCounts: context.view('uint32', 128),
+          status: context.view('uint32', 128)
         }
       })
     );

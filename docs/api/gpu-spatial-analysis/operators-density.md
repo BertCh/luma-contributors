@@ -470,8 +470,15 @@ graph.add(
 - Per frame: radius, `k`, minimum neighbors, the placement (the `grid` passed to
   `getGPUKrigingParameterValues(settings, grid)`, axis-aligned, same width and height as the props; output
   rows follow its row order, row 0 at the top of a north-up grid and at `minY` when rows advance north), model (`'spherical'`, `'exponential'` or `'gaussian'`,
-  the `fitVariogramModel` convention) and nugget, sill and range. Pass `sill + nugget` as PyKrige's "sill"
-  when comparing, since PyKrige's value is the total sill.
+  the `fitVariogramModel` convention) and nugget, sill and range. `range` is the effective range: the
+  exponential model is `1 - exp(-3 h / range)` and the Gaussian model `1 - exp(-3 (h / range)^2)`, both
+  at 95 percent of the sill at `range`. Converting to another library:
+  - PyKrige: pass `sill + nugget` as its "sill" (PyKrige's value is the total sill). Its exponential and
+    spherical models take the same `range`. Its built-in Gaussian model is
+    `1 - exp(-(h / (range * 4 / 7))^2)`, exponent 3.0625 instead of 3, so pass
+    `range * 7 / (4 * sqrt(3))` (about `1.0104 * range`) to get the same surface.
+  - gstat `vgm`: the range parameter is `range / 3` for `"Exp"`, `range / sqrt(3)` for `"Gau"` and
+    `range` for `"Sph"`.
 - `values` is a row-major raster and nodata is NaN: too few distinct neighbors, an ill-conditioned
   system, or an unreliable variance. `variance` is the kriging variance in squared value units, 0 at exact
   hits, NaN at nodata.
@@ -521,8 +528,10 @@ graph.add(
   mean near 0 and variance near 1, and the root mean squared error of `value - prediction`.
 - A sample `mask` is folded into a transient value copy first (a one-pass kernel), and the per-cell status
   goes to a transient before the counters are accumulated, so every kernel stays within 8 storage buffers.
-- Pinned to PyKrige 1.7.3 with 8 closest points (exponential, spherical and Gaussian within 0.2 on values
-  near 70, and 1 percent on variance); the pivot-ratio, duplicate-coalescing, mask, leave-one-out and
+- Pinned to PyKrige 1.7.3 with 8 closest points: exponential, spherical and Gaussian within 2e-5 of
+  the data scale on values (about 1.4e-3 on values near 70) and 1e-4 on variance relative to
+  `max(1, variance)`. The Gaussian fixture uses a custom PyKrige variogram with exponent 3, because
+  PyKrige's built-in Gaussian has the other range convention (see above); the pivot-ratio, duplicate-coalescing, mask, leave-one-out and
   translation fixtures are float64 numpy ordinary kriging (Cressie 1993, eq. 3.2.12 to 3.2.16) that
   reproduces the PyKrige numbers to 5e-7. Global and universal kriging, anisotropy, octant search and
   filtered (measurement-error) kriging are not provided.

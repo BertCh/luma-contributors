@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Buffer, assert} from '@luma.gl/core';
+import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -10,6 +10,11 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
@@ -19,8 +24,11 @@ import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-r
 import {
   importGraphBuffer,
   validateCapacity,
+  validateFiniteNumber,
   validateGPUStorageBindingByteLength,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getPackedPredictionAccessors,
@@ -33,9 +41,21 @@ import {
 } from './gpu-local-kriging';
 import {getBlockedConditionalSimulationNodes} from './conditional-simulation-blocked';
 
+/** Distances are planar Euclidean in the native units of the positions. */
+const PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance' as const
+});
+
 /** Exact bounded joint conditional Gaussian simulation, with explicit known mean. */
 export type GPUConditionalGaussianSimulationProps = {
   id?: string;
+  /**
+   * Coordinate space of the positions. Compile-time. Omitted means native planar coordinates with
+   * Euclidean distance (unchanged behavior); only that is accepted, so longitude/latitude throws:
+   * project to a planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
   /** [value, measurement-error variance, reserved, validity]; zero validity omits the sample. */
   observations: GraphDataView<'float32x4'>;
@@ -87,6 +107,8 @@ export type GPUConditionalGaussianSimulationProps = {
  */
 export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Resolved coordinate space (native planar when `spatialContext` was omitted). */
+  readonly spatialContext: GPUSpatialContext;
   readonly props: GPUConditionalGaussianSimulationProps;
   private preparationControl: Uint32Array | undefined;
   private preparationControlBuffer: Buffer | undefined;
@@ -96,6 +118,11 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
   constructor(props: GPUConditionalGaussianSimulationProps) {
     this.props = props;
     this.id = props.id ?? 'conditional-gaussian-simulation';
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT
+    );
     validatePredictionCovariance(props.covariance);
     // Matern is validated for local kriging only; the dense Cholesky here has no pivot ratio check.
     if (props.covariance.model === 'matern') {
@@ -125,7 +152,12 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
     );
     if (props.reusePreparation) {
       // Mutable batch capacity must fit the uint32 control buffer.
-      assert(props.replicateCount <= 0xffffffff);
+      validateMaximumCount(
+        this.id,
+        'replicateCount with reusePreparation',
+        props.replicateCount,
+        0xffffffff
+      );
       this.preparationControl = Uint32Array.of(
         1,
         1,
@@ -150,7 +182,11 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
   invalidatePreparation(): void {
     const control = this.getPreparationControl();
     // Create a new producer rather than wrapping generation identities.
-    assert(control[0] < 0xffffffff && control[1] < 0xffffffff);
+    validateRequirement(
+      this.id,
+      control[0] < 0xffffffff && control[1] < 0xffffffff,
+      'invalidatePreparation generations must stay below 2^32 - 1; create a new producer'
+    );
     control[0]++;
     control[1]++;
     this.writePreparationControl();
@@ -160,7 +196,11 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
   invalidateObservations(): void {
     const control = this.getPreparationControl();
     // Create a new producer rather than wrapping generation identities.
-    assert(control[1] < 0xffffffff);
+    validateRequirement(
+      this.id,
+      control[1] < 0xffffffff,
+      'invalidateObservations generations must stay below 2^32 - 1; create a new producer'
+    );
     control[1]++;
     this.writePreparationControl();
   }
@@ -169,7 +209,12 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
   setMean(mean: number): void {
     const control = this.getPreparationControl();
     // The known mean is finite in f32 and generation identities must not wrap.
-    assert(Number.isFinite(Math.fround(mean)) && control[1] < 0xffffffff);
+    validateFiniteNumber(this.id, 'mean', mean);
+    validateRequirement(
+      this.id,
+      control[1] < 0xffffffff,
+      'setMean generations must stay below 2^32 - 1; create a new producer'
+    );
     new Float32Array(control.buffer)[2] = mean;
     control[1]++;
     this.writePreparationControl();
@@ -190,17 +235,18 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
     const replicateOffset = parameters.replicateOffset ?? control[4];
     const replicateCount = parameters.replicateCount ?? control[5];
     // The Philox seed is a uint32 key.
-    assert(Number.isInteger(seed) && seed >= 0 && seed <= 0xffffffff);
+    validateCapacity(this.id, 'seed', seed, 0, 0xffffffff);
     // Replicate identities start at a nonnegative exact integer.
-    assert(Number.isSafeInteger(replicateOffset) && replicateOffset >= 0);
+    validateCapacity(this.id, 'replicateOffset', replicateOffset, 0, Number.MAX_SAFE_INTEGER);
     // A batch is nonempty and fits the constructor's output capacity.
-    assert(
-      Number.isSafeInteger(replicateCount) &&
-        replicateCount >= 1 &&
-        replicateCount <= this.props.replicateCount
-    );
+    validateCapacity(this.id, 'replicateCount', replicateCount, 1, this.props.replicateCount);
     // The last replicate identity remains within uint32.
-    assert(replicateOffset + replicateCount <= 0x100000000);
+    validateMaximumCount(
+      this.id,
+      'replicateOffset + replicateCount',
+      replicateOffset + replicateCount,
+      0x100000000
+    );
     control[3] = seed;
     control[4] = replicateOffset;
     control[5] = replicateCount;
@@ -218,8 +264,12 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
 
   private getPreparationControl(): Uint32Array {
     // Mutable preparation is available only for a live producer with reusePreparation enabled.
-    assert(this.preparationControl && !this.destroyed);
-    return this.preparationControl;
+    validateRequirement(
+      this.id,
+      Boolean(this.preparationControl) && !this.destroyed,
+      'preparation controls need reusePreparation and a producer that was not destroyed'
+    );
+    return this.preparationControl!;
   }
 
   private writePreparationControl(): void {
@@ -277,7 +327,11 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
     const retained = Boolean(this.preparationControl);
     if (retained) {
       // A retained producer belongs to one graph and is declared once.
-      assert(!this.destroyed && this.ownedBuffers.length === 0);
+      validateRequirement(
+        this.id,
+        !this.destroyed && this.ownedBuffers.length === 0,
+        'with reusePreparation is added to one graph, once, before destroy'
+      );
     }
     const scratch = retained
       ? createPersistentView('factor', 'float32', scratchLength).view
@@ -568,7 +622,9 @@ let observedCount = u32(scratch[scratchOffset + 1u]);
 var normal: array<f32, ${queryCount}>;
 for (var query = 0u; query < ${queryCount}u; query++) {
   let random = philox4x32(vec4<u32>(index + ${retained ? 'preparationControl[preparationControlOffset + 4u]' : `${props.replicateOffset ?? 0}u`}, query, 0u, 0u), vec2<u32>(${retained ? 'preparationControl[preparationControlOffset + 3u]' : `${props.seed}u`}, ${PHILOX_PURPOSES.conditionalGaussianSimulation.id}u));
-  normal[query] = sqrt(-2.0 * log((f32(random.x >> 8u) + 0.5) / 16777216.0)) * cos(6.28318530718 * (f32(random.y >> 8u) + 0.5) / 16777216.0);
+  // Box-Muller. The radius uniform is open, (0, 1): the 24-bit form rounds to exactly 1.0 for the
+  // largest word, which made that draw exactly zero. The blocked path draws the same way.
+  normal[query] = sqrt(-2.0 * log(philoxOpenUnitFloat(random.x))) * cos(6.28318530718 * (f32(random.y >> 8u) + 0.5) / 16777216.0);
 }
 for (var query = 0u; query < ${queryCount}u; query++) {
   var realization = moments[momentsOffset + query * 2u];

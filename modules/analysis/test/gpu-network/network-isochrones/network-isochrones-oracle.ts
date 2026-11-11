@@ -16,7 +16,14 @@ export type IsochroneRasterSettings = {
   unreachedCost: number;
 };
 
-/** f64 mirror of the splat kernel: samples edges, applies the buffer, min or max per pixel. */
+/**
+ * f64 mirror of the splat kernel: samples edges, applies the buffer, min or max per pixel. In max
+ * mode the cost of a sample is the cheaper of the two directions of its road (the costliest valid
+ * reverse slot `target -> node` when the target is reached), so the maximum runs over samples and
+ * roads only. Before review network-paths-01 the mirror, like the kernel, took the maximum over
+ * the two directions too. The independent check of max mode is
+ * `gpu-network-isochrones-max-mode.spec.ts`.
+ */
 export function splatIsochroneRasterOnCPU(
   csr: NetworkCSR,
   positions: Float32Array,
@@ -51,11 +58,23 @@ export function splatIsochroneRasterOnCPU(
         Math.max(Math.ceil(length / (0.5 * radius)) + 1, 2),
         settings.maximumSamplesPerEdge
       );
+      let reverseWeight = -1;
+      if (mode === 'max' && target !== node && Number.isFinite(costs[target])) {
+        for (let slot = csr.offsets[target]; slot < csr.offsets[target + 1]; slot++) {
+          if (csr.neighbors[slot] === node && csr.weights[slot] >= 0) {
+            reverseWeight = Math.max(reverseWeight, csr.weights[slot]);
+          }
+        }
+      }
       for (let sample = 0; sample < sampleCount; sample++) {
         const t = sample / (sampleCount - 1);
         const pointX = startX + t * (endX - startX);
         const pointY = startY + t * (endY - startY);
-        const edgeCost = costs[node] + t * weight;
+        const forwardCost = costs[node] + t * weight;
+        const edgeCost =
+          reverseWeight >= 0
+            ? Math.min(forwardCost, costs[target] + (1 - t) * reverseWeight)
+            : forwardCost;
         const centerColumn = Math.floor((pointX - minX) / cellX);
         const centerRow = Math.floor((pointY - minY) / cellY);
         for (let row = centerRow - reachY; row <= centerRow + reachY; row++) {
@@ -98,7 +117,8 @@ export function getBandAreaBounds(
   breaks: number[],
   cellArea: number
 ): {lower: number[]; upper: number[]} {
-  const bandOf = (value: number) => breaks.filter(breakValue => breakValue <= value).length;
+  // Upper-inclusive bands (a, b]: a value exactly on a break is within it (roadmap 12.3).
+  const bandOf = (value: number) => breaks.filter(breakValue => breakValue < value).length;
   const lower = new Array(breaks.length + 1).fill(0);
   const upper = new Array(breaks.length + 1).fill(0);
   for (let row = 0; row + 1 < height; row++) {

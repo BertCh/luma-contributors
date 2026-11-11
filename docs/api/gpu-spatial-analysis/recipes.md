@@ -11,7 +11,9 @@ See [Geospatial workflow recipes](./expansion-recipes.md) for zonal distribution
 
 
 Recipes are plain functions, not classes: `addXRecipe(graph, props)` constructs the contributors, calls
-`graph.add` in chain order, wires outputs to inputs and returns `{contributors, ...named views}`. `contributors`
+`graph.add` in chain order, wires outputs to inputs and returns a `GPURecipeResult`: `{contributors, outputs,
+intermediates, status}`. `outputs` holds the named terminal views, `intermediates` the named ports between stages and
+`status` the GPU-resident completeness and convergence views, grouped by stage. `contributors`
 lists every stage the recipe added, in order: composed contributors, and each raw glue kernel as one named
 stage (registered with `RecipeBuilder.addGlue(stage, nodes)`). Status counts over rows or cells (invalid
 rows, unresolved cells) run as a row-parallel kernel plus a published `GPUReduction` sum, never as one
@@ -186,6 +188,12 @@ Statistics and legend (both sources):
   `parameters` and `permutation.parameters` `GPUParameterBuffer`s; `result.setSettings` repacks them per frame.
 - The lattice source keeps its queen/rook weights and gets the same guard and metadata.
 - Permutation confirmation tests every study row; it does not apply `minimumNeighbors`.
+- The permutation confirms the statistic the Gi stage maps. `GPULocalPermutationTest` has a fixed focal
+  weight (1 for `'localGStar'`, none for `'localG'`), so `permutation.statistic` defaults to `'localGStar'`,
+  or to `'localG'` when `selfWeight` is 0. `'localGStar'` with a `selfWeight` other than 1, or `'localG'` with
+  a `selfWeight` other than 0, throws at construction. `outputs.permutation.observed` (optional, `float32`
+  per row) receives the permutation test's observed statistic in esda scaling, so the two stages can be
+  compared.
 
 #### How it computes
 

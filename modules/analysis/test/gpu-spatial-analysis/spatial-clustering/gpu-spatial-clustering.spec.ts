@@ -689,6 +689,71 @@ it('GPUSpatialClustering clusters longitude/latitude points with a great-circle 
   harness.destroy();
 });
 
+it('GPUSpatialClustering joins great-circle neighbours across the antimeridian', async () => {
+  // Math review point-process-clustering-05. At latitude 10 one degree of longitude is
+  // 111.195 km * cos(10 deg) = 109.5 km, so 0.02 deg is 2.19 km. Rows 0..3 sit at longitudes
+  // 179.97, 179.99, -179.99, -179.97: consecutive rows are 2.19 km apart (rows 1 and 2 across
+  // +-180), rows two apart 4.38 km, rows 0 and 3 6.57 km. With epsilon 5 km and minimumPoints 3
+  // (self included) every one of the four has at least three neighbours, so by hand they are one
+  // cluster of four core points; row 4 at longitude 0 is noise. Without the wrap rows 0..1 and
+  // 2..3 are two pairs with two neighbours each: no core point, no cluster.
+  // The latitude bounds stop at +-75: bounds that reach a pole make the cells 360 degrees wide
+  // (one column), which hides the seam because every point is then compared with every other.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const spatialContext: GPUSpatialContext = {
+    coordinateSpace: 'longitude-latitude',
+    metric: 'great-circle',
+    units: 'meters'
+  };
+  const line = Float32Array.of(179.97, 10, 179.99, 10, -179.99, 10, -179.97, 10, 0, 10);
+  const lineParameters = {bounds: [-180, -75, 180, 75] as const, epsilon: 5000, minimumPoints: 3};
+  const lineHarness = createHarness(device, {
+    positions: line,
+    parameters: lineParameters,
+    spatialContext
+  });
+  const lineResult = await lineHarness.run(getGPUSpatialClusteringParameterValues(lineParameters));
+  expect(lineResult.coreFlags).toEqual([1, 1, 1, 1, 0]);
+  expect(lineResult.labels).toEqual([0, 0, 0, 0, GPU_SPATIAL_CLUSTERING_NOISE]);
+  expect(lineResult.clusterCount).toBe(1);
+  lineHarness.destroy();
+
+  // Blobs centred on the antimeridian at three latitudes, on both edges of the bounds, against
+  // the brute-force haversine oracle (which has no lattice and so nothing to wrap). Several
+  // epsilons change the cell width from a fraction of a degree to tens of degrees.
+  const random = createSeededRandom(505);
+  const points: number[] = [];
+  for (const latitude of [0, 45, -70]) {
+    for (let index = 0; index < 80; index++) {
+      const east = (random() + random() + random() - 1.5) * 600;
+      const north = (random() + random() + random() - 1.5) * 600;
+      const longitudeOffset = east / (111195 * Math.cos((latitude * Math.PI) / 180));
+      const longitude = longitudeOffset >= 0 ? -180 + longitudeOffset : 180 + longitudeOffset;
+      points.push(longitude, latitude + north / 111195);
+    }
+  }
+  for (let index = 0; index < 20; index++) {
+    points.push(-50 + random() * 20, -30 + random() * 20);
+  }
+  const positions = new Float32Array(points);
+  for (const [epsilon, minimumPoints] of [
+    [150, 5],
+    [400, 8],
+    [60, 3],
+    [2000000, 4]
+  ]) {
+    const parameters = {bounds: [-180, -75, 180, 75] as const, epsilon, minimumPoints};
+    const harness = createHarness(device, {positions, parameters, spatialContext});
+    const result = await harness.run(getGPUSpatialClusteringParameterValues(parameters));
+    const expected = clusterGeographicPointsOracle(positions, parameters);
+    expect(result.labels, `epsilon ${epsilon}`).toEqual(expected.labels);
+    expect(result.coreFlags, `epsilon ${epsilon}`).toEqual(expected.coreFlags);
+    expect(result.clusterCount, `epsilon ${epsilon}`).toBe(expected.clusterCount);
+    harness.destroy();
+  }
+});
+
 it('GPUSpatialClustering matches the oracle whatever the input order (cell-ordered scans)', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

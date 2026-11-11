@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getOrderedFloat32Key} from '../../../src/dataframe-analysis/column-classification/column-classification-shared';
+import {
+  COLUMN_PROFILE_LARGE_RANGE,
+  COLUMN_PROFILE_LARGE_RANGE_SCALE
+} from '../../../src/dataframe-analysis/column-profile/column-profile-kernels';
 
 const fround = Math.fround;
 const NULL_CODE = 0xffffffff;
@@ -82,14 +86,25 @@ export function estimateHyperLogLog(registers: ArrayLike<number>, precision: num
   return raw <= 2.5 * m && zeros > 0 ? m * Math.log(m / zeros) : raw;
 }
 
-/** Bin of a finite value in a regular domain, mirroring the GPU with `Math.fround`. */
-export function getOracleBin(value: number, lo: number, width: number, binCount: number): number {
-  const difference = fround(value - lo);
-  let bin = Math.floor(fround(difference / width));
-  bin = Math.min(Math.max(bin, 0), binCount - 1);
-  if (difference < fround(bin * width)) {
+/**
+ * Bin of a finite value inside the regular domain `[lo, hi]`, with the convention of the official
+ * `GPUHistogram` (`floor((value - lo) / range * binCount)`, the maximum in the last bin): the `k`
+ * with `fround(k * range) <= fround((value - lo) * binCount) < fround((k + 1) * range)`. The
+ * headless spec compares the kernel with the official class and with exact integer arithmetic;
+ * this mirror serves the randomized scenes.
+ */
+export function getOracleBin(value: number, lo: number, hi: number, binCount: number): number {
+  let difference = fround(value - lo);
+  let range = fround(hi - lo);
+  if (range > COLUMN_PROFILE_LARGE_RANGE) {
+    difference = fround(difference * COLUMN_PROFILE_LARGE_RANGE_SCALE);
+    range = fround(range * COLUMN_PROFILE_LARGE_RANGE_SCALE);
+  }
+  const scaled = fround(difference * binCount);
+  let bin = Math.min(Math.max(Math.floor(fround(scaled / range)), 0), binCount - 1);
+  if (scaled < fround(bin * range)) {
     bin -= 1;
-  } else if (difference >= fround((bin + 1) * width)) {
+  } else if (scaled >= fround((bin + 1) * range)) {
     bin += 1;
   }
   return Math.min(Math.max(bin, 0), binCount - 1);
@@ -225,7 +240,7 @@ export function computeColumnProfileOracle(
             continue;
           }
           const bin =
-            domain.mode === 2 ? 0 : getOracleBin(value, domain.lo, domain.width, histogramBinCount);
+            domain.mode === 2 ? 0 : getOracleBin(value, domain.lo, domain.hi, histogramBinCount);
           histogram[bin]++;
         }
       }

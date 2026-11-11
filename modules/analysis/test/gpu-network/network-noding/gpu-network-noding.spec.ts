@@ -318,3 +318,61 @@ it('GPUNetworkNoding#snaps UTM-scale end points in exact cells relative to the e
   const tooFine = await runNoding(device, UTM_LINES, {tolerance: 0.00001});
   expect(tooFine.overflow).toBe(1);
 });
+
+it('GPUNetworkNoding#lists an undirected self-loop once in the row of its node', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A road from (0,0) to (10,0), a closed ring that starts and ends at (10,0), and a short piece
+  // far away whose two ends fall into one tolerance cell. The ring and the short piece are loops.
+  const lines: Point[][] = [
+    [
+      [0, 0],
+      [10, 0]
+    ],
+    [
+      [10, 0],
+      [20, 0],
+      [20, 10],
+      [10, 10],
+      [10, 0]
+    ],
+    [
+      [30, 30],
+      [30.25, 30.125]
+    ]
+  ];
+  const result = await runNoding(device, lines, {tolerance: 1});
+  expect(result.overflow).toBe(0);
+  expect(result.edgeCount).toBe(3);
+  expect(result.nodeCount).toBe(3);
+  const loops = result.from.filter((node, edge) => node === result.to[edge]).length;
+  expect(loops).toBe(2);
+  // Entries: two per ordinary edge and one per loop, as official GPUGraphAlgorithmsTopology,
+  // GPUNetworkCoarsening and GPUNetworkSubgraphFilter count an undirected self-loop.
+  expect(result.offsets[result.nodeCount]).toBe(2 * (result.edgeCount - loops) + loops);
+  // The two slots the loops no longer use hold no entry: a missing key is 0xffffffff and a
+  // missing float is NaN (the contributor contract's no-data rule).
+  for (let entry = result.offsets[result.nodeCount]; entry < 2 * result.edgeCount; entry++) {
+    expect(result.neighbors[entry]).toBe(0xffffffff);
+    expect(result.edgeIds[entry]).toBe(0xffffffff);
+    expect(Number.isNaN(result.weights[entry])).toBe(true);
+  }
+  for (let node = 0; node < result.nodeCount; node++) {
+    const row = result.neighbors.slice(result.offsets[node], result.offsets[node + 1]);
+    const [x, y] = result.nodes[node];
+    if (x === 0 && y === 0) {
+      // The road end: one entry, the junction.
+      expect(row).toHaveLength(1);
+      expect(row[0]).not.toBe(node);
+    } else if (x === 10 && y === 0) {
+      // The junction: the road and the ring once, with the ring's length 40 as its weight.
+      expect(row).toHaveLength(2);
+      expect(row.filter(neighbor => neighbor === node)).toHaveLength(1);
+      const loopEntry = result.offsets[node] + row.indexOf(node);
+      expect(result.weights[loopEntry]).toBeCloseTo(40, 4);
+    } else {
+      // The collapsed short piece: its own node, listed once.
+      expect(row).toEqual([node]);
+    }
+  }
+});

@@ -358,8 +358,10 @@ export type ReferenceFrame = {
 
 /**
  * Frame and rounding of float32 `positions` (x, y pairs): `cell` is the smallest power of two at
- * least `max(gridSize, E 2^-22)` with E the smallest power of two at least the float32 extent, the
- * origin is `floor(min / cell) cell`, and vertices round half up.
+ * least `max(gridSize, E 2^-22, M 2^-24)` with E the smallest power of two at least the float32
+ * extent and M the smallest power of two at least the largest coordinate magnitude (so every
+ * lattice point of the data is a float32 value; math correctness review 2026-11-10,
+ * polygon-topology-06), the origin is `floor(min / cell) cell`, and vertices round half up.
  */
 export function referenceLatticeFrame(
   positions: ArrayLike<number>,
@@ -388,7 +390,14 @@ export function referenceLatticeFrame(
   );
   const extentExponent = extent > 2 ** -126 ? ceilLog2(extent) : -126;
   const gridExponent = Math.min(127, Math.max(-126, ceilLog2(gridSize)));
-  const cellExponent = Math.max(gridExponent, extentExponent - 22);
+  const magnitude = Math.max(
+    Math.abs(minimum[0]),
+    Math.abs(minimum[1]),
+    Math.abs(maximum[0]),
+    Math.abs(maximum[1])
+  );
+  const magnitudeExponent = magnitude > 2 ** -126 ? ceilLog2(magnitude) : -126;
+  const cellExponent = Math.max(gridExponent, extentExponent - 22, magnitudeExponent - 24);
   const cell = 2 ** cellExponent;
   const scaledCell = 1n << (FRACTION_BITS + BigInt(cellExponent));
   const origin: [number, number] = [0, 0];

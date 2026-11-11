@@ -19,7 +19,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createFloat32ValuesNodes,
@@ -110,6 +110,22 @@ const BATCH_B = {first: 3, count: 19} as const;
 const BATCH_C = {first: 22, count: 3} as const;
 /** Sums of the first-pass deviations from the batch-A means (second-pass mean correction). */
 const BATCH_D = {first: 25, count: 2} as const;
+/**
+ * Columns of the separate two-column magnitude matrix (`|x|`, `|y|` of the analysis rows), summed
+ * with the same fixed-order trees to find the value scales. Kept out of the main matrix so the
+ * documented row maximum (27 columns in one binding) is unchanged.
+ */
+const MAGNITUDE_COLUMNS = {first: 0, count: 2} as const;
+
+/**
+ * Words of the internal counter view that hold the float32 bit patterns of the value scales
+ * `[1 / scaleX, scaleX, 1 / scaleY, scaleY]`, after the five integer counters. Each scale is the
+ * power of two next above the mean magnitude of the analysis values, so multiplying by it or by
+ * its reciprocal is exact. They share the counter view because the pair and finalize kernels
+ * already bind the eight storage buffers a baseline device allows.
+ */
+const VALUE_SCALE = {inverseX: 5, x: 6, inverseY: 7, y: 8} as const;
+const COUNTER_LENGTH = 9;
 
 /**
  * Rows are counted in u32 but compared and divided as f32 in the finalize kernel, and degrees and
@@ -253,6 +269,15 @@ export type GPUGlobalSpatialStatisticsOutput = {
  * be below 2^24 (degrees and counts are f32 columns, exact only there), the same limit as the
  * local statistics.
  *
+ * Value scale: every statistic here is unchanged when the values are multiplied by a constant, so
+ * `values` (and `secondValues`) are divided by a power of two near their mean magnitude before the
+ * moment sums, and only `summary.mean` and `summary.variance` are scaled back. Squares and fourth
+ * powers of sums of ordinary large data (prices, populations) therefore stay inside the float32
+ * range. The weight terms are formed as the ratios `S1 / S0^2` and `S2 / S0^2`, so
+ * `n^3 S0^2` is never evaluated. The scale is exact (a power of two) and changes no result that
+ * was finite before. Remaining limit: the sum of the value magnitudes and `S0`, `S1`, `S2`
+ * themselves must be finite in float32.
+ *
  * Algorithm: one gather pass per row over its CSR slots (binary search of `w_ji` in row `j`), a
  * deterministic transpose (stable sort of slots by neighbor) for column sums, and per-row partials
  * summed by fixed-order two-level workgroup trees. Join counts use u32 atomics. No float atomics,
@@ -279,7 +304,7 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
       throw new Error(`${id} weights must hold fewer than 2^24 rows`);
     }
     if (props.weights.status?.overflow) {
-      validatePackedView(
+      validateSinglePackedView(
         props.weights.status.overflow,
         ['uint32'],
         `${id} weights.status.overflow`
@@ -295,7 +320,7 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
       throw new Error(`${id} secondValues needs one row per weights row`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask needs one row per weights row`);
       }
@@ -312,14 +337,14 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
       throw new Error(`${id} bivariateMoran requires secondValues`);
     }
     const {output} = props;
-    validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
     if (output.summary.length < GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length) {
       throw new Error(
         `${id} output.summary needs ${GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length} values`
       );
     }
     if (output.joinCounts) {
-      validatePackedView(output.joinCounts, ['uint32'], `${id} output.joinCounts`);
+      validateSinglePackedView(output.joinCounts, ['uint32'], `${id} output.joinCounts`);
       if (output.joinCounts.length < 3) {
         throw new Error(`${id} output.joinCounts needs 3 values`);
       }
@@ -427,9 +452,22 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
     const totalsB = createTransientView(graph, `${id}-totals-b`, 'float32', BATCH_B.count);
     const totalsC = createTransientView(graph, `${id}-totals-c`, 'float32', BATCH_C.count);
     const totalsD = createTransientView(graph, `${id}-totals-d`, 'float32', BATCH_D.count);
+    const magnitudes = createTransientView(
+      graph,
+      `${id}-magnitudes`,
+      'float32',
+      MAGNITUDE_COLUMNS.count * rows
+    );
+    const magnitudeTotals = createTransientView(
+      graph,
+      `${id}-magnitude-totals`,
+      'float32',
+      MAGNITUDE_COLUMNS.count
+    );
     const baseStates = createTransientView(graph, `${id}-base-states`, 'uint32', rows);
-    // [n, analysis rows with a negative value, BB2, BW2, WW2], u32 so counts stay exact.
-    const counters = createTransientView(graph, `${id}-counters`, 'uint32', 5);
+    // [n, analysis rows with a negative value, BB2, BW2, WW2], u32 so counts stay exact, then the
+    // four VALUE_SCALE words.
+    const counters = createTransientView(graph, `${id}-counters`, 'uint32', COUNTER_LENGTH);
     const rowScale = createTransientView(graph, `${id}-row-scale`, 'float32', rows);
     // Chunked weights accumulate the in-link sums of the chunks here: [weight, degree, lag] per row.
     const columnParts = isWhole
@@ -478,7 +516,8 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
           ...getWeightBindings(dispatch),
           {name: 'baseStates', view: baseStates, type: 'u32', access: 'read'},
           {name: 'counters', view: counters, type: 'atomic<u32>', access: 'read_write'},
-          {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
+          {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'},
+          {name: 'magnitudes', view: magnitudes, type: 'f32', access: 'read_write'}
         ],
         invocationCount: dispatch.rowCount,
         workgroupSize: REDUCTION_WORKGROUP_SIZE,
@@ -507,6 +546,8 @@ var<workgroup> groupNegative: atomic<u32>;`,
     // Missing rows and excluded islands leave the sums.
     matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)] = 0.0;
     matrix[matrixOffset + getMatrixIndex(COLUMN_Y, index)] = 0.0;
+    magnitudes[magnitudesOffset + index] = 0.0;
+    magnitudes[magnitudesOffset + ROWS + index] = 0.0;
   }
   matrix[matrixOffset + getMatrixIndex(COLUMN_INCLUDED, index)] = select(0.0, 1.0, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_ISLAND, index)] = select(0.0, 1.0, island);
@@ -663,6 +704,8 @@ var<workgroup> groupNegative: atomic<u32>;`,
   var outDegree = 0u;
   var binaryS1 = 0u;
   let x = values[valuesOffset + index];
+  // General G uses the raw values in scaled units; the black test uses them unscaled.
+  let inverseScaleX = bitcast<f32>(atomicLoad(&counters[countersOffset + ${VALUE_SCALE.inverseX}u]));
   if (isFiniteFloat(centeredX)) {
     let black = x != 0.0;
     let scale = getRowScale(index);
@@ -682,7 +725,7 @@ var<workgroup> groupNegative: atomic<u32>;`,
       lag += scaled * neighborX;
       let difference = centeredX - neighborX;
       gearySum += scaled * difference * difference;
-      rawLag += scaled * values[valuesOffset + neighbor];
+      rawLag += scaled * (values[valuesOffset + neighbor] * inverseScaleX);
       lagY += scaled * centered[centeredOffset + neighbor * 2u + 1u];
       outDegree++;
       let neighborBlack = values[valuesOffset + neighbor] != 0.0;
@@ -700,7 +743,7 @@ var<workgroup> groupNegative: atomic<u32>;`,
   ${isChunked ? '' : 'matrix[matrixOffset + getMatrixIndex(COLUMN_S1, index)] = s1;'}
   matrix[matrixOffset + getMatrixIndex(COLUMN_MORAN_CROSS, index)] = select(0.0, centeredX * lag, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_GEARY_SUM, index)] = gearySum;
-  matrix[matrixOffset + getMatrixIndex(COLUMN_G_CROSS, index)] = select(0.0, x * rawLag, included);
+  matrix[matrixOffset + getMatrixIndex(COLUMN_G_CROSS, index)] = select(0.0, (x * inverseScaleX) * rawLag, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_BIVARIATE_CROSS, index)] = select(0.0, centeredX * lagY, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_BINARY_OUT_DEGREE, index)] = f32(outDegree);
   ${isChunked ? '' : 'matrix[matrixOffset + getMatrixIndex(COLUMN_BINARY_S1, index)] = f32(binaryS1);'}
@@ -1071,7 +1114,8 @@ ${getRowScaleWGSL(standardized)}`,
           {name: 'values', view: values, type: 'f32', access: 'read'},
           ...optionalInputs,
           {name: 'baseStates', view: baseStates, type: 'u32', access: 'read_write'},
-          {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
+          {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'},
+          {name: 'magnitudes', view: magnitudes, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rows,
         declarations: constantsWGSL,
@@ -1080,7 +1124,9 @@ ${getRowScaleWGSL(standardized)}`,
   let included = ${mask ? 'mask[maskOffset + index] != 0u &&' : ''} isFiniteFloat(x) && isFiniteFloat(y);
   baseStates[baseStatesOffset + index] = select(0u, 1u, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)] = select(0.0, x, included);
-  matrix[matrixOffset + getMatrixIndex(COLUMN_Y, index)] = select(0.0, y, included);`
+  matrix[matrixOffset + getMatrixIndex(COLUMN_Y, index)] = select(0.0, y, included);
+  magnitudes[magnitudesOffset + index] = select(0.0, abs(x), included);
+  magnitudes[magnitudesOffset + ROWS + index] = select(0.0, abs(y), included);`
       }),
       // Islands: included rows with no active slot to another included row. Rows left in the
       // analysis (all included rows for 'keep', the non-islands for 'exclude') are counted in
@@ -1094,7 +1140,51 @@ ${getRowScaleWGSL(standardized)}`,
         ...BATCH_A,
         totals: totalsA
       }),
-      // Second-pass mean: first-pass deviations from the batch-A mean, whose sum corrects it.
+      ...getColumnSumNodes<Parameters>(graph, {
+        id: `${id}-sum-magnitudes`,
+        matrix: magnitudes,
+        rows,
+        blockCount,
+        ...MAGNITUDE_COLUMNS,
+        totals: magnitudeTotals
+      }),
+      // Value scales: the power of two next above the mean magnitude of each variable. The
+      // statistics are homogeneous of degree zero in the values, so every later kernel works on
+      // values near 1 and the squares of the moment sums stay inside the f32 range.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-value-scales`,
+        operation: OPERATION,
+        variant: 'value-scales',
+        bindings: [
+          {name: 'magnitudeTotals', view: magnitudeTotals, type: 'f32', access: 'read'},
+          {name: 'counters', view: counters, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: 1,
+        declarations: `${constantsWGSL}
+// Binary exponent e with 2^(e - 1) <= mean magnitude < 2^e, read from the float bits (exact), or 0
+// when the mean magnitude is zero or not finite. Clamped so that 2^e and 2^-e are normal floats.
+fn getScaleExponent(totalMagnitude: f32, count: f32) -> i32 {
+  let meanMagnitude = totalMagnitude / count;
+  if (!(meanMagnitude > 0.0) || !isFiniteFloat(meanMagnitude)) {
+    return 0;
+  }
+  let biasedExponent = i32((bitcast<u32>(meanMagnitude) >> 23u) & 0xffu);
+  return clamp(biasedExponent - 126, -126, 126);
+}
+// Bit pattern of the float 2^exponent.
+fn getPowerOfTwoBits(exponent: i32) -> u32 {
+  return u32(exponent + 127) << 23u;
+}`,
+        body: `let count = f32(counters[countersOffset]);
+  let exponentX = getScaleExponent(magnitudeTotals[magnitudeTotalsOffset], count);
+  let exponentY = getScaleExponent(magnitudeTotals[magnitudeTotalsOffset + 1u], count);
+  counters[countersOffset + ${VALUE_SCALE.inverseX}u] = getPowerOfTwoBits(-exponentX);
+  counters[countersOffset + ${VALUE_SCALE.x}u] = getPowerOfTwoBits(exponentX);
+  counters[countersOffset + ${VALUE_SCALE.inverseY}u] = getPowerOfTwoBits(-exponentY);
+  counters[countersOffset + ${VALUE_SCALE.y}u] = getPowerOfTwoBits(exponentY);`
+      }),
+      // Second-pass mean: first-pass deviations from the batch-A mean, whose sum corrects it. The
+      // deviations are stored in scaled units (an exact power-of-two multiply).
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-deviate`,
         operation: OPERATION,
@@ -1108,12 +1198,14 @@ ${getRowScaleWGSL(standardized)}`,
         declarations: constantsWGSL,
         body: `let included = matrix[matrixOffset + getMatrixIndex(COLUMN_INCLUDED, index)] != 0.0;
   let count = f32(counters[countersOffset]);
-  let x = matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)];
-  let y = matrix[matrixOffset + getMatrixIndex(COLUMN_Y, index)];
+  let inverseScaleX = bitcast<f32>(counters[countersOffset + ${VALUE_SCALE.inverseX}u]);
+  let inverseScaleY = bitcast<f32>(counters[countersOffset + ${VALUE_SCALE.inverseY}u]);
+  let x = matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)] * inverseScaleX;
+  let y = matrix[matrixOffset + getMatrixIndex(COLUMN_Y, index)] * inverseScaleY;
   matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_X, index)] =
-    select(0.0, x - getMeanQuotient(totalsA[totalsAOffset + 1u], count), included);
+    select(0.0, x - getMeanQuotient(totalsA[totalsAOffset + COLUMN_X], count) * inverseScaleX, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_Y, index)] =
-    select(0.0, y - getMeanQuotient(totalsA[totalsAOffset + 2u], count), included);`
+    select(0.0, y - getMeanQuotient(totalsA[totalsAOffset + COLUMN_Y], count) * inverseScaleY, included);`
       }),
       ...getColumnSumNodes<Parameters>(graph, {
         id: `${id}-sum-d`,
@@ -1363,28 +1455,34 @@ fn getZScore(statistic: f32, expected: f32, variance: f32) -> f32 {
   return select(getQuietNaN(0u), z, variance > 0.0 && isFiniteFloat(z));
 }
 
+// The moment formulas below are esda's with numerator and denominator divided by S0^2, so the
+// weights enter only as the ratios r1 = S1 / S0^2 and r2 = S2 / S0^2 and the product n^3 S0^2
+// (above the f32 range for about 1e7 rows with tens of neighbors) is never formed.
+
 // esda.Moran: (expected, VI_norm, VI_rand).
 fn getMoranMoments(n: f32, s0: f32, s1: f32, s2: f32, kurtosis: f32) -> vec3<f32> {
   let n2 = n * n;
-  let s02 = s0 * s0;
+  let r1 = s1 / s0 / s0;
+  let r2 = s2 / s0 / s0;
   let expected = -1.0 / (n - 1.0);
-  let varianceNormality = (n2 * s1 - n * s2 + 3.0 * s02) / ((n2 - 1.0) * s02) - expected * expected;
-  let a = n * ((n2 - 3.0 * n + 3.0) * s1 - n * s2 + 3.0 * s02);
-  let b = kurtosis * ((n2 - n) * s1 - 2.0 * n * s2 + 6.0 * s02);
+  let varianceNormality = (n2 * r1 - n * r2 + 3.0) / (n2 - 1.0) - expected * expected;
+  let a = n * ((n2 - 3.0 * n + 3.0) * r1 - n * r2 + 3.0);
+  let b = kurtosis * ((n2 - n) * r1 - 2.0 * n * r2 + 6.0);
   let varianceRandomization =
-    (a - b) / ((n - 1.0) * (n - 2.0) * (n - 3.0) * s02) - expected * expected;
+    (a - b) / ((n - 1.0) * (n - 2.0) * (n - 3.0)) - expected * expected;
   return vec3<f32>(expected, varianceNormality, varianceRandomization);
 }
 
 // esda.Geary: (VC_norm, VC_rand).
 fn getGearyMoments(n: f32, s0: f32, s1: f32, s2: f32, kurtosis: f32) -> vec2<f32> {
   let n2 = n * n;
-  let s02 = s0 * s0;
-  let varianceNormality = ((2.0 * s1 + s2) * (n - 1.0) - 4.0 * s02) / (2.0 * (n + 1.0) * s02);
-  let a = (n - 1.0) * s1 * (n2 - 3.0 * n + 3.0 - (n - 1.0) * kurtosis);
-  let b = 0.25 * (n - 1.0) * s2 * (n2 + 3.0 * n - 6.0 - (n2 - n + 2.0) * kurtosis);
-  let c = s02 * (n2 - 3.0 - (n - 1.0) * (n - 1.0) * kurtosis);
-  let varianceRandomization = (a - b + c) / (n * (n - 2.0) * (n - 3.0) * s02);
+  let r1 = s1 / s0 / s0;
+  let r2 = s2 / s0 / s0;
+  let varianceNormality = ((2.0 * r1 + r2) * (n - 1.0) - 4.0) / (2.0 * (n + 1.0));
+  let a = (n - 1.0) * r1 * (n2 - 3.0 * n + 3.0 - (n - 1.0) * kurtosis);
+  let b = 0.25 * (n - 1.0) * r2 * (n2 + 3.0 * n - 6.0 - (n2 - n + 2.0) * kurtosis);
+  let c = n2 - 3.0 - (n - 1.0) * (n - 1.0) * kurtosis;
+  let varianceRandomization = (a - b + c) / (n * (n - 2.0) * (n - 3.0));
   return vec2<f32>(varianceNormality, varianceRandomization);
 }
 
@@ -1396,7 +1494,7 @@ fn getQuadraticFormVariance(
 ) -> f32 {
   // A constant input has an invariant quadratic form under every permutation.
   if (sumSquares == 0.0) { return 0.0; }
-  let kurtosis = n * sumFourths / (sumSquares * sumSquares);
+  let kurtosis = n * (sumFourths / sumSquares) / sumSquares;
   let moranVariance = getMoranMoments(n, s0, s1, s2, kurtosis).z;
   let scale = s0 * sumSquares / n;
   let linearVariance = sumSquares * degreeDeviation / (n - 1.0);
@@ -1443,8 +1541,9 @@ function getPValueWGSL(alternative: 'two-sided' | 'greater' | 'lesser'): string 
     lesser: `min(0.5 * erfcValue(-z * ${SQRT_HALF}), 1.0)`
   };
   // erfcValue comes with SPATIAL_AUTOCORRELATION_FLOAT_WGSL, included by the finalize kernel.
-  // f32 exp underflows beyond |z| of about 9.3; p-values are floored at the smallest normal f32.
-  return `const P_VALUE_FLOOR: f32 = 1.17549435e-38;
+  // p-values are floored at ANALYTIC_P_VALUE_FLOOR (the smallest normal f32), the shared rule of
+  // SPATIAL_AUTOCORRELATION_FLOAT_WGSL; the one-sided tails apply the same floor here.
+  return `const P_VALUE_FLOOR: f32 = ANALYTIC_P_VALUE_FLOOR;
 fn getPValue(z: f32) -> f32 {
   return select(getQuietNaN(0u), max(${expressions[alternative]}, P_VALUE_FLOOR), isFiniteFloat(z));
 }`;
@@ -1463,8 +1562,12 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
   return /* wgsl */ `let n = f32(counters[countersOffset]);
   let hasNegative = counters[countersOffset + 1u] > 0u;
   let truncated = ${hasOverflow ? 'overflow[overflowOffset] != 0u' : 'false'};
+  // Every moment below is in scaled units (values divided by a power of two near their mean
+  // magnitude); only the reported mean and variance are scaled back.
+  let inverseScaleX = bitcast<f32>(counters[countersOffset + ${VALUE_SCALE.inverseX}u]);
+  let scaleX = bitcast<f32>(counters[countersOffset + ${VALUE_SCALE.x}u]);
   // Mean with the second-pass correction sum(x - mean) / n.
-  let mean = divide(readTotal(COLUMN_X), n) + divide(readTotal(COLUMN_DEVIATION_X), n);
+  let mean = divide(readTotal(COLUMN_X), n) * inverseScaleX + divide(readTotal(COLUMN_DEVIATION_X), n);
   let sumSquares = readTotal(COLUMN_CENTERED_SQUARE);
   let sumCubes = readTotal(COLUMN_CENTERED_CUBE);
   let sumFourths = readTotal(COLUMN_CENTERED_FOURTH);
@@ -1473,15 +1576,16 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
   let s2 = readTotal(COLUMN_DEGREE_SQUARE);
   let blackCount = readTotal(COLUMN_BLACK);
   let degreeDeviation = readTotal(COLUMN_DEGREE_DEVIATION);
-  let kurtosis = divide(n * sumFourths, sumSquares * sumSquares);
+  let kurtosis = divide(n * divide(sumFourths, sumSquares), sumSquares);
   let valid = n >= 4.0 && s0 > 0.0 && sumSquares > 0.0;
 
   results[resultsOffset + ${layout.summary}u] = n;
   results[resultsOffset + ${layout.summary + 1}u] = select(s0, getQuietNaN(1u), truncated);
   results[resultsOffset + ${layout.summary + 2}u] = select(s1, getQuietNaN(2u), truncated);
   results[resultsOffset + ${layout.summary + 3}u] = select(s2, getQuietNaN(3u), truncated);
-  results[resultsOffset + ${layout.summary + 4}u] = select(getFinite(mean), getQuietNaN(4u), truncated);
-  results[resultsOffset + ${layout.summary + 5}u] = select(divide(sumSquares, n), getQuietNaN(5u), truncated);
+  results[resultsOffset + ${layout.summary + 4}u] = select(getFinite(mean * scaleX), getQuietNaN(4u), truncated);
+  results[resultsOffset + ${layout.summary + 5}u] =
+    select(getFinite(divide(sumSquares, n) * scaleX * scaleX), getQuietNaN(5u), truncated);
   results[resultsOffset + ${layout.summary + 6}u] = blackCount;
   results[resultsOffset + ${layout.summary + 7}u] = readTotal(COLUMN_ISLAND);
 
@@ -1518,7 +1622,7 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
     let statistic = divide(readTotal(COLUMN_G_CROSS), denominator);
     let expected = divide(s0, n * (n - 1.0));
     let variance = select(getQuietNaN(1u), getFinite(getQuadraticFormVariance(n, s0, s1, s2,
-      degreeDeviation, mean, sumSquares, sumCubes, sumFourths) / (denominator * denominator)),
+      degreeDeviation, mean, sumSquares, sumCubes, sumFourths) / denominator / denominator),
       n >= 4.0 && s0 > 0.0 && denominator > 0.0);
     let z = getZScore(statistic, expected, variance);
     // esda calls these VG / z_norm; retain the randomization aliases for compatibility.
@@ -1566,7 +1670,7 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
       blackFourths)), binaryValid);
     let varianceBlackBlackOrZero = select(varianceBlackBlack, 0.0, binaryValid && oneColour);
     let expectedBlackWhite = getFinite(b0 * blackSquares / (n - 1.0));
-    let blackKurtosis = n * blackFourths / (blackSquares * blackSquares);
+    let blackKurtosis = n * (blackFourths / blackSquares) / blackSquares;
     let blackWhiteScale = b0 * blackSquares / (n - 1.0);
     let varianceBlackWhite = select(getQuietNaN(3u), getFinite(getGearyMoments(n, b0, b1, b2,
       blackKurtosis).y * blackWhiteScale * blackWhiteScale), binaryValid && !oneColour);

@@ -17,7 +17,7 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSegmentIntersectionMaximumVertexCount,
@@ -167,13 +167,13 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
       throw new Error(`${id} requires exactly one of polygons, lines and points`);
     }
     if (polygons) {
-      validatePackedView(polygons.positions, ['float32x2'], `${id} polygons.positions`);
+      validateSinglePackedView(polygons.positions, ['float32x2'], `${id} polygons.positions`);
       for (const [name, view] of [
         ['featureOffsets', polygons.featureOffsets],
         ['polygonOffsets', polygons.polygonOffsets],
         ['ringOffsets', polygons.ringOffsets]
       ] as const) {
-        validatePackedView(view, ['uint32'], `${id} polygons.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} polygons.${name}`);
         if (view.length < 1) {
           throw new Error(`${id} polygons.${name} requires a terminal entry`);
         }
@@ -187,8 +187,8 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
         throw new Error(`${id} polygons require status.overflow and intersectionCapacity`);
       }
     } else if (lines) {
-      validatePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
-      validatePackedView(lines.lineOffsets, ['uint32'], `${id} lines.lineOffsets`);
+      validateSinglePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
+      validateSinglePackedView(lines.lineOffsets, ['uint32'], `${id} lines.lineOffsets`);
       if (lines.lineOffsets.length < 1) {
         throw new Error(`${id} lines.lineOffsets requires a terminal entry`);
       }
@@ -196,7 +196,7 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
       this.ringCount = 0;
     } else {
       const pointGeometry = points as GPUPackedGeometryPort<GPUPointGeometryPort>;
-      validatePackedView(pointGeometry.positions, ['float32x2'], `${id} points.positions`);
+      validateSinglePackedView(pointGeometry.positions, ['float32x2'], `${id} points.positions`);
       this.featureCount = pointGeometry.positions.length;
       this.ringCount = 0;
     }
@@ -204,7 +204,7 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
       throw new Error(`${id} geometry must contain at least one feature`);
     }
     const {mask, status} = props.output;
-    validatePackedView(mask, ['uint32'], `${id} output.mask`);
+    validateSinglePackedView(mask, ['uint32'], `${id} output.mask`);
     if (mask.length !== this.featureCount) {
       throw new Error(`${id} output.mask length must equal the feature count`);
     }
@@ -213,7 +213,7 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
       ['intersectionCount', status?.intersectionCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
         if (view.length < 1) {
           throw new Error(`${id} output.status.${name} must contain one uint32 row`);
         }

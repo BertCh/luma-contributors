@@ -17,13 +17,14 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   ERFC_VALUE_WGSL,
   GET_NAN_WGSL,
   IS_FINITE_VALUE_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
+import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {
   getGPUSpatialWeightsOrChunksViews,
   validateGPUSpatialWeightsOrChunks,
@@ -85,13 +86,14 @@ import {
   getSpatialMaximumLikelihoodSeriesLimit
 } from './spatial-maximum-likelihood-parameters';
 import {
-  getKahanSumWGSL,
   getParameterSearchWGSL,
   getTableRowWGSL,
   getTraceSeriesWGSL
 } from './spatial-maximum-likelihood-wgsl';
+import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
 import {SPATIAL_SERIES_TAIL_MINIMUM_POWER, getSpatialSeriesTailWGSL} from './spatial-series-tail';
 import {getCholeskyWGSL} from './spatial-regression-solve';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 import {
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
   GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT,
@@ -111,6 +113,49 @@ const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
 const MINIMUM_DEFAULT_TILE_ROWS = 64;
 const TILE_WORKGROUP_SIZE = SPATIAL_MAXIMUM_LIKELIHOOD_TILE_WORKGROUP_SIZE;
 const LN_TWO_PI = Math.log(2 * Math.PI);
+/**
+ * The first-order condition of an interior estimate, checked from the published residuals: with
+ * `t = u'e1 / u'u`, `g = n t - tr(W A)` the derivative of the concentrated log-likelihood at
+ * the published `rho` and `c = n (e1'e1 / u'u - 2 t^2) + tr((W A)^2)` its curvature,
+ * `|g| <= sqrt(tolerance * c) + c d`, that is, `rho` is within half a standard error (of the
+ * concentrated likelihood) plus `d` of a stationary point, with `d` the float32 allowance of
+ * `STATIONARITY_PARAMETER_STEPS`. `u'u` and `u'e1` are summed per row from the published
+ * residuals and the second OLS residual, not taken from the sums the search used, so a search
+ * that ended away from a stationary point (a pole of a badly conditioned derivative, a wrong
+ * direct sum) is status 3. It shares the trace series with the search and cannot tell a local
+ * maximum from the global one. On the scenes of `math-review-lag-conditioning.spec.ts` the
+ * float32 step of `rho` leaves `g^2 / c` at 0.015 or less.
+ */
+const STATIONARITY_TOLERANCE = 0.25;
+/**
+ * Float32 steps of `rho` the first-order condition allows on top of half a standard error. A
+ * float32 `rho` cannot be nearer to the stationary point than half a step, and the sums it is
+ * tested with carry the same rounding: the bisection of the search ends within one step of the
+ * root of its own derivative; each product `rho0 e1` of the direct sums and each product
+ * `rho e1` of the published residuals is rounded by at most `2^-24` of itself, which moves
+ * `u'e1` by no more than a shift of `rho` by one step would (`sum |rho e1| |e1| 2^-24 <=
+ * e1'e1 step`). Three steps in the worst case, four allowed. Where the standard error of `rho`
+ * is many steps the allowance is nothing; where it is below one step (a response that is its
+ * own lag times `rho` plus `X b` to float32 rounding) the nearest float32 `rho` failed the bare
+ * test (`g^2 / c = 0.36` in float64 on the 64-row scene of
+ * `math-review-lag-conditioning.spec.ts`).
+ */
+const STATIONARITY_PARAMETER_STEPS = 4;
+
+/** Fixed pairwise sum of `count` items of `source` at `base + item * stride` (see `getPairwiseSumWGSL`). */
+function getMergeSumWGSL(
+  source: string,
+  base: string,
+  stride: string,
+  count: string,
+  name = 'sum'
+): string {
+  return getPairwiseSumWGSL({
+    count,
+    name,
+    term: `${source}[${source}Offset + ${base} + ${name}Item * ${stride}]`
+  });
+}
 
 /** Caller-owned outputs of {@link GPUSpatialLagMaximumLikelihood}. */
 export type GPUSpatialLagMaximumLikelihoodOutput = {
@@ -129,7 +174,11 @@ export type GPUSpatialLagMaximumLikelihoodOutput = {
   table: GraphDataView<'float32'>;
   /** At least 22 float32 values; see the `GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_*` slots. */
   summary: GraphDataView<'float32'>;
-  /** Optional per-row residuals `u = y - rho W y - X b` (spreg `u`); NaN for a failed fit. */
+  /**
+   * Optional per-row residuals `u = y - rho W y - X b` (spreg `u`); NaN for a failed fit, except
+   * a fit rejected by the first-order condition (status 3 with a finite search result), which
+   * leaves the residuals of the rejected `rho`.
+   */
   residuals?: GraphDataView<'float32'>;
   /**
    * Optional `maximumPower` float32 values `tr((W/s)^q)` the fit used, so that a downstream
@@ -231,9 +280,20 @@ export type GPUSpatialLagMaximumLikelihoodProps = {
  * (Anselin 1988; spreg `ML_Lag` with `method='full'`, whose exact log-determinant is replaced
  * here by a truncated trace series). Nothing is read back.
  *
- * 1. `e0` and `e1` are the OLS residuals of `y` and `W y` on `[1, X]` (two
- *    `GPUOrdinaryLeastSquares` compositions; `W y` comes from an inline sparse product), so
- *    `u(rho) = e0 - rho e1` and `s2(rho) = u'u / n` need only the sums `e0'e0`, `e0'e1`, `e1'e1`.
+ * 1. `e0` and `e1` are the OLS residuals of `y` and of the lag column on `[1, X]` (two
+ *    `GPUOrdinaryLeastSquares` compositions), so `u(rho) = e0 - rho e1` and
+ *    `s2(rho) = u'u / n`. The lag column is `v = W (y - ybar) + ybar (s_i - s)` from an inline
+ *    sparse product, with `s_i` the exact sum of the float32 weights of row `i`
+ *    (`getAdditionRoundingError`) and `s` the largest row sum: `W y = v + ybar s`, and the
+ *    constant `ybar s` only moves the intercept, where it is added back. A sum of `w * y` over
+ *    the raw response is rounded to a float32 step of the response, which for residuals of
+ *    0.002 around 10,000 was up to 4% of `s2`; the lag about the mean is not.
+ *    The search does not form `u'u` as `e0'e0 - 2 rho e0'e1 + rho^2 e1'e1`: where the model
+ *    fits well (`u'u` below 1e-7 of `e0'e0`) that difference of three float32 sums is rounding,
+ *    and the search then ran to a pole of the derivative or found no candidate. It uses
+ *    `u'u = S + e1'e1 (rho - rho*)^2`, with `rho0 = e0'e1 / e1'e1`, `r = e0 - rho0 e1` summed
+ *    per row, `rho* = rho0 + r'e1 / e1'e1` and `S = r'r - (r'e1)^2 / e1'e1`: two non-negative
+ *    terms.
  * 2. The concentrated log-likelihood `-n/2 ln(s2(rho)) + ln|I - rho W|` has the log-determinant
  *    `-sum_{q=1}^{Q} rho^q tr(W^q) / q` from `GPUSpatialWeightsTraces` (exact traces up to 4096
  *    rows, Hutchinson estimates above), evaluated by Horner's rule.
@@ -249,8 +309,10 @@ export type GPUSpatialLagMaximumLikelihoodProps = {
  *    `tr3 = tr((W A)' W A)` from a second probe pass at the estimated `rho`
  *    (`createSeriesProbeNodes`), with `A = (I - rho W)^-1`. The `s2` row is eliminated by its Schur
  *    complement (the `rho` entry becomes `tr2 + tr3 + (W X b~)'(W X b~) / s2 - 2 tr1^2 / n`), the
- *    matrix is built on centered predictors and unit-scaled before the Cholesky factorization, and
- *    the intercept variance is mapped back to the uncentered model.
+ *    matrix is built on centered predictors and on `W X b~` about its mean (a response with a
+ *    large mean otherwise cancels the `rho` entry against the intercept to nothing in float32)
+ *    and unit-scaled before the Cholesky factorization, and the intercept variance is mapped back
+ *    to the uncentered model.
  *
  * Search interval. `B = min(0.99, seriesLimit) / ||W||_inf`, with `||W||_inf` the largest absolute
  * row sum computed on the GPU, which keeps `I - rho W` invertible for any `W` (spreg's fixed
@@ -268,6 +330,57 @@ export type GPUSpatialLagMaximumLikelihoodProps = {
  *
  * The float32 traces `tr(W^q)` grow like `n ||W||_inf^q`: for a raw (unstandardized) `W` choose
  * `maximumPower` with `||W||_inf^maximumPower < 1e36`, else they overflow and the status is 3.
+ * What float32 leaves (measured on the test GPU against float64, residuals of 0.002 to 0.004
+ * around a response mean of 10,000; `math-review-lag-conditioning.spec.ts`). Weights whose rows
+ * share a row sum, exactly or up to the rounding of the weights (row-standardized or not, with
+ * or without rows that have no neighbours): `s2` within 1.1e-5 for `rho` from 0.2 to 0.8, the
+ * log-likelihood within 0.004. With three rows without neighbours and `u'u` at 2e-10 of
+ * `e0'e0`: `s2` within 4e-5, `rho` within 0.12 standard errors (a float32 step of `rho`).
+ * Slopes two hundred times the residual deviation over the predictor range (`u'u` at 3e-9 of
+ * `e0'e0`): `s2` within 3.4e-4, because the fitted values are rounded to 1% to 3% of a residual.
+ * Row sums that differ by more than rounding with such a response (row sums 2 and 3): the lag
+ * differs between rows by the response mean, the lag column is rounded to a float32 step of
+ * that, and `s2` was within 2.5e-4.
+ * Degenerate sums of squares. `S = 0` (the response residual is a multiple of the lag
+ * residual) has a likelihood wherever `u'u = e1'e1 (rho - rho*)^2` is positive: when `rho*`
+ * lies outside the search interval the search runs (spreg `ML_Lag` returns a fit there too);
+ * when it lies inside, the likelihood has a pole and the status is 3. `e1'e1 = 0` (the lag
+ * column lies in the span of `[1, X]`) makes `u'u = e0'e0` for every `rho`: the likelihood is
+ * the log-determinant plus a constant and the estimate is its maximum (`rho = 0` for weights
+ * with a zero diagonal).
+ * Status 3 also covers an interior `rho` that fails the first-order condition. `u'u` and `u'e1`
+ * are summed per row from the published residuals (not taken from the sums of the search), and
+ * the derivative `g = n t - tr(W A)`, `t = u'e1 / u'u`, of the concentrated log-likelihood is
+ * held against its curvature `c = n (e1'e1 / u'u - 2 t^2) + tr((W A)^2)`:
+ * `|g| <= sqrt(0.25 c) + 4 c step`, that is, `rho` within half a standard error (of the
+ * concentrated likelihood) plus four float32 steps of `rho` of a stationary point. Only ratios
+ * of the sums enter, so the test is the same for a response multiplied by any factor that
+ * keeps the sums in float32 range (measured identical status and `rho` within 6e-8 for
+ * factors of 1e-10, 1 and 1e10; the products of two sums of the earlier form overflowed at
+ * 1e10 and rejected the fit). The allowance of four steps is the float32 resolution of `rho`
+ * and of the sums it is tested with (`STATIONARITY_PARAMETER_STEPS`): without it the float32
+ * nearest to the maximum fails the test when the standard error of `rho` is below one step. A
+ * search moved 1e-4 off on purpose is status 3 (pinned by
+ * `math-review-lag-conditioning.spec.ts`, which offsets the stored `rho` between the search and
+ * the rest of the graph). The check shares the trace series with the search, so it does not
+ * detect a wrong log-determinant, and it cannot tell a local maximum from the global one. The
+ * `residuals` output of a fit rejected by this test holds the residuals of the rejected `rho`,
+ * not NaN (every other output is NaN).
+ * Where the standard error of `rho` is below its float32 step (a response that is `rho` times
+ * its lag plus `X b` to float32 rounding), `rho` is right to a step or two, but `s2`, the
+ * log-likelihood and the standard errors are not those of the data: on the 64-row scene of the
+ * same spec `s2` is 7.8e-13 against 2.4e-14 in float64 (33 times), the standard errors 5.7
+ * times and the log-likelihood 111 low. The cause is the coefficients, not the residual
+ * arithmetic. The residuals are `e0 - rho e1` of two float32 OLS fits, each with its own
+ * rounded slope, so they are not orthogonal to `[1, X]`: 91% of the published residual sum of
+ * squares lies in the span of `[1, x]` (the published slope is 1.00000012, one float32 step
+ * above the float64 slope 1.0000000014, and the intercept -1.2e-7 against 0). The float32
+ * floor of the residual arithmetic itself is far lower: `rho` rounded to float32 costs 1.006
+ * times, `e0` and `e1` rounded 1.04, both with the product 1.65, and the published residuals
+ * with their component in the span of `[1, x]` removed 2.9 (the decomposition of the re-review
+ * of round three, in float64 from the GPU's outputs). A regression of the residuals on
+ * `[1, X]` with the correction applied to `b` (as the two-stage kernel refines its estimate)
+ * would remove it; the kernel does not do that. No output flags this.
  * Inputs must be finite: a non-finite predictor, response or weight gives status 3 (NaN outputs).
  * At most 14 predictors (the 16-wide Cholesky of the `(predictorCount + 2)`-wide information
  * matrix); no kernel binds more than 8 storage buffers. The `table` feeds `GPUSpatialLagImpacts`
@@ -320,8 +433,8 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
     }
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
     this.exactLogDeterminant = validateExactLogDeterminant(id, props, rows);
-    validatePackedView(props.predictors, ['float32'], `${id} predictors`);
-    validatePackedView(props.response, ['float32'], `${id} response`);
+    validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
+    validateSinglePackedView(props.response, ['float32'], `${id} response`);
     if (props.response.length !== rows) {
       throw new Error(`${id} response length must equal the weights row count`);
     }
@@ -345,28 +458,32 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
       validateCapacity(id, 'traceProbeCount', props.traceProbeCount);
     }
     validateGPUSpatialWeightsTracesParameters(id, 'traceParameters', props.traceParameters);
-    validatePackedView(output.table, ['float32'], `${id} output.table`);
+    validateSinglePackedView(output.table, ['float32'], `${id} output.table`);
     if (output.table.length < (predictorCount + 2) * GPU_SPATIAL_MAXIMUM_LIKELIHOOD_TABLE_STRIDE) {
       throw new Error(`${id} output.table must hold (predictorCount + 2) * 4 float32 values`);
     }
-    validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
     if (output.summary.length < GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH) {
       throw new Error(
         `${id} output.summary must hold ${GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH} float32 values`
       );
     }
-    validatePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
+    validateSinglePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
     if (output.status.code.length < 1) {
       throw new Error(`${id} output.status.code must hold one uint32 row`);
     }
     if (output.status.converged) {
-      validatePackedView(output.status.converged, ['uint32'], `${id} output.status.converged`);
+      validateSinglePackedView(
+        output.status.converged,
+        ['uint32'],
+        `${id} output.status.converged`
+      );
       if (output.status.converged.length < 1) {
         throw new Error(`${id} output.status.converged must hold one uint32 row`);
       }
     }
     if (output.residuals) {
-      validatePackedView(output.residuals, ['float32'], `${id} output.residuals`);
+      validateSinglePackedView(output.residuals, ['float32'], `${id} output.residuals`);
       if (output.residuals.length < rows) {
         throw new Error(`${id} output.residuals must hold one row per input row`);
       }
@@ -386,7 +503,7 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
       ['powerTraceStandardErrors', output.powerTraceStandardErrors]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length < (name === 'infinityNorm' ? 1 : maximumPower)) {
           throw new Error(`${id} output.${name} must hold maximumPower float32 values`);
         }
@@ -418,11 +535,14 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns the lagged-response and weights-norm node, the two `GPUOrdinaryLeastSquares`
-   * compositions, `GPUSpatialWeightsTraces`, the means and residual moment passes, the `rho`
-   * search, the coefficient solve, the residual pass, the `Q - 1` Horner steps of
-   * `(I - rho W)^-1 X b` and the final moment passes, the `tr3` probe pass (per batch `Q` steps
-   * and a merge), the variance and the finish kernel.
+   * Returns the means pass, the lagged-response and weights-norm node, the row-sum merge and
+   * the lag-column shift, the two `GPUOrdinaryLeastSquares` compositions,
+   * `GPUSpatialWeightsTraces`, the residual moment passes (three sums and their merge, then the
+   * direct sums at `rho0`), the `rho` search, the coefficient solve, the residual pass, the
+   * `Q - 1` Horner steps of
+   * `(I - rho W)^-1 X b`, the mean of `W (I - rho W)^-1 X b` (tiles and merge) and the final
+   * moment passes, the `tr3` probe pass (per batch `Q` steps and a merge), the variance and the
+   * finish kernel.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -475,7 +595,9 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
     const sumResponsePrediction = k + 6;
     const sumPredictionSquares = k + 7;
     const sumPrediction = k + 8;
-    const gramBase = k + 9;
+    // u'e1 of the published residuals and the second OLS residual (the first-order condition).
+    const sumResidualLagged = k + 9;
+    const gramBase = k + 10;
     const finalSumCount = gramBase + packedCount;
 
     let slotCount = 0;
@@ -499,6 +621,16 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
     allocate('TRACES', 3);
     allocate('STANDARD_ERRORS', p + 1);
     allocate('VARIANCE_DEFINED');
+    // The mean of W A X b, about which the rho column of the information matrix is centered, and
+    // a zero written at run time (the runtime zero of getRoundedDifference).
+    allocate('WEIGHTED_MEAN');
+    allocate('RUNTIME_ZERO');
+    // The row sum the lag is formed about (the largest row sum of W): W y = v + ybar * W_ROW_SUM
+    // with v the column of the second OLS fit.
+    allocate('ROW_SUM');
+    // e0'e0, e0'e1, e1'e1 and rho0 = e0'e1 / e1'e1, the minimizer of the residual sum of squares.
+    allocate('MOMENTS', 3);
+    allocate('PARAMETER_ZERO');
     const slotConstants = Object.entries(slots)
       .map(([name, value]) => `const W_${name}: u32 = ${value}u;`)
       .join('\n');
@@ -528,9 +660,13 @@ ${IS_FINITE_VALUE_WGSL}`;
     const tilePlan = getGPUSpatialWeightsTilePlan(weights, tileRowCount);
     const normTileCount = tilePlan.tileCount;
 
-    // ---- First stage: W y, ||W||_inf tiles and the two OLS fits. ----
+    // ---- First stage: the lag column, ||W||_inf tiles and the two OLS fits. ----
+    // `lagged` holds W (y - ybar) after the tile pass and the lag column v after the shift pass.
     const lagged = transient('lagged-response', rowCount);
-    const partialNorm = transient('partial-weights-norm', normTileCount);
+    // Per row: the float32 row sum of W and what its additions dropped.
+    const rowSums = transient('weights-row-sums', rowCount * 2);
+    // Per tile: the largest absolute row sum and the largest row sum.
+    const partialNorm = transient('partial-weights-norm', normTileCount * 2);
     const olsResiduals = [
       transient('ols-residuals-response', rowCount),
       transient('ols-residuals-lagged', rowCount)
@@ -566,66 +702,17 @@ ${IS_FINITE_VALUE_WGSL}`;
 
     const partialMeans = transient('partial-means', tileCount * (k + 1));
     const partialMoments = transient('partial-moments', tileCount * 3);
+    const partialDirect = transient('partial-direct-moments', tileCount * 2);
     const residualView = output.residuals ?? transient('residuals', rowCount);
     const reduced = transient('reduced-prediction', rowCount);
     const chain = [transient('chain-a', rowCount), transient('chain-b', rowCount)];
     const weightedPrediction = transient('weighted-prediction', rowCount);
+    const partialWeightedMean = transient('partial-weighted-mean', tileCount);
     const partialFinal = transient('partial-final-sums', tileCount * finalSumCount);
     const finalSums = transient('final-sums', finalSumCount);
 
     const nodes: GPUCommandNode<Parameters>[] = [
-      ...tilePlan.dispatches.map(dispatch =>
-        kernel(
-          `lagged-response-tiles${dispatch.idSuffix}`,
-          [
-            ...getWeightBindings(dispatch.weights),
-            f32('response', props.response, 'read'),
-            f32('lagged', lagged, 'read_write'),
-            f32('partialNorm', partialNorm, 'read_write')
-          ],
-          dispatch.chunkTileCount,
-          `${constants}${dispatch.tileConstantsWGSL ? `\n${dispatch.tileConstantsWGSL}` : ''}`,
-          rewriteWeightsChunkTileBodyWGSL(
-            dispatch,
-            `let firstRow = index * TILE_ROWS;
-  let lastRow = min(firstRow + TILE_ROWS, ROWS);
-  var largest = 0.0;
-  for (var row = firstRow; row < lastRow; row++) {
-    var sum = 0.0;
-    var absoluteSum = 0.0;
-    for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
-      let neighbor = neighbors[neighborsOffset + slot];
-      if (neighbor >= ROWS) {
-        continue;
-      }
-      let weight = weights[weightsOffset + slot];
-      sum += weight * response[responseOffset + neighbor];
-      absoluteSum += abs(weight);
-    }
-    lagged[laggedOffset + row] = sum;
-    largest = max(largest, absoluteSum);
-  }
-  partialNorm[partialNormOffset + index] = largest;`
-          ),
-          {workgroupSize: TILE_WORKGROUP_SIZE}
-        )
-      ),
-      ...olsNodes[0],
-      ...olsNodes[1],
-      ...new GPUSpatialWeightsTraces({
-        id: `${id}-traces`,
-        weights,
-        maximumPower,
-        mode: this.traceMode,
-        probeCount: props.traceProbeCount,
-        parameters: props.traceParameters,
-        output: {
-          powerTraces,
-          powerSums,
-          infinityNorm,
-          powerTraceStandardErrors: output.powerTraceStandardErrors
-        }
-      }).getCommandNodes(graph),
+      // The column means come first: the lag below is formed about the response mean.
       kernel(
         'means-tiles',
         [
@@ -654,9 +741,122 @@ ${IS_FINITE_VALUE_WGSL}`;
         [f32('partial', partialMeans, 'read'), f32('workspace', workspace, 'read_write')],
         k + 1,
         constants,
-        `${getKahanSumWGSL('partial', 'index', `${k + 1}u`, 'TILE_COUNT')}
-  workspace[workspaceOffset + W_MEANS + index] = sum / f32(ROWS);`
+        `${getMergeSumWGSL('partial', 'index', `${k + 1}u`, 'TILE_COUNT')}
+  workspace[workspaceOffset + W_MEANS + index] = sum / f32(ROWS);
+  if (index == 0u) {
+    // A zero the compiler cannot see: the runtime zero of getRoundedDifference.
+    workspace[workspaceOffset + W_RUNTIME_ZERO] = 0.0;
+  }`
       ),
+      // W (y - ybar), the exact row sums of W, and ||W||_inf. The lag is formed about the response
+      // mean because a sum of w * y is rounded to a float32 step of the response: for residuals of
+      // 0.002 around 10,000 that rounding was up to 4% of the residual variance. Each y - ybar is
+      // exact or rounded once (getRoundedDifference keeps the compiler from summing the raw values
+      // and subtracting the mean afterwards). The part left out, ybar * (row sum), needs the row
+      // sum of the float32 weights exactly: three weights of float32(1/3) sum to 1.0000000298, and
+      // 3e-8 of 10,000 is a tenth of such a residual. getAdditionRoundingError returns what each
+      // float32 addition of the row sum drops.
+      ...tilePlan.dispatches.map(dispatch =>
+        kernel(
+          `lagged-response-tiles${dispatch.idSuffix}`,
+          [
+            ...getWeightBindings(dispatch.weights),
+            f32('response', props.response, 'read'),
+            f32('workspace', workspace, 'read'),
+            f32('lagged', lagged, 'read_write'),
+            f32('rowSums', rowSums, 'read_write'),
+            f32('partialNorm', partialNorm, 'read_write')
+          ],
+          dispatch.chunkTileCount,
+          `${constants}${dispatch.tileConstantsWGSL ? `\n${dispatch.tileConstantsWGSL}` : ''}
+${ROUNDED_DIFFERENCE_WGSL}
+${ADDITION_ROUNDING_ERROR_WGSL}`,
+          rewriteWeightsChunkTileBodyWGSL(
+            dispatch,
+            `let firstRow = index * TILE_ROWS;
+  let lastRow = min(firstRow + TILE_ROWS, ROWS);
+  let responseMean = workspace[workspaceOffset + W_YBAR];
+  let runtimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
+  var largest = 0.0;
+  var largestRowSum = -3.0e38;
+  for (var row = firstRow; row < lastRow; row++) {
+    var sum = 0.0;
+    var absoluteSum = 0.0;
+    var rowSum = 0.0;
+    var rowSumError = 0.0;
+    for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
+      let neighbor = neighbors[neighborsOffset + slot];
+      if (neighbor >= ROWS) {
+        continue;
+      }
+      let weight = weights[weightsOffset + slot];
+      sum += weight * getRoundedDifference(response[responseOffset + neighbor], responseMean, runtimeZero);
+      absoluteSum += abs(weight);
+      let nextRowSum = rowSum + weight;
+      rowSumError += getAdditionRoundingError(rowSum, weight, nextRowSum);
+      rowSum = nextRowSum;
+    }
+    lagged[laggedOffset + row] = sum;
+    rowSums[rowSumsOffset + 2u * row] = rowSum;
+    rowSums[rowSumsOffset + 2u * row + 1u] = rowSumError;
+    largest = max(largest, absoluteSum);
+    largestRowSum = max(largestRowSum, rowSum);
+  }
+  partialNorm[partialNormOffset + 2u * index] = largest;
+  partialNorm[partialNormOffset + 2u * index + 1u] = largestRowSum;`
+          ),
+          {workgroupSize: TILE_WORKGROUP_SIZE}
+        )
+      ),
+      // The row sum the lag column is formed about: the largest row sum, which is the common row
+      // sum of row-standardized weights (rows without neighbours sum to 0 and do not set it).
+      kernel(
+        'row-sum-merge',
+        [f32('partialNorm', partialNorm, 'read'), f32('workspace', workspace, 'read_write')],
+        1,
+        constants,
+        `var largestRowSum = -3.0e38;
+  for (var tile = 0u; tile < ${normTileCount}u; tile++) {
+    largestRowSum = max(largestRowSum, partialNorm[partialNormOffset + 2u * tile + 1u]);
+  }
+  workspace[workspaceOffset + W_ROW_SUM] = largestRowSum;`
+      ),
+      // The lag column of the second OLS fit: v = W (y - ybar) + ybar (s_i - s), with s_i the exact
+      // row sum and s = W_ROW_SUM, so that W y = v + ybar s. The constant ybar s only moves the
+      // intercept and is added back there. For rows that share the row sum s the second term is
+      // ybar times the rounding of the row sum (a few 1e-8); for a row without neighbours v is
+      // -ybar s, the lag 0 of that row on the same footing.
+      kernel(
+        'lagged-response-shift',
+        [
+          f32('rowSums', rowSums, 'read'),
+          f32('workspace', workspace, 'read'),
+          f32('lagged', lagged, 'read_write')
+        ],
+        rowCount,
+        `${constants}
+${ROUNDED_DIFFERENCE_WGSL}`,
+        `let runtimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
+  let rowSumDeviation = getRoundedDifference(rowSums[rowSumsOffset + 2u * index], workspace[workspaceOffset + W_ROW_SUM], runtimeZero)
+    + rowSums[rowSumsOffset + 2u * index + 1u];
+  lagged[laggedOffset + index] = lagged[laggedOffset + index] + workspace[workspaceOffset + W_YBAR] * rowSumDeviation;`
+      ),
+      ...olsNodes[0],
+      ...olsNodes[1],
+      ...new GPUSpatialWeightsTraces({
+        id: `${id}-traces`,
+        weights,
+        maximumPower,
+        mode: this.traceMode,
+        probeCount: props.traceProbeCount,
+        parameters: props.traceParameters,
+        output: {
+          powerTraces,
+          powerSums,
+          infinityNorm,
+          powerTraceStandardErrors: output.powerTraceStandardErrors
+        }
+      }).getCommandNodes(graph),
       kernel(
         'moments-tiles',
         [
@@ -683,11 +883,61 @@ ${IS_FINITE_VALUE_WGSL}`;
   partial[partialOffset + index * 3u + 2u] = sumC;`,
         {workgroupSize: TILE_WORKGROUP_SIZE}
       ),
+      // rho0 = e0'e1 / e1'e1, the minimizer of the residual sum of squares u(rho)'u(rho).
+      kernel(
+        'moments-merge',
+        [f32('partialMoments', partialMoments, 'read'), f32('workspace', workspace, 'read_write')],
+        1,
+        constants,
+        `${getMergeSumWGSL('partialMoments', '0u', '3u', 'TILE_COUNT', 'momentA')}
+  ${getMergeSumWGSL('partialMoments', '1u', '3u', 'TILE_COUNT', 'momentB')}
+  ${getMergeSumWGSL('partialMoments', '2u', '3u', 'TILE_COUNT', 'momentC')}
+  workspace[workspaceOffset + W_MOMENTS] = momentA;
+  workspace[workspaceOffset + W_MOMENTS + 1u] = momentB;
+  workspace[workspaceOffset + W_MOMENTS + 2u] = momentC;
+  // e1'e1 = 0 (the lag column lies in the span of [1, X]): u'u does not depend on rho, and
+  // rho0 is 0 by convention.
+  workspace[workspaceOffset + W_PARAMETER_ZERO] = select(momentB / momentC, 0.0, momentC == 0.0);`
+      ),
+      // The residual sum of squares at rho0, summed per row from r = e0 - rho0 e1, and r'e1 (what
+      // the float32 rho0 misses of the minimizer). The search needs u(rho)'u(rho) where it is
+      // 1e-9 of e0'e0 or less (a lag model that fits well): e0'e0 - 2 rho e0'e1 + rho^2 e1'e1
+      // of three float32 sums is rounding there, and the search then ran to a pole of the
+      // derivative or found no candidate. u'u = r'r - 2 (rho - rho0) r'e1 + (rho - rho0)^2 e1'e1
+      // has no such cancellation.
+      kernel(
+        'direct-moments-tiles',
+        [
+          f32('residual0', olsResiduals[0], 'read'),
+          f32('residual1', olsResiduals[1], 'read'),
+          f32('workspace', workspace, 'read'),
+          f32('partial', partialDirect, 'read_write')
+        ],
+        tileCount,
+        `${constants}
+${ROUNDED_DIFFERENCE_WGSL}`,
+        `let firstRow = index * TILE_ROWS;
+  let lastRow = min(firstRow + TILE_ROWS, ROWS);
+  let parameterZero = workspace[workspaceOffset + W_PARAMETER_ZERO];
+  let runtimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
+  var sumSquares = 0.0;
+  var sumProducts = 0.0;
+  for (var row = firstRow; row < lastRow; row++) {
+    let e1 = residual1[residual1Offset + row];
+    // Rounded as written, so the tile sums stay sums of the small differences.
+    let residual = getRoundedDifference(residual0[residual0Offset + row], parameterZero * e1, runtimeZero);
+    sumSquares += residual * residual;
+    sumProducts += residual * e1;
+  }
+  partial[partialOffset + index * 2u] = sumSquares;
+  partial[partialOffset + index * 2u + 1u] = sumProducts;`,
+        {workgroupSize: TILE_WORKGROUP_SIZE}
+      ),
       kernel(
         'rho-search',
         [
           f32('partialNorm', partialNorm, 'read'),
-          f32('partialMoments', partialMoments, 'read'),
+          f32('partialDirect', partialDirect, 'read'),
           exact
             ? getF32Binding('eigenvalues', props.eigenvalues!, 'read')
             : f32('powerTraces', powerTraces, 'read'),
@@ -697,15 +947,25 @@ ${IS_FINITE_VALUE_WGSL}`;
         1,
         `${constants}
 ${finiteDeclarations}
+${ROUNDED_DIFFERENCE_WGSL}
 const ROWS_F: f32 = ${rowCount}.0;
 ${logDeterminantWGSL}
 ${traceWGSL}
-var<private> sumA: f32;
-var<private> sumB: f32;
-var<private> sumC: f32;
+// u(rho)'u(rho) = residualSquares + laggedSquares (rho - rho*)^2, a sum of two non-negative
+// terms, with rho* = parameterZero + parameterCorrection its minimizer.
+var<private> residualSquares: f32;
+var<private> laggedSquares: f32;
+var<private> parameterZero: f32;
+var<private> parameterCorrection: f32;
+var<private> searchRuntimeZero: u32;
+
+fn getParameterOffset(rho: f32) -> f32 {
+  return getRoundedDifference(rho, parameterZero, searchRuntimeZero) - parameterCorrection;
+}
 
 fn getSumOfSquares(rho: f32) -> f32 {
-  return sumA - 2.0 * rho * sumB + rho * rho * sumC;
+  let offset = getParameterOffset(rho);
+  return residualSquares + laggedSquares * offset * offset;
 }
 
 fn getObjective(rho: f32) -> f32 {
@@ -713,12 +973,12 @@ fn getObjective(rho: f32) -> f32 {
 }
 
 fn getDerivative(rho: f32) -> f32 {
-  return -0.5 * ROWS_F * (-2.0 * sumB + 2.0 * rho * sumC) / getSumOfSquares(rho) + getLogDeterminantDerivative(rho);
+  return -ROWS_F * laggedSquares * getParameterOffset(rho) / getSumOfSquares(rho) + getLogDeterminantDerivative(rho);
 }
 ${getParameterSearchWGSL()}`,
         `var largest = 0.0;
-  for (var tile = 0u; tile < ${normTileCount === tileCount ? 'TILE_COUNT' : `${normTileCount}u`}; tile++) {
-    largest = max(largest, partialNorm[partialNormOffset + tile]);
+  for (var tile = 0u; tile < ${normTileCount}u; tile++) {
+    largest = max(largest, partialNorm[partialNormOffset + 2u * tile]);
   }
   let validNorm = largest > 0.0 && isFiniteValue(largest);
   let seriesLimit = ${getWGSLFloatLiteral(
@@ -735,13 +995,27 @@ ${getParameterSearchWGSL()}`,
   workspace[workspaceOffset + W_VALID] = 0.0;
   workspace[workspaceOffset + W_CANDIDATES] = 0.0;
   workspace[workspaceOffset + W_AT_BOUNDARY] = 0.0;
-  ${getKahanSumWGSL('partialMoments', '0u', '3u', 'TILE_COUNT', 'momentA')}
-  ${getKahanSumWGSL('partialMoments', '1u', '3u', 'TILE_COUNT', 'momentB')}
-  ${getKahanSumWGSL('partialMoments', '2u', '3u', 'TILE_COUNT', 'momentC')}
-  sumA = momentA;
-  sumB = momentB;
-  sumC = momentC;
-  if (validNorm && isFiniteValue(sumA) && isFiniteValue(sumB) && isFiniteValue(sumC) && sumA > 0.0 && sumC > 0.0) {
+  ${getMergeSumWGSL('partialDirect', '0u', '2u', 'TILE_COUNT', 'directSquares')}
+  ${getMergeSumWGSL('partialDirect', '1u', '2u', 'TILE_COUNT', 'directProducts')}
+  let momentA = workspace[workspaceOffset + W_MOMENTS];
+  laggedSquares = workspace[workspaceOffset + W_MOMENTS + 2u];
+  parameterZero = workspace[workspaceOffset + W_PARAMETER_ZERO];
+  // e1'e1 = 0: a constant sum of squares e0'e0 (directSquares at rho0 = 0), no correction.
+  parameterCorrection = select(directProducts / laggedSquares, 0.0, laggedSquares == 0.0);
+  residualSquares = directSquares - directProducts * parameterCorrection;
+  searchRuntimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
+  // The likelihood needs u'u > 0 on the whole search interval. S > 0 gives that for every rho.
+  // S = 0 (the response residual is a multiple of the lag residual) gives it when the minimizer
+  // rho* lies outside the interval, where u'u = e1'e1 (rho - rho*)^2 is positive throughout; S
+  // is then a difference that rounds to zero either way, so a rounding-sized negative value
+  // (below 1e-6 of r'r) is taken as zero. S = 0 with rho* inside the interval is a pole of the
+  // likelihood: no candidate, status 3.
+  let minimizer = parameterZero + parameterCorrection;
+  let minimizerOutside = laggedSquares > 0.0 && abs(minimizer) > bound;
+  let positiveSquares = residualSquares > 0.0 || (minimizerOutside && residualSquares >= -1.0e-6 * directSquares);
+  residualSquares = max(residualSquares, 0.0);
+  if (validNorm && isFiniteValue(momentA) && isFiniteValue(parameterZero) && isFiniteValue(parameterCorrection)
+      && isFiniteValue(residualSquares) && isFiniteValue(laggedSquares) && momentA > 0.0 && laggedSquares >= 0.0 && positiveSquares) {
     let result = searchParameter(bound);
     workspace[workspaceOffset + W_PARAMETER] = result.parameter;
     workspace[workspaceOffset + W_VALID] = select(0.0, 1.0, isFiniteValue(result.parameter));
@@ -767,18 +1041,27 @@ ${finiteDeclarations}`,
   var code = 0u;
   if (!(f32(ROWS) > f32(K + 2u))) {
     code = 2u;
+  } else if (olsSummary0[olsSummary0Offset] != f32(ROWS) || olsSummary1[olsSummary1Offset] != f32(ROWS)) {
+    // A non-finite input: the fits skipped a row. Tested before the fit statuses because a
+    // non-finite response mean or row sum makes the whole lag column non-finite.
+    code = 3u;
   } else if (olsStatus0[olsStatus0Offset] != 0u) {
     code = select(1u, 2u, olsStatus0[olsStatus0Offset] == 2u);
   } else if (olsStatus1[olsStatus1Offset] != 0u) {
     code = select(1u, 2u, olsStatus1[olsStatus1Offset] == 2u);
-  } else if (olsSummary0[olsSummary0Offset] != f32(ROWS) || olsSummary1[olsSummary1Offset] != f32(ROWS)) {
-    code = 3u;
   } else if (workspace[workspaceOffset + W_VALID] != 1.0 || !isFiniteValue(rho)) {
     code = 3u;
   }
   workspace[workspaceOffset + W_STATUS] = f32(code);
+  // The second fit is of the lag column v = W y - ybar s (see lagged-response-shift), so its
+  // intercept misses the constant ybar s of the lag.
+  let lagShift = workspace[workspaceOffset + W_YBAR] * workspace[workspaceOffset + W_ROW_SUM];
   for (var column = 0u; column < P; column++) {
-    workspace[workspaceOffset + W_BETA + column] = olsCoefficients0[olsCoefficients0Offset + column] - rho * olsCoefficients1[olsCoefficients1Offset + column];
+    var laggedCoefficient = olsCoefficients1[olsCoefficients1Offset + column];
+    if (column == 0u) {
+      laggedCoefficient += lagShift;
+    }
+    workspace[workspaceOffset + W_BETA + column] = olsCoefficients0[olsCoefficients0Offset + column] - rho * laggedCoefficient;
   }
   for (var slot = 0u; slot < 4u; slot++) {
     workspace[workspaceOffset + W_CONDITIONING + slot] = olsSummary0[olsSummary0Offset + ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER}u + slot];
@@ -799,9 +1082,11 @@ ${finiteDeclarations}`,
         constants,
         `let rho = workspace[workspaceOffset + W_PARAMETER];
   residualOut[residualOutOffset + index] = residual0[residual0Offset + index] - rho * residual1[residual1Offset + index];
-  // X b = (y - e0) - rho (W y - e1): the OLS fitted values of y and W y.
+  // X b = (y - e0) - rho (W y - e1): the OLS fitted values of y and W y, with W y the lag column
+  // plus the constant it was formed about.
+  let lagShift = workspace[workspaceOffset + W_YBAR] * workspace[workspaceOffset + W_ROW_SUM];
   reduced[reducedOffset + index] = (response[responseOffset + index] - residual0[residual0Offset + index])
-    - rho * (lagged[laggedOffset + index] - residual1[residual1Offset + index]);`
+    - rho * ((lagged[laggedOffset + index] + lagShift) - residual1[residual1Offset + index]);`
       )
     ];
 
@@ -864,29 +1149,65 @@ ${finiteDeclarations}`,
           )
         )
       ),
+      // The mean of W A X b. Its column of the information matrix is accumulated about this mean:
+      // for a response with a large mean, sum (W A X b)^2 - (sum W A X b)^2 / n of the raw column
+      // cancels to nothing in float32 and the variance of rho was undefined or wrong.
+      kernel(
+        'weighted-mean-tiles',
+        [
+          f32('weighted', weightedPrediction, 'read'),
+          f32('partial', partialWeightedMean, 'read_write')
+        ],
+        tileCount,
+        constants,
+        `let firstRow = index * TILE_ROWS;
+  let lastRow = min(firstRow + TILE_ROWS, ROWS);
+  var sum = 0.0;
+  for (var row = firstRow; row < lastRow; row++) {
+    sum += weighted[weightedOffset + row];
+  }
+  partial[partialOffset + index] = sum;`,
+        {workgroupSize: TILE_WORKGROUP_SIZE}
+      ),
+      kernel(
+        'weighted-mean-merge',
+        [f32('partial', partialWeightedMean, 'read'), f32('workspace', workspace, 'read_write')],
+        1,
+        constants,
+        `${getMergeSumWGSL('partial', '0u', '1u', 'TILE_COUNT')}
+  workspace[workspaceOffset + W_WEIGHTED_MEAN] = sum / f32(ROWS);
+  workspace[workspaceOffset + W_RUNTIME_ZERO] = 0.0;`
+      ),
       kernel(
         'final-moments-tiles',
         [
           f32('design', props.predictors, 'read'),
           f32('response', props.response, 'read'),
           f32('residual', residualView, 'read'),
+          f32('residual1', olsResiduals[1], 'read'),
           f32('prediction', spatialPrediction, 'read'),
           f32('weighted', weightedPrediction, 'read'),
           f32('workspace', workspace, 'read'),
           f32('partial', partialFinal, 'read_write')
         ],
         tileCount,
-        constants,
+        `${constants}
+${ROUNDED_DIFFERENCE_WGSL}`,
         `let firstRow = index * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROWS);
   let ybar = workspace[workspaceOffset + W_YBAR];
+  let weightedMean = workspace[workspaceOffset + W_WEIGHTED_MEAN];
+  let runtimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
   var sums: array<f32, ${finalSumCount}>;
   var centered: array<f32, ${k}>;
   for (var row = firstRow; row < lastRow; row++) {
-    let y = response[responseOffset + row] - ybar;
+    // Each difference from a mean is rounded as written (getRoundedDifference), so the tile sums
+    // below cannot be regrouped into sums of the raw values less a multiple of the mean.
+    let y = getRoundedDifference(response[responseOffset + row], ybar, runtimeZero);
     let u = residual[residualOffset + row];
-    let e = prediction[predictionOffset + row] - ybar;
-    let wp = weighted[weightedOffset + row];
+    let e = getRoundedDifference(prediction[predictionOffset + row], ybar, runtimeZero);
+    // W A X b about its mean, rounded as written so the sums below stay sums of deviations.
+    let wp = getRoundedDifference(weighted[weightedOffset + row], weightedMean, runtimeZero);
     sums[${sumWeighted}] += wp;
     sums[${sumWeightedSquares}] += wp * wp;
     sums[${sumResponseSquares}] += y * y;
@@ -896,8 +1217,9 @@ ${finiteDeclarations}`,
     sums[${sumResponsePrediction}] += y * e;
     sums[${sumPredictionSquares}] += e * e;
     sums[${sumPrediction}] += e;
+    sums[${sumResidualLagged}] += u * residual1[residual1Offset + row];
     for (var column = 0u; column < K; column++) {
-      centered[column] = design[designOffset + row * K + column] - workspace[workspaceOffset + W_MEANS + column];
+      centered[column] = getRoundedDifference(design[designOffset + row * K + column], workspace[workspaceOffset + W_MEANS + column], runtimeZero);
       sums[1u + column] += centered[column] * wp;
     }
     for (var first = 0u; first < K; first++) {
@@ -916,7 +1238,7 @@ ${finiteDeclarations}`,
         [f32('partial', partialFinal, 'read'), f32('finalSums', finalSums, 'read_write')],
         finalSumCount,
         constants,
-        `${getKahanSumWGSL('partial', 'index', `${finalSumCount}u`, 'TILE_COUNT')}
+        `${getMergeSumWGSL('partial', 'index', `${finalSumCount}u`, 'TILE_COUNT')}
   finalSums[finalSumsOffset + index] = sum;`
       )
     );
@@ -974,7 +1296,9 @@ ${getCholeskyWGSL(informationSize)}`,
   if (!(sigma2 > 0.0) || !isFiniteValue(sigma2) || !isFiniteValue(traceThree) || !isFiniteValue(rho)) {
     return;
   }
-  // Information matrix on [intercept (centered), b (K), rho]; the sigma2 row is eliminated.
+  // Information matrix on [intercept (centered), b (K), rho]; the sigma2 row is eliminated. The
+  // rho column is W A X b about its mean (the sums of final-moments-tiles), which leaves the
+  // variances of b and rho unchanged and moves the intercept, mapped back below.
   var a: array<f32, ${informationSize * informationSize}>;
   a[0] = n / sigma2;
   for (var first = 0u; first < K; first++) {
@@ -1016,13 +1340,18 @@ ${getCholeskyWGSL(informationSize)}`,
       covariance[row * ${informationSize}u + column] = unit[row] / (scale[row] * scale[column]);
     }
   }
-  // Intercept of the uncentered model: b0 = a0 - m'b.
+  // Intercept of the uncentered model: b0 = a0 - m'b - mean(W A X b) rho, with a0 the constant
+  // of the model on the centered predictors and the centered W A X b column.
+  var shift: array<f32, ${informationSize}>;
+  for (var column = 0u; column < K; column++) {
+    shift[1u + column] = workspace[workspaceOffset + W_MEANS + column];
+  }
+  shift[P] = workspace[workspaceOffset + W_WEIGHTED_MEAN];
   var interceptVariance = covariance[0];
-  for (var first = 0u; first < K; first++) {
-    let meanFirst = workspace[workspaceOffset + W_MEANS + first];
-    interceptVariance -= 2.0 * meanFirst * covariance[1u + first];
-    for (var second = 0u; second < K; second++) {
-      interceptVariance += meanFirst * workspace[workspaceOffset + W_MEANS + second] * covariance[(1u + first) * ${informationSize}u + 1u + second];
+  for (var first = 1u; first < ${informationSize}u; first++) {
+    interceptVariance -= 2.0 * shift[first] * covariance[first];
+    for (var second = 1u; second < ${informationSize}u; second++) {
+      interceptVariance += shift[first] * shift[second] * covariance[first * ${informationSize}u + second];
     }
   }
   workspace[workspaceOffset + W_STANDARD_ERRORS] = sqrt(interceptVariance);
@@ -1065,6 +1394,7 @@ ${getFinishWGSL({
   sumResponsePrediction,
   sumPredictionSquares,
   sumPrediction,
+  sumResidualLagged,
   hasConverged: output.status.converged !== undefined,
   exact
 })}`,
@@ -1086,6 +1416,7 @@ function getFinishWGSL(options: {
   sumResponsePrediction: number;
   sumPredictionSquares: number;
   sumPrediction: number;
+  sumResidualLagged: number;
   hasConverged: boolean;
   exact: boolean;
 }): string {
@@ -1120,6 +1451,29 @@ fn finish() {
     fail(3u);
     return;
   }
+  // The first-order condition of an interior estimate, from the published residuals: the
+  // derivative of the concentrated log-likelihood at rho against the square root of its
+  // curvature (see STATIONARITY_TOLERANCE). u'u and u'e1 are per-row sums of the published
+  // residuals, not the sums the search used; the traces are those of the variance kernel at
+  // rho. Only ratios of the sums are formed (u'e1 / u'u, e1'e1 / u'u), so the test does not
+  // depend on the scale of the response: the products of two sums overflowed float32 for a
+  // response of 1e10. The allowance for the float32 spacing of rho is the change of the
+  // derivative over STATIONARITY_PARAMETER_STEPS steps of rho, curvature times that distance.
+  if (workspace[workspaceOffset + W_AT_BOUNDARY] != 1.0) {
+    let residualSquares = sigma2 * n;
+    let laggedRatio = ${sum(options.sumResidualLagged)} / residualSquares;
+    let score = n * laggedRatio - workspace[workspaceOffset + W_TRACES];
+    let curvature = n * (workspace[workspaceOffset + W_MOMENTS + 2u] / residualSquares - 2.0 * laggedRatio * laggedRatio)
+      + workspace[workspaceOffset + W_TRACES + 1u];
+    // One float32 step of rho, from its bit pattern.
+    let parameterStep = bitcast<f32>(bitcast<u32>(abs(rho)) + 1u) - abs(rho);
+    let allowance = sqrt(${getWGSLFloatLiteral(STATIONARITY_TOLERANCE)} * curvature)
+      + curvature * ${getWGSLFloatLiteral(STATIONARITY_PARAMETER_STEPS)} * parameterStep;
+    if (!(curvature > 0.0) || !(abs(score) <= allowance)) {
+      fail(3u);
+      return;
+    }
+  }
   let defined = workspace[workspaceOffset + W_VARIANCE_DEFINED] == 1.0;
   for (var row = 0u; row < P; row++) {
     writeTableRow(row, workspace[workspaceOffset + W_BETA + row], workspace[workspaceOffset + W_STANDARD_ERRORS + row]);
@@ -1148,8 +1502,9 @@ fn finish() {
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_LIKELIHOOD)} = logLikelihood;
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_AIC)} = 2.0 * parameterCount - 2.0 * logLikelihood;
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SCHWARZ)} = parameterCount * log(n) - 2.0 * logLikelihood;
-  ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED)} = predictionCovariance * predictionCovariance / (responseSquares * predictionVariance);
-  ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED_SPATIAL)} = spatialCovariance * spatialCovariance / (responseSquares * spatialVariance);
+  // Ratios first: the product of two sums of squares overflows float32 for a response of 1e10.
+  ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED)} = (predictionCovariance / responseSquares) * (predictionCovariance / predictionVariance);
+  ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED_SPATIAL)} = (spatialCovariance / responseSquares) * (spatialCovariance / spatialVariance);
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_RESIDUAL_SUM_OF_SQUARES)} = sigma2 * n;
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CONDITION_NUMBER)} = conditionNumber;
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CORRELATION_CONDITION_NUMBER)} = correlationCondition;

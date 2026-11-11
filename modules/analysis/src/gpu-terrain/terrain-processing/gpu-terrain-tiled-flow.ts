@@ -14,6 +14,10 @@ import {
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateTerrainFlowDirectionEncoding,
+  type GPUTerrainFlowDirectionEncoding
+} from '../hydrology/terrain-flow-tracing';
 import {checkTerrainViews, checkTerrainGraph} from './terrain-processing-utils';
 
 import {createTerrainResidentTileNodes} from './terrain-tiled-resident';
@@ -27,12 +31,20 @@ export type GPUTerrainFlowTile = {
   height: number;
   /** Local owned rectangle [column, row, width, height]. Halo rows never inject runoff. */
   owned: readonly [number, number, number, number];
-  /** D8 directions. In branching mode this compatibility view is ignored; use zero placeholders. */
+  /**
+   * D8 directions (ESRI codes). In branching mode the routing comes from `fractions` and only one
+   * word is read from this view: `GPU_TERRAIN_FLOW_NONE` (0xffffffff, a cell without data) makes
+   * the cell invalid (status 0, NaN accumulation), as it does in D8 mode. Pass the
+   * `flowDirections` of `GPUTerrainFlow`, or zero placeholders when every cell has data.
+   */
   flowDirections: GraphDataView<'uint32'>;
   /** Eight fractions per cell, east first clockwise. Required only with routing: 'branching'. */
   fractions?: GraphDataView<'float32'>;
   runoff: GraphDataView<'float32'>;
-  /** Resolved boolean stream mask (0/1); unresolved sentinels invalidate owned cells. */
+  /**
+   * Stream mask: nonzero is a stream cell (so a mask of Strahler orders works), 0 is not. The
+   * unresolved sentinels 0xffffffff and 0xfffffffe invalidate owned cells.
+   */
   streams: GraphDataView<'uint32'>;
   output: {
     accumulation: GraphDataView<'float32'>;
@@ -47,6 +59,12 @@ export type GPUTerrainTiledFlowProps = {
   grid: GPURasterMetadata;
   /** Routing is globally prepared. Branching consumes D-infinity/MFD fractions without rerouting at seams. */
   routing?: 'd8' | 'branching';
+  /**
+   * Numbering of every tile's `flowDirections`: `'esri'` (default), `'whitebox'` (the
+   * WhiteboxTools default pointer) or `'taudem'`, see `GPUTerrainFlowDirectionEncoding`.
+   * Compile-time.
+   */
+  directionEncoding?: GPUTerrainFlowDirectionEncoding;
   /** Disjoint owned rectangles must cover the entire domain. */
   tiles: readonly GPUTerrainFlowTile[];
   /** GPU DAG sweeps, default clamps width + height to [128, 1024]; each sweep follows bounded successor walks. */
@@ -63,6 +81,7 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
   constructor(readonly props: GPUTerrainTiledFlowProps) {
     this.id = props.id ?? 'terrain-tiled-flow';
     validateRasterGrid(this.id, props.grid);
+    validateTerrainFlowDirectionEncoding(this.id, props.directionEncoding);
     validateRasterIterations(this.id, 'maximumIterations', props.maximumIterations ?? 128);
     let ownedCount = 0;
     const rectangles: number[][] = [];

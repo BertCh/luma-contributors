@@ -19,7 +19,7 @@ import {
   validateGraphViewsBelongToGraph,
   validatePowerOfTwo,
   validateCapacity,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createBoundsNode,
@@ -154,7 +154,7 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
       throw new Error(`${id} distance must be finite and non-negative`);
     }
     if (props.distance !== undefined && typeof props.distance !== 'number') {
-      validatePackedView(props.distance, ['float32'], `${id} distance`);
+      validateSinglePackedView(props.distance, ['float32'], `${id} distance`);
       if (props.distance.length < 1) {
         throw new Error(`${id} distance must contain one float32 row`);
       }
@@ -169,7 +169,7 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
       pairs.status.requiredCount
     ]) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output`);
+        validateSinglePackedView(view, ['uint32'], `${id} output`);
       }
     }
     if (pairs.leftIds.length < 1) {

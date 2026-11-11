@@ -156,7 +156,7 @@ const MEASURE_CASES: MeasureCase[] = [
         queryPositions: view('float32x2', 1),
         radius: view('float32', 1),
         candidateCapacity: 1,
-        output: {measures: view('float32', 1), status: {overflow: view('uint32', 1)}}
+        output: {measures: view('float32', 1), status: {candidateOverflow: view('uint32', 1)}}
       })
   },
   {

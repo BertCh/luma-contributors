@@ -36,6 +36,10 @@ const RECORD_STRIDE = 7;
 const KEY_STRIDE = 4;
 /** Floats per resolved domain: `[lo, hi, width, mode]`; mode 0 invalid, 1 regular, 2 `lo == hi`. */
 const DOMAIN_STRIDE = 4;
+/** A histogram domain wider than this (2^100) is scaled before the bin products. @internal */
+export const COLUMN_PROFILE_LARGE_RANGE = 2 ** 100;
+/** Exact scale (2^-24) of a large range and of the differences inside it. @internal */
+export const COLUMN_PROFILE_LARGE_RANGE_SCALE = 2 ** -24;
 
 /** One normalized profile column. @internal */
 export type ColumnProfileColumn = {
@@ -130,17 +134,33 @@ fn reduceSharedMoments(local: u32) {
 `;
 
 /**
- * Equal-width bin of `value - minimum`: `floor(difference / width)` corrected one step down and up
- * against correctly rounded products, so a CPU oracle using `Math.fround` agrees exactly.
+ * Equal-width bin of a value inside `[minimum, maximum]`, with the convention of the official
+ * `GPUHistogram` of `@luma.gl/graph/gpu-core`: bin `floor((value - minimum) / range * BIN_COUNT)`,
+ * the maximum in the last bin. The official kernel evaluates that expression with one float32
+ * division, which WGSL does not require to be correctly rounded. Here the division only gives an
+ * estimate; the bin is the `k` with `k * range <= (value - minimum) * BIN_COUNT < (k + 1) * range`,
+ * decided by correctly rounded float32 products. A value on an edge
+ * `minimum + k * range / BIN_COUNT` therefore falls in bin `k` for every bin count, the result is
+ * the same on every adapter, and a CPU mirror with `Math.fround` reproduces it. (The earlier rule
+ * compared with `fround(k * width)` for a width rounded twice, which drifted by a unit in the
+ * last place per bin when the bin count is not a power of two.)
+ *
+ * A range above 2^100 is scaled by 2^-24 first (exact) so that the products stay finite. The
+ * caller has already rejected values outside the domain.
  */
 const BIN_WGSL = /* wgsl */ `
-fn getBinIndex(value: f32, minimum: f32, width: f32) -> u32 {
-  let difference = value - minimum;
-  var bin = floor(difference / width);
-  bin = clamp(bin, 0.0, f32(BIN_COUNT - 1u));
-  if (difference < bin * width) {
+fn getBinIndex(value: f32, minimum: f32, maximum: f32) -> u32 {
+  var difference = value - minimum;
+  var range = maximum - minimum;
+  if (range > ${getWGSLFloatLiteral(COLUMN_PROFILE_LARGE_RANGE)}) {
+    difference = difference * ${getWGSLFloatLiteral(COLUMN_PROFILE_LARGE_RANGE_SCALE)};
+    range = range * ${getWGSLFloatLiteral(COLUMN_PROFILE_LARGE_RANGE_SCALE)};
+  }
+  let scaled = difference * f32(BIN_COUNT);
+  var bin = clamp(floor(scaled / range), 0.0, f32(BIN_COUNT - 1u));
+  if (scaled < bin * range) {
     bin = bin - 1.0;
-  } else if (difference >= (bin + 1.0) * width) {
+  } else if (scaled >= (bin + 1.0) * range) {
     bin = bin + 1.0;
   }
   return u32(clamp(bin, 0.0, f32(BIN_COUNT - 1u)));
@@ -539,12 +559,13 @@ ${BIN_WGSL}`,
   let base = domainsOffset + column * ${DOMAIN_STRIDE}u;
   let mode = domains[base + 3u];
   let lo = domains[base];
-  if (mode == 0.0 || value < lo || value > domains[base + 1u]) {
+  let hi = domains[base + 1u];
+  if (mode == 0.0 || value < lo || value > hi) {
     return NO_SLOT;
   }
   var bin = 0u;
   if (mode == 1.0) {
-    bin = getBinIndex(value, lo, domains[base + 2u]);
+    bin = getBinIndex(value, lo, hi);
   }
   return bin;`
           })

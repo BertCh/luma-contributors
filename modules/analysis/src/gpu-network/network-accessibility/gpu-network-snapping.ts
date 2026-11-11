@@ -25,7 +25,7 @@ import {
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUNetworkTopologyViews,
@@ -60,6 +60,15 @@ export const GPU_NETWORK_SNAPPING_NONE = 0xffffffff;
 export function getGPUNetworkSnappingMaximumCandidateEdgeCount(device: Device): number {
   return getStorageBindingElementLimit(device, 16);
 }
+
+/**
+ * Largest number of point-to-edge tests (`pointCount * edgeCount`) of a {@link GPUNetworkSnapping}
+ * without `candidateCapacity`, where every point scans every edge. Above it the contributor
+ * refuses and asks for `candidateCapacity` (a BVH over the edges). It is 2^27, the same ceiling as
+ * the unindexed point-cloud searches: one exhaustive scan then stays inside a frame, and the
+ * largest unindexed use in the tests and the kernel audit (a few million tests) is far below it.
+ */
+export const GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK = 2 ** 27;
 
 /** Value written to fraction, distance, and cost outputs when a point snaps to no edge. */
 export const GPU_NETWORK_SNAPPING_NO_VALUE = -1;
@@ -149,10 +158,18 @@ export type GPUNetworkSnappingProps = {
    * Compile-time candidate capacity. When given, candidate edges come from `GPUNearestFeatureJoin`
    * (a BVH over edge segments probed with `maximumSnapDistance`); candidates past the capacity are
    * dropped and raise `overflow`. When omitted, each point scans every edge, which is exact and
-   * needs no radius but costs `pointCount * edgeCount`. With a capacity the edge count is at most
+   * needs no radius but costs `pointCount * edgeCount`, and is refused above
+   * {@link GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK} tests. With a capacity the edge count is at most
    * {@link getGPUNetworkSnappingMaximumCandidateEdgeCount} (8388608 on a default device).
    */
   candidateCapacity?: number;
+  /**
+   * Compile-time. Largest `pointCount * edgeCount` accepted without `candidateCapacity`. Defaults to
+   * {@link GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK}. A contributor that embeds the snapping and
+   * must keep accepting every configuration it accepted before that limit existed (the network K
+   * function) raises it; a direct caller should pass `candidateCapacity` instead.
+   */
+  maximumUnindexedWork?: number;
   /** Compile-time. Morton-sort edges before the BVH build, as `GPUNearestFeatureJoin.spatialSort`. */
   spatialSort?: boolean;
   /** Which endpoints `output.startNodes` lists. Defaults to `'both'`. */
@@ -209,9 +226,13 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
     const {nodeCount, edgeCount} = validateGPUNetworkTopology(id, props.topology, {
       nodePositions: true
     });
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (output.snappedPositions) {
-      validatePackedView(output.snappedPositions, ['float32x2'], `${id} output.snappedPositions`);
+      validateSinglePackedView(
+        output.snappedPositions,
+        ['float32x2'],
+        `${id} output.snappedPositions`
+      );
     }
     for (const [name, view] of [
       ['maximumSnapDistance', props.maximumSnapDistance],
@@ -222,7 +243,7 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
       ['output.startCosts', output.startCosts]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
     for (const [name, view] of [
@@ -231,7 +252,7 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
       ['output.status.overflow', output.status?.overflow]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     this.pointCount = props.positions.length;
@@ -276,6 +297,23 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
       if (!output.status?.overflow) {
         throw new Error(`${id} candidateCapacity requires output.status.overflow`);
       }
+    }
+    if (props.maximumUnindexedWork !== undefined) {
+      validateCapacity(
+        id,
+        'maximumUnindexedWork',
+        props.maximumUnindexedWork,
+        1,
+        Number.MAX_SAFE_INTEGER
+      );
+    }
+    if (props.candidateCapacity === undefined) {
+      validateMaximumCount(
+        id,
+        'positions times topology edges without candidateCapacity',
+        this.pointCount * edgeCount,
+        props.maximumUnindexedWork ?? GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK
+      );
     }
     if (output.status?.overflow && props.candidateCapacity === undefined) {
       throw new Error(`${id} output.status.overflow requires candidateCapacity`);

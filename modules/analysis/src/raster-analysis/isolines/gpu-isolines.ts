@@ -27,6 +27,7 @@ import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPU_ISOLINES_PARAMETER_LENGTH} from './isolines-parameters';
 import {
   getIsolinesCornersWGSL,
+  ISOLINES_SADDLE_WGSL,
   validateIsolinesAliasing,
   validateIsolinesView
 } from './isolines-utils';
@@ -114,8 +115,8 @@ export type GPUIsolinesProps = {
   grid: GPURasterMetadata;
   /** Packed row-major float32 raster of at least `width * height` rows. NaN and infinities are nodata. */
   values: GraphDataView<'float32'>;
-  /** Optional nonzero-is-valid mask over the raster. */
-  validity?: GraphDataView<'uint32'>;
+  /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
+  mask?: GraphDataView<'uint32'>;
   /** Optional finite sentinel treated as nodata. */
   noDataValue?: number;
   /** Level values; rows `[0, levelCount)` are active. Contents may change per frame. */
@@ -131,8 +132,11 @@ export type GPUIsolinesProps = {
  * stitched polylines.
  *
  * A cell with a nodata corner emits nothing. Corners with `value >= level` are high; saddles are
- * resolved by the cell centre average. Segments are ordered by (cell index, level index, slot), so
- * output is deterministic. The pipeline is count, `GPUScan`, scatter, publish, and then for
+ * resolved by the bilinear (asymptotic) decider of the published `GPURasterContours`: the two
+ * high corners are joined when the saddle value of the bilinear surface through the four corners,
+ * `(v0 * v2 - v1 * v3) / (v0 + v2 - v1 - v3)`, is at or above the level. (Before 2026-11-10 the
+ * rule was the mean of the four corners, which differs when the corners are far from symmetric.)
+ * Segments are ordered by (cell index, level index, slot), so output is deterministic. The pipeline is count, `GPUScan`, scatter, publish, and then for
  * polylines a link pass, a fixed number of pointer-jumping rounds, scans and a gather. Changing
  * levels, `levelCount`, or the extent never recompiles.
  *
@@ -142,6 +146,14 @@ export type GPUIsolinesProps = {
  * raster or tile corner, a vertex is within about `1.2e-7` of its distance from that corner of the
  * float64 crossing (1.2 cm at 100 km); add the origin back on the CPU or as the layer's coordinate
  * origin.
+ *
+ * Row direction: row 0 of the raster is placed at `minY` of the per-frame extent and rows advance
+ * toward larger y. Only the width and height of `grid` are read; `grid.affine` is not, and nothing
+ * is checked at construction. A north-up grid (row 0 at the top, the default of
+ * `makeGPURasterMetadata`) therefore comes out mirrored north to south unless the caller reverses
+ * the row order of the raster before upload. Mirroring the output instead (`y' = minY + maxY - y`)
+ * also swaps the documented side: high values are then on the right of a segment, and ring
+ * windings are reversed. Following the grid affine is deferred (roadmap 12.4).
  */
 export class GPUIsolines implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -173,7 +185,7 @@ export class GPUIsolines implements GPUCommandNodeProducer {
       throw new Error(`${id} noDataValue must be finite (NaN cells are always nodata)`);
     }
     validateIsolinesView(id, 'values', props.values, 'float32', width * height);
-    validateIsolinesView(id, 'validity', props.validity, 'uint32', width * height);
+    validateIsolinesView(id, 'mask', props.mask, 'uint32', width * height);
     validateIsolinesView(id, 'levels', props.levels, 'float32', 1);
     validateIsolinesView(
       id,
@@ -250,7 +262,7 @@ export class GPUIsolines implements GPUCommandNodeProducer {
     validateIsolinesAliasing(
       id,
       [...this.getOutputViews()],
-      [props.values, props.validity, props.levels, props.parameters]
+      [props.values, props.mask, props.levels, props.parameters]
     );
   }
 
@@ -284,14 +296,14 @@ export class GPUIsolines implements GPUCommandNodeProducer {
     const {width, height} = props.grid;
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
-      props.validity,
+      props.mask,
       props.levels,
       props.parameters,
       ...this.getOutputViews()
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
     const cellCount = (width - 1) * (height - 1);
-    const hasValidity = Boolean(props.validity);
+    const hasValidity = Boolean(props.mask);
     const common = `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
 const MAXIMUM_LEVELS: u32 = ${maximumLevelCount}u;
@@ -301,8 +313,8 @@ ${getIsolinesCornersWGSL(hasValidity, props.noDataValue)}`;
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'levels', view: props.levels, type: 'f32', access: 'read'},
       {name: 'raster', view: props.values, type: 'f32', access: 'read'},
-      ...(props.validity
-        ? [{name: 'validity', view: props.validity, type: 'u32', access: 'read'} as const]
+      ...(props.mask
+        ? [{name: 'validity', view: props.mask, type: 'u32', access: 'read'} as const]
         : [])
     ];
 
@@ -392,8 +404,8 @@ ${getCrossingWGSL()}`,
       continue;
     }
     let entries = getEntryMask(mask);
-    // Saddles have two exits. High corners are joined when the centre is high.
-    let isJoined = countOneBits(exits) < 2u || isCentreHigh(v, level);
+    // Saddles have two exits. High corners are joined when the bilinear saddle value is high.
+    let isJoined = countOneBits(exits) < 2u || isSaddleJoined(v, level);
     for (var exitEdge = 0u; exitEdge < 4u; exitEdge++) {
       if (((exits >> exitEdge) & 1u) == 0u) {
         continue;
@@ -942,11 +954,7 @@ ${declarations}`,
 
 /** WGSL `getEdgeCrossing(k, level, v, cx, cy)` in world coordinates, canonical edge direction. */
 function getCrossingWGSL(): string {
-  return /* wgsl */ `
-// Saddles have two exits. High corners are joined when the centre is high.
-fn isCentreHigh(v: vec4<f32>, level: f32) -> bool {
-  return ((v.x + v.y) + (v.z + v.w)) * 0.25 >= level;
-}
+  return /* wgsl */ `${ISOLINES_SADDLE_WGSL}
 
 // The entry edge a segment leaving through exitEdge ends on, walking the cell boundary.
 fn getPairedEntry(exitEdge: u32, entries: u32, isJoined: bool) -> u32 {

@@ -139,7 +139,9 @@ export function createEncounterScanNode<Parameters>(
     declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
 ${props.shape.geodesic ? GEODESIC_WGSL : ''}
 ${getShapeConstants(props.shape)}
-// Same rule as the GPUGridIndex build, so a point and its query agree on the cell.
+// Same rule as the GPUGridIndex build, so a point and its query agree on the cell. luma.gl does not
+// export the rule; encounter-grid-coordinate-pin.node.spec.ts compares this text with the published
+// kernel, so keep the two identical.
 fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   if (maximum == minimum || value == minimum) { return 0u; }
   if (value == maximum) { return size - 1u; }

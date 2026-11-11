@@ -65,7 +65,7 @@ export type GPURasterEmbeddingPyramidLevelProps = {
    */
   quantized?: GraphDataView<'uint32'>;
   /** Source QA; zero excludes the pixel. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   output: GPURasterEmbeddingPyramidLevelOutput;
 };
 
@@ -133,7 +133,7 @@ export class GPURasterEmbeddingPyramidLevel implements GPUCommandNodeProducer {
         props.vectors,
         sourcePixelCount,
         dimensions,
-        props.validity
+        props.mask
       );
     } else {
       validateRasterEmbeddingQuantized(
@@ -145,8 +145,8 @@ export class GPURasterEmbeddingPyramidLevel implements GPUCommandNodeProducer {
       );
       validateRequirement(
         id,
-        !props.validity || props.validity.length === sourcePixelCount,
-        'validity must hold sourceWidth times sourceHeight entries'
+        !props.mask || props.mask.length === sourcePixelCount,
+        'mask must hold sourceWidth times sourceHeight entries'
       );
     }
     validateRasterEmbeddingVectors(
@@ -167,11 +167,11 @@ export class GPURasterEmbeddingPyramidLevel implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {vectors, quantized, validity} = this.props;
+    const {vectors, quantized, mask} = this.props;
     return [
       ...(vectors ? [vectors] : []),
       ...(quantized ? [quantized] : []),
-      ...(validity ? [validity] : [])
+      ...(mask ? [mask] : [])
     ];
   }
 
@@ -209,7 +209,7 @@ export class GPURasterEmbeddingPyramidLevel implements GPUCommandNodeProducer {
         workgroupSize: 64,
         bindings: [
           rasterBinding(sourceName, source),
-          ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+          ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
           rasterBinding('overview', output.vectors, true),
           ...(output.validity ? [rasterBinding('overviewValidity', output.validity, true)] : []),
           ...(output.validCount ? [rasterBinding('validCount', output.validCount, true)] : []),
@@ -223,7 +223,7 @@ var validPixels = 0u;
 for (var row = outRow * ${verticalScale}u; row < min((outRow + 1u) * ${verticalScale}u, ${sourceHeight}u); row++) {
   for (var column = outColumn * ${horizontalScale}u; column < min((outColumn + 1u) * ${horizontalScale}u, ${sourceWidth}u); column++) {
     let pixel = row * ${sourceWidth}u + column;
-    var pixelValid = ${props.validity ? 'validity[validityOffset + pixel] != 0u' : 'true'};
+    var pixelValid = ${props.mask ? 'mask[maskOffset + pixel] != 0u' : 'true'};
     var decoded: array<f32, ${dimensions}>;
     for (var band = 0u; band < ${dimensions}u; band++) {
       ${readComponent}

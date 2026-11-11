@@ -7,8 +7,19 @@ STX-06 and STX-07. Import from `@luma-contributors/analysis/gpu-spatial-analysis
 
 `GPULocationChangePoints` runs unpruned optimal partitioning per cell: `F(t) = min_s F(s) + C(s + 1..t) + beta`, the same optimum PELT
 finds, with `sliceCount^2 / 2` bounded segment costs and no pruning. Missing (NaN) slices are skipped;
-`minimumSegmentLength` counts finite slices. Prefix sums are compensated over the series, standardized per location
-(the Poisson cost uses a deviance form), so segment sums keep f32 relative accuracy at `sliceCount = 512`.
+`minimumSegmentLength` counts finite slices. Values are standardized per location by the series' own mean and
+standard deviation (the Poisson cost uses a deviance form), so the partition does not depend on the unit of `values`.
+The moments of each segment are running sums that begin at the segment's own start, about its first value; no
+difference of two long prefix sums is formed, so a quiet segment after a loud one keeps f32 relative accuracy at
+`sliceCount = 512`.
+
+Variance floor (`'variance'` and `'mean-variance'`): a segment variance below `1e-11` times the variance of the whole
+series is raised to that value, so a constant segment has a finite cost whatever the unit. (Until 2026-11-10 the floor
+was `1e-11` in data units, which clamped every segment of a series in small units, for example values near `1e-6`,
+and returned no change point.) The R `changepoint` package substitutes `1e-11` in data units only when a segment
+variance is not positive; the two rules pick the same segments, and differ in the value given to an exactly constant
+segment unless the series variance is 1. A constant series has no change point, and its `optimalCost` uses `1e-11`
+in data units.
 
 | `cost` | Segment cost | Smallest segment |
 | --- | --- | --- |
@@ -26,7 +37,7 @@ Outputs per cell: `changePointCount` (clamped to `maximumChangePoints`, the earl
 segment, unused rows `GPU_LOCATION_CHANGE_POINTS_NONE`. Optional: `requiredChangePointCounts` (unclamped), `optimalCost` (the sum of the
 segment costs plus `penalty` per change point), and `status.overflow` (`1` when any cell needed more than the capacity).
 
-Limits: `sliceCount <= 512`, `maximumChangePoints <= 128`. In the slope cost, when one line explains almost all the variance the cancellation of
+Limits: `sliceCount <= 512` (`<= 256` for `'slope'`, whose time sums are exact unsigned integers up to that length), `maximumChangePoints <= 128`. In the slope cost, when one line explains almost all the variance the cancellation of
 standardized moments limits the absolute residual to about `2e-6 * sliceCount * variance`.
 
 Validated against ruptures 1.1.10 Pelt for `'mean'`, `'slope'` and `'mean-variance'`. The variance and Poisson costs are checked only against a binary64 reference of the published `changepoint`

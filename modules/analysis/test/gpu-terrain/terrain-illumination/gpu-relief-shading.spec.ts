@@ -215,6 +215,8 @@ it('GPUReliefShading with one light reproduces GPUTerrainDerivatives', async () 
       parameters: parameterBuffers[0].importToGraph(graph),
       cellSizeMode: 'geographic',
       rowDirection: 'north',
+      // GPUTerrainDerivatives defaults to the one-sided border; relief shading has it by name.
+      borderMode: 'one-sided',
       output: {
         hillshade: importGraphBuffer(
           graph,

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert, Buffer} from '@luma.gl/core';
+import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -13,6 +13,7 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {validateMaximumCount} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /**
  * Compact frontier queues with a round-stamped visited set, shared by the phases of
@@ -363,7 +364,7 @@ export function createFrontierRoundNode<Parameters>(
   const bindings = [...props.bindings, ...frontierBindings];
   // Every frontier round binds a fixed set chosen by its contributor (at most 8 for the WebGPU
   // default limit); a ninth binding is a bug in that contributor, not a prop error.
-  assert(bindings.length <= 8);
+  validateMaximumCount(props.operation, `${props.id} storage bindings`, bindings.length, 8);
   const maximumX = graph.device.limits.maxComputeWorkgroupsPerDimension;
   const currentDispatch = round % 2 === 0 ? state.dispatchEven : state.dispatchOdd;
   const slotByteOffset = getFrontierDispatchSlotByteOffset(phase, round);

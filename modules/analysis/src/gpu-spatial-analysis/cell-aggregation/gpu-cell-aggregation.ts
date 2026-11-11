@@ -18,7 +18,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   CELL_KEY_WGSL,
@@ -86,7 +86,10 @@ export type GPUCellAggregationProps = {
   mask?: GraphDataView<'uint32'>;
   /**
    * Fixed-point scale of `output.sums`, a positive float32 value; a power of two keeps the
-   * scaling exact. Defaults to 65536 (16 fractional bits).
+   * scaling exact. Defaults to 65536 (16 fractional bits): every row is rounded to a multiple of
+   * `1 / 65536` before it is added, so values below about 0.01 lose accuracy and values below
+   * `2^-17` add 0. `getGPUCellSumScale(maximumMagnitude, maximumRowCount)` picks a scale from the
+   * data.
    */
   sumScale?: number;
   /** Caller-owned cell table; its capacity is `output.cells.length`. */
@@ -153,16 +156,16 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one row`);
     }
     if (props.positions) {
-      validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+      validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     }
     if (props.cells) {
-      validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
+      validateSinglePackedView(props.cells, ['uint32x2'], `${id} cells`);
     }
     if (props.values) {
-      validatePackedView(props.values, ['float32'], `${id} values`);
+      validateSinglePackedView(props.values, ['float32'], `${id} values`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
     }
     for (const [name, view] of [
       ['values', props.values],

@@ -30,7 +30,7 @@ import {
   validateCommandNodeBudget,
   validateMaximumCount,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUNetworkTopologyViews,
@@ -61,17 +61,36 @@ const OPERATION = 'GPUNetworkKFunction';
 /** Philox counter tag of the simulated event streams, keeping them apart from other users of the RNG. @internal */
 export const NETWORK_K_FUNCTION_STREAM = PHILOX_PURPOSES.networkKFunction.id;
 
-/** Largest quantization range of one edge length in the random edge draw. @internal */
+/** Largest quantization range of one chunk total in the random edge draw. @internal */
 export const NETWORK_K_FUNCTION_LENGTH_RANGE = 2 ** 29;
 
 /**
- * Quantization range of one edge length for `edgeCount` CSR rows: the longest live edge maps to
- * this many units, so the integer prefix sum is at most `edgeCount * range <= 2^32 - 1` and cannot
- * wrap (review B-24). A power of two, at most {@link NETWORK_K_FUNCTION_LENGTH_RANGE}. @internal
+ * CSR slots per chunk of the two-level random edge draw. With edge lengths quantized to at most
+ * {@link NETWORK_K_FUNCTION_EDGE_LENGTH_RANGE} units, a chunk total is at most 2^31. @internal
  */
-export function getNetworkKFunctionLengthRange(edgeCount: number): number {
-  const exponent = Math.floor(Math.log2((2 ** 32 - 1) / Math.max(edgeCount, 1)));
+export const NETWORK_K_FUNCTION_CHUNK_EDGE_COUNT = 128;
+
+/**
+ * Units of the longest live edge in the random edge draw: 2^24, the float32 mantissa, so an edge
+ * gets at least one unit down to 2^-25 of the longest edge. @internal
+ */
+export const NETWORK_K_FUNCTION_EDGE_LENGTH_RANGE = 2 ** 24;
+
+/**
+ * Quantization range of the coarse level of the random edge draw for `count` rows (chunks): the
+ * largest row maps to at most this many units, so the integer prefix sum is at most
+ * `count * range <= 2^32 - 1` and cannot wrap (review B-24). A power of two, at most
+ * {@link NETWORK_K_FUNCTION_LENGTH_RANGE}. Before review network-paths-04 this range was applied
+ * to single edges, which left short edges with no units on large networks. @internal
+ */
+export function getNetworkKFunctionLengthRange(count: number): number {
+  const exponent = Math.floor(Math.log2((2 ** 32 - 1) / Math.max(count, 1)));
   return 2 ** clamp(exponent, 0, 29);
+}
+
+/** Number of chunks of the two-level random edge draw for `edgeCount` CSR slots. @internal */
+export function getNetworkKFunctionChunkCount(edgeCount: number): number {
+  return Math.max(Math.ceil(edgeCount / NETWORK_K_FUNCTION_CHUNK_EDGE_COUNT), 1);
 }
 
 /** Largest accepted `bandCount`. */
@@ -176,7 +195,12 @@ export type GPUNetworkKFunctionProps = {
    * below about 17 m use createGPULocalFrame (see Precision of longitude/latitude positions).
    */
   maximumSnapDistance?: GraphDataView<'float32'>;
-  /** Optional compile-time candidate capacity of `GPUNetworkSnapping`. Requires `maximumSnapDistance`. */
+  /**
+   * Optional compile-time candidate capacity of `GPUNetworkSnapping`. Requires `maximumSnapDistance`.
+   * Without it the events are snapped by an exact scan of every event against every edge with no
+   * index, and the snapping's unindexed-work limit is raised for it, so snapping becomes slow once
+   * events times edges reaches about 2^27 (a frame).
+   */
   candidateCapacity?: number;
   /** Compile-time. Morton-sort edges before the BVH build of the snapping candidate search. */
   spatialSort?: boolean;
@@ -190,8 +214,9 @@ export type GPUNetworkKFunctionProps = {
    * One-row total length `L` in the context's length unit with every road counted once, that is, half of the sum
    * of `topology.weights` over the live rows `0..offsets[nodeCount]` of a topology that lists both
    * directions.
-   * It scales K. The random edge draw is quantized against the longest live edge (a GPU maximum),
-   * so a wrong `networkLength` changes K but never the draw.
+   * It scales K. The random edge draw does not read it: edge lengths are quantized against the
+   * longest live edge (a GPU maximum) and chunk totals against the largest chunk total, so a wrong
+   * `networkLength` changes K but never the draw.
    */
   networkLength: GraphDataView<'float32'>;
   /**
@@ -236,8 +261,16 @@ export type GPUNetworkKFunctionProps = {
  * Okabe and Yamada divides by `n (n - 1)`, so multiply by `n / (n - 1)` to compare with it.
  *
  * The envelope draws `simulationCount` patterns of `n` events from a Philox stream keyed by the
- * seed: an edge with probability proportional to its length (an integer prefix sum of quantized
- * lengths) and a uniform position on it. Searches of all patterns share one set of row blocks
+ * seed: an edge with probability proportional to its length and a uniform position on it. The edge
+ * draw has two integer levels, so that short edges keep their share on large networks. Every live
+ * edge length is quantized to 2^24 units of the longest live edge (rounded to nearest). The slots
+ * are grouped in chunks of 128 with an integer prefix sum inside each chunk; the chunk totals,
+ * shifted right until the largest fits the range `2^floor(log2((2^32 - 1) / chunkCount))` (rounded
+ * to nearest), get a second integer prefix sum. A draw picks a chunk by the coarse sum and then an
+ * edge by the chunk's own sum, both with unbiased bounded integers. An edge shorter than 2^-25 of
+ * the longest is never drawn, and a chunk's share is exact to half a coarse unit (under
+ * `2 * chunkCount / 2^32` of the largest chunk total). Everything is an integer or an exact maximum, so the
+ * draw does not depend on thread order. Searches of all patterns share one set of row blocks
  * (`rowsPerBlock` rows each, searched by one `GPUNetworkReachability` per block over one lane-expanded CSR shared by all blocks), so peak scratch
  * memory is set by `rowsPerBlock`, not by the event or simulation count. Unlike spaghetti, whose
  * envelope scales its extremes by the significance threshold, the envelope here is the plain
@@ -304,7 +337,7 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
       ['output.status.converged', output.status?.converged]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     for (const [name, view] of [
@@ -315,10 +348,10 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
       ['output.envelope', output.envelope]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     this.eventCount = props.positions.length;
     this.nodeCount = nodeCount;
     this.edgeCount = edgeCount;
@@ -400,8 +433,8 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
       SHARED_PRIMITIVE_NODE_ALLOWANCE +
       // event-flags, clear, expand-seeds, block-info, finalize
       5 +
-      // live-weights, quantize, simulate
-      (this.simulationCount > 0 ? 3 : 0) +
+      // live-weights, quantize, chunk-prefix, chunk-quantize, simulate
+      (this.simulationCount > 0 ? 5 : 0) +
       batchCount * reachabilityNodeCount +
       this.blockCount +
       Number(Boolean(output.envelope)) +
@@ -418,8 +451,9 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns the snapping nodes, the event count, the random-edge preparation (`quantize`, a `GPUScan`
-   * prefix sum, `simulate`; only with simulations), one `clear`, then per block the cost-matrix nodes and a `count`
+   * Returns the snapping nodes, the event count, the random-edge preparation (`quantize`,
+   * `chunk-prefix`, `chunk-quantize`, a `GPUScan` prefix sum of the chunks, `simulate`; only with
+   * simulations), one `clear`, then per block the cost-matrix nodes and a `count`
    * node, and finally `finalize`, optional `envelope` and `converged` nodes.
    */
   getCommandNodes<Parameters>(
@@ -455,6 +489,9 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
         topology: props.topology,
         maximumSnapDistance: props.maximumSnapDistance,
         candidateCapacity: props.candidateCapacity,
+        // Without a radius there is no indexed search to fall back to, and every event count times
+        // edge count built before snapping had a limit, so the K function keeps accepting them.
+        maximumUnindexedWork: Number.MAX_SAFE_INTEGER,
         spatialSort: props.spatialSort,
         startDirection: 'both',
         output: {
@@ -492,10 +529,19 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
 
     if (simulationCount > 0) {
       const quantized = u32('quantized-lengths', edgeCount);
-      const prefix = u32('length-prefix', edgeCount);
+      // Two-level draw (review network-paths-04). One buffer holds both prefix sums so that the
+      // simulate kernel stays within 8 storage bindings: the prefix inside each chunk at slot
+      // `edge`, and the prefix over the quantized chunk totals at CHUNK_PREFIX_BASE + chunk.
+      const chunkCount = getNetworkKFunctionChunkCount(edgeCount);
+      const chunkPrefixBase = alignElementCount(edgeCount);
+      const prefix = u32('length-prefix', chunkPrefixBase + chunkCount);
+      const chunkPrefix = getSubView(graph, prefix, chunkPrefixBase, chunkCount);
+      const chunkTotals = u32('chunk-totals', chunkCount);
+      const chunkMaximum = u32('chunk-maximum', 1);
+      const quantizedChunks = u32('quantized-chunks', chunkCount);
+      const chunkRangeBits = Math.log2(getNetworkKFunctionLengthRange(chunkCount));
       const liveWeights = createTransientView(graph, `${id}-live-weights`, 'float32', edgeCount);
       const liveMaximum = createTransientView(graph, `${id}-live-maximum`, 'float32', 1);
-      const lengthRange = getNetworkKFunctionLengthRange(edgeCount);
       // Rows past offsets[NODE_COUNT] (a CSR shorter than its capacity) are not edges: drawing
       // one would emit a node past NODE_COUNT. Non-finite or negative weights are not drawable.
       const liveEdgeSource = `${IS_FINITE_BITS_WGSL}
@@ -527,9 +573,10 @@ ${liveEdgeSource}`,
           output: liveMaximum,
           operation: 'max'
         }).getCommandNodes(graph),
-        // The scale maps the longest live edge to `lengthRange` units, so the integer prefix sum
-        // is at most edgeCount * lengthRange < 2^32 whatever `networkLength` says (review B-24).
-        // A maximum is exact and order independent, so the draw is reproducible on the CPU.
+        // The longest live edge maps to 2^24 units, rounded to nearest (half up, on the fraction, so
+        // no float tie is involved). The ratio is at most 1 and the scale a power of two, so a
+        // value is at most 2^24 whatever `networkLength` says (review B-24). A maximum is exact
+        // and order independent, so the draw is reproducible on the CPU.
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-quantize`,
           operation: OPERATION,
@@ -543,14 +590,67 @@ ${liveEdgeSource}`,
           body: `let maximum = liveMaximum[liveMaximumOffset];
   var value = 0u;
   if (maximum > 0.0) {
-    value = u32(liveWeights[liveWeightsOffset + index] * (${lengthRange}.0 / maximum));
+    let scaled = min(liveWeights[liveWeightsOffset + index] / maximum, 1.0) * ${NETWORK_K_FUNCTION_EDGE_LENGTH_RANGE}.0;
+    let whole = floor(scaled);
+    value = u32(whole) + select(0u, 1u, scaled - whole >= 0.5);
   }
   quantized[quantizedOffset + index] = value;`
         }),
+        // One thread per chunk: the inclusive integer prefix sum of its slots, and its total (at
+        // most 128 * 2^24 = 2^31).
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-chunk-prefix`,
+          operation: OPERATION,
+          variant: 'chunk-prefix',
+          bindings: [
+            {name: 'quantized', view: quantized, type: 'u32', access: 'read'},
+            {name: 'prefix', view: prefix, type: 'u32', access: 'read_write'},
+            {name: 'chunkTotals', view: chunkTotals, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: chunkCount,
+          declarations: `const EDGE_COUNT: u32 = ${edgeCount}u;
+const CHUNK_EDGE_COUNT: u32 = ${NETWORK_K_FUNCTION_CHUNK_EDGE_COUNT}u;`,
+          body: `let firstEdge = index * CHUNK_EDGE_COUNT;
+  let endEdge = min(firstEdge + CHUNK_EDGE_COUNT, EDGE_COUNT);
+  var running = 0u;
+  for (var edge = firstEdge; edge < endEdge; edge++) {
+    running += quantized[quantizedOffset + edge];
+    prefix[prefixOffset + edge] = running;
+  }
+  chunkTotals[chunkTotalsOffset + index] = running;`
+        }),
+        ...new GPUReduction({
+          id: `${id}-chunk-maximum`,
+          input: chunkTotals,
+          output: chunkMaximum,
+          operation: 'max'
+        }).getCommandNodes(graph),
+        // Chunk totals shifted right until the largest is below the coarse range, rounded to
+        // nearest, so their prefix sum is at most chunkCount * range <= 2^32 - 1.
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-chunk-quantize`,
+          operation: OPERATION,
+          variant: 'chunk-quantize',
+          bindings: [
+            {name: 'chunkTotals', view: chunkTotals, type: 'u32', access: 'read'},
+            {name: 'chunkMaximum', view: chunkMaximum, type: 'u32', access: 'read'},
+            {name: 'quantizedChunks', view: quantizedChunks, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: chunkCount,
+          declarations: `const CHUNK_RANGE_BITS: u32 = ${chunkRangeBits}u;`,
+          body: `let maximumBits = 32u - countLeadingZeros(chunkMaximum[chunkMaximumOffset]);
+  let total = chunkTotals[chunkTotalsOffset + index];
+  var value = total;
+  if (maximumBits > CHUNK_RANGE_BITS) {
+    let shift = min(maximumBits - CHUNK_RANGE_BITS, 31u);
+    value = (total >> shift) + ((total >> (shift - 1u)) & 1u);
+  }
+  quantizedChunks[quantizedChunksOffset + index] = value;`
+        }),
         ...new GPUScan({
           id: `${id}-length-scan`,
-          input: quantized,
-          output: prefix,
+          input: quantizedChunks,
+          output: chunkPrefix,
           mode: 'inclusive'
         }).getCommandNodes(graph),
         createWGSLKernelNode<Parameters>(graph, {
@@ -572,6 +672,9 @@ ${liveEdgeSource}`,
 const EDGE_COUNT: u32 = ${edgeCount}u;
 const EVENT_COUNT: u32 = ${eventCount}u;
 const SIMULATION_COUNT: u32 = ${simulationCount}u;
+const CHUNK_EDGE_COUNT: u32 = ${NETWORK_K_FUNCTION_CHUNK_EDGE_COUNT}u;
+const CHUNK_COUNT: u32 = ${chunkCount}u;
+const CHUNK_PREFIX_BASE: u32 = ${chunkPrefixBase}u;
 const NONE: u32 = ${NONE}u;
 const STREAM_TAG: u32 = ${NETWORK_K_FUNCTION_STREAM}u;
 ${PERMUTATION_RANDOM_WGSL}`,
@@ -579,7 +682,7 @@ ${PERMUTATION_RANDOM_WGSL}`,
   let eventIndex = index - (pattern - 1u) * EVENT_COUNT;
   let slot = 2u * (pattern * EVENT_COUNT + eventIndex);
   let activeCount = min(parameters[parametersOffset + 2u], SIMULATION_COUNT);
-  let total = prefix[prefixOffset + EDGE_COUNT - 1u];
+  let total = prefix[prefixOffset + CHUNK_PREFIX_BASE + CHUNK_COUNT - 1u];
   var firstNode = NONE;
   var secondNode = NONE;
   var firstCost = -1.0;
@@ -591,10 +694,26 @@ ${PERMUTATION_RANDOM_WGSL}`,
       pattern,
       STREAM_TAG
     );
-    let draw = nextPhiloxBelow(&stream, total);
+    // Level 1: a chunk, by the prefix sum of the quantized chunk totals. The first chunk whose
+    // prefix exceeds the draw has a positive quantized total, so its own total is positive too.
+    let chunkDraw = nextPhiloxBelow(&stream, total);
+    var chunkLow = 0u;
+    var chunkHigh = CHUNK_COUNT;
+    while (chunkLow < chunkHigh) {
+      let middle = (chunkLow + chunkHigh) / 2u;
+      if (prefix[prefixOffset + CHUNK_PREFIX_BASE + middle] > chunkDraw) {
+        chunkHigh = middle;
+      } else {
+        chunkLow = middle + 1u;
+      }
+    }
+    // Level 2: an edge of the chunk, by the chunk's own prefix sum of 2^24-unit edge lengths.
+    let chunkFirstEdge = chunkLow * CHUNK_EDGE_COUNT;
+    let chunkEndEdge = min(chunkFirstEdge + CHUNK_EDGE_COUNT, EDGE_COUNT);
+    let draw = nextPhiloxBelow(&stream, prefix[prefixOffset + chunkEndEdge - 1u]);
     let fractionBits = nextPhiloxUint32(&stream);
-    var low = 0u;
-    var high = EDGE_COUNT;
+    var low = chunkFirstEdge;
+    var high = chunkEndEdge;
     while (low < high) {
       let middle = (low + high) / 2u;
       if (prefix[prefixOffset + middle] > draw) {

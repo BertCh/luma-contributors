@@ -11,7 +11,7 @@ import type {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
@@ -96,7 +96,7 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
       0,
       MAXIMUM_AUGMENTATIONS
     );
-    validatePackedView(props.edges, ['uint32x2'], this.id);
+    validateSinglePackedView(props.edges, ['uint32x2'], this.id);
     for (const view of [
       props.capacities,
       props.costs,
@@ -105,7 +105,7 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
       props.output.cut,
       props.output.summary
     ]) {
-      if (view) validatePackedView(view, ['uint32'], this.id);
+      if (view) validateSinglePackedView(view, ['uint32'], this.id);
     }
     validateRequirement(
       id,
@@ -138,7 +138,7 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
       `output.summary must hold ${SUMMARY_WORD_COUNT} rows`
     );
     if (props.output.exactCost) {
-      validatePackedView(props.output.exactCost, ['uint32x2'], this.id);
+      validateSinglePackedView(props.output.exactCost, ['uint32x2'], this.id);
       validateRequirement(
         id,
         props.output.exactCost.length === 1,

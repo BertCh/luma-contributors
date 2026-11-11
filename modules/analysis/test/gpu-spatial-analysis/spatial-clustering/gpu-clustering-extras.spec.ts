@@ -6,19 +6,19 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  getGPUKMeansParameterValues,
+  getGPUSpatialKMeansParameterValues,
   getGPUSpatialClusteringParameterValues,
-  GPUKMeans,
-  GPU_KMEANS_PARAMETER_LENGTH,
+  GPUSpatialKMeans,
+  GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
   GPUSpatialClustering,
   GPU_SPATIAL_CLUSTERING_NOISE,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-  type GPUKMeansInitialization,
+  type GPUSpatialKMeansInitialization,
   type GPUSpatialClusteringSettings
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
-import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
-import {getKMeansRestartSeed} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-kmeans';
+import {getGPUSpatialKMeansRestartSeed} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-spatial-kmeans';
 import {
   computeKMeansOracle,
   computeKMeansOracleFromCenters,
@@ -166,7 +166,7 @@ async function runKMeans(
     k: number;
     iterations: number;
     tolerance?: number;
-    initialization?: GPUKMeansInitialization;
+    initialization?: GPUSpatialKMeansInitialization;
     seed?: number;
     restartCount?: number;
     centerCoordinates?: boolean;
@@ -183,16 +183,16 @@ async function runKMeans(
   const inertia = rig.output('float32', 1);
   const {iterations, seed, tolerance, ...shape} = options;
   rig.run(
-    new GPUKMeans({
+    new GPUSpatialKMeans({
       positions: rig.input(positions, 'float32x2', rows),
       // The default initialization is 'kmeans++'; the first-valid oracle specs pin it explicitly.
       initialization: 'first-valid',
       ...shape,
       maximumIterations: iterations,
       parameters: rig.input(
-        getGPUKMeansParameterValues({seed, tolerance}),
+        getGPUSpatialKMeansParameterValues({seed, tolerance}),
         'uint32',
-        GPU_KMEANS_PARAMETER_LENGTH
+        GPU_SPATIAL_KMEANS_PARAMETER_LENGTH
       ),
       output: {
         labels: labels.view,
@@ -220,7 +220,7 @@ async function runKMeans(
   return result;
 }
 
-it("GPUKMeans 'first-valid' matches the f64 Lloyd oracle and ignores non-finite rows", async () => {
+it("GPUSpatialKMeans 'first-valid' matches the f64 Lloyd oracle and ignores non-finite rows", async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const positions = createBlobs(5, 150);
@@ -252,7 +252,7 @@ it("GPUKMeans 'first-valid' matches the f64 Lloyd oracle and ignores non-finite 
   }
 });
 
-it('GPUKMeans center reduction handles many chunks, k=1, k not dividing 256, and k=256', async () => {
+it('GPUSpatialKMeans center reduction handles many chunks, k=1, k not dividing 256, and k=256', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // 20000 rows: 79 chunks of 256 rows, last chunk partial.
@@ -288,7 +288,7 @@ it('GPUKMeans center reduction handles many chunks, k=1, k not dividing 256, and
   }
 });
 
-it('GPUKMeans stops at a fixed point and reports iterations used', async () => {
+it('GPUSpatialKMeans stops at a fixed point and reports iterations used', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const positions = createBlobs(5, 150);
@@ -308,7 +308,7 @@ it('GPUKMeans stops at a fixed point and reports iterations used', async () => {
   expect(Array.from(single.convergence)).toEqual([1, 0]);
 });
 
-it('GPUKMeans leaves centers empty when there are fewer valid points than k', async () => {
+it('GPUSpatialKMeans leaves centers empty when there are fewer valid points than k', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const positions = new Float32Array([1, 1, NaN, 2, 5, 5, 9, 9, 3, NaN]);
@@ -326,7 +326,7 @@ it('GPUKMeans leaves centers empty when there are fewer valid points than k', as
   expect(result.squaredDistances[0]).toBe(0);
 });
 
-it('GPUKMeans does not report convergence when the center update overflows float32', async () => {
+it('GPUSpatialKMeans does not report convergence when the center update overflows float32', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // Three finite rows at x = 2e38: the f32 coordinate sum 6e38 overflows, so the center becomes
@@ -347,7 +347,7 @@ it('GPUKMeans does not report convergence when the center update overflows float
 });
 
 for (const fixture of SKLEARN_RELOCATION_FIXTURES) {
-  it(`GPUKMeans relocates empty clusters like scikit-learn (${fixture.name})`, async () => {
+  it(`GPUSpatialKMeans relocates empty clusters like scikit-learn (${fixture.name})`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const positions = new Float32Array(fixture.positions);
@@ -366,7 +366,7 @@ for (const fixture of SKLEARN_RELOCATION_FIXTURES) {
   });
 }
 
-it('GPUKMeans moves still-empty clusters to the largest cluster when all points coincide', async () => {
+it('GPUSpatialKMeans moves still-empty clusters to the largest cluster when all points coincide', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // Every distance is 0, so scikit-learn relocates nothing and averages the empty centers onto the
@@ -378,7 +378,7 @@ it('GPUKMeans moves still-empty clusters to the largest cluster when all points 
   expect(result.inertia).toBe(0);
 });
 
-it("GPUKMeans 'kmeans++' is deterministic per seed and recovers separated blobs", async () => {
+it("GPUSpatialKMeans 'kmeans++' is deterministic per seed and recovers separated blobs", async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const positions = createBlobs(8, 120);
@@ -416,7 +416,94 @@ it("GPUKMeans 'kmeans++' is deterministic per seed and recovers separated blobs"
   expect(new Set(outcomes).size).toBeGreaterThan(1);
 });
 
-it('GPUKMeans reports the total inertia of the returned clustering', async () => {
+it("GPUSpatialKMeans 'kmeans++' draws each next center in proportion to its squared distance", async () => {
+  // Three points on a line at 0, 1 and 3 with k = 3: every point becomes a center, each point is
+  // its own cluster from the first assignment on, and its label is the round that chose it. So
+  // the labels are the order of the draws, whose probabilities are closed forms (the first center
+  // is uniform, the second is proportional to the squared distance to the first):
+  //   0,1,3: 1/3 * 1/10   0,3,1: 1/3 * 9/10
+  //   1,0,3: 1/3 * 1/5    1,3,0: 1/3 * 4/5
+  //   3,0,1: 1/3 * 9/13   3,1,0: 1/3 * 4/13
+  // 1,500 seeds, Pearson chi-square with 5 degrees of freedom: 20.5 is the 0.1 % point.
+  // Proportional to distance instead of its square would give 0,3,1 a quarter and score above 30.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const positions = new Float32Array([0, 0, 1, 0, 3, 0]);
+  const rig = new WeightsRig(device);
+  const labels = rig.output('uint32', 3);
+  const parameterBuffer = new GPUParameterBuffer(device, {
+    id: 'kmeans-seeding-parameters',
+    format: 'uint32',
+    length: GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
+    values: getGPUSpatialKMeansParameterValues({seed: 0})
+  });
+  rig.graph.add(
+    new GPUSpatialKMeans({
+      positions: rig.input(positions, 'float32x2', 3),
+      k: 3,
+      maximumIterations: 1,
+      parameters: parameterBuffer.importToGraph(rig.graph),
+      output: {labels: labels.view, centers: rig.output('float32x2', 3).view}
+    })
+  );
+  const compiled = rig.graph.compile();
+  const seedCount = 1500;
+  const observed = new Map<string, number>();
+  for (let seed = 0; seed < seedCount; seed++) {
+    parameterBuffer.write(getGPUSpatialKMeansParameterValues({seed}));
+    submitGraph(device, compiled, undefined);
+    // labels[point] is the round that chose the point; invert it to the order of the draws.
+    const rounds = await readUint32(labels.buffer, 3);
+    const order = [0, 1, 2].map(round => rounds.indexOf(round)).join('');
+    observed.set(order, (observed.get(order) ?? 0) + 1);
+  }
+  compiled.destroy();
+  parameterBuffer.destroy();
+  rig.destroy();
+  const expected: Record<string, number> = {
+    '012': (1 / 3) * (1 / 10),
+    '021': (1 / 3) * (9 / 10),
+    '102': (1 / 3) * (1 / 5),
+    '120': (1 / 3) * (4 / 5),
+    '201': (1 / 3) * (9 / 13),
+    '210': (1 / 3) * (4 / 13)
+  };
+  expect([...observed.keys()].sort()).toEqual(Object.keys(expected).sort());
+  let chiSquare = 0;
+  for (const [order, probability] of Object.entries(expected)) {
+    const expectedCount = probability * seedCount;
+    chiSquare += ((observed.get(order) ?? 0) - expectedCount) ** 2 / expectedCount;
+  }
+  expect(chiSquare).toBeLessThan(20.5);
+}, 120000);
+
+it("GPUSpatialKMeans 'kmeans++' repeats a point, not NaN, when no distance is left to draw from", async () => {
+  // Math review point-process-clustering-07. Three identical points, k = 2: after the first
+  // center every remaining squared distance is 0, so the second draw has no weight. The lowest
+  // valid row is taken again; the duplicate center is finite and its empty cluster then moves to
+  // the mean of the largest cluster, the same point. Only a table with no valid point leaves NaN.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const identical = await runKMeans(device, new Float32Array([3, 4, 3, 4, 3, 4]), {
+    k: 2,
+    iterations: 2,
+    initialization: 'kmeans++',
+    seed: 7
+  });
+  expect(Array.from(identical.centers)).toEqual([3, 4, 3, 4]);
+  expect(identical.labels).toEqual([0, 0, 0]);
+  expect(identical.sizes).toEqual([3, 0]);
+  const noValidPoint = await runKMeans(device, new Float32Array([NaN, 1, 2, NaN]), {
+    k: 2,
+    iterations: 2,
+    initialization: 'kmeans++',
+    seed: 7
+  });
+  expect(noValidPoint.centers.every(Number.isNaN)).toBe(true);
+  expect(noValidPoint.labels).toEqual([GPU_SPATIAL_CLUSTERING_NOISE, GPU_SPATIAL_CLUSTERING_NOISE]);
+});
+
+it('GPUSpatialKMeans reports the total inertia of the returned clustering', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const positions = createBlobs(5, 150);
@@ -425,7 +512,27 @@ it('GPUKMeans reports the total inertia of the returned clustering', async () =>
   expect(Math.abs(result.inertia - expected.inertia)).toBeLessThan(1e-4 * expected.inertia);
 });
 
-it('GPUKMeans restartCount returns the lowest-inertia restart (ties: lowest index)', async () => {
+it('GPUSpatialKMeans sums the inertia of a million equal terms to float32 accuracy', async () => {
+  // 1,000,002 points alternating between (0.3, 0) and (-0.3, 0) with k = 1: the center is the
+  // origin and every squared distance is fl(0.3)^2, so the inertia is rows * fl(0.3)^2 (float64
+  // of the float32 input). A plain serial float32 sum of a million terms of 0.09 is off by parts
+  // in a thousand once the running sum's last place passes the term; the kernel's strided lanes
+  // and fixed binary trees keep every partial within a few last places.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rows = 1000002;
+  const positions = new Float32Array(rows * 2);
+  for (let row = 0; row < rows; row++) {
+    positions[row * 2] = row % 2 === 0 ? 0.3 : -0.3;
+  }
+  const result = await runKMeans(device, positions, {k: 1, iterations: 2});
+  expect(Math.abs(result.centers[0])).toBeLessThan(1e-6);
+  expect(result.centers[1]).toBe(0);
+  const expectedInertia = rows * Math.fround(0.3) ** 2;
+  expect(Math.abs(result.inertia - expectedInertia)).toBeLessThan(2e-6 * expectedInertia);
+});
+
+it('GPUSpatialKMeans restartCount returns the lowest-inertia restart (ties: lowest index)', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const positions = createBlobs(11, 240);
@@ -435,7 +542,10 @@ it('GPUKMeans restartCount returns the lowest-inertia restart (ties: lowest inde
   const singles = [];
   for (let restart = 0; restart < restartCount; restart++) {
     singles.push(
-      await runKMeans(device, positions, {...options, seed: getKMeansRestartSeed(3, restart)})
+      await runKMeans(device, positions, {
+        ...options,
+        seed: getGPUSpatialKMeansRestartSeed(3, restart)
+      })
     );
   }
   const winner = selectBestKMeansRestart(singles.map(single => single.inertia));
@@ -452,7 +562,7 @@ it('GPUKMeans restartCount returns the lowest-inertia restart (ties: lowest inde
   expect(refit.labels).toEqual(multi.labels);
 });
 
-it('GPUKMeans reaches the scikit-learn inertia on a well-separated scene for every seed', async () => {
+it('GPUSpatialKMeans reaches the scikit-learn inertia on a well-separated scene for every seed', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // Oracle: scikit-learn 1.9.1 KMeans, fix/work/C/U7/kmeans-sklearn.py (see the node spec).
@@ -471,7 +581,7 @@ it('GPUKMeans reaches the scikit-learn inertia on a well-separated scene for eve
   }
 });
 
-it('GPUKMeans centerCoordinates keeps projected-coordinate centers accurate in float32', async () => {
+it('GPUSpatialKMeans centerCoordinates keeps projected-coordinate centers accurate in float32', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // Three blobs of 20000 points at 6e6 m: float32 spacing there is 0.5 m, so the sums of uncentered

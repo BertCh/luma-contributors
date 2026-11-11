@@ -18,11 +18,12 @@ import {
 import {
   validateCapacity,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /** Largest facility count: the exhaustive search enumerates 2^F subsets (65,536 at 16). */
 const MAXIMUM_FACILITY_COUNT = 16;
@@ -124,13 +125,13 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
       props.threshold,
       props.output.objective
     ])
-      validatePackedView(view, ['float32'], this.id);
+      validateSinglePackedView(view, ['float32'], this.id);
     for (const view of [
       props.output.selectedFacilities,
       props.output.assignments,
       props.output.status
     ])
-      validatePackedView(view, ['uint32'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
     validateRequirement(
       id,
       props.costs.length ===
@@ -196,7 +197,7 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
     );
     const declarations = `const FACILITY_COUNT: u32 = ${props.facilityCount}u;
 const DEMAND_COUNT: u32 = ${props.demand.length}u;
-fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }`;
+${IS_FINITE_VALUE_WGSL}`;
     const inputBindings = [
       {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
       {name: 'demand', view: props.demand, type: 'f32', access: 'read'},
@@ -222,10 +223,10 @@ fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x
   state[stateOffset + 4u] = 0u;
   state[stateOffset + 5u] = 0u;
   for (var row = 0u; row < DEMAND_COUNT; row++) {
-    if (!finite(demand[demandOffset + row]) || demand[demandOffset + row] < 0.0) { return; }
+    if (!isFiniteValue(demand[demandOffset + row]) || demand[demandOffset + row] < 0.0) { return; }
   }
-  ${capacitated ? 'for (var facility = 0u; facility < FACILITY_COUNT; facility++) { if (!finite(capacities[capacitiesOffset + facility]) || capacities[capacitiesOffset + facility] < 0.0) { return; } }' : ''}
-  ${!capacitated && !dispersion ? 'if (!finite(threshold[thresholdOffset]) || threshold[thresholdOffset] < 0.0) { return; }' : ''}
+  ${capacitated ? 'for (var facility = 0u; facility < FACILITY_COUNT; facility++) { if (!isFiniteValue(capacities[capacitiesOffset + facility]) || capacities[capacitiesOffset + facility] < 0.0) { return; } }' : ''}
+  ${!capacitated && !dispersion ? 'if (!isFiniteValue(threshold[thresholdOffset]) || threshold[thresholdOffset] < 0.0) { return; }' : ''}
   for (var entry = 0u; entry < ${props.costs.length}u; entry++) {
     let cost = costs[costsOffset + entry];
     if (cost < 0.0 || (bitcast<u32>(cost) & 0x7fffffffu) > 0x7f800000u) { return; }
@@ -262,7 +263,7 @@ fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x
     let cost = costs[costsOffset + row * FACILITY_COUNT + facility]; let weight = demand[demandOffset + row];
     if (weight == 0.0) { continue; } mask |= 1u << facility;
     used[facility] += weight;
-    if (!finite(cost) || used[facility] > capacities[capacitiesOffset + facility]) { feasible = false; }
+    if (!isFiniteValue(cost) || used[facility] > capacities[capacitiesOffset + facility]) { feasible = false; }
     score += weight * cost;
   }
   if (countOneBits(mask) > ${props.selectCount}u) { feasible = false; }`
@@ -284,7 +285,7 @@ fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x
   }`
   }`
   }
-  ${!dispersion ? 'if (!finite(score) && feasible) { scores[offset + 3u] = 1u; return; }' : ''}
+  ${!dispersion ? 'if (!isFiniteValue(score) && feasible) { scores[offset + 3u] = 1u; return; }' : ''}
   if (!feasible) { return; }
   // Signed zero is a numeric tie, including in the maximum-dispersion objective.
   let scoreBits = select(bitcast<u32>(score), 0u, score == 0.0);

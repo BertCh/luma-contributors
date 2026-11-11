@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-/** @internal Functions for finite, prepared-float32 native-style scalar scales. */
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+
+/**
+ * @internal Functions for finite, prepared-float32 native-style scalar scales, with
+ * `isFiniteValue` from `analysis-core` (do not include `IS_FINITE_VALUE_WGSL` again).
+ */
 export const SCALAR_SCALE_WGSL = /* wgsl */ `
-fn scalarIsFinite(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_VALUE_WGSL}
 fn scalarTransform(value: f32, scale: u32) -> f32 {
   if (scale == 1u) {
     return select(sqrt(abs(value)), -sqrt(abs(value)), value < 0.0);

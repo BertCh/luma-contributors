@@ -18,7 +18,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
@@ -85,7 +85,7 @@ export function planSpatialWeightsTranspose(
     throw new Error(`${id} output.distances is required with weights.distances`);
   }
   if (output.asymmetricSlots) {
-    validatePackedView(output.asymmetricSlots, ['uint32'], `${id} asymmetricSlots`);
+    validateSinglePackedView(output.asymmetricSlots, ['uint32'], `${id} asymmetricSlots`);
     if (output.asymmetricSlots.length !== 1) {
       throw new Error(`${id} asymmetricSlots must hold one uint32 row`);
     }
@@ -100,7 +100,7 @@ export function planSpatialWeightsTranspose(
     throw new Error(`${id} symmetryTolerance must be finite and >= 0`);
   }
   if (output.distances) {
-    validatePackedView(output.distances, ['float32'], `${id} output.distances`);
+    validateSinglePackedView(output.distances, ['float32'], `${id} output.distances`);
   }
   const inputTransform = weights.information?.transform ?? 'unknown';
   const outputWeights = describeGPUSpatialWeights(output, {

@@ -18,7 +18,7 @@ import {
   GPUHierarchicalDensityClustering,
   GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT,
   GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_SAMPLES,
-  GPUKMeans,
+  GPUSpatialKMeans,
   GPUKriging,
   GPU_FOCAL_STATISTICS_PARAMETER_LENGTH,
   GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH,
@@ -54,10 +54,10 @@ import {
   GPU_WARD_REGIONS_PARAMETER_LENGTH,
   GPU_WARD_STATUS,
   GPUSpatialClustering,
-  GPU_KMEANS_MAXIMUM_CLUSTERS,
-  GPU_KMEANS_MAXIMUM_ITERATIONS,
-  GPU_KMEANS_MAXIMUM_RESTARTS,
-  GPU_KMEANS_PARAMETER_LENGTH,
+  GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS,
+  GPU_SPATIAL_KMEANS_MAXIMUM_ITERATIONS,
+  GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS,
+  GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   GPUSimilarLocations,
   GPU_SEGREGATION_MAXIMUM_GROUPS,
@@ -1556,24 +1556,24 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
   ),
   ...(
     [
-      ['first-valid', 1, GPU_KMEANS_MAXIMUM_CLUSTERS],
+      ['first-valid', 1, GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS],
       ['first-valid', 1, 1],
-      ['kmeans++', 1, GPU_KMEANS_MAXIMUM_CLUSTERS],
-      ['kmeans++', GPU_KMEANS_MAXIMUM_RESTARTS, GPU_KMEANS_MAXIMUM_CLUSTERS],
-      ['kmeans++', GPU_KMEANS_MAXIMUM_RESTARTS, 7]
+      ['kmeans++', 1, GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS],
+      ['kmeans++', GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS, GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS],
+      ['kmeans++', GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS, 7]
     ] as const
   ).map(
     ([initialization, restartCount, k]): KernelAuditCase => ({
-      exportName: 'GPUKMeans',
+      exportName: 'GPUSpatialKMeans',
       name: `every output ${initialization} ${restartCount} restarts k ${k}`,
       build: ({graph, view}) => {
         const rows = 5000;
         graph.add(
-          new GPUKMeans({
+          new GPUSpatialKMeans({
             positions: view('float32x2', rows),
             k,
-            maximumIterations: GPU_KMEANS_MAXIMUM_ITERATIONS,
-            parameters: view('uint32', GPU_KMEANS_PARAMETER_LENGTH),
+            maximumIterations: GPU_SPATIAL_KMEANS_MAXIMUM_ITERATIONS,
+            parameters: view('uint32', GPU_SPATIAL_KMEANS_PARAMETER_LENGTH),
             initialization,
             restartCount,
             output: {
@@ -1591,19 +1591,19 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
   ),
   ...(['first-valid', 'kmeans++'] as const).map(
     (initialization): KernelAuditCase => ({
-      exportName: 'GPUKMeans',
+      exportName: 'GPUSpatialKMeans',
       name: `rows at the binding limit ${initialization}`,
       build: ({graph, view, maximumRows}) => {
         const rows = maximumRows(8);
-        const k = GPU_KMEANS_MAXIMUM_CLUSTERS;
+        const k = GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS;
         graph.add(
-          new GPUKMeans({
+          new GPUSpatialKMeans({
             positions: view('float32x2', rows),
             k,
-            maximumIterations: GPU_KMEANS_MAXIMUM_ITERATIONS,
-            parameters: view('uint32', GPU_KMEANS_PARAMETER_LENGTH),
+            maximumIterations: GPU_SPATIAL_KMEANS_MAXIMUM_ITERATIONS,
+            parameters: view('uint32', GPU_SPATIAL_KMEANS_PARAMETER_LENGTH),
             initialization,
-            restartCount: initialization === 'kmeans++' ? GPU_KMEANS_MAXIMUM_RESTARTS : 1,
+            restartCount: initialization === 'kmeans++' ? GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS : 1,
             output: {
               labels: view('uint32', rows),
               centers: view('float32x2', k),

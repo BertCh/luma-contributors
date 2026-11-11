@@ -1,20 +1,31 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {
-  CompiledGPUCommandGraph,
-  GPUCommandGraphEncodingStats,
-  GPUCommandGraphNodePreflight
+import {
+  getViewElementOffset,
+  type CompiledGPUCommandGraph,
+  type GPUCommandGraph,
+  type GPUCommandGraphEncodingStats,
+  type GPUCommandGraphNodePreflight,
+  type GraphBufferHandle,
+  type GraphTextureHandle
 } from '@luma.gl/graph/gpu-core';
+import {
+  getWGSLKernelNodeRecord,
+  type WGSLKernelNodeRecord
+} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import type {
+  GPUComputationAttributes,
   GPUComputationEdge,
   GPUComputationEdgeKind,
   GPUComputationGraph,
   GPUComputationNode,
+  GPUComputationNodeAnnotation,
   GPUComputationResource,
   GPUComputationSourceRef
 } from './computation-record-types';
 import type {GPUComputationRecorder} from './computation-recorder';
+import {hashGPUComputationText} from './hash-computation-text';
 
 /** Compiled graph structure and its deduplicated source references. */
 export type GPUCommandGraphDescription = {
@@ -34,6 +45,19 @@ export type DescribeGPUCommandGraphOptions = {
   domain?: string;
   /** Annotations recorded while the graph was built; without it nodes carry published facts only. */
   recorder?: GPUComputationRecorder;
+  /**
+   * Graph that was compiled, when it was passed to `recordWGSLKernelNodes` (or the recorder's
+   * `recordKernels`, which is the default) before nodes were added.
+   * Every node built by `createWGSLKernelNode` then gets its source, workgroup size, dispatch,
+   * bindings and operation name, and the graph gets its published transient allocation totals.
+   * Recorder annotations win field by field.
+   */
+  graph?: GPUCommandGraph<any>;
+  /**
+   * Keep the full WGSL text of kernel sources taken from `graph`. Defaults to the recorder's
+   * `sourceText`, or false without a recorder (hash, module id and entry point only).
+   */
+  sourceText?: boolean;
 };
 
 const READ_USAGES = new Set([
@@ -68,6 +92,10 @@ export function describeGPUCommandGraph(
   const graphId = options.graphId ?? `${compiled.id}-compiled`;
   validateGraphId(graphId);
   const recorder = options.recorder;
+  const kernelGraph = options.graph ?? recorder?.graph;
+  const sourceText = options.sourceText ?? recorder?.sourceText ?? false;
+  /** Handles of resources bound by recorded kernels, so their ownership is stated, not assumed. */
+  const kernelHandles = new Map<string, GraphBufferHandle | GraphTextureHandle>();
   const preflightById = new Map(compiled.preflight.nodes.map(node => [node.id, node]));
   const sources = new Map<string, GPUComputationSourceRef>();
   const lifetimes = new Map<string, {firstNode: string; lastNode: string}>();
@@ -89,7 +117,17 @@ export function describeGPUCommandGraph(
   for (const nodeId of compiled.stats.nodeOrder) {
     const node = preflightById.get(nodeId) as GPUCommandGraphNodePreflight | undefined;
     if (!node) continue;
-    const record = recorder?.getNodeRecord(nodeId);
+    const kernel = kernelGraph && getWGSLKernelNodeRecord(kernelGraph, nodeId);
+    if (kernel) {
+      for (const binding of kernel.bindings)
+        kernelHandles.set(binding.view.buffer.id, binding.view.buffer);
+      for (const binding of kernel.textures)
+        kernelHandles.set(binding.texture.texture.id, binding.texture.texture);
+    }
+    const record = mergeKernelAnnotation(
+      recorder?.getNodeRecord(nodeId),
+      kernel && createWGSLKernelNodeAnnotation(kernel, sourceText)
+    );
     if (record?.source) {
       const previous = sources.get(record.source.id);
       if (previous && previous.text !== record.source.text) {
@@ -147,6 +185,7 @@ export function describeGPUCommandGraph(
         formula: record?.formula,
         source: record?.source?.id,
         workgroupSize: record?.workgroupSize,
+        constants: record?.constants,
         bindings: record?.bindings,
         dispatch: record?.dispatch,
         reads: [...reads],
@@ -168,7 +207,7 @@ export function describeGPUCommandGraph(
 
   const resources: GPUComputationResource[] = [];
   for (const [id, summary] of summaries) {
-    const handle = recorder?.getResource(id);
+    const handle = recorder?.getResource(id) ?? kernelHandles.get(id);
     const base = {id, kind: summary.kind, ...lifetimes.get(id)};
     if (handle && 'transient' in handle) {
       const isBuffer = 'byteLength' in handle;
@@ -201,9 +240,89 @@ export function describeGPUCommandGraph(
       label: options.label ?? compiled.id,
       nodes,
       edges: [...edges.values()],
-      resources
+      resources,
+      ...(kernelGraph && {attrs: getTransientAllocationAttributes(compiled.stats)})
     },
     sources: [...sources.values()]
+  };
+}
+
+/**
+ * Builds the node annotation of one kernel built by `createWGSLKernelNode`, the same shape
+ * `createGPUKernelAnnotation` produces. Hashes the source, so call it only while describing.
+ */
+export function createWGSLKernelNodeAnnotation(
+  kernel: WGSLKernelNodeRecord,
+  sourceText = false
+): GPUComputationNodeAnnotation {
+  const hash = hashGPUComputationText(kernel.source);
+  return {
+    op: kernel.operation,
+    source: {
+      id: `wgsl:${hash}`,
+      language: 'wgsl',
+      moduleId: kernel.variant ? `${kernel.operation}/${kernel.variant}` : kernel.operation,
+      hash,
+      bodyHash: hashGPUComputationText(kernel.body),
+      entryPoint: kernel.entryPoint,
+      ...(sourceText && {text: kernel.source})
+    },
+    // Overrides differ per pipeline while the module text is shared, so they belong to the node.
+    constants: kernel.constants,
+    workgroupSize: kernel.workgroupSize,
+    dispatch: {
+      workgroups: kernel.workgroups,
+      invocationCount: kernel.invocationCount,
+      indirect: kernel.indirect
+    },
+    bindings: [
+      ...kernel.bindings.map(binding => ({
+        name: binding.name,
+        resource: binding.view.buffer.id,
+        access: binding.access,
+        elementType: binding.type,
+        elementOffset: getViewElementOffset(binding.view),
+        length: binding.view.length
+      })),
+      ...kernel.textures.map(binding => ({
+        name: binding.name,
+        resource: binding.texture.texture.id,
+        access: 'sampled' as const
+      }))
+    ]
+  };
+}
+
+/** Recorder annotation over kernel facts: every field the recorder sets wins. */
+function mergeKernelAnnotation<Annotation extends GPUComputationNodeAnnotation>(
+  recorded: Annotation | undefined,
+  kernel: GPUComputationNodeAnnotation | undefined
+): Annotation | undefined {
+  if (!kernel) return recorded;
+  if (!recorded) return kernel as Annotation;
+  const merged: Record<string, unknown> = {...kernel};
+  for (const [key, value] of Object.entries(recorded)) {
+    if (value !== undefined) merged[key] = value;
+  }
+  return merged as Annotation;
+}
+
+/**
+ * Published transient allocation totals of a compiled graph. Which logical transients share a
+ * physical allocation is not published by `@luma.gl/graph`, so per-resource `allocation` stays unset.
+ */
+function getTransientAllocationAttributes(
+  stats: CompiledGPUCommandGraph['stats']
+): GPUComputationAttributes {
+  return {
+    logicalTransientBufferCount: stats.logicalTransientBufferCount,
+    physicalTransientBufferCount: stats.physicalTransientBufferCount,
+    logicalTransientBytes: stats.logicalTransientBytes,
+    physicalTransientBytes: stats.physicalTransientBytes,
+    reusedTransientBytes: stats.reusedTransientBytes,
+    logicalTransientTextureCount: stats.logicalTransientTextureCount,
+    physicalTransientTextureCount: stats.physicalTransientTextureCount,
+    reusedTransientTextureBytes: stats.reusedTransientTextureBytes
   };
 }
 

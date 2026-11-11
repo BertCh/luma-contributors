@@ -18,14 +18,17 @@ import {
   GPULineIntegralConvolution,
   type GPULineIntegralConvolutionSettings
 } from '../../../src/raster-analysis/flow-texture/index';
-import {convolveLineIntegralOnCPU} from '../../oracles/line-integral-convolution-cpu';
+import {
+  convolveLineIntegralOnCPU,
+  getLineIntegralConvolutionNoise
+} from '../../oracles/line-integral-convolution-cpu';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {createVortexField, type TestField} from './flow-texture-scenes';
+import {createUniformField, createVortexField, type TestField} from './flow-texture-scenes';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 type Result = {
@@ -226,6 +229,79 @@ it('GPULineIntegralConvolution animates by phase without rebuilding and replays 
     // A new seed changes the noise on the same graph.
     const reseeded = await fixture.run({...base, phase: 0, seed: 2});
     expect(reseeded.values).not.toEqual(first.values);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('GPULineIntegralConvolution traces tangent to the field on non-square output cells (raster-fields-01)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Uniform field (1, 1): every streamline is a straight line at 45 degrees in world space. The
+  // output has 2 x 1 world-unit cells (16 x 32 pixels over [0, 32]^2), so the same line runs along
+  // (1, 2) / sqrt(5) in pixel space. Scaling each axis by its own cell size (the old rule) ran
+  // along (1, 1) / sqrt(2) in pixel space, which is 26.6 degrees in world space.
+  const width = 16;
+  const height = 32;
+  const stepCount = 6;
+  const stepLength = 1;
+  const field = createUniformField(4, 4, 1, 1);
+  const fixture = createFixture(device, field, width, height, stepCount);
+  try {
+    const settings: GPULineIntegralConvolutionSettings = {
+      fieldExtent: [-16, -16, 16, 16],
+      outputExtent: [0, 0, 2, 1],
+      stepLength,
+      seed: 11
+    };
+    const actual = await fixture.run(settings);
+    // Closed form, independent of the kernel's integrator: sample k sits stepLength * k pixels along
+    // the pixel-space image of the world diagonal, the weights are the Hann window, and a trace
+    // ends at the first sample outside the output.
+    const getExpected = (pixelDirection: [number, number]) => {
+      const expected = new Float32Array(width * height);
+      let minimumMargin = 1;
+      for (let row = 0; row < height; row++) {
+        for (let column = 0; column < width; column++) {
+          let weightSum = 1;
+          let sum = getLineIntegralConvolutionNoise(column, row, settings.seed ?? 0);
+          for (const directionSign of [1, -1]) {
+            for (let step = 1; step <= stepCount; step++) {
+              const x = column + 0.5 + directionSign * step * stepLength * pixelDirection[0];
+              const y = row + 0.5 + directionSign * step * stepLength * pixelDirection[1];
+              if (x < 0 || y < 0 || x >= width || y >= height) {
+                break;
+              }
+              minimumMargin = Math.min(
+                minimumMargin,
+                Math.abs(x - Math.round(x)),
+                Math.abs(y - Math.round(y))
+              );
+              const weight = 0.5 * (1 + Math.cos((Math.PI * step) / (stepCount + 1)));
+              sum +=
+                weight *
+                getLineIntegralConvolutionNoise(Math.floor(x), Math.floor(y), settings.seed ?? 0);
+              weightSum += weight;
+            }
+          }
+          expected[row * width + column] = sum / weightSum;
+        }
+      }
+      return {expected, minimumMargin};
+    };
+    const tangent = getExpected([1 / Math.sqrt(5), 2 / Math.sqrt(5)]);
+    const perAxis = getExpected([Math.SQRT1_2, Math.SQRT1_2]);
+    // No sample is close enough to a pixel edge for float32 rounding to change its pixel.
+    expect(tangent.minimumMargin).toBeGreaterThan(1e-3);
+    let tangentMismatches = 0;
+    let perAxisMismatches = 0;
+    for (let index = 0; index < width * height; index++) {
+      tangentMismatches += Math.abs(actual.values[index] - tangent.expected[index]) > 1e-5 ? 1 : 0;
+      perAxisMismatches += Math.abs(actual.values[index] - perAxis.expected[index]) > 1e-2 ? 1 : 0;
+    }
+    expect(tangentMismatches).toBe(0);
+    // The old per-axis rule is a different picture, so this spec fails on it.
+    expect(perAxisMismatches).toBeGreaterThan((width * height) / 2);
   } finally {
     fixture.destroy();
   }

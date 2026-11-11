@@ -16,7 +16,7 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUNetworkTopologyViews,
@@ -164,7 +164,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       ['edges.output.lineOffsets', edges?.output.lineOffsets]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     for (const [name, view] of [
@@ -172,7 +172,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       ['output.pathCosts', output.pathCosts]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
     const nodeCount = props.predecessors.length;

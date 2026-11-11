@@ -41,7 +41,7 @@ filter, or aggregation plan.
 
 ```ts
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUTimeWindowFilter,
   getGPUTimeWindowFilterParameterValues,
@@ -278,6 +278,24 @@ scaleParameters.write(getGPUColorScaleParameterValues({scale: 'threshold', domai
   lower/upper percentile filtering: bounds `x[floor(n * lower)]` and `x[ceil(n * upper) - 1]`, and a
   `outputMask` of the rows inside them. At most 2^24 rows. About 1.8 ms at 1M rows and 3.5 ms at
   4M rows for 9 quantiles plus the filter (Apple M-series, headless Chromium).
+  - Which rank is exact. The default rank `fround(fround(n - 1) * p)` is a float32 product and is
+    not exact: its fraction is lost from rank 2^23 (16,777,216 rows at `p = 0.95`: `linear`
+    returns `x[lo]`, numpy interpolates by 0.25), and the float32 `p` can put `floor(h)` one rank
+    from numpy's at any size (101 rows at `p = 0.59`). The optional `rationalProbabilities` view
+    (`getGPUColumnQuantilesRationalProbabilityValues([[19, 20], [1, 2]])`, uint32 pairs
+    `numerator, denominator`) replaces the float32 probabilities: the rank
+    `floor((n - 1) numerator / denominator)` and its remainder come from a 64-bit integer product
+    and division, exact for every row count, and the `linear` fraction is the correctly rounded
+    float32 of `remainder / denominator`. It agrees with `numpy.quantile` 2.5.4 for `linear`
+    everywhere tested, and for the other methods except where numpy's own float64 product
+    `(n - 1) * q` lands just below or just above an integer the exact product equals: just below,
+    `lower` and `midpoint` are one rank off (101 rows, `q = 0.29`: numpy `lower` returns `x[28]`,
+    the exact rank is 29); just above, `higher` and `midpoint` are (101 rows, `q = 0.55`: numpy
+    `higher` returns `x[56]`, the exact rank is 55). With it the column may
+    exceed 2^24 rows (up to one storage binding, 2^25 rows at the default limit) when no filter
+    output is requested; the filter ranks stay float32. `GPUClassBreaks` and `GPUGroupStatistics`
+    use the float32 rank only. Fixture and generator:
+    `modules/analysis/test/oracles/dataframe-quantile-rational-rank.py`.
 - One order-statistic policy for `GPUColumnQuantiles`, the `GPUClassBreaks` quantile and box-plot
   methods, and the `GPUGroupStatistics` medians and percentiles: the sample is the finite unmasked
   values (NaN and ±Infinity are missing), `-0` equals `+0`, and a probability that is NaN or outside
@@ -644,8 +662,12 @@ domainParameters.write(getGPUColumnProfileParameterValues([[0, 100], [NaN, NaN]]
 - Histograms: equal-width bins over a per-frame `[minimum, maximum]` per column (a
   `GPUColumnProfileDomain`: a pair or `{minimum, maximum}`), or the frame's finite minimum and
   maximum when a bound is NaN; the last bin includes the maximum and values outside are not counted.
-  Bin assignment uses correctly rounded products, so it is identical on every adapter. Category
-  columns get per-code counts in their first bins.
+  Bin assignment has the convention of the official `GPUHistogram`,
+  `min(floor((v - minimum) / (maximum - minimum) * bins), bins - 1)`, so a value on a bin edge is
+  in the upper bin for every bin count (-0.875 is in bin 5 of 30 over `[-3.5, 12.25]`). The bin
+  is decided by correctly rounded float32 products
+  (`k * range <= (v - minimum) * bins < (k + 1) * range`), not by one division, so it is identical
+  on every adapter. Category columns get per-code counts in their first bins.
 - Distinct count: HyperLogLog over a murmur3 `fmix32` hash of the value bits (`-0` folded to
   `+0`) with `atomicMax` registers and linear-counting small-range correction. Registers are
   exact, and the estimate is within about `1.04 / sqrt(2^p)` relative error.
@@ -707,9 +729,9 @@ fractions.write(Float32Array.of(0.1, 0.5, 0.9)); // no recompile
 ```
 
 - Output groups are ascending by key, capacity is `output.keys.length`, at most `getGPUGroupStatisticsMaximumGroupCount(device)` (2^23 on a default device; the 16-byte moment sums per group fit one 128 MiB binding) and, with `percentiles`, `capacity * P` at most `getGPUGroupStatisticsMaximumPercentileTotal(device)` (2^25 on a default device). When more groups exist, the smallest keys are kept, `status.overflow` is 1 and `status.requiredCount` is the unclamped number. Tail rows hold the all-ones key, count 0, sums 0 and NaN for every other float statistic.
-- `output.counts` counts valid rows (mask set, key valid); each column's `counts` counts finite values. Zero to four columns; each column lists the statistics it needs (a compile-time set) and supplies exactly the matching output views: `counts`, `sums` (exact signed 64-bit fixed point, `uint32x2`, scale `sumScale`, default 65536) and/or `sumValues` for `sum`, `means`, `minimums`, `maximums`, `variances`, `standardDeviations`, `skewness`, `kurtosis`, `medians`, `percentiles` (`capacity * P`, group-major), `modes`, `uniqueCounts`, and `zScores` (one row per source row).
-- Exactness: counts, fixed-point sums, minimum, maximum, median, percentiles, mode and unique counts are bit-identical to a CPU reference. Percentiles use the numpy `linear` rule (`h = (n - 1) p`, `lo + (hi - lo) * (h - floor h)` in f32) and the order-statistic policy shared with `GPUColumnQuantiles`, with `p` read per frame; a fraction that is NaN or outside [0, 1] gives NaN (it is no longer clamped). Mode is the longest run of equal values (ties: smallest value). `-0` is treated as `+0`; NaN and infinities are excluded.
-- Moments are corrected two-pass: `d = v - mean` is summed in a fixed order (one 256-thread workgroup per group, strided partials and a binary tree), so a second encode is bitwise identical, sized by an indirect dispatch from the GPU-written group total so that unoccupied capacity launches no workgroups; one workgroup reduces a whole group, so a single group of about 2^20 rows or more becomes the bottleneck (the replacement is chunked partials with `load-balanced-for-each`, or a segment tree from `sorted-segment-sums`), and central moments about the true mean come from the shifted power sums. Measured agreement with a float64 reference on mixed data is about 1e-7 for mean and variance, 2e-6 for skewness and kurtosis, 7e-6 for z-scores (relative). Skewness is Fisher-Pearson `g1`, kurtosis is excess `g2`; both are NaN for constant groups, a group whose variance is under 2^-19 of its shifted sum of squares is treated as constant (the fixed-point mean carries 2^-17 absolute error). Sample variance of one value is NaN; z-score is 0 when the deviation is 0 or a sample group has one value, NaN for masked, invalid-key, non-finite or capacity-dropped rows.
+- `output.counts` counts valid rows (mask set, key valid); each column's `counts` counts finite values. Zero to four columns; each column lists the statistics it needs (a compile-time set) and supplies exactly the matching output views: `counts`, `sums` (signed 64-bit fixed point, `uint32x2`, the sum of `roundHalfEven(value * sumScale)`, default scale 65536: each value is rounded to `1 / sumScale` first) and/or `sumValues` (the sum of the values themselves as float32, from a 96-bit fixed-point accumulator whose unit follows the largest value of the column; it does not depend on `sumScale`) for `sum`, `means`, `minimums`, `maximums`, `variances`, `standardDeviations`, `skewness`, `kurtosis`, `medians`, `percentiles` (`capacity * P`, group-major), `modes`, `uniqueCounts`, and `zScores` (one row per source row).
+- Exactness: counts, the fixed-point `sums` words, minimum, maximum, median, percentiles, mode and unique counts are bit-identical to a CPU reference. `sumValues` is the exact sum rounded once to float32 and `means` is that divided by the count (a few float32 units in the last place), at any magnitude: values 1.0e-4, 1.2e-4, 1.4e-4 have mean 1.2e-4. A value keeps all its bits in the sum while its magnitude is at least `max * 2^(h - 71)`, where `max` is the largest value of the column in a kept group and `h` the bit length of the row count. Percentiles use the numpy `linear` rule (`h = (n - 1) p`, `lo + (hi - lo) * (h - floor h)` in f32) and the order-statistic policy shared with `GPUColumnQuantiles`, with `p` read per frame; a fraction that is NaN or outside [0, 1] gives NaN (it is no longer clamped). Mode is the longest run of equal values (ties: smallest value). `-0` is treated as `+0`; NaN and infinities are excluded.
+- Moments are corrected two-pass: `d = v - mean` is summed in a fixed order (one 256-thread workgroup per group, strided partials and a binary tree), so a second encode is bitwise identical, sized by an indirect dispatch from the GPU-written group total so that unoccupied capacity launches no workgroups; one workgroup reduces a whole group, so a single group of about 2^20 rows or more becomes the bottleneck (the replacement is chunked partials with `load-balanced-for-each`, or a segment tree from `sorted-segment-sums`), and central moments about the true mean come from the shifted power sums. Measured agreement with a float64 reference on mixed data is about 1e-7 for mean and variance, 2e-6 for skewness and kurtosis, 7e-6 for z-scores (relative). Skewness is Fisher-Pearson `g1`, kurtosis is excess `g2`; both are NaN for constant groups, a group whose variance is under 2^-19 of its shifted sum of squares is treated as constant (the shift mean is rounded to float32). Sample variance of one value is NaN; the z-score is `(v - mean) / sd` with the same corrected mean the variance uses, and is 0 when the deviation is 0 or a sample group has one value, NaN for masked, invalid-key, non-finite or capacity-dropped rows.
 - Dense mode: `keyCount` (compile-time) requires `uint32` keys in `[0, keyCount)`. `output.keys.length` and every per-group output hold exactly `keyCount` rows, and row `k` is key `k` (`output.keys[k] = k`, `output.status.count` and `status.requiredCount` are `keyCount`, `status.overflow` is 0). Keys with no rows keep a row: `counts` 0, `sums` and `uniqueCounts` 0, and NaN for mean, minimum, maximum, variance, standard deviation, skewness, kurtosis, median, percentiles and mode. Keys outside the range and the reserved all-ones key are skipped like masked rows and are not reported as overflow. It costs one binary search per key instead of a group scan, and suits region IDs or other small dense key spaces (the choropleth recipe uses it so empty polygons keep a row). The default compact table of occupied keys is unchanged.
 - Cost: one stable key sort (two 32-bit radix sorts for 64-bit keys); each column that asks for median, percentiles, mode or unique count adds a value sort plus a key re-sort. Inputs must be single packed views. Approximate distinct counts (HyperLogLog) are not included.
 
@@ -751,9 +773,13 @@ each left row binary-searches them on the unsigned `(high, low)` order.
 - `gather` copies a right column (`float32` or `uint32`, bit for bit) from the smallest matching
   right row. Unmatched rows get NaN or `0xffffffff`.
 - `aggregates` run over all matching right rows: `count`, `sum`, `mean`, `minimum`, `maximum`.
-  Sums are exact 64-bit fixed point (`sums` output, scale `sumScale`, default 65536); extremes use
-  ordered-key atomics. Non-finite values are excluded per aggregate. Unmatched rows get 0 for
-  `count` and NaN otherwise.
+  `sum` is the exact sum of the finite values in a 96-bit fixed-point accumulator whose unit
+  follows the largest value among the valid right rows, rounded once to float32; `mean` divides
+  it by the finite count. A column of 1e-4 and a column of 1e6 are both right to float32. The
+  optional `sums` words are a separate 64-bit sum of `roundHalfEven(value * sumScale)` (default
+  65536): each value is rounded to `1 / sumScale` first, so a value below half a unit adds
+  nothing there. Extremes use ordered-key atomics. Non-finite values are excluded per aggregate.
+  Unmatched rows get 0 for `count` and NaN otherwise.
 - `output.rightRows`, `matchCounts`, `matched` (usable as a crossfilter live mask) are left-aligned;
   `rightMatched` is right-aligned (1 when some valid left row has the same key).
 - `kind: 'inner'` additionally compacts matched left row IDs, ascending, into `output.rows`
@@ -834,7 +860,11 @@ const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 
 - `GPUVariogram`: polygon windows filter rows only; no area or edge correction is applied.
   Matheron semivariance, pair count, mean lag distance and Cressie-Hawkins robust
   semivariance per lag and optional azimuth sector (`directionCount` equal sectors over `[0, pi)`
-  from a per-frame `azimuthOffset`). Matheron precision: a term `(z_i - z_j)^2 / 2` is scaled by
+  from a per-frame `azimuthOffset`; a pair of coincident points has no direction and is counted
+  in sector 0). The robust estimator is
+  `(mean |z_i - z_j|^(1/2))^4 / (2 (0.457 + 0.494 / N + 0.045 / N^2))`, the Cressie and Hawkins
+  (1980) correction that scikit-gstat evaluates; the `0.045 / N^2` term lowers a one-pair bin by
+  4.7 % against the two-term form. Matheron precision: a term `(z_i - z_j)^2 / 2` is scaled by
   `2^24 / u` and rounded to an integer, where `u` is the robust variance `(IQR / 1.349)^2` of the
   included values (exact quartiles), clamped to at most the population variance, so the absolute
   error of a bin mean is at most `u * 2^-25` (never more than `variance * 2^-25`, itself below the
@@ -919,8 +949,11 @@ const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 
   binned on the radius grid, exact including the censoring of points that have no neighbor within
   `maximumDistance`. `'hanisch'` is spatstat `han` for G and Chiu-Stoyan style weights for F, with 14-bit
   fixed-point weights (relative error about 1e-4); a point with no neighbor within `maximumDistance` but a
-  border distance of at least `maximumDistance` enters the denominator at `d = maximumDistance`, so G is
-  slightly high unless every point has a neighbor in range. The corrections are checked against an f64
+  border distance of at least `maximumDistance` enters the denominator at `d = maximumDistance`. That is
+  too little weight when the point is uncensored (G too high) and too much when it is censored (G too low:
+  two such points beside one close pair give 0.44 where the Hanisch estimator is 1). The estimate is exact
+  when every point has a neighbor in range, so set `maximumDistance` to at least the largest
+  nearest-neighbor distance when it matters. The corrections are checked against an f64
   oracle written from the spatstat definitions, not against spatstat itself, and K and L (`GPURipley`) have
   no Kaplan-Meier or Hanisch option. The pass uses 8 channels per radius (a `radiusCount` of 256 still fits
   the default 16 KB of workgroup memory exactly). F depends on the reference lattice, so keep it coprime with the
@@ -944,8 +977,8 @@ const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 
   pointpats / ArcGIS) overstates clustering in small or elongated windows and is no longer the
   default. The per-frame `alternative` (default `'two-sided'`; `'greater'` tests for regularity in
   Clark-Evans and for clustering in the quadrat chi-square, `'lesser'` the opposite) sets the tail
-  of both p-values. The quadrat p-value is exact (regularized incomplete gamma) up to 100 degrees
-  of freedom and the Wilson-Hilferty approximation (absolute error below 2e-4) above; assume
+  of both p-values. The quadrat p-value is the regularized incomplete gamma function at every
+  degree of freedom (float32 series or continued fraction; no normal approximation); assume
   expected counts of about 5 or more per quadrat. `GPU_CLARK_EVANS_LENGTH` and
   `GPU_QUADRAT_STATISTICS_LENGTH` are now 7.
   Set compile-time `studyWindow` to a `GPUStudyWindowPreparation` added before this consumer in the
@@ -1213,8 +1246,14 @@ parameters.write(
   negative weight here, use a direction to flip an indicator),
   `'principal-component'` (projection of direction-adjusted z-scores on the first eigenvector of
   their correlation matrix; needs `enablePrincipalComponent`; weights are ignored).
-- The first component comes from 64 fixed power-iteration steps from `1 / sqrt(d)` in one thread,
-  signed so the loadings sum to a non-negative value. `principalComponentSummary` holds
+- The first component of two indicators is the closed form: `(1, 1) / sqrt(2)` with eigenvalue
+  `1 + r` for a correlation `r >= 0`, `(1, -1) / sqrt(2)` with `1 - r` for `r < 0` (at `r = 0`
+  the two tie and `(1, 1)` is taken). For more indicators it is the last eigenvector of a cyclic
+  Jacobi decomposition in one thread, which separates close eigenvalues; when the largest
+  eigenvalue is repeated, any unit vector of its eigenspace is a first component and the one
+  returned is fixed by the rotation order. No power iteration is used.
+  The loadings are signed so that they sum to a positive value; when they sum to zero the first
+  loading that ties the largest magnitude is positive. `principalComponentSummary` holds
   `[eigenvalue, explainedVarianceRatio, residual]`; the ratio divides by the number of
   non-constant columns.
 - Outputs: `score` (required), `scaled`, `columnStatistics` (`[minimum, maximum, mean, standardDeviation]` per column),
@@ -1619,7 +1658,7 @@ Which route builds a DGGS (cell, period) cube without readback? Two compose from
 - Packing: with `b = ceil(log2(periodCount))` period bits, the key is `(cellKey & ~(2^b - 1)) | period`. The period replaces the low `b` bits of the cell key, so the packed key sorts by cell and then period. A packed key is not a valid cell id: unpack the group table keys with `unpackGPUCellPeriodKey(key, periodCount, fill)`.
 - What happens to the key bits: the cell key stays 64 bits, nothing is truncated to 32. The `b` replaced bits must hold the `fill` pattern. At the resolution of the cells they do: unused H3 digits are 7 (`3 * (15 - resolution)` low bits, all ones), the Quadbin footer is all ones (`52 - 2 * zoom` bits), an S2 id has a lone sentinel one above `60 - 2 * level` zero bits. Within that many free bits the packing is lossless and injective. A cell with any other bits where the period goes (a finer cell) is not packed: its key becomes the reserved all-ones key, which `GPUGroupStatistics` skips, and it is counted in `status.invalidCount`; cells are never merged silently. A finer cell whose extra bits happen to equal the fill pattern is packed and unpacks to itself. `getGPUCellKeyFreeBits('h3' | 'quadbin' | 's2', resolution)` gives the free bits. 365 daily periods need 9 bits: H3 resolution 12 or coarser, Quadbin zoom 21 or coarser, S2 level 25 or coarser. Hourly periods over a year (8,760) need 14 bits: H3 resolution 10, Quadbin zoom 19, S2 level 23.
 - Rows are skipped silently when masked, when the cell is the all-ones "no cell" key, or when the period is `0xffffffff`. A period at or above `periodCount` is skipped and counted.
-- Limits: `periodCount` at most 4294967293 (32 period bits); `cells` fit one storage binding, 16,777,216 rows on a default device. Downstream, `GPUGroupStatistics` keeps at most `getGPUGroupStatisticsMaximumGroupCount` (8,388,608 on a default device) distinct (cell, period) groups and keeps the smallest keys on overflow, and its sums are fixed point with a resolution of `1 / sumScale` (65536 by default), unlike `GPUValueCube`, whose unit follows the data.
+- Limits: `periodCount` at most 4294967293 (32 period bits); `cells` fit one storage binding, 16,777,216 rows on a default device. Downstream, `GPUGroupStatistics` keeps at most `getGPUGroupStatisticsMaximumGroupCount` (8,388,608 on a default device) distinct (cell, period) groups and keeps the smallest keys on overflow, and its `sums` words are fixed point with a resolution of `1 / sumScale` (65536 by default); its `sumValues` and `means` use a unit that follows the data, as `GPUValueCube` does.
 
 ### `GPUCellPeriodKeys` parameters
 

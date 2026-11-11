@@ -14,3 +14,9 @@ export type {
   GPUMapColoringProps,
   GPUMapColoringSettings
 } from './gpu-map-coloring';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {computeMapColoringOnCPU, CPUMapColoringOperation} from './cpu-map-coloring-operation';
+export type {CPUMapColoringResult} from './cpu-map-coloring-operation';
+export {GPUMapColoringOperation} from './gpu-map-coloring-operation';
+export type {MapColoringOperationProps} from './gpu-map-coloring-operation';

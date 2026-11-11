@@ -19,7 +19,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createFloat32ValuesNodes,
@@ -201,7 +201,7 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
       id: this.id,
       globalStatistics: props.output.globalStatistics
     });
-    validatePackedView(props.output.statistic, ['float32'], `${this.id} output.statistic`);
+    validateSinglePackedView(props.output.statistic, ['float32'], `${this.id} output.statistic`);
     if (props.output.statistic.length !== rows) {
       throw new Error(`${this.id} output.statistic length must equal the row count`);
     }
@@ -294,7 +294,14 @@ export type GPUSpatialPearsonProps = GPUEdgeAssociationProps & {
   secondValues: GPUFloat32OrUint32Values;
 };
 
-/** Spatial Pearson shares the global bivariate cross-product permutation engine. */
+/**
+ * Names the global permutation statistic closest to {@link GPUSpatialPearson}: bivariate Moran
+ * with `secondValues` permuted. It is a test of bivariate Moran's I, not of the edge-weighted
+ * Pearson coefficient. The two order every permutation the same way only when every column of the
+ * weights has the same total (each row receives the same in-weight): then the edge-weighted mean
+ * and variance of `y` do not change under permutation. On other graphs (binary weights with
+ * unequal degrees, row-standardized weights) the orderings and so the pseudo p-values can differ.
+ */
 export const GPU_SPATIAL_PEARSON_PERMUTATION_ADAPTER: GPUPermutationStatisticAdapter = {
   scope: 'global',
   statistic: 'bivariateMoran',
@@ -306,6 +313,9 @@ export const GPU_SPATIAL_PEARSON_PERMUTATION_ADAPTER: GPUPermutationStatisticAda
  * Weighted Pearson correlation across directed spatial edges `(i,j)`: the weighted covariance of
  * `x_i` and `y_j`, divided by their weighted edge standard deviations. This definition is bounded
  * to `[-1, 1]`, is valid for asymmetric weights, and returns NaN for zero edge weight or variance.
+ *
+ * This is not `esda.Spatial_Pearson`, which is Lee's L (`'leesL'` in `GPUGlobalPermutationTest`).
+ * For a permutation test see {@link GPU_SPATIAL_PEARSON_PERMUTATION_ADAPTER} and its limits.
  */
 export class GPUSpatialPearson implements GPUCommandNodeProducer {
   readonly id: string;
@@ -332,7 +342,22 @@ export type GPUGammaStatisticProps = GPUEdgeAssociationProps & {
   operation?: GPUGammaOperation;
 };
 
-/** Returns the existing global permutation statistic with the same order-preserving pair sum. */
+/**
+ * Names the existing global permutation statistic to run for a Gamma operation.
+ *
+ * `'squared-difference'` maps to `'geary'` exactly: the Gamma value is Geary's numerator divided by
+ * the constant total edge weight, so both order every permutation the same way.
+ *
+ * `'cross-product'` maps to `'moran'`, which is the same ordering only when every row of the
+ * weights has the same total, or every column does (row-standardized weights, or binary weights
+ * on a regular graph): {@link GPUGammaStatistic} centers on the edge-weighted means and divides
+ * by the edge weight, and those means move under permutation when degrees differ. On such a
+ * graph the adapter runs a test of Moran's I, not of this Gamma. Example: the star 0-1, 0-2, 0-3
+ * with the edge 3-4, binary weights; the values (7, 2, 4, 1, 11) and (11, 2, 1, 7, 4) have Gamma
+ * -10 and -11.0625 but Moran pair sums -80 and -64, the opposite order.
+ *
+ * `'absolute-difference'` has no matching permutation statistic and throws.
+ */
 export function getGPUGammaPermutationAdapter(
   operation: GPUGammaOperation
 ): GPUPermutationStatisticAdapter {
@@ -348,8 +373,14 @@ export function getGPUGammaPermutationAdapter(
 }
 
 /**
- * Hubert's Gamma over directed weighted edges. The operation is either centered cross-product,
- * squared difference, or absolute difference. The result is the weighted mean over valid edges.
+ * A Gamma-type statistic over directed weighted edges. The operation is either centered
+ * cross-product, squared difference, or absolute difference. The result is the weighted mean over
+ * valid edges; the cross-product is centered on the edge-weighted means of the two edge ends.
+ *
+ * This is not `esda.Gamma`, which is the plain sum `sum_ij w_ij x_i x_j` (uncentered unless its
+ * `standardize` option is set; or the same sum of squared or absolute differences) with no
+ * division by the edge weight. For a permutation test
+ * see {@link getGPUGammaPermutationAdapter} and its limits.
  */
 export class GPUGammaStatistic implements GPUCommandNodeProducer {
   readonly id: string;
@@ -388,7 +419,7 @@ function validateEdgeAssociationProps(id: string, props: GPUEdgeAssociationProps
     validatePackedUint32View(props.mask, `${id} mask`);
     if (props.mask.length !== rows) throw new Error(`${id} mask length must equal weights rows`);
   }
-  validatePackedView(props.output.statistic, ['float32'], `${id} output.statistic`);
+  validateSinglePackedView(props.output.statistic, ['float32'], `${id} output.statistic`);
   validateCapacity(id, 'output.statistic length', props.output.statistic.length);
   validateGraphOutputsDisjointFromInputs(
     id,

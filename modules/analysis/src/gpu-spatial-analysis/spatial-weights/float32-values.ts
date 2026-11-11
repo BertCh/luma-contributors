@@ -8,7 +8,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {validatePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateSinglePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 /** A count-like or value column accepted as `float32` or `uint32` (exact in f32 below 2^24). */
@@ -26,7 +26,7 @@ export function validateFloat32OrUint32Values(
   view: GPUFloat32OrUint32Values,
   name: string
 ): number {
-  validatePackedView(view, ['float32', 'uint32'], name);
+  validateSinglePackedView(view, ['float32', 'uint32'], name);
   return view.length;
 }
 

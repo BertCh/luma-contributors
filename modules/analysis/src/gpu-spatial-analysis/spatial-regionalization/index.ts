@@ -85,3 +85,33 @@ export type {
   GPUMaxPRegionsSettings
 } from './gpu-max-p-regions';
 export {getGPURegionalizationMaximumSlotCount} from './regionalization-inputs';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {computeWardRegionsOnCPU, CPUWardRegionsOperation} from './cpu-ward-regions-operation';
+export type {CPUWardRegionsOptions, CPUWardRegionsResult} from './cpu-ward-regions-operation';
+export {GPUWardRegionsOperation} from './gpu-ward-regions-operation';
+export type {WardRegionsOperationProps} from './gpu-ward-regions-operation';
+export {computeSkaterRegionsOnCPU, CPUSkaterRegionsOperation} from './cpu-skater-regions-operation';
+export type {
+  CPUSkaterRegionsInput,
+  CPUSkaterRegionsOptions,
+  CPUSkaterRegionsResult
+} from './cpu-skater-regions-operation';
+export {GPUSkaterRegionsOperation} from './gpu-skater-regions-operation';
+export type {SkaterRegionsOperationProps} from './gpu-skater-regions-operation';
+export {computeAZPRegionsOnCPU, CPUAZPRegionsOperation} from './cpu-azp-regions-operation';
+export type {
+  CPUAZPRegionsInput,
+  CPUAZPRegionsOptions,
+  CPUAZPRegionsResult
+} from './cpu-azp-regions-operation';
+export {computeMaxPRegionsOnCPU, CPUMaxPRegionsOperation} from './cpu-max-p-regions-operation';
+export type {
+  CPUMaxPRegionsInput,
+  CPUMaxPRegionsOptions,
+  CPUMaxPRegionsResult
+} from './cpu-max-p-regions-operation';
+export {GPUAZPRegionsOperation} from './gpu-azp-regions-operation';
+export type {AZPRegionsOperationProps} from './gpu-azp-regions-operation';
+export {GPUMaxPRegionsOperation} from './gpu-max-p-regions-operation';
+export type {MaxPRegionsOperationProps} from './gpu-max-p-regions-operation';

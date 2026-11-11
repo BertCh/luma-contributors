@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {validateMaximumCount} from './gpu-contributor-utils';
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
 
 /**
@@ -52,11 +52,9 @@ export function createScanCarryNode<Parameters>(
   props: ScanTotalProps
 ): GPUCommandNode<Parameters> {
   // Callers scan `rowCount` rows of both views and own the total row.
-  assert(
-    props.rowCount <= props.counts.length &&
-      props.rowCount <= props.offsets.length &&
-      (props.totalRow ?? 0) < props.total.length
-  );
+  validateMaximumCount(props.id, 'rowCount', props.rowCount, props.counts.length);
+  validateMaximumCount(props.id, 'rowCount', props.rowCount, props.offsets.length);
+  validateMaximumCount(props.id, 'totalRow', props.totalRow ?? 0, props.total.length - 1);
   return createWGSLKernelNode<Parameters>(graph, {
     id: `${props.id}-carry`,
     operation: props.operation,

@@ -13,11 +13,15 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  GET_NAN_WGSL,
+  IS_FINITE_BITS_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -113,6 +117,14 @@ export type GPUGeneralizedGeographicallyWeightedRegressionProps = {
   gaussianCutoff?: number;
   /** Predict at finite query rows excluded by the training mask. Their responses are never used. */
   predictExcluded?: boolean;
+  /**
+   * Scale of `output.fitted`: `'response'` (the default) is the fitted mean, `'link'` the linear
+   * predictor. Bandwidth selection fits its candidates on the link scale, because the float32
+   * logistic mean is exactly 1 from a linear predictor of about 17 and cannot give a deviance.
+   *
+   * @internal
+   */
+  fittedScale?: 'response' | 'link';
   /** Exact leave-one-out mean deviance selection, restricted to training-mask rows. */
   bandwidthSelection?: {
     bandwidths: readonly number[];
@@ -174,7 +186,7 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
     if (!['poisson', 'logistic'].includes(props.family))
       throw new Error(`${this.id}: unsupported family`);
     if (props.offset) {
-      validatePackedView(props.offset, ['float32'], this.id);
+      validateSinglePackedView(props.offset, ['float32'], this.id);
       if (props.offset.length !== props.response.length)
         throw new Error(`${this.id}: offset length mismatch`);
     }
@@ -194,14 +206,14 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
       )
         throw new Error(`${this.id}: invalid bandwidth selection`);
       for (const [name, view] of Object.entries(props.bandwidthSelection.output)) {
-        validatePackedView(view, [name === 'status' ? 'uint32' : 'float32'], this.id);
+        validateSinglePackedView(view, [name === 'status' ? 'uint32' : 'float32'], this.id);
         if (view.length !== (name === 'scores' ? count : 1))
           throw new Error(`${this.id}: selection shape mismatch`);
       }
     }
     if (props.inference) {
-      validatePackedView(props.inference.standardErrors, ['float32'], this.id);
-      validatePackedView(props.inference.influence, ['float32'], this.id);
+      validateSinglePackedView(props.inference.standardErrors, ['float32'], this.id);
+      validateSinglePackedView(props.inference.influence, ['float32'], this.id);
       if (
         props.inference.standardErrors.length !== rows * (props.predictorCount + 1) ||
         props.inference.influence.length !== rows
@@ -209,7 +221,7 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
         throw new Error(`${this.id}: inference shape mismatch`);
     }
     for (const [name, view] of Object.entries(getOutputColumns(props.output))) {
-      validatePackedView(
+      validateSinglePackedView(
         view,
         [name === 'coefficients' || name === 'fitted' ? 'float32' : 'uint32'],
         this.id
@@ -281,7 +293,7 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
     const maximumNeighborSlots = (props.maximumNeighborCount ?? 128) + (props.leaveOneOut ? 1 : 0);
     const loop = (body: string) =>
       `{\n${getCandidateLoopWGSL(body, Boolean(props.indexGridSize), 'included(row) && responseValid(row)')}\n}`;
-    const common = `${getRegressionWGSL(effective, neighborhood)}\n${getCholeskyWGSL(columns, GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT + 1)}\n${getEquilibratedCholeskyWGSL(columns)}
+    const common = `${getRegressionWGSL(effective, neighborhood)}\n${neighborhood.grid ? '' : IS_FINITE_VALUE_WGSL}\n${getCholeskyWGSL(columns, GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT + 1)}\n${getEquilibratedCholeskyWGSL(columns)}
 ${hasRingSearch ? `const MAXIMUM_NEIGHBORS: u32 = ${maximumNeighborSlots}u;\nconst SENTINEL: f32 = 3.0e38;\n${getRingNeighborDistancesWGSL()}` : ''}
 fn responseValid(row: u32) -> bool {
   let responseValue = response[responseOffset + row];
@@ -423,7 +435,7 @@ for (var iteration = 0u; iteration < ${iterations}u; iteration++) {
 }
 if (state == 0u) {
   // Map the centered, scaled coefficients back to the raw predictor basis.
-  fits[base + ${columns}u] = meanResponse(linearPredictor(focus, &coefficients));
+  fits[base + ${columns}u] = ${props.fittedScale === 'link' ? 'linearPredictor(focus, &coefficients)' : 'meanResponse(linearPredictor(focus, &coefficients))'};
   var intercept = coefficients[0];
   for (var column = 1u; column < ${columns}u; column++) {
     fits[base + column] = coefficients[column] / scaleValues[column];
@@ -643,10 +655,10 @@ export function validateRegressionInputs(
   )
     // gaussianCutoff is a truncation radius in bandwidths and must be a positive finite number.
     throw new Error(`${id}: gaussianCutoff must be a positive finite number`);
-  validatePackedView(props.positions, ['float32x2'], id);
-  validatePackedView(props.predictors, ['float32'], id);
-  validatePackedView(props.response, ['float32'], id);
-  validatePackedView(props.parameters, ['float32'], id);
+  validateSinglePackedView(props.positions, ['float32x2'], id);
+  validateSinglePackedView(props.predictors, ['float32'], id);
+  validateSinglePackedView(props.response, ['float32'], id);
+  validateSinglePackedView(props.parameters, ['float32'], id);
   if (
     props.positions.length !== rows ||
     props.predictors.length !== rows * props.predictorCount ||
@@ -654,7 +666,7 @@ export function validateRegressionInputs(
   )
     throw new Error(`${id}: input shape mismatch`);
   if (props.mask) {
-    validatePackedView(props.mask, ['uint32'], id);
+    validateSinglePackedView(props.mask, ['uint32'], id);
     if (props.mask.length !== rows) throw new Error(`${id}: mask length mismatch`);
   }
 }

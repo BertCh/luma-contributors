@@ -68,6 +68,37 @@ export function validateRasterGridAxisAligned(
   }
 }
 
+/**
+ * Largest `|cos|` of the angle between the two pixel axes accepted as orthogonal. A rotated grid
+ * built from float64 sines and cosines is far inside it; the diagonal step it admits is wrong by
+ * less than one part in a million.
+ *
+ * @internal
+ */
+export const RASTER_GRID_ORTHOGONALITY_TOLERANCE = 1e-6;
+
+/**
+ * Throws when the two pixel axes of the grid affine are not orthogonal (a sheared grid). The D8
+ * step lengths `[hypot(a, d), hypot(b, e), sqrt of their squares]` are the ground lengths of the
+ * moves only when the column axis `(a, d)` and the row axis `(b, e)` are perpendicular; on a
+ * sheared grid the two diagonals have different lengths, `hypot(a + b, d + e)` and
+ * `hypot(a - b, d - e)`. Rotated grids pass.
+ *
+ * @internal
+ */
+export function validateRasterGridOrthogonal(id: string, grid: GPURasterMetadata): void {
+  const [a, b, , d, e] = grid.affine;
+  const columnLength = Math.hypot(a, d);
+  const rowLength = Math.hypot(b, e);
+  if (
+    !(Math.abs(a * b + d * e) <= RASTER_GRID_ORTHOGONALITY_TOLERANCE * columnLength * rowLength)
+  ) {
+    throw new Error(
+      `${id} grid.affine must have orthogonal pixel axes (a * b + d * e = 0 within ${RASTER_GRID_ORTHOGONALITY_TOLERANCE} of the axis lengths): a sheared grid has two different diagonal step lengths; resample it to a rotated or axis-aligned grid`
+    );
+  }
+}
+
 /** Throws unless `parameters` is packed float32 with at least `length` values. @internal */
 export function validateRasterParameters(
   id: string,

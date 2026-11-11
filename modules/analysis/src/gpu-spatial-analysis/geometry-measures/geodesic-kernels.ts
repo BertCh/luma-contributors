@@ -106,7 +106,8 @@ fn vincentyInverse(a: vec2<f32>, b: vec2<f32>) -> VincentyInverse {
   let sinU2 = sin(reduced2);
   let cosU2 = getCosReducedLatitude(phi2, b.y);
   let sinDeltaU = sin(deltaReduced);
-  let longitudeDelta = geodesicWrapLongitudeDelta(b.x - a.x) * GEODESIC_DEGREES_TO_RADIANS;
+  // Seam-safe difference: wrapping b.x - a.x afterwards loses 1.7 m across the antimeridian.
+  let longitudeDelta = geodesicLongitudeDelta(a.x, b.x) * GEODESIC_DEGREES_TO_RADIANS;
   var lambda = longitudeDelta;
   var result: VincentyInverse;
   result.converged = false;
@@ -260,7 +261,7 @@ export function getSafeguardedVincentyWGSL(
 fn vincentyInverse(a: vec2f, b: vec2f) -> VincentyInverse {
   var result = vincentyInverseFast(a, b);
   if (result.converged) { return result; }
-  let longitude = geodesicWrapLongitudeDelta(b.x - a.x) * GEODESIC_DEGREES_TO_RADIANS;
+  let longitude = geodesicLongitudeDelta(a.x, b.x) * GEODESIC_DEGREES_TO_RADIANS;
   let lower = max(-3.141592653589793, longitude - 4.0 * abs(VINCENTY_F) - 0.001);
   let upper = min(3.141592653589793, longitude + 4.0 * abs(VINCENTY_F) + 0.001);
   var previousLongitude = lower;

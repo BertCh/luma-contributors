@@ -15,7 +15,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
@@ -29,6 +29,7 @@ import {
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 import {
+  resolveTerrainRowDirection,
   TERRAIN_GEOMORPHOMETRY_CELL_SLOTS,
   writeTerrainGeomorphometryCellSettings,
   type TerrainGeomorphometryCellSettings
@@ -39,8 +40,7 @@ import {
   type GPURasterCellSizeMode,
   type GPURasterRowDirection,
   RASTER_DEGREES_TO_RADIANS_WGSL,
-  validateRasterCellSizeMode,
-  validateRasterRowDirection
+  validateRasterCellSizeMode
 } from '../../analysis-core/raster-grid';
 
 /**
@@ -157,7 +157,13 @@ export type GPUGeomorphonsProps = {
   output: GPUGeomorphonsOutput;
   /** Cell size interpretation. Defaults to `'uniform'`. */
   cellSizeMode?: GPURasterCellSizeMode;
-  /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
+  /**
+   * Direction in which the row index increases. It decides which neighbour is "north", so it
+   * fixes the digit order of `pattern` (forms and the `ternary` class are mirror-invariant).
+   * Defaults to the direction the grid affine states: `grid.affine[4] < 0` means rows advance
+   * south (a north-up raster), `> 0` north; `'south'` when that term is 0. An explicit value that
+   * contradicts the grid throws at construction.
+   */
   rowDirection?: GPURasterRowDirection;
 };
 
@@ -195,6 +201,8 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
   readonly props: GPUGeomorphonsProps;
   /** Receptive field in pixels (`GPURasterHaloStage` contract), equal to `searchRadius`. */
   readonly requiredHalo: number;
+  /** Row direction the kernel uses: the prop, or the direction the grid affine states. */
+  readonly rowDirection: GPURasterRowDirection;
 
   constructor(props: GPUGeomorphonsProps) {
     this.id = props.id ?? 'geomorphons';
@@ -225,7 +233,7 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
       ['outputValidity', output.outputValidity]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== pixelCount) {
           throw new Error(`${id} output.${name} must contain one value per pixel`);
         }
@@ -234,7 +242,7 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
     validateRasterParameters(id, props.parameters, GPU_GEOMORPHONS_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
-    validateRasterRowDirection(id, props.rowDirection);
+    this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
     validateRasterBuffersDistinct(
       id,
       [output.forms, output.ternary, output.pattern, output.outputValidity],
@@ -281,7 +289,7 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
     const comparison = props.comparison ?? 'anglev1';
     const skipRadius = props.skipRadius ?? 0;
     const cellSizeMode = props.cellSizeMode ?? 'uniform';
-    const rowDirection = props.rowDirection ?? 'south';
+    const rowDirection = this.rowDirection;
     return [
       ...source.nodes,
       createWGSLKernelNode<Parameters>(graph, {

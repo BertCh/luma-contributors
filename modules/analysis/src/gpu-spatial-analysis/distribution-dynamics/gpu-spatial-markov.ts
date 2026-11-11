@@ -16,7 +16,8 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUSpatialLag} from '../spatial-weights/gpu-spatial-lag';
 import {
@@ -24,7 +25,7 @@ import {
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
-import {GPUClassAssignment} from './gpu-class-assignment';
+import {GPUClassAssignment, type GPUClassIntervalClosure} from './gpu-class-assignment';
 import {GPUTransitionMatrix, type GPUTransitionMatrixOutput} from './gpu-transition-matrix';
 import {
   createPeriodPackNode,
@@ -81,6 +82,14 @@ export type GPUSpatialMarkovProps = {
   lagParameters: GraphDataView<'float32'>;
   /** Methods compiled into the lag classification. Defaults to `['quantile']`. */
   lagMethods?: readonly GPUClassBreaksMethod[];
+  /**
+   * Compile-time side on which the lag class intervals are closed, passed to the internal
+   * {@link GPUClassAssignment}. Defaults to `'left'`: a lag equal to a lag edge goes to the upper
+   * lag class. giddy classifies the lag with mapclassify, whose bins are right-closed: pass
+   * `'right'` to condition on giddy's lag classes when lags can equal a quantile edge (tied or
+   * rounded data). The two differ only for such rows.
+   */
+  lagIntervalClosure?: GPUClassIntervalClosure;
   /** Optional row selection (`rowCount` entries) applied to every period. */
   mask?: GraphDataView<'uint32'>;
   /**
@@ -102,7 +111,9 @@ export type GPUSpatialMarkovProps = {
  * `maximumLagClassCount * classCount * classCount`; condition `c` is the `c`th lag class, so slices
  * past the produced `lagClassCount` stay zero. Counts are exact integers. The lag values and edges
  * are f32 (fixed-order sums), so a lag within f32 rounding of an edge may fall in the neighboring
- * lag class compared with a double-precision evaluation.
+ * lag class compared with a double-precision evaluation. A lag exactly equal to a lag edge goes
+ * to the upper lag class by default and to the lower one, as in giddy (mapclassify bins are
+ * right-closed), with `lagIntervalClosure: 'right'`.
  *
  * Diagnostics, on request through `output` (see {@link GPUTransitionDiagnostics}):
  * - `homogeneity`: giddy's `Q`, `Q_p_value`, `LR`, `LR_p_value`, `dof_hom`, the chi-square and
@@ -135,9 +146,15 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
     this.props = props;
     this.rowCount = validateGPUSpatialWeights(id, props.weights);
     const total = this.rowCount * props.periodCount;
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     validatePackedUint32View(props.classes, `${id} classes`);
     validateCapacity(id, 'periodCount', props.periodCount, 2);
+    const lagIntervalClosure = props.lagIntervalClosure ?? 'left';
+    validateRequirement(
+      id,
+      lagIntervalClosure === 'left' || lagIntervalClosure === 'right',
+      "lagIntervalClosure must be 'left' or 'right'"
+    );
     if (props.values.length !== total || props.classes.length !== total) {
       throw new Error(`${id} values and classes length must equal rowCount * periodCount`);
     }
@@ -283,6 +300,7 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
         breaks: output.lagBreaks,
         classCount: output.lagClassCount,
         mask: pooledMask,
+        intervalClosure: props.lagIntervalClosure,
         output: lagClasses
       }).getCommandNodes(graph),
       ...new GPUTransitionMatrix({

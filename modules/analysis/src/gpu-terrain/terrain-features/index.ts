@@ -54,3 +54,16 @@ export type {
 } from './gpu-profile-peaks';
 
 export * from './gpu-terrain-peak-prominence';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {computeProfilePeaksOnCPU, CPUProfilePeaksOperation} from './cpu-profile-peaks-operation';
+export type {CPUProfilePeaksOptions, CPUProfilePeaksResult} from './cpu-profile-peaks-operation';
+export {
+  computeTerrainPeakProminenceOnCPU,
+  CPUTerrainPeakProminenceOperation
+} from './cpu-terrain-peak-prominence-operation';
+export type {CPUTerrainPeakProminenceResult} from './cpu-terrain-peak-prominence-operation';
+export {GPUProfilePeaksOperation} from './gpu-profile-peaks-operation';
+export type {ProfilePeaksOperationProps} from './gpu-profile-peaks-operation';
+export {GPUTerrainPeakProminenceOperation} from './gpu-terrain-peak-prominence-operation';
+export type {TerrainPeakProminenceOperationProps} from './gpu-terrain-peak-prominence-operation';

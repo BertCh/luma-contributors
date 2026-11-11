@@ -167,7 +167,7 @@ it('statistical filtering retains original rows and voxel downsampling keeps min
         capacity: 2,
         standardDeviations: 1,
         meanDistances: means.view,
-        mask: mask.view
+        validity: mask.view
       })
     );
     const representatives = fixture.view('uint32', new Uint32Array(2));

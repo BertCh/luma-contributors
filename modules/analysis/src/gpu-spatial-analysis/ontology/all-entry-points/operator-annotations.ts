@@ -481,6 +481,16 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
       }
     ]
   },
+  GPUNetworkSnapping: {
+    limits: [
+      {
+        name: 'positionsTimesEdgesWithoutCandidateCapacity',
+        maximum: 134217728,
+        reason: 'Without candidateCapacity every point tests every edge.',
+        source: 'modules/analysis/src/gpu-network/network-accessibility/gpu-network-snapping.ts'
+      }
+    ]
+  },
   GPUNetworkFlow: {
     tier: 'reference',
     limits: [
@@ -620,7 +630,16 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
       {
         name: 'rowCount',
         maximum: 16384,
-        reason: 'Dense traversal of all pairs, O(rows squared times radii), in one invocation.',
+        reason:
+          'Without gridSize: dense traversal of all pairs, O(rows squared times radii), in one invocation.',
+        source:
+          'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-marked-point-statistics.ts'
+      },
+      {
+        name: 'rowCount x radiusCount x 3',
+        maximum: 16777216,
+        reason:
+          'With gridSize: six float32 partials per row and radius share one 128 MiB binding; pairs come from a cell index.',
         source:
           'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-marked-point-statistics.ts'
       },
@@ -639,7 +658,15 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
       {
         name: 'rowCount',
         maximum: 16384,
-        reason: 'Bounded dense traversal of all pairs, O(rows squared times bins).',
+        reason:
+          'Without gridSize: bounded dense traversal of all pairs, O(rows squared times bins).',
+        source: 'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-cross-variogram.ts'
+      },
+      {
+        name: 'rowCount x binCount',
+        maximum: 16777216,
+        reason:
+          'With gridSize: two float32 partials per row and bin share one 128 MiB binding; pairs come from a cell index.',
         source: 'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-cross-variogram.ts'
       },
       {
@@ -917,14 +944,15 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
     limits: [
       {
         name: 'features',
-        maximum: 512,
-        reason: 'All feature pairs are tested exhaustively.',
+        maximum: 65536,
+        reason:
+          'Each emitted pair is sorted by one uint32 key, 16 bits of row and 16 bits of neighbor; per-row neighbor counts and the required total stay within uint32.',
         source: 'modules/analysis/src/gpu-spatial-analysis/spatial-weights/gpu-fuzzy-contiguity.ts'
       },
       {
         name: 'vertices',
         maximum: 65536,
-        reason: 'Vertices are scanned for every pair.',
+        reason: 'Vertices are scanned for every candidate pair the bounds index returns.',
         source: 'modules/analysis/src/gpu-spatial-analysis/spatial-weights/gpu-fuzzy-contiguity.ts'
       }
     ]
@@ -1026,10 +1054,45 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
     tier: 'reference',
     limits: [
       {
-        name: 'rows',
+        name: "rows (neighborIndex 'brute-force', and xi extraction)",
         maximum: 4096,
-        reason: 'Reachability is computed over all point pairs and the order is built serially.',
+        reason:
+          'Every visit scans every row; xi walks the ordering in one invocation. The order is built serially.',
         source: 'modules/analysis/src/gpu-spatial-analysis/spatial-clustering/gpu-optics.ts'
+      },
+      {
+        name: "rows (neighborIndex 'grid', the default above 4096)",
+        maximum: 65536,
+        reason:
+          'A GPUNeighborSearch radius list bounds each relaxation, but the order is still built one visit after another in one workgroup, with batches as command nodes.',
+        source: 'modules/analysis/src/gpu-spatial-analysis/spatial-clustering/gpu-optics.ts'
+      }
+    ]
+  },
+  GPULocalKriging: {
+    limits: [
+      {
+        name: 'neighborCount',
+        maximum: 32,
+        reason: 'The neighbor list and the dense local system are held per query invocation.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging.ts'
+      },
+      {
+        name: 'positions.length (default exhaustive scan)',
+        maximum: 4096,
+        reason:
+          "sampleIndex 'auto' scans every sample up to this count and takes candidates from a GPUNeighborSearch grid above it.",
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging.ts'
+      },
+      {
+        name: "samples * queries (any exhaustive scan, explicit or chosen by sampleIndex 'auto')",
+        maximum: 2 ** 32,
+        reason:
+          "Each query invocation scans every sample; the exhaustive-scan work ceiling. 'auto' takes the grid above it.",
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging.ts'
       }
     ]
   },
@@ -1215,6 +1278,121 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
         reason: 'Component labels are hooked in a bounded number of gated rounds.',
         source:
           'modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-locations.ts'
+      }
+    ]
+  },
+  // Internal contributor (not a public operator): recorded here for contract rule 12, so its
+  // limits stay beside the others until it is exported.
+  GPUSnapRoundedNoding: {
+    limitation:
+      'Planar only. lines.positions rows, and 4 x (rows + intersectionCapacity), are at most the device segment-intersection vertex limit (getGPUSegmentIntersectionMaximumVertexCount); leafCapacity must be a power of two. Incomplete output sets candidateOverflow or overflow.'
+  },
+  GPUNestedInterpolationValidation: {
+    tier: 'reference',
+    limits: [
+      {
+        name: 'rows',
+        maximum: 256,
+        reason: 'The outer-mask overlap check and each fold fit run in single invocations.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-nested-interpolation-validation.ts'
+      },
+      {
+        name: 'foldCount',
+        maximum: 16,
+        reason: 'Outer folds are unrolled into separate command nodes.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-nested-interpolation-validation.ts'
+      },
+      {
+        name: 'innerFoldCount',
+        maximum: 8,
+        reason: 'Inner folds are unrolled per candidate inside each outer fold.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-nested-interpolation-validation.ts'
+      },
+      {
+        name: 'candidates',
+        maximum: 16,
+        reason: 'The hyperparameter ladder is searched exhaustively.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-nested-interpolation-validation.ts'
+      },
+      {
+        name: 'neighborCount',
+        maximum: 32,
+        reason: 'Each local system is a bounded dense solve.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-nested-interpolation-validation.ts'
+      }
+    ]
+  },
+  addResistanceConnectivityRecipe: {
+    tier: 'reference',
+    limits: [
+      {
+        name: 'vertexCount',
+        maximum: 256,
+        reason: 'One solver thread keeps five private arrays of one value per vertex.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/landscape-ecology/resistance-connectivity.ts'
+      },
+      {
+        name: 'edges.length',
+        maximum: 65536,
+        reason: 'The single solver thread sweeps every edge in every conjugate gradient iteration.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/landscape-ecology/resistance-connectivity.ts'
+      }
+    ]
+  },
+  addSparseResistanceConnectivityRecipe: {
+    limits: [
+      {
+        name: 'vertexCount',
+        maximum: 1048576,
+        reason: 'The vertex-wide reduction trees and label arrays stay within one binding.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/landscape-ecology/sparse-resistance-connectivity.ts'
+      },
+      {
+        name: 'edges.length',
+        maximum: 2097152,
+        reason: 'Twice as many half-edge entries stay within one 128 MiB binding of uint32 pairs.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/landscape-ecology/sparse-resistance-connectivity.ts'
+      },
+      {
+        name: 'maximumIterations',
+        maximum: 4096,
+        reason: 'Conjugate gradient iterations are unrolled, five command nodes each.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/landscape-ecology/sparse-resistance-connectivity.ts'
+      }
+    ]
+  },
+  addRasterResistanceConnectivityRecipe: {
+    limits: [
+      {
+        name: 'grid cells (width * height)',
+        maximum: 1048576,
+        reason: 'Every cell is a vertex of the sparse resistance solve.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/landscape-ecology/raster-resistance-connectivity.ts'
+      },
+      {
+        name: 'edge slots (grid cells * 2 for neighborhood 4, * 4 for neighborhood 8)',
+        maximum: 2097152,
+        reason: 'Every edge slot is an edge row of the sparse resistance solve.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/landscape-ecology/raster-resistance-connectivity.ts'
+      },
+      {
+        name: 'maximumIterations',
+        maximum: 4096,
+        reason: 'Conjugate gradient iterations are unrolled, five command nodes each.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/landscape-ecology/raster-resistance-connectivity.ts'
       }
     ]
   },

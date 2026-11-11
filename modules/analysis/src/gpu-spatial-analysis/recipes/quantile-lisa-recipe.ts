@@ -10,7 +10,7 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -83,12 +83,12 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUQuantileLISAProps) {
     this.id = props.id ?? 'quantile-lisa';
-    validatePackedView(props.values, ['float32'], this.id);
-    validatePackedView(props.quantileParameters, ['uint32'], this.id);
-    if (props.mask) validatePackedView(props.mask, ['uint32'], this.id);
+    validateSinglePackedView(props.values, ['float32'], this.id);
+    validateSinglePackedView(props.quantileParameters, ['uint32'], this.id);
+    if (props.mask) validateSinglePackedView(props.mask, ['uint32'], this.id);
     for (const key of ['membership', 'classes', 'validCount', 'invalidQuantile'] as const)
-      validatePackedView(props.output[key], ['uint32'], this.id);
-    validatePackedView(props.output.boundaries, ['float32'], this.id);
+      validateSinglePackedView(props.output[key], ['uint32'], this.id);
+    validateSinglePackedView(props.output.boundaries, ['float32'], this.id);
     // Quantile settings hold exactly the two resident control words (count, selected quantile).
     validateViewLength(this.id, 'quantileParameters', props.quantileParameters, 2);
     // Quantile boundaries need at least three rows to be defined.

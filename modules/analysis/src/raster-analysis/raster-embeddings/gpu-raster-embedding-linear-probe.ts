@@ -47,7 +47,7 @@ export type GPURasterEmbeddingLinearProbeProps = {
   dimensions: number;
   vectors: GraphDataView<'float32'>;
   /** Per-pixel QA; zero makes the pixel invalid. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Number of classes, in `[1, 64]`. */
   classCount: number;
   /** Host-trained weights, `class * dimensions + band` (scikit-learn's `coef_`). Contents are per-frame. */
@@ -88,7 +88,7 @@ export class GPURasterEmbeddingLinearProbe implements GPUCommandNodeProducer {
       props.vectors,
       pixelCount,
       dimensions,
-      props.validity
+      props.mask
     );
     validateRequirement(
       id,
@@ -107,8 +107,8 @@ export class GPURasterEmbeddingLinearProbe implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {vectors, validity, weights, bias} = this.props;
-    return [vectors, weights, bias, ...(validity ? [validity] : [])];
+    const {vectors, mask, weights, bias} = this.props;
+    return [vectors, weights, bias, ...(mask ? [mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -132,7 +132,7 @@ export class GPURasterEmbeddingLinearProbe implements GPUCommandNodeProducer {
           rasterBinding('vectors', props.vectors),
           rasterBinding('weights', props.weights),
           rasterBinding('bias', props.bias),
-          ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+          ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
           rasterBinding('labels', output.labels, true),
           ...(output.confidence ? [rasterBinding('confidence', output.confidence, true)] : []),
           ...(output.probabilities
@@ -141,7 +141,7 @@ export class GPURasterEmbeddingLinearProbe implements GPUCommandNodeProducer {
         ],
         declarations: RASTER_FINITE_WGSL,
         body: `var vector: array<f32, ${dimensions}>;
-var isValid = ${props.validity ? 'validity[validityOffset + index] != 0u' : 'true'};
+var isValid = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
 for (var band = 0u; band < ${dimensions}u; band++) {
   let value = vectors[vectorsOffset + index * ${dimensions}u + band];
   if (!finite(value)) { isValid = false; }

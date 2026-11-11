@@ -16,7 +16,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -141,7 +141,7 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
     if (!props.neighbors.distances) {
       throw new Error(`${id} neighbors.distances is required`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LOCAL_OUTLIER_FACTOR_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_LOCAL_OUTLIER_FACTOR_PARAMETER_LENGTH} float32 values`
@@ -153,19 +153,19 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
       ['localReachabilityDensity', output.localReachabilityDensity],
       ['lof', output.lof]
     ] as const) {
-      validatePackedView(view, ['float32'], `${id} output.${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
       if (view.length !== rows) {
         throw new Error(`${id} output.${name} length must equal the neighbors row count`);
       }
     }
     if (output.outlier) {
-      validatePackedView(output.outlier, ['uint32'], `${id} output.outlier`);
+      validateSinglePackedView(output.outlier, ['uint32'], `${id} output.outlier`);
       if (output.outlier.length !== rows) {
         throw new Error(`${id} output.outlier length must equal the neighbors row count`);
       }
     }
     if (output.outlierCount) {
-      validatePackedView(output.outlierCount, ['uint32'], `${id} output.outlierCount`);
+      validateSinglePackedView(output.outlierCount, ['uint32'], `${id} output.outlierCount`);
       if (output.outlierCount.length < 1) {
         throw new Error(`${id} output.outlierCount must hold one uint32`);
       }

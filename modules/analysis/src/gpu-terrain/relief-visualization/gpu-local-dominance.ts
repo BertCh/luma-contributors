@@ -330,7 +330,7 @@ const NORMALIZATION: f32 = ${getWGSLFloatLiteral(shifts.normalization)};
 const SHIFTS = array<vec2<i32>, ${shifts.count}>(${offsets});
 const FACTORS = array<f32, ${shifts.count}>(${factors});`,
         body: `let isValid = validity[validityOffset + index] != 0u;
-  var value = getNaN(index);
+  var value = getQuietNaN(index);
   if (isValid) {
     let observerHeight = settings[settingsOffset];
     let verticalExaggeration = settings[settingsOffset + 1u];

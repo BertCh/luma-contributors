@@ -138,6 +138,26 @@ it('GPUNetworkAnalyticsColumns handles a directed network with a reverse CSR', a
   expect(result.components).toEqual(Array.from(componentsOracle(nodeCount, result.csr)));
 });
 
+it('GPUNetworkAnalyticsColumns degree skips dead slots and counts a self-loop slot once (network-paths-06)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Review network-paths-06. `neighbors` indices >= nodeCount are documented as ignored, but the
+  // degree was the offset difference, which counted them. By hand: node 0 has the slots
+  // [1, 0xffffffff, 7] of which one is live; node 1 has [0]; node 2 has one self-loop slot,
+  // which counts once (the rule of luma.gl's `GPUGraphAlgorithmsDegree`); node 3 has none.
+  const edges: NetworkEdge[] = [
+    [0, 1, 1],
+    [0, 0xffffffff, 1],
+    [0, 7, 1],
+    [1, 0, 1],
+    [2, 2, 1]
+  ];
+  const result = await runColumns(device, {nodeCount: 4, edges});
+  expect(result.degree).toEqual([1, 1, 1, 0]);
+  expect(result.degreeExtent).toEqual([0, 1]);
+  expect(result.components).toEqual([0, 0, 2, 3]);
+});
+
 it('GPUNetworkAnalyticsColumns reports an exhausted component budget', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

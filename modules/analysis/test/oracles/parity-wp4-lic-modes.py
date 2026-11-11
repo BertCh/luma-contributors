@@ -113,7 +113,12 @@ def make_case(name, field, width, height, step_count, settings, mode):
         for direction in [-1, 1]:
             def velocity(time, packed):
                 sampled = sample(packed.reshape(-1, 2))
-                return (direction * cells * sampled / np.linalg.norm(sampled, axis=-1)[:, None]).ravel()
+                # Tangent in world space, one stepLength of output pixels per unit time: the unit world
+                # direction times one scalar. (Before 2026-11-10 this was `cells * unit`, which bends the
+                # trace on non-square cells; the two agree on square cells and on axis-aligned flow, so
+                # the committed fixtures did not change.)
+                unit = sampled / np.linalg.norm(sampled, axis=-1)[:, None]
+                return (direction * unit / np.linalg.norm(unit / cells, axis=-1)[:, None]).ravel()
             times = np.arange(1, step_count + 1) * settings['stepLength']
             solution = solve_ivp(velocity, (0, times[-1]), centres.ravel(), t_eval=times,
                                  method='DOP853', atol=1e-12, rtol=1e-12,

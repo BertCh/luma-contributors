@@ -67,9 +67,74 @@ const HEIGHT: f32 = ${props.height}.0;`,
 }
 
 /**
+ * Writes the breaks {@link GPUIsobands} reads so that the isochrone bands are upper-inclusive.
+ * `GPUIsobands` puts a value in band `k` when exactly `k` breaks are `<=` it, which is
+ * `[b[k - 1], b[k])`. Each break is replaced by the next float32 above it, and "the next float
+ * above `b` is `<=` the value" is the same test as "`b <` the value", so band `k` becomes
+ * `(b[k - 1], b[k]]`: a cost exactly on a break is within it, as in `GPUNetworkReachability`
+ * (review network-paths-07). A break of zero becomes the smallest normal float32 and NaN or
+ * infinite breaks pass through. The contour geometry moves by one unit in the last place. @internal
+ */
+export function createIsochronesInclusiveBreaksNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    costBreaks: GraphDataView<'float32'>;
+    inclusiveBreaks: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'inclusive-breaks',
+    bindings: [
+      {name: 'costBreaks', view: props.costBreaks, type: 'u32', access: 'read'},
+      {name: 'inclusiveBreaks', view: props.inclusiveBreaks, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: props.costBreaks.length,
+    body: `let bits = costBreaks[costBreaksOffset + index];
+  let magnitude = bits & 0x7fffffffu;
+  var nextBits = bits;
+  if (magnitude == 0u) {
+    // Subnormal comparisons are not portable, so zero steps to the smallest normal number.
+    nextBits = 0x00800000u;
+  } else if (magnitude < 0x7f800000u) {
+    // Positive floats grow with their bits, negative floats shrink in magnitude toward zero.
+    nextBits = select(bits + 1u, bits - 1u, (bits & 0x80000000u) != 0u);
+  }
+  inclusiveBreaks[inclusiveBreaksOffset + index] = nextBits;`
+  });
+}
+
+/**
+ * Max mode only: finds the reverse direction of the slot's road, a slot `target -> source` with a
+ * valid weight and a finite target cost. Among several such slots (parallel roads share the
+ * straight segment between their nodes) it keeps the costliest, which is exact when every parallel
+ * road lists both directions with one weight. Declares `reverseWeight` (negative when the road is
+ * one-way, a self-loop, or its far end is unreached) and `reverseCost`.
+ */
+const ISOCHRONES_REVERSE_DIRECTION_WGSL = /* wgsl */ `var reverseWeight = -1.0;
+  let reverseCost = costs[costsOffset + targetNode];
+  if (targetNode != source && isochronesIsFinite(reverseCost) && reverseCost >= 0.0) {
+    let edgeCount = offsets[offsetsOffset + NODE_COUNT];
+    let firstReverse = min(offsets[offsetsOffset + targetNode], edgeCount);
+    let lastReverse = min(offsets[offsetsOffset + targetNode + 1u], edgeCount);
+    for (var reverseSlot = firstReverse; reverseSlot < lastReverse; reverseSlot++) {
+      if (neighbors[neighborsOffset + reverseSlot] != source) { continue; }
+      let candidateWeight = weights[weightsOffset + reverseSlot];
+      if (candidateWeight >= 0.0 && isochronesIsFinite(candidateWeight)) {
+        reverseWeight = max(reverseWeight, candidateWeight);
+      }
+    }
+  }`;
+
+/**
  * One thread per edge: samples the edge at a bounded number of points, interpolates the cost
  * linearly from the source node cost along the edge weight, and applies `atomicMin` or `atomicMax`
- * to every pixel within the buffer of each sample. Costs are non-negative f32, so their bit
+ * to every pixel within the buffer of each sample. In max mode the cost of a sample is the cheaper
+ * of the two directions of its road (`min(cost[u] + t w, cost[v] + (1 - t) wReverse)` when the
+ * reverse slot exists), so the maximum runs over road samples and roads, never over the two
+ * directions of one road (review network-paths-01). Costs are non-negative f32, so their bit
  * patterns order like integers; max mode stores `bits + 1` so zero means untouched. With
  * `assignments` (min mode) the low 8 bits of the word hold the facility row of the edge's source
  * node and the cost keeps its top 24 bits (relative precision 2^-15, rounded down), so the
@@ -179,11 +244,22 @@ fn isochronesGetPosition(node: u32) -> vec2f {
   }
   let spacing = 0.5 * radius;
   let sampleCount = clamp(u32(ceil(length(endPoint - startPoint) / spacing)) + 1u, 2u, MAXIMUM_SAMPLES);
+  ${isMin ? '' : ISOCHRONES_REVERSE_DIRECTION_WGSL}
   for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++) {
     let t = f32(sampleIndex) / f32(sampleCount - 1u);
     let point = mix(startPoint, endPoint, vec2f(t));
     if (any(point < extentLow) || any(point > extentHigh)) { continue; }
-    let edgeCost = sourceCost + t * weight;
+    ${
+      isMin
+        ? 'let edgeCost = sourceCost + t * weight;'
+        : `// The network cost of a road point is the cheaper of the two directions that reach it. The
+    // reverse parameter is formed like the reverse slot's own t, so both slots of a road agree.
+    var edgeCost = sourceCost + t * weight;
+    if (reverseWeight >= 0.0) {
+      let reverseT = f32(sampleCount - 1u - sampleIndex) / f32(sampleCount - 1u);
+      edgeCost = min(edgeCost, reverseCost + reverseT * reverseWeight);
+    }`
+    }
     let centerPixel = vec2i(floor((point - minimum) / cellSize));
     for (var dy = -reachY; dy <= reachY; dy++) {
       let row = centerPixel.y + dy;

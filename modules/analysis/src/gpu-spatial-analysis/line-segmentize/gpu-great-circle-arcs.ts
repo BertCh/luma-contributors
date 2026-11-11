@@ -14,7 +14,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSphereRadius,
@@ -31,7 +31,11 @@ import {
 } from './line-segmentize-kernels';
 import {GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} from './line-segmentize-parameters';
 import type {GPULineGeometryOutput} from './line-segmentize-types';
-import {getLineGeometryOutputViews, validateLineGeometryOutput} from './line-geometry-output';
+import {
+  createLineGeometryCountNode,
+  getLineGeometryOutputViews,
+  validateLineGeometryOutput
+} from './line-geometry-output';
 
 const OPERATION = 'GPUGreatCircleArcs';
 
@@ -77,7 +81,8 @@ export type GPUGreatCircleArcsProps = {
   parameters: GraphDataView<'float32'>;
   /**
    * Arc lines, one output line per pair (`lineOffsets` has `pairCount + 1` rows).
-   * `output.status.count` counts output vertices. The optional `output.status.approximation`
+   * `output.status.count` and `requiredCount` count lines (the pair count); `vertexCount` and
+   * `requiredVertexCount` count vertices. The optional `output.status.approximation`
    * receives `1` when a pair needed more than `maximumSegmentCount` segments to respect the
    * maximum length; otherwise `0`.
    */
@@ -125,8 +130,8 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
     this.maximumSegmentCount =
       props.maximumSegmentCount ?? GPU_GREAT_CIRCLE_ARCS_DEFAULT_MAXIMUM_SEGMENT_COUNT;
     const {id} = this;
-    validatePackedView(props.sources, ['float32x2'], `${id} sources`);
-    validatePackedView(props.targets, ['float32x2'], `${id} targets`);
+    validateSinglePackedView(props.sources, ['float32x2'], `${id} sources`);
+    validateSinglePackedView(props.targets, ['float32x2'], `${id} targets`);
     const pairCount = props.sources.length;
     if (pairCount < 1) {
       throw new Error(`${id} needs at least one pair`);
@@ -142,7 +147,7 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
       1,
       Math.floor(0xffffffff / pairCount) - 1
     );
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} float32 values`
@@ -156,7 +161,10 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
     ]);
   }
 
-  /** Returns the count node, the scan nodes, the emit node, the publish node and an optional source-line-index node. */
+  /**
+   * Returns the count node, the scan nodes, the emit node, the publish node, the line-count node
+   * and an optional source-line-index node.
+   */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -219,10 +227,15 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
         starts,
         outputLineOffsets: output.lineOffsets,
         capacity: output.positions.length,
-        count: output.status.count,
         overflow: output.status.overflow,
-        requiredCount: output.status.requiredCount,
-        lineCountOutput: output.status.lineCount
+        vertexCount: output.status.vertexCount,
+        requiredVertexCount: output.status.requiredVertexCount
+      }),
+      createLineGeometryCountNode<Parameters>(graph, {
+        id,
+        operation: OPERATION,
+        output,
+        lineCapacity: pairCount
       })
     ];
     if (output.sourceLineIndices) {

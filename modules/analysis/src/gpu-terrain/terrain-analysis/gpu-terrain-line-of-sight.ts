@@ -21,7 +21,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPURasterExtremaPyramidLayout,
@@ -320,20 +320,20 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
     validateRasterGrid(id, props.grid);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
-    validatePackedView(props.pairs, ['float32x4'], `${id} pairs`);
+    validateSinglePackedView(props.pairs, ['float32x4'], `${id} pairs`);
     const pairCount = props.pairs.length;
     if (props.pairHeights) {
-      validatePackedView(props.pairHeights, ['float32x2'], `${id} pairHeights`);
+      validateSinglePackedView(props.pairHeights, ['float32x2'], `${id} pairHeights`);
       if (props.pairHeights.length !== pairCount) {
         throw new Error(`${id} pairHeights must contain one row per pair`);
       }
     }
-    validatePackedView(output.visibility, ['uint32'], `${id} output.visibility`);
+    validateSinglePackedView(output.visibility, ['uint32'], `${id} output.visibility`);
     if (output.visibility.length !== pairCount) {
       throw new Error(`${id} output.visibility must contain one value per pair`);
     }
     if (output.clearance) {
-      validatePackedView(output.clearance, ['float32'], `${id} output.clearance`);
+      validateSinglePackedView(output.clearance, ['float32'], `${id} output.clearance`);
       if (output.clearance.length !== pairCount) {
         throw new Error(`${id} output.clearance must contain one value per pair`);
       }

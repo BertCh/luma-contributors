@@ -25,8 +25,41 @@ export const GPU_COMPOSITE_SCORE_PRINCIPAL_COMPONENT_SUMMARY = {
 /** Number of float32 elements in the `principalComponentSummary` output. */
 export const GPU_COMPOSITE_SCORE_PRINCIPAL_COMPONENT_SUMMARY_LENGTH = 3;
 
-/** Fixed number of power-iteration steps of the first principal component. */
+/**
+ * Step count of the power iteration that earlier versions used for the first principal
+ * component.
+ *
+ * @deprecated Not used. The first component is a closed form for two indicators and a Jacobi
+ * eigen decomposition otherwise; the export stays so that importers keep compiling.
+ */
 export const GPU_COMPOSITE_SCORE_POWER_ITERATIONS = 64;
+
+/** Largest number of Jacobi sweeps of the eigen decomposition of the correlation matrix. */
+export const GPU_COMPOSITE_SCORE_JACOBI_MAXIMUM_SWEEPS = 24;
+
+/**
+ * The Jacobi sweeps stop when the off-diagonal Frobenius norm is at most this fraction of the
+ * diagonal norm: the float32 resolution of a correlation matrix.
+ */
+export const GPU_COMPOSITE_SCORE_JACOBI_TOLERANCE = 1e-7;
+
+/**
+ * Power steps applied to the Jacobi eigenvector. They start at the answer and only damp the
+ * float32 rounding that the rotations leave in the other eigen-directions.
+ */
+export const GPU_COMPOSITE_SCORE_POLISH_STEPS = 4;
+
+/**
+ * The loadings count as summing to zero when the absolute value of their sum is at most this
+ * fraction of the sum of their absolute values.
+ */
+export const GPU_COMPOSITE_SCORE_ZERO_SUM_TOLERANCE = 1e-5;
+
+/**
+ * Two loadings tie for the largest magnitude when they differ by at most this fraction of it.
+ * The first of the tied loadings decides the sign of zero-sum loadings.
+ */
+export const GPU_COMPOSITE_SCORE_LOADING_TIE_TOLERANCE = 1e-4;
 
 /** Scaler codes stored in parameter slot 0. */
 export const GPU_COMPOSITE_SCORE_SCALER = {

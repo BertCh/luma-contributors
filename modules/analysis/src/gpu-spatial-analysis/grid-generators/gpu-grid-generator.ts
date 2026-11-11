@@ -13,7 +13,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -272,7 +272,7 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
     if (this.cellCount * Math.max(this.verticesPerCell, 1) > 0x7fffffff) {
       throw new Error(`${id} grid is too large`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_GRID_GENERATOR_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_GRID_GENERATOR_PARAMETER_LENGTH} float32 values`
@@ -280,7 +280,7 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
     }
     const {positions, centers, corners, cornerIntersects} = props.output;
     if (corners) {
-      validatePackedView(corners, ['float32x2'], `${id} output.corners`);
+      validateSinglePackedView(corners, ['float32x2'], `${id} output.corners`);
       if (
         !this.cornerCount ||
         this.cornerCount > 0x7fffffff ||
@@ -290,7 +290,7 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
       }
     }
     if (cornerIntersects) {
-      validatePackedView(cornerIntersects, ['uint32'], `${id} output.cornerIntersects`);
+      validateSinglePackedView(cornerIntersects, ['uint32'], `${id} output.cornerIntersects`);
       if (!corners || cornerIntersects.length !== this.cornerCount) {
         throw new Error(`${id} output.cornerIntersects needs one row per output corner`);
       }
@@ -306,7 +306,7 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
       throw new Error(`${id} ${props.gridType} grids need output.positions`);
     }
     if (positions) {
-      validatePackedView(positions, ['float32x2'], `${id} output.positions`);
+      validateSinglePackedView(positions, ['float32x2'], `${id} output.positions`);
       if (positions.length !== this.cellCount * this.verticesPerCell) {
         throw new Error(
           `${id} output.positions must hold ${this.cellCount * this.verticesPerCell} rows`
@@ -314,7 +314,7 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
       }
     }
     if (centers) {
-      validatePackedView(centers, ['float32x2'], `${id} output.centers`);
+      validateSinglePackedView(centers, ['float32x2'], `${id} output.centers`);
       if (centers.length !== this.cellCount) {
         throw new Error(`${id} output.centers must hold ${this.cellCount} rows`);
       }
@@ -336,12 +336,12 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
     }
     if (extent) {
       if (intersects) {
-        validatePackedView(intersects, ['uint32'], `${id} output.intersects`);
+        validateSinglePackedView(intersects, ['uint32'], `${id} output.intersects`);
       }
-      validatePackedView(extent.positions, ['float32x2'], `${id} extent.positions`);
-      validatePackedView(extent.featureOffsets, ['uint32'], `${id} extent.featureOffsets`);
-      validatePackedView(extent.polygonOffsets, ['uint32'], `${id} extent.polygonOffsets`);
-      validatePackedView(extent.ringOffsets, ['uint32'], `${id} extent.ringOffsets`);
+      validateSinglePackedView(extent.positions, ['float32x2'], `${id} extent.positions`);
+      validateSinglePackedView(extent.featureOffsets, ['uint32'], `${id} extent.featureOffsets`);
+      validateSinglePackedView(extent.polygonOffsets, ['uint32'], `${id} extent.polygonOffsets`);
+      validateSinglePackedView(extent.ringOffsets, ['uint32'], `${id} extent.ringOffsets`);
       if (intersects && intersects.length !== this.cellCount) {
         throw new Error(`${id} output.intersects must hold ${this.cellCount} rows`);
       }

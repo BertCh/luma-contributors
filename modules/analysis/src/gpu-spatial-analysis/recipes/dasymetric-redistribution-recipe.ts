@@ -50,7 +50,13 @@ export type GPUDasymetricRedistributionRecipeProps = {
   /** Planar grid. Ancillary density is per square affine-coordinate unit. */
   grid: GPURasterMetadata;
   source:
-    | {kind: 'polygons'; zones: GPUPolygonGeometryFields; tupleCapacity: number}
+    | {
+        kind: 'polygons';
+        zones: GPUPolygonGeometryFields;
+        tupleCapacity: number;
+        /** `getGPURasterFractionalCoverageParameterValues(grid)` view: per-frame georeference of `grid`. */
+        parameters: GraphDataView<'float32'>;
+      }
     | {kind: 'coverage'; coverage: FractionalCoverage};
   /** Nonnegative finite extensive totals in stable source-feature row order. */
   sourceTotals: GraphDataView<'float32'>;
@@ -149,6 +155,7 @@ export function addDasymetricRedistributionRecipe<Parameters>(
         id: `${id}-coverage`,
         grid: props.grid,
         zones: props.source.zones,
+        parameters: props.source.parameters,
         output: coverage
       })
     );

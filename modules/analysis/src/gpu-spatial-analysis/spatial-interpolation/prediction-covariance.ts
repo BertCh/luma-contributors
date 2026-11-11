@@ -118,7 +118,17 @@ function getMaternCorrelationWGSL(
   };
 }
 
-/** WGSL for one model code: optional statements, then a correlation expression over `scaled`. */
+/**
+ * WGSL for one model code: optional statements, then a correlation expression over `scaled`.
+ *
+ * This is the covariance form of the model family. The semivariogram form (`1 - correlation`,
+ * used by `GPUKriging` and the variogram fit) is `VARIOGRAM_MODEL_SHAPE_WGSL` in
+ * `dataframe-analysis/pair-statistics/variogram-model.ts`, with the same model codes, range
+ * factors and Matern series coefficients. The two are separate on purpose: each form keeps its
+ * digits at a different end (a shape at short lags, a correlation at long lags), so neither can be
+ * computed as one minus the other in float32. The exponential and Gaussian correlations need no
+ * series here: `exp(-x)` near 1 is already the nearest float32 to the correlation.
+ */
 function getCorrelationWGSL(modelCode: number): {statements: string; expression: string} {
   switch (modelCode) {
     case 0:

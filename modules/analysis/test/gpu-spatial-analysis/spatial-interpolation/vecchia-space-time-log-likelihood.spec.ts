@@ -182,6 +182,43 @@ describe('GPUVecchiaSpaceTimeLogLikelihood', () => {
     });
   });
 
+  it('treats a site whose conditioning rows are all excluded as marginal', async () => {
+    // Math correctness review, interpolation-density-06, space-time form. All times are equal,
+    // so the metric model reduces to its joint exponential structure in space: sill 1, nugget
+    // 0.1, range 3000, C(0) = 1.1 and C(1500) = exp(-1.5). Row 0 is excluded but still listed.
+    const harness = await createVecchiaSpaceTimeHarness({
+      positions: [0, 0, 1000, 0, 2500, 0],
+      times: [5, 5, 5],
+      values: [7, 0.8, -0.4],
+      offsets: new Uint32Array([0, 0, 1, 3]),
+      neighbors: new Uint32Array([0, 0, 1]),
+      neighborCount: 4,
+      validity: [0, 1, 1]
+    });
+    destroyers.push(harness.destroy);
+    const termOf = (residual: number, variance: number) =>
+      -0.5 * (Math.log(2 * Math.PI) + Math.log(variance) + (residual * residual) / variance);
+    const crossCovariance = Math.exp(-1.5);
+    const expected =
+      termOf(0.8, 1.1) +
+      termOf(-0.4 - (crossCovariance / 1.1) * 0.8, 1.1 - (crossCovariance * crossCovariance) / 1.1);
+    const result = await harness.evaluate(
+      getGPUVecchiaSpaceTimeLogLikelihoodParameterValues(
+        {
+          type: 'metric',
+          joint: {model: 'exponential', nugget: 0.1, sill: 1, range: 3000},
+          anisotropy: TIME_SCALE
+        },
+        undefined,
+        TIME_SCALE
+      )
+    );
+    expect(result.failedSiteCount).toBe(0);
+    expect(result.excludedSiteCount).toBe(1);
+    expect(result.usedSiteCount).toBe(2);
+    expect(result.logLikelihood).toBeCloseTo(expected, 5);
+  });
+
   it('rejects a Matern 3/2 structure with no nugget', () => {
     expect(() =>
       getGPUVecchiaSpaceTimeLogLikelihoodParameterValues(

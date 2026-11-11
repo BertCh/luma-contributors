@@ -11,7 +11,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -44,13 +44,13 @@ export class GPUNormalizePolygons implements GPUCommandNodeProducer {
   constructor(props: GPUNormalizePolygonsProps) {
     this.id = props.id ?? 'normalize-polygons';
     this.props = props;
-    validatePackedView(props.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.positions, ['float32x2'], this.id);
     for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
-      validatePackedView(props[name], ['uint32'], this.id);
+      validateSinglePackedView(props[name], ['uint32'], this.id);
       validateCapacity(this.id, name, props[name].length, 2);
     }
     for (const name of ['positions', 'ringOffsets', 'polygonOffsets'] as const) {
-      validatePackedView(
+      validateSinglePackedView(
         props.output[name],
         [name === 'positions' ? 'float32x2' : 'uint32'],
         this.id

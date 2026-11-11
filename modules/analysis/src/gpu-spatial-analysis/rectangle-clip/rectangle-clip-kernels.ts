@@ -205,7 +205,11 @@ fn writeVertex(slot: u32, p: vec2<f32>) {
   });
 }
 
-/** Publishes counts and flags and the unclamped totals to `totals = [vertices, lines]`. @internal */
+/**
+ * Publishes the overflow flag and the totals
+ * `totals = [clamped vertices, clamped lines, vertices, lines]` read by {@link createLineTailNode}.
+ * @internal
+ */
 export function createLineClipPublishNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
@@ -218,9 +222,7 @@ export function createLineClipPublishNode<Parameters>(
     lineIndices: GraphDataView<'uint32'>;
     startFlags: GraphDataView<'uint32'>;
     totals: GraphDataView<'uint32'>;
-    count: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
-    requiredCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -229,12 +231,8 @@ export function createLineClipPublishNode<Parameters>(
     {name: 'lineIndices', view: props.lineIndices, type: 'u32', access: 'read'},
     {name: 'startFlags', view: props.startFlags, type: 'u32', access: 'read'},
     {name: 'totals', view: props.totals, type: 'u32', access: 'read_write'},
-    {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   ];
-  if (props.requiredCount) {
-    bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
-  }
   const last = props.starts.length - 1;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
@@ -247,15 +245,16 @@ export function createLineClipPublishNode<Parameters>(
   let lineClamped = min(lineTotal, ${props.lineCapacity}u);
   totals[totalsOffset] = min(vertexTotal, ${props.capacity}u);
   totals[totalsOffset + 1u] = lineClamped;
-  countOut[countOutOffset] = min(vertexTotal, ${props.capacity}u);
-  overflowOut[overflowOutOffset] = select(0u, 1u, vertexTotal > ${props.capacity}u || lineTotal > ${props.lineCapacity}u);
-  ${props.requiredCount ? 'totalOut[totalOutOffset] = vertexTotal;' : ''}`
+  totals[totalsOffset + 2u] = vertexTotal;
+  totals[totalsOffset + 3u] = lineTotal;
+  overflowOut[overflowOutOffset] = select(0u, 1u, vertexTotal > ${props.capacity}u || lineTotal > ${props.lineCapacity}u);`
   });
 }
 
 /**
  * Fills the unused tail of `lineOffsets` (lines at or after `totals[1]`) with the vertex count,
- * and optional source lines with `GPU_LINE_NO_SOURCE`.
+ * and optional source lines with `GPU_LINE_NO_SOURCE`, and writes the line and vertex counts from
+ * the totals of {@link createLineClipPublishNode}.
  *
  * @internal
  */
@@ -267,15 +266,29 @@ export function createLineTailNode<Parameters>(
     totals: GraphDataView<'uint32'>;
     lineOffsets: GraphDataView<'uint32'>;
     sourceLineIndices?: GraphDataView<'uint32'>;
-    lineCount?: GraphDataView<'uint32'>;
+    count: GraphDataView<'uint32'>;
+    requiredCount?: GraphDataView<'uint32'>;
+    vertexCount?: GraphDataView<'uint32'>;
+    requiredVertexCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
     {name: 'totals', view: props.totals, type: 'u32', access: 'read'},
     {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read_write'}
   ];
-  if (props.lineCount) {
-    bindings.push({name: 'lineCountOut', view: props.lineCount, type: 'u32', access: 'read_write'});
+  // Each status scalar is written from its `totals` word on the first invocation.
+  const scalars = [
+    ['count', props.count, 1],
+    ['requiredCount', props.requiredCount, 3],
+    ['vertexCount', props.vertexCount, 0],
+    ['requiredVertexCount', props.requiredVertexCount, 2]
+  ] as const;
+  const scalarWrites: string[] = [];
+  for (const [name, view, word] of scalars) {
+    if (view) {
+      bindings.push({name: `${name}Out`, view, type: 'u32', access: 'read_write'});
+      scalarWrites.push(`${name}Out[${name}OutOffset] = totals[totalsOffset + ${word}u];`);
+    }
   }
   if (props.sourceLineIndices) {
     bindings.push({
@@ -291,7 +304,9 @@ export function createLineTailNode<Parameters>(
     variant: 'line-tail',
     bindings,
     invocationCount: props.lineOffsets.length,
-    body: `${props.lineCount ? 'if (index == 0u) {\n    lineCountOut[lineCountOutOffset] = totals[totalsOffset + 1u];\n  }' : ''}
+    body: `if (index == 0u) {
+    ${scalarWrites.join('\n    ')}
+  }
   if (index >= totals[totalsOffset + 1u]) {
     lineOffsets[lineOffsetsOffset + index] = totals[totalsOffset];
     ${props.sourceLineIndices ? `if (index < ${props.sourceLineIndices.length}u) {\n      sourceLineIndices[sourceLineIndicesOffset + index] = ${GPU_LINE_NO_SOURCE}u;\n    }` : ''}
@@ -338,14 +353,21 @@ fn isInside(p: vec2<f32>) -> bool {
   }
 }
 
+// Crossing of edge s -> e with the stage's boundary line. The interpolation always runs from the
+// lexicographically smaller endpoint (x, then y), whichever way the ring walks the edge: two
+// polygons that share an edge walk it in opposite directions, and interpolating from each one's
+// own start gave clip points one f32 step apart, which breaks exact vertex matching downstream.
 fn getIntersection(s: vec2<f32>, e: vec2<f32>) -> vec2<f32> {
   let bound = getBound();
+  let swap = e.x < s.x || (e.x == s.x && e.y < s.y);
+  let first = select(s, e, swap);
+  let second = select(e, s, swap);
   if (BOUNDARY < 2u) {
-    let t = (bound - s.x) / (e.x - s.x);
-    return vec2<f32>(bound, s.y + t * (e.y - s.y));
+    let t = (bound - first.x) / (second.x - first.x);
+    return vec2<f32>(bound, first.y + t * (second.y - first.y));
   }
-  let t = (bound - s.y) / (e.y - s.y);
-  return vec2<f32>(s.x + t * (e.x - s.x), bound);
+  let t = (bound - first.y) / (second.y - first.y);
+  return vec2<f32>(first.x + t * (second.x - first.x), bound);
 }
 
 // Previous vertex of the ring that owns \`row\`, or false when the row is outside every ring.
@@ -541,33 +563,39 @@ const CAPACITY: u32 = ${props.capacity}u;`,
   });
 }
 
-/** Publishes count, accumulated overflow, required count (exact or supplied bound) and ring count. @internal */
+/**
+ * Publishes the accumulated overflow and the optional clamped vertex count and required vertex
+ * count (exact or supplied bound).
+ * @internal
+ */
 export function createPolygonPublishNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
     operation: string;
     capacity: number;
-    ringCount: number;
     stageFlags: GraphDataView<'uint32'>;
-    count: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
-    requiredCount?: GraphDataView<'uint32'>;
+    vertexCount?: GraphDataView<'uint32'>;
+    requiredVertexCount?: GraphDataView<'uint32'>;
     /** Stage-flags word holding a caller-computed resize bound; defaults to the final total (3). */
-    requiredCountIndex?: number;
-    lineCount?: GraphDataView<'uint32'>;
+    requiredVertexCountIndex?: number;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
     {name: 'stageFlags', view: props.stageFlags, type: 'u32', access: 'read'},
-    {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   ];
-  if (props.requiredCount) {
-    bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
+  if (props.vertexCount) {
+    bindings.push({name: 'countOut', view: props.vertexCount, type: 'u32', access: 'read_write'});
   }
-  if (props.lineCount) {
-    bindings.push({name: 'lineCountOut', view: props.lineCount, type: 'u32', access: 'read_write'});
+  if (props.requiredVertexCount) {
+    bindings.push({
+      name: 'totalOut',
+      view: props.requiredVertexCount,
+      type: 'u32',
+      access: 'read_write'
+    });
   }
   // stageFlags holds each stage's unclamped total; any stage above capacity truncated the result.
   return createWGSLKernelNode<Parameters>(graph, {
@@ -581,9 +609,8 @@ export function createPolygonPublishNode<Parameters>(
   for (var stage = 0u; stage < 4u; stage++) {
     overflow = overflow || stageFlags[stageFlagsOffset + stage] > ${props.capacity}u;
   }
-  countOut[countOutOffset] = min(finalTotal, ${props.capacity}u);
   overflowOut[overflowOutOffset] = select(0u, 1u, overflow);
-  ${props.requiredCount ? `totalOut[totalOutOffset] = stageFlags[stageFlagsOffset + ${props.requiredCountIndex ?? 3}u];` : ''}
-  ${props.lineCount ? `lineCountOut[lineCountOutOffset] = ${props.ringCount}u;` : ''}`
+  ${props.vertexCount ? `countOut[countOutOffset] = min(finalTotal, ${props.capacity}u);` : ''}
+  ${props.requiredVertexCount ? `totalOut[totalOutOffset] = stageFlags[stageFlagsOffset + ${props.requiredVertexCountIndex ?? 3}u];` : ''}`
   });
 }

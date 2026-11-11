@@ -4,4 +4,4 @@
 
 import './gpu-spatial-clustering.spec';
 import './gpu-clustering-extras.spec';
-import './gpu-kmeans.node.spec';
+import './gpu-spatial-kmeans.node.spec';

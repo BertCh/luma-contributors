@@ -52,7 +52,7 @@ const CELL_COUNT: u32 = ${count}u;`;
     ],
     `var elder = NONE;
   if (index < CELL_COUNT) {
-    if (validity[validityOffset + index] != 0u && isSpillFinite(values[valuesOffset + index])) {
+    if (validity[validityOffset + index] != 0u && isFiniteValue(values[valuesOffset + index])) {
       elder = index;
     }
   }

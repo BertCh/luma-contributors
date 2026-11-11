@@ -32,7 +32,11 @@ export const GPU_POINT_CLOUD_MAXIMUM_GROUND_RADIUS_COUNT = 32;
 /** Largest square-window radius, in cells, of the progressive morphological filter. Each cell scans (2r+1)^2 neighbors. */
 export const GPU_POINT_CLOUD_MAXIMUM_GROUND_RADIUS_CELLS = 32;
 
-/** Largest SMRF opening window, in cells. The unrolled openings grow as the square of the radius (about 2,100 nodes at 64). */
+/**
+ * Largest SMRF opening window, in cells. The openings are unrolled into published raster
+ * morphology passes of radius at most 8, and their number grows as the square of the window
+ * (about 350 passes at 64).
+ */
 export const GPU_POINT_CLOUD_MAXIMUM_SMRF_WINDOW_CELLS = 64;
 
 /** Largest SMRF net-cut spacing, in cells. The cut openings use diamonds of twice this radius. */

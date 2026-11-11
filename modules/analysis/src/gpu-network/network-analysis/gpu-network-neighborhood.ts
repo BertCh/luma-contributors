@@ -17,7 +17,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUNetworkTopologyViews,
@@ -144,7 +144,7 @@ export class GPUNetworkNeighborhood implements GPUCommandNodeProducer {
       ['output.edgeMask', output.edgeMask]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     for (const compactOutput of [output.nodes, output.edges]) {

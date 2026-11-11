@@ -29,7 +29,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUGeographicDistribution} from '../geographic-distribution/index';
 import {GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} from '../geographic-distribution/index';
@@ -185,7 +185,7 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
     );
     const {id} = this;
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -193,17 +193,17 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
     if (rows > MAXIMUM_ROWS) {
       throw new Error(`${id} supports fewer than 2^24 rows`);
     }
-    validatePackedView(props.labels, ['uint32'], `${id} labels`);
+    validateSinglePackedView(props.labels, ['uint32'], `${id} labels`);
     if (props.labels.length !== rows) {
       throw new Error(`${id} labels length must equal positions length`);
     }
     if (props.weights) {
-      validatePackedView(props.weights, ['float32'], `${id} weights`);
+      validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
       if (props.weights.length !== rows) {
         throw new Error(`${id} weights length must equal positions length`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} float32 values`
@@ -234,7 +234,7 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
         continue;
       }
       outputCount++;
-      validatePackedView(view, formats, `${id} output.${name}`);
+      validateSinglePackedView(view, formats, `${id} output.${name}`);
       if (view.length < length) {
         throw new Error(`${id} output.${name} must hold at least ${length} rows`);
       }

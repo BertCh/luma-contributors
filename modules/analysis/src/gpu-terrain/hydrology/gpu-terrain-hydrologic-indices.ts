@@ -20,7 +20,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateRasterCellSizeMode,
@@ -33,6 +33,7 @@ import {
   validateRasterBandBelongsToGraph,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 
@@ -162,6 +163,8 @@ export class GPUTerrainHydrologicIndices implements GPUCommandNodeProducer {
     validateRasterParameters(id, props.parameters, GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // The D8 descent slope divides by the diagonal step sqrt(x^2 + y^2): orthogonal axes only.
+    validateRasterGridOrthogonal(id, props.grid);
     const outputs = this.getOutputs();
     if (outputs.length === 0) {
       throw new Error(`${id} requires at least one output`);
@@ -170,7 +173,7 @@ export class GPUTerrainHydrologicIndices implements GPUCommandNodeProducer {
       ['accumulation', props.accumulation],
       ...outputs.map(([outputName, outputView]) => [`output.${outputName}`, outputView] as const)
     ] as const) {
-      validatePackedView(view, ['float32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       if (view.length !== cellCount) {
         throw new Error(`${id} ${name} must contain one value per cell`);
       }

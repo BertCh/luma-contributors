@@ -22,7 +22,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/index';
 import {
@@ -242,13 +242,13 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
       props.spatialContext,
       SPATIAL_CONTEXT_SUPPORT
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     if (props.timestampsLow) {
       if (props.timestamps.format !== 'float32') {
         throw new Error(`${id} timestampsLow requires float32 timestamps, not Int64 words`);
       }
-      validatePackedView(props.timestampsLow, ['float32'], `${id} timestampsLow`);
+      validateSinglePackedView(props.timestampsLow, ['float32'], `${id} timestampsLow`);
       if (props.timestampsLow.length !== props.positions.length) {
         throw new Error(`${id} timestampsLow length must equal positions length`);
       }
@@ -259,7 +259,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
       props.temporalContext,
       props.timestampsLow
     );
-    validatePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
     if (props.timestamps.length !== props.positions.length) {
       throw new Error(`${id} timestamps length must equal positions length`);
     }
@@ -277,7 +277,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['float32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       if (view.length !== trackCount) {
         throw new Error(`${id} ${name} length must equal the track count`);
       }
@@ -290,13 +290,13 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['float32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       if (view.length !== props.positions.length) {
         throw new Error(`${id} ${name} length must equal positions length`);
       }
     }
     if (output.trackStopCounts) {
-      validatePackedView(output.trackStopCounts, ['uint32'], `${id} trackStopCounts`);
+      validateSinglePackedView(output.trackStopCounts, ['uint32'], `${id} trackStopCounts`);
       if (output.trackStopCounts.length !== trackCount) {
         throw new Error(`${id} trackStopCounts length must equal the track count`);
       }
@@ -305,7 +305,11 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     if (stops) {
       validateCompactOutput(id, stops);
       if (stops.drawInstanceCount) {
-        validatePackedView(stops.drawInstanceCount, ['uint32'], `${id} stops.drawInstanceCount`);
+        validateSinglePackedView(
+          stops.drawInstanceCount,
+          ['uint32'],
+          `${id} stops.drawInstanceCount`
+        );
         if (stops.drawInstanceCount.length < 1) {
           throw new Error(`${id} stops.drawInstanceCount must contain one uint32 row`);
         }
@@ -320,14 +324,14 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         if (!view) {
           continue;
         }
-        validatePackedView(view, [format], `${id} stops.${name}`);
+        validateSinglePackedView(view, [format], `${id} stops.${name}`);
         if (view.length !== capacity) {
           throw new Error(`${id} stops.${name} length must equal the stop capacity`);
         }
       }
     }
     if (props.parameters) {
-      validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
       if (props.parameters.length < GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH) {
         throw new Error(
           `${id} parameters must hold ${GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH} float32 values`

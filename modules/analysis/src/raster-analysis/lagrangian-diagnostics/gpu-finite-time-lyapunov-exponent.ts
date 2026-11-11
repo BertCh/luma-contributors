@@ -14,7 +14,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -96,6 +96,12 @@ export type GPUFiniteTimeLyapunovExponentProps = {
  * Reference: the FTLE definition of lcs-parcels (MIT) and the OceanParcels Lagrangian_diags
  * tutorial; tests check a linear strain field with the known exponent and a binary64 CPU
  * reference. Ridge or curve extraction (hyperbolic and elliptic LCS) is not provided.
+ *
+ * Row direction: the seed grid is row-major, the layout `GPULagrangianFlowMap` writes, and output
+ * row `r` belongs to seed row `r`. The exponent does not depend on whether rows advance toward
+ * larger or smaller y: reversing the rows changes the sign of one column of `J`, which leaves the
+ * eigenvalues of `J^T J` unchanged. No grid affine is read and no reordering is needed for a
+ * north-up seed grid.
  */
 export class GPUFiniteTimeLyapunovExponent implements GPUCommandNodeProducer {
   /** Prefix for graph node IDs. */
@@ -107,15 +113,15 @@ export class GPUFiniteTimeLyapunovExponent implements GPUCommandNodeProducer {
     const id = props.id ?? 'finite-time-lyapunov-exponent';
     validateCapacity(id, 'seedWidth', props.seedWidth, 2, 65535);
     validateCapacity(id, 'seedHeight', props.seedHeight, 2, 65535);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateViewLength(id, 'positions', props.positions, props.seedWidth * props.seedHeight);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       props.parameters.length >= GPU_FINITE_TIME_LYAPUNOV_EXPONENT_PARAMETER_LENGTH,
       `parameters must contain ${GPU_FINITE_TIME_LYAPUNOV_EXPONENT_PARAMETER_LENGTH} float32 rows`
     );
-    validatePackedView(props.output.ftle, ['float32'], `${id} output.ftle`);
+    validateSinglePackedView(props.output.ftle, ['float32'], `${id} output.ftle`);
     validateViewLength(id, 'output.ftle', props.output.ftle, props.seedWidth * props.seedHeight);
     validateGraphOutputsDisjointFromInputs(
       id,

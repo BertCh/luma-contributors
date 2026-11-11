@@ -17,7 +17,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createFloat32ValuesNodes,
@@ -158,14 +158,14 @@ export class GPUEmpiricalBayesRates implements GPUCommandNodeProducer {
       ['excessRisk', output.excessRisk]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== rows) {
           throw new Error(`${id} output.${name} length must equal the events length`);
         }
       }
     }
     if (output.summary) {
-      validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+      validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
       if (output.summary.length < GPU_EMPIRICAL_BAYES_SUMMARY.length) {
         throw new Error(`${id} output.summary is too short`);
       }

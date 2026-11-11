@@ -172,7 +172,8 @@ it('computeVariogramOnCPU matches a hand-computed transect', () => {
   expect(result.semivariances[4]).toBeCloseTo((9 + 25) / 4, 12);
   expect(result.semivariances[6]).toBeCloseTo(36 / 2, 12);
   expect(result.meanDistances[2]).toBe(1);
-  const robust = ((1 + Math.SQRT2 + Math.sqrt(3)) / 3) ** 4 / (2 * (0.457 + 0.494 / 3));
+  // Cressie and Hawkins (1980), as scikit-gstat: 0.457 + 0.494 / N + 0.045 / N^2 with N = 3.
+  const robust = ((1 + Math.SQRT2 + Math.sqrt(3)) / 3) ** 4 / (2 * (0.457 + 0.494 / 3 + 0.045 / 9));
   expect(result.robustSemivariances[2]).toBeCloseTo(robust, 12);
   expect(result.statistics).toEqual([4, 2.5, 5.25, 0, 6]);
 });

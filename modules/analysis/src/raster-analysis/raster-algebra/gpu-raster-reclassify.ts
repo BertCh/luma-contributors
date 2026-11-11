@@ -48,8 +48,8 @@ export type GPURasterReclassifyProps = {
   values: GraphDataView<'float32'>;
   /** Rows to classify. Defaults to `values.length`. */
   rowCount?: number;
-  /** Optional row-aligned `uint32` validity; zero marks nodata. */
-  validity?: GraphDataView<'uint32'>;
+  /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
+  mask?: GraphDataView<'uint32'>;
   /** Optional finite nodata sentinel compared exactly against values. */
   noDataValue?: number;
   /** Ascending breaks; the view length is the compile-time maximum break count. */
@@ -91,7 +91,7 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
     this.rowCount = props.rowCount ?? props.values.length;
     validateRasterAlgebraCount(id, 'rowCount', this.rowCount, 0, props.values.length);
     validateRasterAlgebraNoData(id, props.noDataValue);
-    validateRasterAlgebraView(id, 'validity', props.validity, 'uint32', this.rowCount);
+    validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', this.rowCount);
     validateRasterAlgebraView(id, 'breaks', props.breaks, 'float32', 1);
     this.maximumBreakCount = props.breaks.length;
     validateRasterAlgebraView(
@@ -132,7 +132,7 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
     validateRasterAlgebraAliasing(
       id,
       [output.classes, output.reclassified, output.classCounts],
-      [props.values, props.validity, props.breaks, props.classValues, props.parameters]
+      [props.values, props.mask, props.breaks, props.classValues, props.parameters]
     );
   }
 
@@ -144,7 +144,7 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
     const {output} = props;
     validateRasterAlgebraGraph(id, graph, [
       props.values,
-      props.validity,
+      props.mask,
       props.breaks,
       props.classValues,
       props.parameters,
@@ -173,8 +173,8 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
       {name: 'breaks', view: props.breaks, type: 'f32', access: 'read'},
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
     ];
-    if (props.validity) {
-      bindings.push({name: 'validity', view: props.validity, type: 'u32', access: 'read'});
+    if (props.mask) {
+      bindings.push({name: 'validity', view: props.mask, type: 'u32', access: 'read'});
     }
     if (props.classValues) {
       bindings.push({name: 'classValues', view: props.classValues, type: 'f32', access: 'read'});
@@ -226,7 +226,7 @@ ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`,
         }
   let value = source[sourceOffset + index];
   var isValid = !isNoDataValue(value);
-  ${props.validity ? 'isValid = isValid && validity[validityOffset + index] != 0u;' : ''}
+  ${props.mask ? 'isValid = isValid && validity[validityOffset + index] != 0u;' : ''}
   let breakCountValue = params[paramsOffset];
   let breakCount = min(u32(clamp(select(0.0, breakCountValue, isFiniteValue(breakCountValue)), 0.0, 4294967040.0)), MAXIMUM_BREAK_COUNT);
   let closedRight = params[paramsOffset + 1u] != 0.0;

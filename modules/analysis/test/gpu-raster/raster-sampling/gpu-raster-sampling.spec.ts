@@ -98,7 +98,7 @@ async function createHarness(scene: Scene, withPointCount: boolean) {
       id: 'sampling',
       grid: makeGPURasterMetadata({width: raster.width, height: raster.height}),
       values: importGraphBuffer(graph, 'raster', buffers.raster, 'float32', raster.values.length),
-      validity: buffers.validity
+      mask: buffers.validity
         ? importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', raster.values.length)
         : undefined,
       noDataValue: raster.noDataValue,
@@ -375,5 +375,46 @@ it('GPURasterSampling reads a north-up grid like the same raster stored south-up
     expectFloatArraysClose(result.values, expected, method === 'nearest' ? 0 : 4, method);
     expect(expected.some(value => !Number.isNaN(value))).toBe(true);
   }
+  harness.destroy();
+});
+
+it('GPURasterSampling treats an infinity as nodata, like NaN (raster-fields-07)', async () => {
+  const width = 4;
+  const height = 1;
+  // One row: +Infinity, -Infinity, 4, 6. Cell centres at x = 0.5, 1.5, 2.5, 3.5.
+  const values = Float32Array.from([Infinity, -Infinity, 4, 6]);
+  const points = [
+    [0.5, 0.5], // centre of the +Infinity cell
+    [2.5, 0.5], // centre of the cell holding 4
+    [1, 0.5], // halfway between +Infinity and -Infinity
+    [2.25, 0.5], // a quarter -Infinity, three quarters 4
+    [3, 0.5] // halfway between 4 and 6
+  ];
+  const positions = new Float32Array(points.flat());
+  const harness = await createHarness({raster: {width, height, values}, positions}, false);
+  if (!harness) {
+    return;
+  }
+  const extent = [0, 0, 4, 1] as const;
+  const toComparable = (results: number[]) =>
+    results.map(value => (Number.isNaN(value) ? 'nodata' : value));
+  // Keeping infinities as data (the old rule) returned +Infinity for the first point and
+  // -Infinity for the fourth under both policies.
+  const nearest = await harness.run({width, height, extent, method: 'nearest'});
+  expect(toComparable(nearest.values)).toEqual(['nodata', 4, 'nodata', 4, 6]);
+  expect(nearest.validity).toEqual([0, 1, 0, 1, 1]);
+  const strict = await harness.run({width, height, extent, method: 'bilinear'});
+  expect(toComparable(strict.values)).toEqual(['nodata', 4, 'nodata', 'nodata', 5]);
+  expect(strict.validity).toEqual([0, 1, 0, 0, 1]);
+  const renormalized = await harness.run({
+    width,
+    height,
+    extent,
+    method: 'bilinear',
+    noDataPolicy: 'renormalize'
+  });
+  // Only the finite neighbour is left for the fourth point, so it is that neighbour's value.
+  expect(toComparable(renormalized.values)).toEqual(['nodata', 4, 'nodata', 4, 5]);
+  expect(renormalized.validity).toEqual([0, 1, 0, 1, 1]);
   harness.destroy();
 });

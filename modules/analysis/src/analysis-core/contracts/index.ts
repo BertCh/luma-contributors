@@ -10,14 +10,17 @@ export type {
   GPUBoundedResultStatusPort,
   GPUCandidateStatusPort,
   GPUCardinalityPort,
+  GPUGeneratedGeometryStatusPort,
   GPUInvalidStatusPort,
   GPUIterationStatusPort,
   GPULonLatPolygonStatusPort,
   GPUOverflowStatusPort,
   GPURecipeStageStatusPort,
   GPURecipeStatusPort,
+  GPURingCountStatusPort,
   GPUStatusScalar,
-  GPUUncertaintyStatusPort
+  GPUUncertaintyStatusPort,
+  GPUVertexCountStatusPort
 } from './status';
 export {validateGPURecipeStatusPort, validateGPUStatusPort} from './status';
 
@@ -146,7 +149,6 @@ export {
 
 export type {
   GPURectangleStudyWindow,
-  GPUStudyWindowSlabViews,
   GPUPolygonStudyWindowViews,
   GPUPolygonStudyWindow,
   GPUStudyWindow

@@ -17,10 +17,11 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
+  getGPUSpatialWeightsNeighborLoopWGSL,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -105,8 +106,11 @@ export type GPUSegregationProps = {
    */
   scales?: readonly (GPUSpatialWeights | null)[];
   /**
-   * Weight of a unit in its own environment, added to the neighbor weights (which never list the
-   * unit itself). Defaults to 1; use 0 to exclude it.
+   * Weight of a unit in its own environment, added to the neighbor weights. Defaults to 1; use 0
+   * to exclude it. The neighbors are the active slots of the shared neighbor rule (positive
+   * weight, another unit), so a self slot in the weights (for example from
+   * `GPUSpatialWeightsAlgebra` `'selfWeight'`) is not read: the unit enters its own environment
+   * through this prop only, never twice.
    */
   selfWeight?: number;
   /**
@@ -204,7 +208,7 @@ export class GPUSegregation implements GPUCommandNodeProducer {
       throw new Error(`${id} scales must not be empty`);
     }
     this.scaleCount = scales.length;
-    validatePackedView(props.groupCounts, ['float32'], `${id} groupCounts`);
+    validateSinglePackedView(props.groupCounts, ['float32'], `${id} groupCounts`);
     const unitCount = props.groupCounts.length / groupCount;
     if (!Number.isInteger(unitCount) || unitCount < 1) {
       throw new Error(`${id} groupCounts length must be a positive multiple of groupCount`);
@@ -245,7 +249,7 @@ export class GPUSegregation implements GPUCommandNodeProducer {
     ];
     for (const [name, view, length] of expectedLengths) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length !== length) {
           throw new Error(`${id} ${name} must contain ${length} rows`);
         }
@@ -587,7 +591,14 @@ fn getDiversity() -> f32 {
             {name: 'scaleCursor', view: scaleCursor, type: 'u32', access: 'read_write'}
           ],
           invocationCount: unitCount,
-          declarations,
+          // ROWS and CAPACITY are the constants of the shared neighbor loop. The capacity is not
+          // the scale's slot count, so every scale keeps sharing one pipeline: offsets are used as
+          // given, as before.
+          declarations: weights
+            ? `${declarations}
+const ROWS: u32 = ${unitCount}u;
+const CAPACITY: u32 = 0xffffffffu;`
+            : declarations,
           // Only invocation 0 touches the cursor. The scale index is small, so f32 holds it exactly.
           body: `if (index == 0u) {
     let scale = scaleCursor[scaleCursorOffset] + 1u;
@@ -599,12 +610,7 @@ fn getDiversity() -> f32 {
       ? `var total = 0.0;
   for (var group = 0u; group < K; group++) {
     var sum = SELF_WEIGHT * countAt(index, group);
-    for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
-      let neighbor = neighbors[neighborsOffset + slot];
-      if (neighbor < UNITS) {
-        sum += weights[weightsOffset + slot] * countAt(neighbor, group);
-      }
-    }
+    ${getGPUSpatialWeightsNeighborLoopWGSL('true', 'sum += weight * countAt(neighbor, group);')}
     environment[environmentOffset + index * K + group] = sum;
     total += sum;
   }

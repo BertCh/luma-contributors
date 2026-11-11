@@ -6,6 +6,11 @@ import {
   createFullCovarianceKalmanNodes,
   getKalmanTimeSource
 } from './trajectory-kalman-full-covariance';
+import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   getEffectiveMaximumGapWGSL,
@@ -22,23 +27,58 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
-/** Per-observation flags. Reset marks the beginning of a new independently estimated segment. */
+/**
+ * Bits of the per-observation `output.status` word of {@link GPUTrajectoryKalman}, 0 for an
+ * observation updated with a measurement inside a running segment.
+ */
 export const GPU_TRAJECTORY_KALMAN_STATUS = {
+  /**
+   * The row started a new independently estimated segment: the first measured row of a track, or
+   * the first measured row after a gap longer than `maximumGap` or an invalid row.
+   */
   reset: 1,
+  /**
+   * The row has no measurement (NaN or infinite coordinate): the state is the prediction alone and
+   * its covariance grew. Together with `invalid` (6) it marks an unmeasured row that cannot start a
+   * segment: the state and covariance are NaN.
+   */
   predictionOnly: 2,
+  /**
+   * The row was skipped: invalid parameters, a nonfinite or decreasing time, a singular innovation
+   * or a nonfinite estimate. Its filtered state and covariance are NaN and the next measured row
+   * resets the segment.
+   */
   invalid: 4,
+  /**
+   * The backward smoother met a singular predicted covariance at this row, so its smoothed state
+   * and covariance are not valid. Only set when smoothed outputs are requested.
+   */
   smoothingSingular: 8
 } as const;
 
+/** Spatial contexts of the filter: planar positions, whose frame must preserve distance. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
+
 type GPUTrajectoryKalmanOptions = {
   id?: string;
+  /**
+   * Coordinate space of `positions`. Only planar coordinates with the native metric are
+   * supported (the motion model is Euclidean, so spectral densities, variances and the output
+   * covariance are in squared position units); longitude-latitude, grid and topology contexts, and
+   * `local-lambert-equal-area` frames, are rejected at construction. Project longitude/latitude
+   * first, for example with `prepareGPUTrajectoryObservations`. Defaults to native planar.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Projected planar observations. NaN/infinite coordinates mean missing measurement. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -60,6 +100,7 @@ type GPUTrajectoryKalmanOptions = {
     filteredState: GraphDataView<'float32x4'>;
     /** Isotropic: one [positionVariance,covariance,covariance,velocityVariance] row per observation. Full: four column-major rows per observation. */
     filteredCovariance: GraphDataView<'float32x4'>;
+    /** One {@link GPU_TRAJECTORY_KALMAN_STATUS} bit set per observation: 1 reset, 2 prediction only, 4 invalid, 8 smoothing singular. */
     status: GraphDataView<'uint32'>;
     smoothedState?: GraphDataView<'float32x4'>;
     smoothedCovariance?: GraphDataView<'float32x4'>;
@@ -86,8 +127,15 @@ const TIME_UNITS_PER_SECOND = {second: 1, millisecond: 1e3, microsecond: 1e6, na
 export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUTrajectoryKalmanResolvedProps;
+  /** Resolved coordinate context: always planar. */
+  readonly spatialContext: GPUSpatialContext;
   constructor(input: GPUTrajectoryKalmanProps) {
     this.id = input.id ?? 'trajectory-kalman';
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      input.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     const {times, offsets} = getGPUTrajectoryTimeColumns(this.id, input);
     const context = resolveGPUTrajectoryTemporalContext(this.id, times, input.temporalContext);
     const contextUnits = context && TIME_UNITS_PER_SECOND[context.unit];
@@ -111,16 +159,16 @@ export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
       timeUnitsPerSecond: contextUnits ?? input.timeUnitsPerSecond
     };
     const {props} = this;
-    validatePackedView(props.positions, ['float32x2'], this.id);
-    validatePackedView(props.times, ['float32', 'uint32x2'], this.id);
+    validateSinglePackedView(props.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.times, ['float32', 'uint32x2'], this.id);
     validateRequirement(
       this.id,
       props.timeUnitsPerSecond === undefined ||
         (Number.isFinite(props.timeUnitsPerSecond) && props.timeUnitsPerSecond > 0),
       'timeUnitsPerSecond must be a positive finite number'
     );
-    validatePackedView(props.offsets, ['uint32'], this.id);
-    validatePackedView(props.parameters, ['float32'], this.id);
+    validateSinglePackedView(props.offsets, ['uint32'], this.id);
+    validateSinglePackedView(props.parameters, ['float32'], this.id);
     validateViewLength(this.id, 'times', props.times, props.positions.length);
     validateRequirement(this.id, props.offsets.length >= 1, 'offsets must have at least 1 row');
     validateViewLength(
@@ -136,7 +184,7 @@ export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
       props.output.smoothedCovariance
     ]) {
       if (view) {
-        validatePackedView(view, ['float32x4'], this.id);
+        validateSinglePackedView(view, ['float32x4'], this.id);
         validateViewLength(
           this.id,
           'output state or covariance',
@@ -149,7 +197,7 @@ export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
         );
       }
     }
-    validatePackedView(props.output.status, ['uint32'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32'], this.id);
     validateViewLength(this.id, 'output.status', props.output.status, props.positions.length);
     validateRequirement(
       this.id,

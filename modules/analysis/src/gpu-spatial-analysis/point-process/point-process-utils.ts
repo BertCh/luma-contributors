@@ -4,7 +4,7 @@
 
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
@@ -15,7 +15,7 @@ export function validatePointProcessView(
   length: number,
   id: string = 'point-process'
 ): void {
-  validatePackedView(view, [format], id);
+  validateSinglePackedView(view, [format], id);
   // A point-process field must cover exactly the declared rows.
   validateRequirement(id, view.length === length, `views must hold exactly ${length} rows`);
 }

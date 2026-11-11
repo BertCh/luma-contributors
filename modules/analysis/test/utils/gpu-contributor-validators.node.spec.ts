@@ -7,7 +7,7 @@ import {describe, expect, it} from 'vitest';
 import {
   validateCapacity,
   validateExtent,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo
 } from '../../src/analysis-core/kernels/gpu-contributor-utils';
 import {createNullWebGPUDevice} from './gpu-contributor-test-utils';
@@ -15,11 +15,11 @@ import {createNullWebGPUDevice} from './gpu-contributor-test-utils';
 // Rule 17 (A-16): user-facing prop errors go through one set of short shared validators.
 
 describe('shared contributor validators', () => {
-  it('validatePackedView accepts one packed view and rejects vectors and wrong formats', () => {
+  it('validateSinglePackedView accepts one packed view and rejects vectors and wrong formats', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'validators'});
     const view = createTransientView(graph, 'rows', 'uint32', 4);
-    expect(() => validatePackedView(view, ['uint32'], 'test rows')).not.toThrow();
-    expect(() => validatePackedView(view, ['float32'], 'test rows')).toThrow(/test rows/);
+    expect(() => validateSinglePackedView(view, ['uint32'], 'test rows')).not.toThrow();
+    expect(() => validateSinglePackedView(view, ['float32'], 'test rows')).toThrow(/test rows/);
     const vector = new GraphVectorView({
       id: 'rows-vector',
       name: 'rows-vector',
@@ -31,7 +31,7 @@ describe('shared contributor validators', () => {
       rowByteLength: 4,
       data: [view]
     });
-    expect(() => validatePackedView(vector, ['uint32'], 'test rows')).toThrow(
+    expect(() => validateSinglePackedView(vector, ['uint32'], 'test rows')).toThrow(
       'test rows must be one packed view'
     );
   });

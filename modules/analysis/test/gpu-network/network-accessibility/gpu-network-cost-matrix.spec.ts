@@ -54,8 +54,10 @@ async function runCostMatrix(
     maximumIterations?: number;
     costLimit?: number;
     targets?: readonly number[];
+    /** Request `status.converged` (default) or only `status.iterationLimitReached`. */
+    withConverged?: boolean;
   } = {}
-): Promise<{matrix: Float32Array; converged: number}> {
+): Promise<{matrix: Float32Array; converged: number; iterationLimitReached: number}> {
   const graph = new GPUCommandGraph(device, {id: 'cost-matrix'});
   const {nodes, costs, rowIds} = flattenRows(rows);
   const buffers: Buffer[] = [];
@@ -67,8 +69,9 @@ async function runCostMatrix(
   const columnCount = options.targets?.length ?? nodeCount;
   const costsBuffer = createOutputBuffer(device, rows.length * columnCount);
   const convergedBuffer = createOutputBuffer(device, 1);
+  const limitBuffer = createOutputBuffer(device, 1);
   const edgeCount = csr.neighbors.length;
-  buffers.push(costsBuffer, convergedBuffer);
+  buffers.push(costsBuffer, convergedBuffer, limitBuffer);
   graph.add(
     new GPUNetworkCostMatrix({
       id: 'matrix',
@@ -122,7 +125,11 @@ async function runCostMatrix(
       output: {
         costs: importGraphBuffer(graph, 'costs', costsBuffer, 'float32', rows.length * columnCount),
         status: {
-          converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1)
+          converged:
+            options.withConverged === false
+              ? undefined
+              : importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1),
+          iterationLimitReached: importGraphBuffer(graph, 'limit-reached', limitBuffer, 'uint32', 1)
         }
       }
     })
@@ -131,11 +138,12 @@ async function runCostMatrix(
   submitGraph(device, compiled, undefined);
   const matrix = Float32Array.from(await readFloat32(costsBuffer, rows.length * columnCount));
   const [converged] = await readUint32(convergedBuffer, 1);
+  const [iterationLimitReached] = await readUint32(limitBuffer, 1);
   compiled.destroy();
   for (const buffer of buffers) {
     buffer.destroy();
   }
-  return {matrix, converged};
+  return {matrix, converged, iterationLimitReached};
 }
 
 const ZERO_WEIGHT_ROWS: AccessibilitySeed[][] = [
@@ -309,4 +317,30 @@ it('GPUNetworkCostMatrix targetNodes keeps unreached targets at infinity', async
     new Uint32Array(gatherDenseColumns(dense.matrix, 9, ZERO_WEIGHT_ROWS.length, targets).buffer)
   );
   expect(compact.matrix[0 * targets.length + 2]).toBe(Infinity);
+});
+
+it('GPUNetworkCostMatrix iterationLimitReached is the complement of converged, with or without it', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A path of 400 nodes needs more than one round, even with chained local hops.
+  const nodeCount = 400;
+  const csr = buildCSR(
+    nodeCount,
+    Array.from({length: nodeCount - 1}, (_, node): [number, number, number] => [node, node + 1, 1])
+  );
+  const rows = [[{node: 0, cost: 0}]];
+  for (const withConverged of [true, false]) {
+    const truncated = await runCostMatrix(device, csr, nodeCount, rows, {
+      maximumIterations: 1,
+      withConverged
+    });
+    expect(truncated.iterationLimitReached).toBe(1);
+    if (withConverged) expect(truncated.converged).toBe(0);
+    const complete = await runCostMatrix(device, csr, nodeCount, rows, {
+      maximumIterations: 400,
+      withConverged
+    });
+    expect(complete.iterationLimitReached).toBe(0);
+    if (withConverged) expect(complete.converged).toBe(1);
+  }
 });

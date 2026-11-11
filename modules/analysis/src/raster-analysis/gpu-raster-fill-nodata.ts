@@ -6,6 +6,7 @@ import {
   validateCapacity,
   validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
+import {validateGPUStatusPort, type GPUInvalidStatusPort} from '../analysis-core/contracts/status';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -31,8 +32,15 @@ export type GPURasterFillNoDataOutput = {
   values: GraphDataView<'float32'>;
   validity: GraphDataView<'uint32'>;
   filled: GraphDataView<'uint32'>;
-  /** One row; missing cells for which the bounded search found no valid source. */
-  unresolvedCount: GraphDataView<'uint32'>;
+  /**
+   * Required named status (an object; its entries are optional). `invalidCount` (one `uint32`
+   * row): the number of cells of the result that are still invalid, that is, cells with
+   * `output.validity` 0 because the bounded search found no valid source. This is the status
+   * vocabulary's `invalidCount` read over the output cells (what the operation could not fill), not
+   * over input rows rejected by validation: a missing input cell the search does fill is not
+   * counted, and an input cell that is invalid and unreachable is.
+   */
+  status: GPUInvalidStatusPort;
 };
 /** Continuous interpolation of original valid samples; filled samples never become donors. */
 export type GPURasterFillNoDataProps = {
@@ -68,16 +76,29 @@ export class GPURasterFillNoData implements GPUCommandNodeProducer {
         ['nearest', 'inverse-distance', 'gdal-four-quadrant'].includes(props.method),
       "method must be 'nearest', 'inverse-distance' or 'gdal-four-quadrant'"
     );
+    validateRequirement(
+      this.id,
+      typeof props.output.status === 'object' && props.output.status !== null,
+      'output.status is required (an object holding the optional invalidCount view, the count of cells left invalid)'
+    );
     const count = validateRasterExpansionViews(
       this.id,
       props.grid,
       getRasterBandViews(props.input),
-      Object.values(props.output)
+      getOutputViews(props.output)
     );
     requireRasterLength(props.output.values, count, this.id, 'output.values');
     requireRasterLength(props.output.validity, count, this.id, 'output.validity');
     requireRasterLength(props.output.filled, count, this.id, 'output.filled');
-    requireRasterLength(props.output.unresolvedCount, 1, this.id, 'output.unresolvedCount');
+    validateGPUStatusPort(this.id, props.output.status);
+    if (props.output.status.invalidCount) {
+      requireRasterLength(
+        props.output.status.invalidCount,
+        1,
+        this.id,
+        'output.status.invalidCount'
+      );
+    }
     validateCapacity(this.id, 'maximumDistance', props.maximumDistance, 1, MAXIMUM_SEARCH_DISTANCE);
   }
   getCommandNodes<Parameters>(
@@ -88,7 +109,7 @@ export class GPURasterFillNoData implements GPUCommandNodeProducer {
     const count = grid.width * grid.height;
     validateRasterExpansionGraph(id, graph, [
       ...getRasterBandViews(props.input),
-      ...Object.values(output)
+      ...getOutputViews(output)
     ]);
     const source = getRasterBufferBandNodes(graph, id, props.input, grid, true);
     return [
@@ -134,16 +155,27 @@ values[valuesOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), 
 validity[validityOffset + index] = u32(valid);
 filled[filledOffset + index] = u32(valid && !originalValid);`
       }),
-      ...createRasterCountNodes(graph, {
-        id: `${id}-unresolved`,
-        operation: 'GPURasterFillNoData',
-        values: output.validity,
-        count,
-        condition: 'value == 0u',
-        output: output.unresolvedCount
-      })
+      ...(output.status.invalidCount
+        ? createRasterCountNodes(graph, {
+            id: `${id}-unresolved`,
+            operation: 'GPURasterFillNoData',
+            values: output.validity,
+            count,
+            condition: 'value == 0u',
+            output: output.status.invalidCount
+          })
+        : [])
     ];
   }
+}
+
+function getOutputViews(output: GPURasterFillNoDataOutput): GraphDataView[] {
+  return [
+    output.values,
+    output.validity,
+    output.filled,
+    ...(output.status.invalidCount ? [output.status.invalidCount] : [])
+  ];
 }
 
 /** GDAL-compatible search order, quadrant axes, border clamping and strict distance ties. */

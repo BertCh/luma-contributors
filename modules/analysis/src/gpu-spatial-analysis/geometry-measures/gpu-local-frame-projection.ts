@@ -31,7 +31,13 @@ export type GPULocalFrameProjectionProps = {
    * continuous longitudes, for example 179 to 181). Rows outside the bounds are rejected.
    */
   bounds: ProjectionBounds;
-  /** Maximum projection error in meters accepted by the patch compiler. Defaults to `0.01`. */
+  /**
+   * Maximum error in meters of the polynomial patches accepted by the patch compiler, measured
+   * relative to the center of `bounds`. Defaults to `0.01`. It does not bound the float32 rounding
+   * of the output rows, which are absolute frame meters: the patch origin and the sum are each
+   * rounded, so add up to one float32 spacing of the largest frame coordinate inside `bounds`
+   * (0.004 m within 65 km of the frame origin, 0.016 m within 262 km, 0.03 m within 524 km).
+   */
   tolerance?: number;
   /** Optional `uint32` rows: 1 for projected rows, 0 for rows outside `bounds` (output 0). */
   validity?: GPUProjectionValidity;
@@ -45,13 +51,26 @@ export type GPULocalFrameProjectionProps = {
  * patches over `bounds` and evaluated by `GPUProjection` (`gpu-project`). Output rows are absolute
  * frame meters: the plan is referenced to the frame origin, so float32 rounding is relative to the
  * frame extent. Pass {@link spatialContext} (the frame's planar context) to downstream operators.
+ *
+ * **Error budget.** `compileProjectionPlan` validates `tolerance` and reports
+ * `plan.float32MaxError` for output relative to the center of `bounds`. This class then moves the
+ * plan's destination origin to the frame origin, which the published compiler has no option for,
+ * so those two numbers describe the patch fit and not the rows written here. The rows carry in
+ * addition the float32 rounding of an absolute frame coordinate: up to one spacing per axis, which
+ * is 0.016 m for coordinates between 131 km and 262 km from the frame origin and passes the
+ * default tolerance beyond that. Keep `bounds` near the frame origin when centimeter output
+ * matters.
  */
 export class GPULocalFrameProjection implements GPUCommandNodeProducer {
   readonly id: string;
   readonly frame: GPULocalFrame;
   /** Planar context of the output rows, carrying `units: 'meters'` and the frame identity/kind. */
   readonly spatialContext: GPUSpatialContext;
-  /** Compiled plan; its destination origin is the frame origin `[0, 0]`. */
+  /**
+   * Compiled plan; its destination origin is the frame origin `[0, 0]`. Its `tolerance`,
+   * `maxError` and `float32MaxError` were computed before that change, for output relative to the
+   * center of `bounds` (see the class documentation).
+   */
   readonly plan: ProjectionPlan;
   private readonly projection: GPUProjection;
 

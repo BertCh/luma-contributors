@@ -4,7 +4,7 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {validateGPUFeatureGeometryPort} from '../../analysis-core/contracts/index';
-import {validatePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateSinglePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -54,7 +54,7 @@ export function validateSpatialJoinGeometry(
 ): void {
   for (const view of [...getSpatialJoinGeometryViews(geometry), geometry.sourceIds]) {
     if (view) {
-      validatePackedView(view, [view.format as 'float32x2' | 'uint32'], `${id} ${name}`);
+      validateSinglePackedView(view, [view.format as 'float32x2' | 'uint32'], `${id} ${name}`);
     }
   }
   validateGPUFeatureGeometryPort(`${id} ${name}`, geometry);
@@ -70,7 +70,7 @@ export function validateStatusScalars(
 ): void {
   for (const [name, view] of Object.entries(status)) {
     if (view) {
-      validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
       if (view.length < 1) {
         throw new Error(`${id} output.status.${name} needs one row`);
       }

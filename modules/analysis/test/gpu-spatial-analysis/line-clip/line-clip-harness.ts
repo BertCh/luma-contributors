@@ -227,14 +227,16 @@ export async function runLineClip(
 }
 
 export type SharedResult = {
-  leftLineIds: number[];
-  rightLineIds: number[];
+  leftSourceIds: number[];
+  rightSourceIds: number[];
   forward: number[];
   runs: Point[][];
   count: number;
   vertexCount: number;
   overflow: number;
   requiredCount: number;
+  /** `status.candidateOverflow` (intersection pair list overflow). */
+  candidateOverflow: number;
 };
 
 export type SharedOptions = {
@@ -256,8 +258,8 @@ export async function runSharedPaths(
   const rightArrays = flattenLines(right);
   const runCapacity = options.runCapacity ?? 128;
   const vertexCapacity = options.vertexCapacity ?? 1024;
-  const leftLineIds = output('left-line-ids', runCapacity);
-  const rightLineIds = output('right-line-ids', runCapacity);
+  const leftSourceIds = output('left-line-ids', runCapacity);
+  const rightSourceIds = output('right-line-ids', runCapacity);
   const forward = output('forward', runCapacity);
   const offsets = output('run-offsets', runCapacity + 1);
   const positions = output('run-positions', vertexCapacity, 'float32x2');
@@ -265,6 +267,7 @@ export async function runSharedPaths(
   const vertexCount = output('vertex-count', 1);
   const overflow = output('overflow', 1);
   const requiredCount = output('total-count', 1);
+  const candidateOverflow = output('shared-candidate-overflow', 1);
   graph.add(
     new GPUSharedPaths({
       left: {
@@ -280,8 +283,8 @@ export async function runSharedPaths(
       intersectionCapacity: options.intersectionCapacity ?? 1024,
       output: {
         runs: {
-          leftLineIds: leftLineIds.view,
-          rightLineIds: rightLineIds.view,
+          leftSourceIds: leftSourceIds.view,
+          rightSourceIds: rightSourceIds.view,
           forward: forward.view,
           offsets: offsets.view,
           positions: positions.view
@@ -290,7 +293,8 @@ export async function runSharedPaths(
           count: count.view,
           vertexCount: vertexCount.view,
           overflow: overflow.view,
-          requiredCount: requiredCount.view
+          requiredCount: requiredCount.view,
+          candidateOverflow: candidateOverflow.view
         }
       }
     })
@@ -299,14 +303,15 @@ export async function runSharedPaths(
   submitGraph(device, compiled, undefined);
   const [runTotal] = await readUint32(count.buffer, 1);
   const result: SharedResult = {
-    leftLineIds: (await readUint32(leftLineIds.buffer, runCapacity)).slice(0, runTotal),
-    rightLineIds: (await readUint32(rightLineIds.buffer, runCapacity)).slice(0, runTotal),
+    leftSourceIds: (await readUint32(leftSourceIds.buffer, runCapacity)).slice(0, runTotal),
+    rightSourceIds: (await readUint32(rightSourceIds.buffer, runCapacity)).slice(0, runTotal),
     forward: (await readUint32(forward.buffer, runCapacity)).slice(0, runTotal),
     runs: await readRuns(offsets.buffer, positions.buffer, runTotal, runCapacity, vertexCapacity),
     count: runTotal,
     vertexCount: (await readUint32(vertexCount.buffer, 1))[0],
     overflow: (await readUint32(overflow.buffer, 1))[0],
-    requiredCount: (await readUint32(requiredCount.buffer, 1))[0]
+    requiredCount: (await readUint32(requiredCount.buffer, 1))[0],
+    candidateOverflow: (await readUint32(candidateOverflow.buffer, 1))[0]
   };
   compiled.destroy();
   for (const buffer of buffers) {

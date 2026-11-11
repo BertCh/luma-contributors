@@ -11,7 +11,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
@@ -40,7 +40,13 @@ export type GPUNestedInterpolationValidationProps = {
   training: GraphDataView<'uint32'>;
   testing: GraphDataView<'uint32'>;
   foldCount: number;
-  /** Inner block membership; only outer-training rows enter inner assignment and scoring. */
+  /**
+   * Inner block membership; only outer-training rows enter inner assignment and scoring. The
+   * inner folds are dealt by `GPUSpatialCrossValidation` among the blocks that hold a training row
+   * of the outer fold, so for one `seed` a block can be in different inner folds under different
+   * outer folds (whenever an outer fold holds out whole inner blocks), and no inner fold is empty
+   * while at least `innerFoldCount` blocks remain.
+   */
   innerBlocks: GraphDataView<'uint32'>;
   innerFoldCount?: number;
   innerBufferDistance?: number;
@@ -85,7 +91,7 @@ export class GPUNestedInterpolationValidation implements GPUCommandNodeProducer 
       [props.output.metrics, 'float32', 6 * props.foldCount],
       [props.output.status, 'uint32', props.foldCount]
     ] as const) {
-      validatePackedView(view, [format], this.id);
+      validateSinglePackedView(view, [format], this.id);
       if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
     }
     validatePredictionViews(

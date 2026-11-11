@@ -20,7 +20,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   describeGPUSpatialWeights,
@@ -349,8 +349,10 @@ function getAlgebraOutputInformation(
  * that sum over slots keep the self term and accept it: `GPUSpatialLag` (a lag with the self
  * weight gives Getis-Ord G* style sums), `GPUSpatialWeightsTransform` (row, binary, kernel,
  * symmetrize, double, variance) and this class's own operations. The permutation tests,
- * `GPUGlobalSpatialStatistics` and the local spatial-autocorrelation kernels skip `neighbor ==
- * row` entries by design, so passing self weights to them silently ignores the diagonal.
+ * `GPUGlobalSpatialStatistics`, the local spatial-autocorrelation kernels, `GPUCategoryPairCounts`
+ * (and `GPUSpatialEntropy`), `GPUColocationQuotient`, `GPULocalCategoryDependence`,
+ * `GPUSegregation` and `GPUSpatialEmpiricalBayesRates` skip `neighbor == row` entries by design
+ * (the shared active-slot rule), so passing self weights to them silently ignores the diagonal.
  *
  * Metadata: {@link GPUSpatialWeightsAlgebra.outputWeights} is `output` with `information` (row count,
  * transform state, symmetric flag, provenance) and `status` (`overflow`, `requiredCount`)
@@ -432,7 +434,7 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
         break;
       case 'subgraph':
         checkRows(props.weights, 'weights');
-        validatePackedView(props.mask, ['uint32'], `${id} mask`);
+        validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
         if (props.mask.length !== outputRows) {
           throw new Error(`${id} mask length must equal the row count`);
         }
@@ -464,7 +466,7 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
         break;
       }
       case 'block':
-        validatePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
+        validateSinglePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
         if (props.groupIds.length !== outputRows) {
           throw new Error(`${id} groupIds length must equal the row count`);
         }

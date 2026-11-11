@@ -16,11 +16,11 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterParameters} from '../raster-band-utils';
 import {GPU_CHANGE_DETECTION_PARAMETER_LENGTH} from './change-detection-parameters';
-import {ERFC_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {ERFC_VALUE_WGSL, GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {NAN_WGSL, STUDENT_T_WGSL} from './change-detection-wgsl';
 import {
   getGPURasterDateAxisBinding,
@@ -87,18 +87,24 @@ export type GPUChangeDetectionOutput = {
 /**
  * Properties for {@link GPUChangeDetection}.
  *
- * Per-frame (no recompile): the contents of `parameters` and of `slices` and `mask`. Topology
- * (needs a new graph): `cellCount`, `sliceCount`, `bandCount`, view lengths, which outputs and the
- * mask are present, and `significanceSource`.
+ * Per-frame (no recompile): the contents of `parameters` and of `slices`, `mask` and `observationMask`.
+ * Topology (needs a new graph): `cellCount`, `sliceCount`, `bandCount`, view lengths, which
+ * outputs, the mask and the observation mask are present, and `significanceSource`.
  */
 export type GPUChangeDetectionProps = {
   /** Prefix for generated node IDs. Defaults to `'change-detection'`. */
   id?: string;
   /**
    * Dense float32 stack indexed `(cell * sliceCount + slice) * bandCount + band` (cell-major, like
-   * `GPUTemporalReduction`'s `cell * bucketCount + bucket`). NaN means missing.
+   * `GPUTemporalReduction`'s `cell * bucketCount + bucket`). A sample that is not finite (NaN or
+   * an infinity) is missing.
    */
   slices: GraphDataView<'float32'>;
+  /**
+   * Optional per-observation mask, `cell * sliceCount + slice` (for example a per-date cloud
+   * mask): zero makes that observation missing in every band, exactly as a NaN sample.
+   */
+  observationMask?: GraphDataView<'uint32'>;
   /** Optional packed `uint32` cell mask with one row per cell; zero skips the cell. */
   mask?: GraphDataView<'uint32'>;
   /** Per-frame parameters, float32 of at least 5 elements; see `getGPUChangeDetectionParameterValues`. */
@@ -203,14 +209,20 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
     if (this.significanceSource !== 't-test' && this.significanceSource !== 'mann-kendall') {
       throw new Error(`${id} significanceSource must be 't-test' or 'mann-kendall'`);
     }
-    validatePackedView(props.slices, ['float32'], `${id} slices`);
+    validateSinglePackedView(props.slices, ['float32'], `${id} slices`);
     if (props.slices.length < cellCount * sliceCount * bandCount) {
       throw new Error(`${id} slices must hold cellCount * sliceCount * bandCount rows`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length < cellCount) {
         throw new Error(`${id} mask must hold cellCount rows`);
+      }
+    }
+    if (props.observationMask) {
+      validateSinglePackedView(props.observationMask, ['uint32'], `${id} observationMask`);
+      if (props.observationMask.length < cellCount * sliceCount) {
+        throw new Error(`${id} observationMask must hold cellCount * sliceCount rows`);
       }
     }
     validateRasterParameters(id, props.parameters, GPU_CHANGE_DETECTION_PARAMETER_LENGTH);
@@ -220,14 +232,14 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
     }
     for (const name of FLOAT_OUTPUTS) {
       if (output[name]) {
-        validatePackedView(output[name], ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(output[name], ['float32'], `${id} output.${name}`);
       }
     }
     if (output.mannKendallS) {
-      validatePackedView(output.mannKendallS, ['sint32'], `${id} output.mannKendallS`);
+      validateSinglePackedView(output.mannKendallS, ['sint32'], `${id} output.mannKendallS`);
     }
     if (output.significance) {
-      validatePackedView(output.significance, ['uint32'], `${id} output.significance`);
+      validateSinglePackedView(output.significance, ['uint32'], `${id} output.significance`);
     }
     for (const name of SINGLE_BAND_OUTPUTS) {
       if (output[name] && bandCount !== 1) {
@@ -245,7 +257,7 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
       }
     }
     if (output.changeDirection) {
-      validatePackedView(
+      validateSinglePackedView(
         output.changeDirection,
         [bandCount === 2 ? 'float32' : 'uint32'],
         `${id} output.changeDirection`
@@ -263,7 +275,7 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       present.map(([, view]) => view as GraphDataView),
-      [props.slices, props.mask, props.parameters]
+      [props.slices, props.mask, props.observationMask, props.parameters]
     );
   }
 
@@ -276,6 +288,7 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       props.slices,
       props.mask,
+      props.observationMask,
       props.parameters,
       ...(Object.values(output) as GraphDataView[])
     ]);
@@ -297,6 +310,16 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
               access: 'read'
             } as const
           ]
+        : []),
+      ...(props.observationMask
+        ? [
+            {
+              name: 'observationMask',
+              view: props.observationMask,
+              type: 'u32',
+              access: 'read'
+            } as const
+          ]
         : [])
     ];
     const write = (
@@ -306,7 +329,15 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
     ): WGSLKernelBinding => ({name, view, type, access: 'read_write'});
     const declarations = `const SLICE_COUNT: u32 = ${sliceCount}u;
 const BAND_COUNT: u32 = ${bandCount}u;
-${NAN_WGSL}`;
+${NAN_WGSL}
+// Per-observation mask (all bands of one cell and slice); true when no view is bound.
+fn isObservationValid(cell: u32, slice: u32) -> bool {
+  return ${props.observationMask ? 'observationMask[observationMaskOffset + cell * SLICE_COUNT + slice] != 0u' : 'true'};
+}
+// The sample at (cell, slice, band) is missing: not finite, or its observation is invalid.
+fn isMissingAt(cell: u32, slice: u32, value: f32) -> bool {
+  return isMissingSample(value) || !isObservationValid(cell, slice);
+}`;
     const maskGuard = props.mask
       ? 'if (cellMask[cellMaskOffset + cell] == 0u) {\n    return;\n  }'
       : '';
@@ -358,7 +389,7 @@ ${NAN_WGSL}`;
   }
   let before = slices[slicesOffset + ${sliceIndex('u32(beforeSlice)', 'band')}];
   let after = slices[slicesOffset + ${sliceIndex('u32(afterSlice)', 'band')}];
-  if (isNanValue(before) || isNanValue(after)) {
+  if (isMissingAt(cell, u32(beforeSlice), before) || isMissingAt(cell, u32(afterSlice), after)) {
     return;
   }
   ${compute.join('\n  ')}`
@@ -385,7 +416,7 @@ ${NAN_WGSL}`;
         compute.push(
           isAngle
             ? `if (differences[0] != 0.0 || differences[1] != 0.0) {
-    directionOut[directionOutOffset + cell] = atan2(differences[1], differences[0]);
+    directionOut[directionOutOffset + cell] = guardedAtan2(differences[1], differences[0]);
   } else {
     directionOut[directionOutOffset + cell] = 0.0;
   }`
@@ -399,7 +430,7 @@ ${NAN_WGSL}`;
           variant: 'multiband',
           bindings,
           invocationCount: cellCount,
-          declarations,
+          declarations: `${declarations}\n${GUARDED_ATAN2_WGSL}`,
           body: `let cell = index;
   ${defaults.join('\n  ')}
   ${maskGuard}
@@ -414,7 +445,7 @@ ${NAN_WGSL}`;
   for (var band = 0u; band < BAND_COUNT; band++) {
     let before = slices[slicesOffset + ${sliceIndex('u32(beforeSlice)', 'band')}];
     let after = slices[slicesOffset + ${sliceIndex('u32(afterSlice)', 'band')}];
-    if (isNanValue(before) || isNanValue(after)) {
+    if (isMissingAt(cell, u32(beforeSlice), before) || isMissingAt(cell, u32(afterSlice), after)) {
       return;
     }
     let difference = after - before;
@@ -481,7 +512,7 @@ ${NAN_WGSL}`;
   var sum2 = 0.0;
   for (var slice = 0u; slice < SLICE_COUNT; slice++) {
     let value = slices[slicesOffset + ${sliceIndex('slice')}];
-    if (isNanValue(value)) {
+    if (isMissingAt(cell, slice, value)) {
       continue;
     }
     if (slice < split) {
@@ -509,7 +540,7 @@ ${NAN_WGSL}`;
   var squares2 = 0.0;
   for (var slice = 0u; slice < SLICE_COUNT; slice++) {
     let value = slices[slicesOffset + ${sliceIndex('slice')}];
-    if (isNanValue(value)) {
+    if (isMissingAt(cell, slice, value)) {
       continue;
     }
     if (slice < split) {
@@ -560,7 +591,7 @@ ${NAN_WGSL}`;
   ${maskGuard}
   var validCount = 0u;
   for (var slice = 0u; slice < SLICE_COUNT; slice++) {
-    if (!isNanValue(slices[slicesOffset + ${sliceIndex('slice')}])) {
+    if (!isMissingAt(cell, slice, slices[slicesOffset + ${sliceIndex('slice')}])) {
       validCount++;
     }
   }
@@ -573,12 +604,12 @@ ${NAN_WGSL}`;
   var size = 0u;
   for (var i = 0u; i < SLICE_COUNT; i++) {
     let valueI = slices[slicesOffset + ${sliceIndex('i')}];
-    if (isNanValue(valueI)) {
+    if (isMissingAt(cell, i, valueI)) {
       continue;
     }
     for (var j = i + 1u; j < SLICE_COUNT; j++) {
       let valueJ = slices[slicesOffset + ${sliceIndex('j')}];
-      if (isNanValue(valueJ)) {
+      if (isMissingAt(cell, j, valueJ)) {
         continue;
       }
       let slope = (valueJ - valueI) / ${props.dateAxis ? 'rasterYearsBetween(j, i)' : 'f32(j - i)'};
@@ -673,20 +704,21 @@ ${NAN_WGSL}`;
   var tieTerm = 0u;
   for (var i = 0u; i < SLICE_COUNT; i++) {
     let valueI = slices[slicesOffset + ${sliceIndex('i')}];
-    if (isNanValue(valueI)) {
+    if (isMissingAt(cell, i, valueI)) {
       continue;
     }
     validCount++;
     var seenBefore = false;
     for (var k = 0u; k < i; k++) {
-      if (slices[slicesOffset + ${sliceIndex('k')}] == valueI) {
+      // An earlier observation that is masked out does not start a tie group.
+      if (isObservationValid(cell, k) && slices[slicesOffset + ${sliceIndex('k')}] == valueI) {
         seenBefore = true;
       }
     }
     var tied = 1u;
     for (var j = i + 1u; j < SLICE_COUNT; j++) {
       let valueJ = slices[slicesOffset + ${sliceIndex('j')}];
-      if (isNanValue(valueJ)) {
+      if (isMissingAt(cell, j, valueJ)) {
         continue;
       }
       if (valueJ > valueI) {

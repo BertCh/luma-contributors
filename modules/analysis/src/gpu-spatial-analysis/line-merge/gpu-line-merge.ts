@@ -19,9 +19,14 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {GPUCardinalityPort, GPULineGeometryFields} from '../../analysis-core/contracts/index';
+import type {
+  GPUCardinalityPort,
+  GPULineGeometryFields,
+  GPUOverflowStatusPort,
+  GPUVertexCountStatusPort
+} from '../../analysis-core/contracts/index';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   resolveGPUSpatialContext,
@@ -55,8 +60,20 @@ export type GPULineMergeOutput = {
   chainOffsets: GraphDataView<'uint32'>;
   /** Chain vertices in chain order. Rows past the last chain are left untouched. */
   positions: GraphDataView<'float32x2'>;
-  /** One-row status scalars; `count` counts chains (not vertices or lines) and receives their number. */
-  status: GPUCardinalityPort;
+  /**
+   * One-row status scalars; `count` counts chains (not vertices or lines) and receives their number.
+   * The capacities always suffice, so the optional `requiredCount` receives the same chain count and
+   * the optional `overflow` receives `0`; the optional `vertexCount` and `requiredVertexCount`
+   * receive the number of chain vertices written (the end of the last chain). They complete the
+   * generated-geometry status of contributor contract rule 8.
+   */
+  status: GPUCardinalityPort & Partial<GPUOverflowStatusPort> & GPUVertexCountStatusPort;
+  /**
+   * Optional source row of each chain, `lineCount` rows: the input line the chain starts with
+   * (`lineOrders` 0), or {@link GPU_LINE_MERGE_NONE} past `status.count`. A chain derives from
+   * several lines; `lineChains` and `lineOrders` give every member.
+   */
+  sourceIds?: GraphDataView<'uint32'>;
   /** Optional chain index per input line, or {@link GPU_LINE_MERGE_NONE} for lines with under two vertices. */
   lineChains?: GraphDataView<'uint32'>;
   /** Optional position of each input line within its chain (0 for the first line). */
@@ -134,18 +151,23 @@ export class GPULineMerge implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
     for (const [name, view] of [
       ['lineOffsets', props.lineOffsets],
       ['output.chainOffsets', output.chainOffsets],
       ['output.status.count', output.status.count],
+      ['output.status.requiredCount', output.status.requiredCount],
+      ['output.status.overflow', output.status.overflow],
+      ['output.status.vertexCount', output.status.vertexCount],
+      ['output.status.requiredVertexCount', output.status.requiredVertexCount],
+      ['output.sourceIds', output.sourceIds],
       ['output.lineChains', output.lineChains],
       ['output.lineOrders', output.lineOrders],
       ['output.lineReversed', output.lineReversed]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     if (props.lineOffsets.length < 2) {
@@ -162,6 +184,17 @@ export class GPULineMerge implements GPUCommandNodeProducer {
       throw new Error(`${id} output.status.count must contain exactly one row`);
     }
     for (const [name, view] of [
+      ['requiredCount', output.status.requiredCount],
+      ['overflow', output.status.overflow],
+      ['vertexCount', output.status.vertexCount],
+      ['requiredVertexCount', output.status.requiredVertexCount]
+    ] as const) {
+      if (view && view.length !== 1) {
+        throw new Error(`${id} output.status.${name} must contain exactly one row`);
+      }
+    }
+    for (const [name, view] of [
+      ['sourceIds', output.sourceIds],
       ['lineChains', output.lineChains],
       ['lineOrders', output.lineOrders],
       ['lineReversed', output.lineReversed]
@@ -180,7 +213,7 @@ export class GPULineMerge implements GPUCommandNodeProducer {
 
   /**
    * Returns endpoint keys, two sorts, `partners`, `heads` and `cycles` walks, `flags`, two scans,
-   * `offsets`, `positions` and optional `line-info` nodes.
+   * `offsets`, `positions` and optional `line-info`, `status` and `source-ids` nodes.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -236,6 +269,29 @@ ${declarations}`,
     const flagScan = transient('flag-scan', 'uint32', lineCount);
     const vertexScan = transient('vertex-scan', 'uint32', lineCount);
 
+    // Optional generated-geometry status, written by its own one-thread `status` node after the
+    // offsets kernel so that kernel keeps its five storage buffers (the default device limit is 8).
+    const statusOutputs = [
+      [
+        'requiredCount',
+        output.status.requiredCount,
+        'requiredCount[requiredCountOffset] = chainCount;'
+      ],
+      ['overflow', output.status.overflow, 'overflow[overflowOffset] = 0u;'],
+      ['vertexCount', output.status.vertexCount, 'vertexCount[vertexCountOffset] = totalVertices;'],
+      [
+        'requiredVertexCount',
+        output.status.requiredVertexCount,
+        'requiredVertexCount[requiredVertexCountOffset] = totalVertices;'
+      ]
+    ] as const;
+    const statusBindings = statusOutputs.flatMap(([name, view]) =>
+      view ? [write(name, view)] : []
+    );
+    const statusBody = statusOutputs
+      .flatMap(([, view, statement]) => (view ? [statement] : []))
+      .join('\n  ');
+    const statusVariant = statusOutputs.map(([, view]) => (view ? 1 : 0)).join('');
     const nodes: GPUCommandNode<Parameters>[] = [];
     // Bit patterns; -0 is folded to +0 so equal coordinates compare equal. Lines with fewer than
     // two vertices or a non-finite endpoint get the NaN key, which never joins.
@@ -610,6 +666,40 @@ fn vertexCount(line: u32) -> u32 {
       }
       nodes.push(kernel('line-info', infoBindings, endpointCount, infoBody));
     }
+    // Optional outputs get their own nodes after every existing writer, so no kernel binds more
+    // than the default eight storage buffers: `status` binds at most 6, `source-ids` binds 3.
+    if (statusBindings.length > 0) {
+      nodes.push(
+        kernel(
+          `status-${statusVariant}`,
+          [read('flagScan', flagScan), read('vertexScan', vertexScan), ...statusBindings],
+          1,
+          `let chainCount = flagScan[flagScanOffset + LINE_COUNT - 1u];
+  let totalVertices = vertexScan[vertexScanOffset + LINE_COUNT - 1u];
+  ${statusBody}`
+        )
+      );
+    }
+    if (output.sourceIds) {
+      nodes.push(
+        kernel(
+          'source-ids',
+          [
+            read('leaderVertices', leaderVertices),
+            read('flagScan', flagScan),
+            write('sourceIds', output.sourceIds)
+          ],
+          lineCount,
+          `let chainCount = flagScan[flagScanOffset + LINE_COUNT - 1u];
+  if (index >= chainCount) {
+    sourceIds[sourceIdsOffset + index] = NONE;
+  }
+  if (leaderVertices[leaderVerticesOffset + index] > 0u) {
+    sourceIds[sourceIdsOffset + flagScan[flagScanOffset + index] - 1u] = index;
+  }`
+        )
+      );
+    }
     return nodes;
   }
 }
@@ -626,6 +716,11 @@ function getOutputs(props: GPULineMergeProps): (GraphDataView | undefined)[] {
     output.chainOffsets,
     output.positions,
     output.status.count,
+    output.status.requiredCount,
+    output.status.overflow,
+    output.status.vertexCount,
+    output.status.requiredVertexCount,
+    output.sourceIds,
     output.lineChains,
     output.lineOrders,
     output.lineReversed

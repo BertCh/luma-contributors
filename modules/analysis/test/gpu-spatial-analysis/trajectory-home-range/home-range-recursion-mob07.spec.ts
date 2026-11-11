@@ -15,6 +15,7 @@ import {
 import {GPUTrajectoryRecursions} from '../../../src/gpu-spatial-analysis/trajectory-recursion/index';
 import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import numpyChecks from '../../oracles/fixtures/trajectories-lines-numpy-checks.json';
 import {GraphHarness, importTrajectory} from '../trajectory-staypoints/movement-spec-utils';
 
 function createRandom(seed: number): () => number {
@@ -353,6 +354,36 @@ describe('GPUUtilizationVolumeIsopleths (MOB-07)', () => {
     expect(exact.inside.reduce((sum, value) => sum + value, 0)).toBeGreaterThanOrEqual(2);
   });
 
+  it('gives empty cells volume 1, outside every isopleth (trajectories-lines-04)', async () => {
+    // The six densities of the review: 0.5, 0.3, 0.15, 0.05, 0, 0. Cumulative shares from the
+    // densest are 0.50, 0.80, 0.95, 1.00 by hand. The two empty cells hold no mass, so they are
+    // the last cells any isopleth would reach: volume 1, and `volume <= level` must not select
+    // them. At level 0.9 the volume idiom selects cells 0 and 1; the mask also holds cell 2, whose
+    // own mass crosses the level (0.8 before it, 0.95 with it).
+    const densities = Float32Array.from([0.5, 0.3, 0.15, 0.05, 0, 0]);
+    const result = await runIsopleths(densities, 0.9, 6);
+    [0.5, 0.8, 0.95, 1].forEach((expected, cell) =>
+      expect(result.volume[cell]).toBeCloseTo(expected, 6)
+    );
+    expect(result.volume[4]).toBe(1);
+    expect(result.volume[5]).toBe(1);
+    expect(Array.from(result.volume, value => (value <= 0.9 ? 1 : 0))).toEqual([1, 1, 0, 0, 0, 0]);
+    expect(Array.from(result.inside)).toEqual([1, 1, 1, 0, 0, 0]);
+    // Second check: a stable descending NumPy argsort and cumsum of the same float32 densities
+    // (oracles/trajectories-lines-numpy-checks.py).
+    const reference = numpyChecks.volumeIsopleths;
+    expect(reference.level).toBe(0.9);
+    expect(reference.densities).toEqual(Array.from(densities));
+    reference.volume.forEach((expected, cell) =>
+      expect(result.volume[cell], `NumPy volume ${cell}`).toBeCloseTo(expected, 6)
+    );
+    expect(Array.from(result.inside)).toEqual(reference.inside);
+    // A surface with no mass at all: every cell is empty.
+    const empty = await runIsopleths(new Float32Array(4), 0.9, 4);
+    expect(Array.from(empty.volume)).toEqual([1, 1, 1, 1]);
+    expect(Array.from(empty.inside)).toEqual([0, 0, 0, 0]);
+  });
+
   it('matches a binary64 sort and cumulative sum over 70,000 cells (three prefix levels)', async () => {
     const random = createRandom(9);
     const count = 70000;
@@ -373,7 +404,7 @@ describe('GPUUtilizationVolumeIsopleths (MOB-07)', () => {
     for (const {value, cell} of order) {
       const before = cumulative;
       cumulative += value;
-      const expectedVolume = value > 0 ? cumulative / total : 0;
+      const expectedVolume = value > 0 ? cumulative / total : 1;
       expect(Math.abs(result.volume[cell] - expectedVolume)).toBeLessThan(2e-4);
       const expectedInside = value > 0 && before / total < level ? 1 : 0;
       if (Math.abs(before / total - level) < 1e-5) {
@@ -383,8 +414,10 @@ describe('GPUUtilizationVolumeIsopleths (MOB-07)', () => {
       }
     }
     expect(borderline).toBeLessThan(40);
-    expect(result.volume[5]).toBe(0);
-    expect(result.volume[77]).toBe(0);
+    // Zero, NaN and negative cells hold no mass: volume 1, never inside.
+    expect(result.volume[5]).toBe(1);
+    expect(result.volume[77]).toBe(1);
+    expect(result.volume[78]).toBe(1);
     expect(result.inside[78]).toBe(0);
   });
 

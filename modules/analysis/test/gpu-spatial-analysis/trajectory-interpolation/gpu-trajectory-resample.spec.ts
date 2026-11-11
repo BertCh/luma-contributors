@@ -12,6 +12,7 @@ import {
 import {expectClose, runResample} from './trajectory-interpolation-harness';
 import {computeResampleOracle, type ResampleOracleResult} from './trajectory-interpolation-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import numpyChecks from '../../oracles/fixtures/trajectories-lines-numpy-checks.json';
 
 function expectResampleParity(
   actual: ResampleOracleResult,
@@ -98,6 +99,65 @@ function expectResampleParityWithinUlps(
   }
   return shiftedCount;
 }
+
+it('GPUTrajectoryResample arc-length spacing stays uniform on a long track of equal steps (trajectories-lines-03)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 86,400 steps of the same length, back and forth between two points, one row per time unit.
+  // Every step is equally long, so arc length is proportional to the row number and sample k of 8
+  // lies at row 86400 k / 7 exactly: a closed form with no summation. A plain f32 running sum of
+  // this track is 1,051 units short at the end and places the interior samples 11 to 44 rows off.
+  const stepCount = 86_400;
+  const stepLength = Math.fround(13.9);
+  const sampleCount = 8;
+  const positions = new Float32Array(2 * (stepCount + 1));
+  for (let row = 1; row <= stepCount; row += 2) {
+    positions[2 * row] = stepLength;
+  }
+  const actual = await runResample(
+    device,
+    {
+      positions,
+      times: {
+        kind: 'float32',
+        values: Float32Array.from({length: stepCount + 1}, (_, row) => row)
+      },
+      trackOffsets: [0, stepCount + 1]
+    },
+    sampleCount,
+    'arc-length'
+  );
+  for (let sample = 0; sample < sampleCount; sample++) {
+    const expectedRow = (stepCount * sample) / (sampleCount - 1);
+    const segment = Math.floor(expectedRow);
+    const fraction = expectedRow - segment;
+    const expectedX = (segment % 2 === 0 ? fraction : 1 - fraction) * stepLength;
+    // 0.1 rows is 1.39 units of 1,200,960: the compensated f32 sum is within 0.03 rows.
+    expect(Math.abs(actual.sampleTimes[sample] - expectedRow), `time ${sample}`).toBeLessThan(0.1);
+    expect(Math.abs(actual.samples[2 * sample] - expectedX), `x ${sample}`).toBeLessThan(1.5);
+    expect(actual.samples[2 * sample + 1]).toBe(0);
+  }
+  // Second check: NumPy cumsum and interp over the same float32 positions, summed in binary64
+  // (oracles/trajectories-lines-numpy-checks.py). It agrees with the closed form above.
+  const reference = numpyChecks.arcLengthResample;
+  expect([reference.stepCount, reference.sampleCount, reference.stepLength]).toEqual([
+    stepCount,
+    sampleCount,
+    stepLength
+  ]);
+  for (let sample = 0; sample < sampleCount; sample++) {
+    expect(reference.sampleTimes[sample]).toBeCloseTo((stepCount * sample) / (sampleCount - 1), 6);
+    expect(
+      Math.abs(actual.sampleTimes[sample] - reference.sampleTimes[sample]),
+      `NumPy time ${sample}`
+    ).toBeLessThan(0.1);
+    expect(
+      Math.abs(actual.samples[2 * sample] - reference.sampleX[sample]),
+      `NumPy x ${sample}`
+    ).toBeLessThan(1.5);
+  }
+  device.destroy?.();
+});
 
 it('GPUTrajectoryResample matches the oracle on random tracks', async () => {
   const device = await getWebGPUTestDevice();

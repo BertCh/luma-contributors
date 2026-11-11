@@ -13,13 +13,12 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPULineGeometryFields,
   GPUPolygonGeometryFields
 } from '../../analysis-core/contracts/index';
-import {assert} from '@luma.gl/core';
 import {createFillNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   createCleanupEmitNode,
@@ -249,7 +248,7 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} geometryType must be 'points', 'lines' or 'polygons'`);
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
@@ -267,31 +266,33 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
       }
     } else {
       // Lines and polygons always resolve both offsets views.
-      assert(layout.ringOffsets && layout.outputRingOffsets);
-      validatePackedView(layout.ringOffsets, ['uint32'], `${id} ringOffsets`);
+      if (!layout.ringOffsets || !layout.outputRingOffsets) {
+        throw new Error(`${id} ${props.geometryType} need input and output line or ring offsets`);
+      }
+      validateSinglePackedView(layout.ringOffsets, ['uint32'], `${id} ringOffsets`);
       if (layout.ringOffsets.length < 2) {
         throw new Error(`${id} ringOffsets must contain at least two rows`);
       }
-      validatePackedView(layout.outputRingOffsets, ['uint32'], `${id} output ring offsets`);
+      validateSinglePackedView(layout.outputRingOffsets, ['uint32'], `${id} output ring offsets`);
       if (layout.outputRingOffsets.length !== layout.ringOffsets.length) {
         throw new Error(`${id} output offsets length must equal input offsets length`);
       }
     }
     if (props.geometryType === 'polygons') {
       for (const name of ['polygonOffsets', 'featureOffsets'] as const) {
-        validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(props[name], ['uint32'], `${id} ${name}`);
         if (props[name].length < 2) {
           throw new Error(`${id} ${name} must contain at least two rows`);
         }
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_GEOMETRY_CLEANUP_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_GEOMETRY_CLEANUP_PARAMETER_LENGTH} float32 values`
       );
     }
-    validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
     if (output.positions.length < 1) {
       throw new Error(`${id} output.positions must hold at least one row`);
     }
@@ -304,7 +305,7 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
       ['collapsedCount', collapsedCount]
     ] as const) {
       if (scalar) {
-        validatePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
+        validateSinglePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
         if (scalar.length < 1) {
           throw new Error(`${id} output.status.${name} must contain one uint32 row`);
         }
@@ -363,8 +364,10 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
     }
     const {output} = props;
     const {ringOffsets, outputRingOffsets} = layout;
-    // Lines and polygons always resolve both offsets views.
-    assert(ringOffsets && outputRingOffsets);
+    // Lines and polygons always resolve both offsets views (checked at construction).
+    if (!ringOffsets || !outputRingOffsets) {
+      throw new Error(`${id} ${props.geometryType} need input and output line or ring offsets`);
+    }
     const collapsedRings =
       'collapsedCount' in output.status ? output.status.collapsedCount : undefined;
     validateGraphViewsBelongToGraph(id, graph, [

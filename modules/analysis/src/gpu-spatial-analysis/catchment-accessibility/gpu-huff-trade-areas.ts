@@ -10,10 +10,12 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -68,9 +70,16 @@ export type GPUHuffTradeAreasOutput = {
   tradeAreaProbability?: GraphDataView<'float32'>;
   /**
    * Optional expected demand `E_j = sum_i P_i p_ij` captured per facility. Needs `facilityWeights`
-   * and `demand`.
+   * and `demand`. A demand location whose `demand` is NaN or infinite is missing: it adds nothing
+   * to any facility (the rule of `GPUCatchmentAccessibility`) and its `validity` row is 0.
    */
   expectedDemand?: GraphDataView<'float32'>;
+  /**
+   * Optional flag per demand location: 1 when its `demand` is finite, 0 when it is NaN or infinite
+   * and was left out of `expectedDemand`. Needs `demand`. The trade area and the probabilities of
+   * a flagged row do not read `demand` and remain valid.
+   */
+  validity?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -116,7 +125,9 @@ export type GPUHuffTradeAreasProps = {
  * The weights carry the decay and the catchment cut-off, so a Euclidean kernel from
  * `GPUNeighborSearch` gives the classic distance-decay Huff model. Rows accumulate in slot order,
  * so results are deterministic and match a sequential CPU evaluation within f32 rounding.
- * Facilities with zero attractiveness have probability 0.
+ * Facilities with zero attractiveness have probability 0. A non-finite `demand` is missing: it adds
+ * nothing to `expectedDemand` and its `validity` row is 0, the no-data rule of
+ * `GPUCatchmentAccessibility`.
  *
  * When both weights declare spatial contexts, they must be compatible.
  *
@@ -147,8 +158,8 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
       );
     }
     const {output} = props;
-    validatePackedView(props.attractiveness, ['float32'], `${id} attractiveness`);
-    validatePackedView(output.tradeArea, ['uint32'], `${id} output.tradeArea`);
+    validateSinglePackedView(props.attractiveness, ['float32'], `${id} attractiveness`);
+    validateSinglePackedView(output.tradeArea, ['uint32'], `${id} output.tradeArea`);
     for (const [name, view] of [
       ['demand', props.demand],
       ['parameters', props.parameters],
@@ -157,7 +168,7 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
       ['output.expectedDemand', output.expectedDemand]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
     if (output.tradeArea.length !== this.demandCount) {
@@ -176,6 +187,15 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
     }
     if (props.parameters && props.parameters.length < GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must hold ${GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH} word`);
+    }
+    if (output.validity) {
+      validateSinglePackedView(output.validity, ['uint32'], `${id} output.validity`);
+      validateRequirement(id, props.demand !== undefined, 'output.validity needs demand');
+      validateRequirement(
+        id,
+        props.demand?.length === this.demandCount && output.validity.length === this.demandCount,
+        'demand and output.validity must have one row per demand location'
+      );
     }
     if (output.expectedDemand) {
       if (!props.facilityWeights || !props.demand) {
@@ -326,18 +346,37 @@ const DEMANDS: u32 = ${demandCount}u;`;
             {name: 'expectedDemand', view: output.expectedDemand, type: 'f32', access: 'read_write'}
           ],
           invocationCount: facilityCount,
-          declarations,
+          declarations: `${declarations}
+${IS_FINITE_VALUE_WGSL}`,
           body: `var captured = 0.0;
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     let partner = neighbors[neighborsOffset + slot];
     if (partner < DEMANDS) {
       let total = denominators[denominatorsOffset + partner];
-      if (total > 0.0) {
-        captured += demand[demandOffset + partner] * weights[weightsOffset + slot] / total;
+      let partnerDemand = demand[demandOffset + partner];
+      // A non-finite demand is missing and adds nothing, as in GPUCatchmentAccessibility.
+      if (total > 0.0 && isFiniteValue(partnerDemand)) {
+        captured += partnerDemand * weights[weightsOffset + slot] / total;
       }
     }
   }
   expectedDemand[expectedDemandOffset + index] = attraction[attractionOffset + index] * captured;`
+        })
+      );
+    }
+    if (output.validity && props.demand) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-validity`,
+          operation: OPERATION,
+          variant: 'validity',
+          bindings: [
+            {name: 'demand', view: props.demand, type: 'f32', access: 'read'},
+            {name: 'validity', view: output.validity, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: demandCount,
+          declarations: IS_FINITE_VALUE_WGSL,
+          body: 'validity[validityOffset + index] = u32(isFiniteValue(demand[demandOffset + index]));'
         })
       );
     }
@@ -351,7 +390,8 @@ function getOutputs(output: GPUHuffTradeAreasOutput): (GraphDataView | undefined
     output.probabilities,
     output.tradeArea,
     output.tradeAreaProbability,
-    output.expectedDemand
+    output.expectedDemand,
+    output.validity
   ];
 }
 

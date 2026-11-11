@@ -14,7 +14,7 @@ import {
 } from '../delaunay-tessellation/gpu-delaunay-tessellation';
 import type {GPUConcaveHullProps} from '../concave-hull/gpu-concave-hull';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   getGraphOutputViews,
@@ -38,11 +38,25 @@ export type GPURatioConcaveHullProps = Omit<GPUConcaveHullProps, 'maximumCircumr
 /**
  * Edge-length-ratio hull from Delaunay border erosion. A removable border triangle
  * has one exposed edge and an interior opposite vertex, preserving connectivity
- * and all input vertices. Hole seeds have three interior vertices. Triangles with
- * exposed edge length greater than minLength + ratio * (maxLength - minLength)
- * are removed in descending size order (triangle ID breaks ties). At ratio one
- * this is the convex hull. Collinear/point sets have an empty area boundary.
- * `converged` also covers the removal budget; incomplete masks are not final hulls.
+ * and all input vertices. Hole seeds have three interior vertices. A triangle is a
+ * candidate while its exposed edge is strictly longer than
+ * `minLength + ratio * (maxLength - minLength)`. At ratio one this is the convex
+ * hull. Collinear/point sets have an empty area boundary. `converged` also covers
+ * the removal budget; incomplete masks are not final hulls.
+ *
+ * **Removal order.** Erosion runs in rounds. Each round removes, in parallel, every
+ * candidate that is the largest (exposed edge length, then lowest triangle row)
+ * among the candidates around all three of its vertices, and rounds repeat until
+ * no candidate is left. The result is a connected hull over every input vertex in
+ * which no removable border triangle exceeds the threshold. It is not the hull of
+ * GEOS and JTS `ConcaveHull` (`shapely.concave_hull`), which remove one triangle
+ * at a time, always the largest: a triangle that is only the largest in its own
+ * neighbourhood can go here before a larger removal elsewhere reaches that
+ * neighbourhood and would have made it unremovable. The two hulls agree at ratio
+ * one and on the committed Shapely fixtures (five and thirty-two points), and
+ * otherwise can keep different triangles (nine points are enough; both walks keep
+ * seven triangles there, with areas 37.66 against 31.75). GEOS also removes an
+ * edge exactly at the threshold.
  */
 export class GPURatioConcaveHull implements GPUCommandNodeProducer {
   readonly id: string;
@@ -55,15 +69,15 @@ export class GPURatioConcaveHull implements GPUCommandNodeProducer {
       throw new Error('Invalid hull ratio');
     }
     validateCapacity(this.id, 'maximumIterations', props.maximumIterations ?? capacity, 0);
-    validatePackedView(props.positions, ['float32x2'], this.id);
-    validatePackedView(props.output.triangles, ['uint32x3'], this.id);
-    validatePackedView(props.output.boundaryEdges, ['uint32x2'], this.id);
+    validateSinglePackedView(props.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.output.triangles, ['uint32x3'], this.id);
+    validateSinglePackedView(props.output.boundaryEdges, ['uint32x2'], this.id);
     for (const view of [
       props.output.triangleValidity,
       props.output.edgeValidity,
       props.output.status.converged
     ]) {
-      validatePackedView(view, ['uint32'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
     }
     if (
       props.output.triangles.length !== capacity ||

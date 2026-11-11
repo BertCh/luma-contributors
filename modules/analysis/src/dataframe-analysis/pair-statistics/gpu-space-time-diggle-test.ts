@@ -19,7 +19,7 @@ import {
   validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -48,6 +48,7 @@ import {
 import {
   GPU_SPACE_TIME_K_WEIGHT_CAP,
   SPACE_TIME_K_EDGE_WEIGHT_WGSL,
+  SPACE_TIME_K_SPLANCS_TIE_WGSL,
   SPACE_TIME_K_WEIGHT_SCALE
 } from './space-time-k-function-wgsl';
 
@@ -67,7 +68,7 @@ export const GPU_SPACE_TIME_DIGGLE_SUMMARY_LENGTH = 11;
 
 /** Indices of the `summary` output of {@link GPUSpaceTimeDiggleTest}. */
 export const GPU_SPACE_TIME_DIGGLE_SUMMARY = {
-  /** Observed statistic `U`, the sum of standardised `D` residuals over the usable classes. */
+  /** Observed statistic `U`, the sum of `D` over all classes (splancs `stmctest` `t0`). */
   observed: 0,
   /** Mean of the `P` permuted statistics. */
   permutationMean: 1,
@@ -85,7 +86,10 @@ export const GPU_SPACE_TIME_DIGGLE_SUMMARY = {
   pseudoPTwoSided: 7,
   /** `(observed - permutationMean) / sqrt(permutationVariance)`, NaN when the variance is 0. */
   zScore: 8,
-  /** Classes with a positive, finite permutation standard deviation (the classes in `U`). */
+  /**
+   * Classes with a finite observed `D`: all `distanceClassCount * timeClassCount` of them when
+   * the statistic is defined, since `U` sums every class.
+   */
   usedClasses: 9,
   /** Included events `n`. */
   includedCount: 10
@@ -106,15 +110,24 @@ export type GPUSpaceTimeDiggleTestOutput = {
   /** Observed `D(u_a, v_b)`, at least `distanceClassCount * timeClassCount` rows, distance-major like `GPUSpaceTimeKFunction`. */
   d: GraphDataView<'float32'>;
   /**
-   * `permutationCount + 1` float32 rows: row 0 is the observed statistic `U`, rows `1..P` the
-   * statistic of each permutation. NaN when no class is usable or fewer than two events are included.
+   * `permutationCount + 1` float32 rows: row 0 is the observed statistic `U = sum D`, rows `1..P`
+   * the same sum for each permutation. NaN when fewer than two events are included or a class is
+   * not finite.
    */
   statistics: GraphDataView<'float32'>;
   /** `GPU_SPACE_TIME_DIGGLE_SUMMARY_LENGTH` float32 words, see {@link GPU_SPACE_TIME_DIGGLE_SUMMARY}. */
   summary: GraphDataView<'float32'>;
-  /** Optional mean over the permutations of `D` per class, laid out like `d`. */
+  /**
+   * Optional mean over the permutations of `D` per class, laid out like `d`. A diagnostic: it is
+   * not part of the statistic.
+   */
   permutationMean?: GraphDataView<'float32'>;
-  /** Optional sample standard deviation over the permutations of `D` per class. */
+  /**
+   * Optional sample standard deviation over the permutations of `D` per class (NaN with one
+   * permutation). A diagnostic, the Monte Carlo counterpart of the splancs `stsecal` standard
+   * error: `(d - permutationMean) / permutationStandardDeviation` is a standardised residual
+   * like the `R` of `stdiagn`. It is not part of the statistic.
+   */
   permutationStandardDeviation?: GraphDataView<'float32'>;
   /** Optional observed `K`, laid out like `d`. */
   k?: GraphDataView<'float32'>;
@@ -185,20 +198,56 @@ export function getGPUSpaceTimeDiggleRandomParameterValues(seed: number): Uint32
  * test of `D(u, v) = K(u, v) - K_s(u) K_t(v)` against random relabelling of the event times over
  * the event locations (splancs `stmctest`, surveillance `stKtest`), on the indexed pair histogram.
  * `K`, `K_s`, `K_t` and the edge corrections are those of {@link GPUSpaceTimeKFunction}
- * (homogeneous estimator, `edgeCorrection` `'isotropic'` or `'none'`).
+ * (homogeneous estimator, `edgeCorrection` `'isotropic'` or `'none'`), except at exact ties, where
+ * this class follows splancs and that one follows stpp (below).
  *
  * Under a time permutation the locations and the multiset of times are fixed, so `K_s` and `K_t`
  * do not change and only `K` is recomputed. Each permutation is a swap-or-not shuffle of the
  * included events (the shuffle of `GPUKnoxTest`, on its own Philox stream), applied to the times.
  *
- * Statistic: with `m` and `s` the mean and sample standard deviation over the `P` permutations
- * of `D` in each class (classes with `s = 0` or non-finite values are skipped), the statistic is
- * `U = sum_classes (D - m) / s`, the sum of standardised residuals, for the observed pattern
- * and, with the same `m` and `s`, for each permutation. The pseudo p-value for interaction is
- * `(1 + #{U_p >= U}) / (P + 1)`. This is the definition of Diggle et al. (1995) as splancs
- * documents it; splancs is R-only (GPL), so its fixture is pending and the spec compares with a
- * binary64 reference that follows this definition. Whether splancs includes the observed pattern
- * in `m` and `s` was not verified.
+ * Statistic: `U = sum_a sum_b D(u_a, v_b)`, the plain sum of `D` over the whole grid of classes,
+ * for the observed pattern and for each permutation. This is the statistic of splancs `stmctest`
+ * (`sum(kst - outer(ks, kt))`) and of surveillance `stKtest`. It is not standardised: classes
+ * with large `K` weigh more, and neither splancs function divides by the `stsecal` standard
+ * error (splancs uses that only for the residual plot `R = D / SE` of `stdiagn`). The pseudo
+ * p-value for interaction is `(1 + #{U_p >= U}) / (P + 1)`, the p-value `stKtest` reports. Every
+ * labelling gets the same function of the data, so the Monte Carlo test is exact.
+ *
+ * Agreement with splancs: `K_s`, `K_t`, `K`, `D` and `U` equal a NumPy port of the splancs
+ * 2.01-45 source (`stkhat.f`, `stmctest.S`; a port, not a run of R, which is not available where
+ * the fixtures are generated) to float32 accuracy, for the isotropic correction on a rectangular
+ * window with `distanceClassCount` equal steps up to `maximumDistance` and `timeClassCount`
+ * equal steps up to `maximumTimeLag`. The generator is
+ * `test/oracles/space-time-diggle-splancs-port.py`; `space-time-diggle-splancs.spec.ts` pins it.
+ * The permutations are this class's own shuffle, so individual `U_p` differ from an R session;
+ * the spread of the null distribution matches the port's simulations.
+ *
+ * Exact ties follow splancs `stkhat.f`. Times recorded as whole days and a whole-day
+ * `maximumTimeLag` make them ordinary, not rare, so the fixture has such a scene (60 events on
+ * days 0 to 30, three lag grids) and the agreement above holds on it:
+ * - a time lag that exactly reaches a limit of the time window (`t_i - start <= lag` or
+ *   `end - t_i <= lag`) has temporal weight 2;
+ * - a pair at exactly `maximumDistance` or at exactly `maximumTimeLag` is dropped: the last
+ *   class is open above, every other class is closed above (`iplace.f`);
+ * - the class of a distance or lag is found with products (`value * count <= maximum * (k + 1)`),
+ *   so a whole-number lag on a whole-number class break stays in the class the break closes.
+ * `GPUSpaceTimeKFunction` follows stpp 2.0-8 instead (`stikfunction.f`: the time window is
+ * closed, weight 1 at such a lag, and a pair at the largest distance or lag is counted), so the
+ * optional outputs `k`, `spatialK`, `temporalK` and `d` of this class can differ from that
+ * class's on tied data. The size is not small: on 60 events with whole-day times the review of
+ * this class measured `U` 43.95 under the stpp rules against 52.26 under the splancs rules.
+ *
+ * Differences from splancs that remain: the spatial weight is capped at 100 here (a circle with
+ * less than 1/100 of its circumference inside the window) and unbounded in splancs; at a
+ * distance exactly equal to the largest, `stkhat.f` drops the pair from `ks` but adds a term to
+ * `kst` with the class and weights left from an earlier pair, which is not reproduced (the pair
+ * is dropped from both here). splancs also accepts a polygon window and unequal class breaks;
+ * this class does not.
+ *
+ * Until the math review of 2026-11-10 (dataframe-10) the statistic was the sum of residuals
+ * standardised by the permutation mean and standard deviation per class, which no reference
+ * computes. Those per-class moments remain as the optional diagnostic outputs
+ * `permutationMean` and `permutationStandardDeviation`.
  *
  * Permutations run in batches, `B = floor(1024 / (U V))` at a time (and as many as the time table
  * of `B * rows` floats fits one storage binding): a pair visited once accumulates the weight of
@@ -249,13 +298,13 @@ export class GPUSpaceTimeDiggleTest implements GPUCommandNodeProducer {
       gridSize: props.gridSize,
       mask: props.mask
     });
-    validatePackedView(props.times, ['float32'], `${id} times`);
+    validateSinglePackedView(props.times, ['float32'], `${id} times`);
     validateRequirement(
       id,
       props.times.length === rows,
       'times length must equal positions length'
     );
-    validatePackedView(props.randomParameters, ['uint32'], `${id} randomParameters`);
+    validateSinglePackedView(props.randomParameters, ['uint32'], `${id} randomParameters`);
     validateRequirement(
       id,
       props.randomParameters.length >= GPU_SPACE_TIME_DIGGLE_RANDOM_PARAMETER_LENGTH,
@@ -315,7 +364,7 @@ export class GPUSpaceTimeDiggleTest implements GPUCommandNodeProducer {
     const outputViews: GraphDataView[] = [];
     for (const [name, view] of Object.entries(output)) {
       if (view) {
-        validatePackedView(
+        validateSinglePackedView(
           view,
           [name === 'status' ? 'uint32' : 'float32'],
           `${id} output.${name}`
@@ -391,6 +440,9 @@ export class GPUSpaceTimeDiggleTest implements GPUCommandNodeProducer {
       distanceClassCount: U,
       timeClassCount: V,
       edgeCorrection: this.edgeCorrection,
+      // splancs stkhat: weight 2 from lag == radius on; pairs at exactly the largest distance or
+      // lag are dropped. The permutation batches below apply the same two rules.
+      tieRule: 'splancs',
       k,
       spatialK,
       temporalK,
@@ -516,30 +568,29 @@ ${PAIR_STATISTICS_FLOAT_WGSL}`,
         pairOrder: 'ordered',
         extraBindings: [{name: 'permutedTimes', view: permutedTimes, type: 'f32', access: 'read'}],
         declarations: `${batchConstants}
-${SPACE_TIME_K_EDGE_WEIGHT_WGSL}`,
+${SPACE_TIME_K_EDGE_WEIGHT_WGSL}${SPACE_TIME_K_SPLANCS_TIE_WGSL}`,
         focusPrologue: `let timeStart = readParameter(7u);
     let timeEnd = readParameter(8u);
     let maximumDistance = readParameter(5u);
     let maximumTimeLag = readParameter(6u);
-    let focusUsable = isFiniteFloat(maximumDistance) && maximumDistance > 0.0 &&
-      isFiniteFloat(maximumTimeLag) && maximumTimeLag > 0.0;
+    let focusUsable = isFiniteValue(maximumDistance) && maximumDistance > 0.0 &&
+      isFiniteValue(maximumTimeLag) && maximumTimeLag > 0.0;
     let left = x - lattice.minimumX;
     let bottom = y - lattice.minimumY;
     let right = lattice.maximumX - x;
     let top = lattice.maximumY - y;`,
         pairAction: `if (!focusUsable) { continue; }
-            let scaledDistance = pairDistance / maximumDistance * f32(DISTANCE_CLASS_COUNT);
-            if (!(scaledDistance <= f32(DISTANCE_CLASS_COUNT))) { continue; }
-            let distanceClass = min(u32(max(ceil(scaledDistance) - 1.0, 0.0)), DISTANCE_CLASS_COUNT - 1u);
+            // The class of splancs iplace; the last class is open above (sj .ge. smax is dropped).
+            let distanceClass = getSpaceTimeSplancsClass(pairDistance, maximumDistance, DISTANCE_CLASS_COUNT);
+            if (distanceClass >= DISTANCE_CLASS_COUNT) { continue; }
             let spatialWeight = select(1.0, getSpaceTimeSpatialWeight(left, bottom, right, top, pairDistance), EDGE_ISOTROPIC);
             for (var permutation = 0u; permutation < BATCH_SIZE; permutation++) {
               let timeBase = permutedTimesOffset + permutation * PERMUTATION_ROW_COUNT;
               let focusTime = permutedTimes[timeBase + focus];
               let timeLag = abs(permutedTimes[timeBase + neighbor] - focusTime);
-              let scaledLag = timeLag / maximumTimeLag * f32(TIME_CLASS_COUNT);
-              if (!(scaledLag <= f32(TIME_CLASS_COUNT))) { continue; }
-              let lagClass = min(u32(max(ceil(scaledLag) - 1.0, 0.0)), TIME_CLASS_COUNT - 1u);
-              let temporalWeight = select(1.0, getSpaceTimeTemporalWeight(timeLag, min(focusTime - timeStart, timeEnd - focusTime)), EDGE_ISOTROPIC);
+              let lagClass = getSpaceTimeSplancsClass(timeLag, maximumTimeLag, TIME_CLASS_COUNT);
+              if (lagClass >= TIME_CLASS_COUNT) { continue; }
+              let temporalWeight = select(1.0, getSpaceTimeSplancsTemporalWeight(timeLag, min(focusTime - timeStart, timeEnd - focusTime)), EDGE_ISOTROPIC);
               accumulateScaled((permutation * DISTANCE_CLASS_COUNT + distanceClass) * TIME_CLASS_COUNT + lagClass, 0u, 1u, spatialWeight * temporalWeight * WEIGHT_SCALE);
             }`
       });
@@ -565,8 +616,8 @@ ${getPairHistogramReadWGSL('accumulators', 2, '', active * bins)}`,
   let area = (parameters[parametersOffset + 2u] - parameters[parametersOffset]) *
     (parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u]);
   let duration = parameters[parametersOffset + 8u] - parameters[parametersOffset + 7u];
-  let defined = includedCount >= 2.0 && isFiniteFloat(area) && area > 0.0 &&
-    isFiniteFloat(duration) && duration > 0.0 && !readPairOverflow();
+  let defined = includedCount >= 2.0 && isFiniteValue(area) && area > 0.0 &&
+    isFiniteValue(duration) && duration > 0.0 && !readPairOverflow();
   let localPermutation = index / BINS;
   let bin = index % BINS;
   let distanceIndex = bin / TIME_CLASS_COUNT;
@@ -584,32 +635,33 @@ ${getPairHistogramReadWGSL('accumulators', 2, '', active * bins)}`,
       );
     }
 
-    // Mean and standard deviation of D over the permutations, per class.
-    const permutationMean = output.permutationMean ?? f32('permutation-mean', bins);
-    const permutationStandardDeviation =
-      output.permutationStandardDeviation ?? f32('permutation-standard-deviation', bins);
     const statisticsConstants = `${PAIR_STATISTICS_FLOAT_WGSL}
 ${constants}`;
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-permutation-moments`,
-        operation: OPERATION,
-        variant: 'permutation-moments',
-        bindings: [
-          {name: 'simulatedK', view: simulatedK, type: 'f32', access: 'read'},
-          {name: 'spatialK', view: spatialK, type: 'f32', access: 'read'},
-          {name: 'temporalK', view: temporalK, type: 'f32', access: 'read'},
-          {name: 'permutationMean', view: permutationMean, type: 'f32', access: 'read_write'},
-          {
-            name: 'permutationStandardDeviation',
-            view: permutationStandardDeviation,
-            type: 'f32',
-            access: 'read_write'
-          }
-        ],
-        invocationCount: bins,
-        declarations: statisticsConstants,
-        body: `// Capacity-bounded loops over the permutations (at most ${GPU_SPACE_TIME_DIGGLE_MAXIMUM_PERMUTATIONS}).
+    // Diagnostics only: mean and standard deviation of D over the permutations, per class.
+    if (output.permutationMean || output.permutationStandardDeviation) {
+      const permutationMean = output.permutationMean ?? f32('permutation-mean', bins);
+      const permutationStandardDeviation =
+        output.permutationStandardDeviation ?? f32('permutation-standard-deviation', bins);
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-permutation-moments`,
+          operation: OPERATION,
+          variant: 'permutation-moments',
+          bindings: [
+            {name: 'simulatedK', view: simulatedK, type: 'f32', access: 'read'},
+            {name: 'spatialK', view: spatialK, type: 'f32', access: 'read'},
+            {name: 'temporalK', view: temporalK, type: 'f32', access: 'read'},
+            {name: 'permutationMean', view: permutationMean, type: 'f32', access: 'read_write'},
+            {
+              name: 'permutationStandardDeviation',
+              view: permutationStandardDeviation,
+              type: 'f32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: bins,
+          declarations: statisticsConstants,
+          body: `// Capacity-bounded loops over the permutations (at most ${GPU_SPACE_TIME_DIGGLE_MAXIMUM_PERMUTATIONS}).
   var sum = 0.0;
   for (var permutation = 0u; permutation < PERMUTATION_COUNT; permutation++) {
     sum += simulatedK[simulatedKOffset + permutation * BINS + index];
@@ -624,7 +676,10 @@ ${constants}`;
   permutationMean[permutationMeanOffset + index] = mean - product;
   permutationStandardDeviation[permutationStandardDeviationOffset + index] =
     select(getQuietNaN(index), sqrt(squares / f32(PERMUTATION_COUNT - 1u)), PERMUTATION_COUNT > 1u);`
-      }),
+        })
+      );
+    }
+    nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-statistics`,
         operation: OPERATION,
@@ -634,34 +689,27 @@ ${constants}`;
           {name: 'simulatedK', view: simulatedK, type: 'f32', access: 'read'},
           {name: 'spatialK', view: spatialK, type: 'f32', access: 'read'},
           {name: 'temporalK', view: temporalK, type: 'f32', access: 'read'},
-          {name: 'permutationMean', view: permutationMean, type: 'f32', access: 'read'},
-          {
-            name: 'permutationStandardDeviation',
-            view: permutationStandardDeviation,
-            type: 'f32',
-            access: 'read'
-          },
           {name: 'statistics', view: output.statistics, type: 'f32', access: 'read_write'}
         ],
         invocationCount: permutationCount + 1,
         declarations: statisticsConstants,
+        // splancs stmctest: sum(kst - outer(ks, kt)) over the whole grid, for every labelling.
         body: `// Row 0 is the observed pattern, row p the permutation p - 1.
   var total = 0.0;
-  var used = 0u;
+  var finiteClasses = 0u;
   for (var bin = 0u; bin < BINS; bin++) {
-    let product = spatialK[spatialKOffset + bin / TIME_CLASS_COUNT] * temporalK[temporalKOffset + bin % TIME_CLASS_COUNT];
     var value = d[dOffset + bin];
     if (index > 0u) {
+      let product = spatialK[spatialKOffset + bin / TIME_CLASS_COUNT] * temporalK[temporalKOffset + bin % TIME_CLASS_COUNT];
       value = simulatedK[simulatedKOffset + (index - 1u) * BINS + bin] - product;
     }
-    let deviation = permutationStandardDeviation[permutationStandardDeviationOffset + bin];
-    let residual = (value - permutationMean[permutationMeanOffset + bin]) / deviation;
-    if (isFiniteFloat(residual) && deviation > 0.0) {
-      total += residual;
-      used++;
+    if (isFiniteValue(value)) {
+      total += value;
+      finiteClasses++;
     }
   }
-  statistics[statisticsOffset + index] = select(getQuietNaN(index), total, used > 0u);`
+  // The sum is over every class; one that is not finite makes the statistic undefined.
+  statistics[statisticsOffset + index] = select(getQuietNaN(index), total, finiteClasses == BINS);`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-summary`,
@@ -669,12 +717,7 @@ ${constants}`;
         variant: 'summary',
         bindings: [
           {name: 'statistics', view: output.statistics, type: 'f32', access: 'read'},
-          {
-            name: 'permutationStandardDeviation',
-            view: permutationStandardDeviation,
-            type: 'f32',
-            access: 'read'
-          },
+          {name: 'd', view: output.d, type: 'f32', access: 'read'},
           {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
           {name: 'summary', view: output.summary, type: 'f32', access: 'read_write'}
         ],
@@ -682,7 +725,7 @@ ${constants}`;
         declarations: `${statisticsConstants}
 const CELL_COUNT: u32 = ${cellCount}u;`,
         body: `let observed = statistics[statisticsOffset];
-  let defined = isFiniteFloat(observed);
+  let defined = isFiniteValue(observed);
   var greater = 0u;
   var lesser = 0u;
   var sum = 0.0;
@@ -702,8 +745,7 @@ const CELL_COUNT: u32 = ${cellCount}u;`,
   let variance = select(0.0, squares / (count - 1.0), PERMUTATION_COUNT > 1u);
   var usedClasses = 0u;
   for (var bin = 0u; bin < BINS; bin++) {
-    let deviation = permutationStandardDeviation[permutationStandardDeviationOffset + bin];
-    if (isFiniteFloat(deviation) && deviation > 0.0) { usedClasses++; }
+    if (isFiniteValue(d[dOffset + bin])) { usedClasses++; }
   }
   let nan = getQuietNaN(0u);
   let pGreater = f32(greater + 1u) / (count + 1.0);

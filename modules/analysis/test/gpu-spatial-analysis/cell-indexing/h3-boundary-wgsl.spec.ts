@@ -27,6 +27,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {getFloatWords, runWGSLModuleKernel} from '../../utils/wgsl-module-harness';
 
 const CAPACITY = 8192;
 const MAXIMUM_VERTICES = 10;
@@ -273,3 +274,60 @@ function getRandomCell(random: () => number, resolution: number): string {
   }
   return cell;
 }
+
+it('H3 boundary longitude guards atan2 against a signed-zero second argument', async () => {
+  // Direct test of cellIndexH3BoundaryUnitVectorToLngLat, the guarded atan2 call site. The unit
+  // vectors come from a storage buffer, so the compiler cannot fold the signed zeros. On the test
+  // GPU a bare atan2(y, -0.0) returns -sign(y) * pi / 2 (FX-17); the CPU reference is Math.atan2.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const vectors: [number, number, number][] = [];
+  for (const x of [0, -0]) {
+    for (const y of [1, -1, 0.6, -0.6, 1e-7, -1e-7]) {
+      vectors.push([x, y, Math.sqrt(Math.max(0, 1 - y * y))]);
+    }
+  }
+  // Ordinary quadrants, including x just off zero on both sides.
+  for (const [x, y] of [
+    [0.6, 0.8],
+    [-0.6, 0.8],
+    [-0.6, -0.8],
+    [0.6, -0.8],
+    [-1e-7, 1],
+    [-1e-7, -1],
+    [1e-7, -1]
+  ]) {
+    vectors.push([x, y, 0]);
+  }
+  const words = await runWGSLModuleKernel(device, {
+    id: 'h3-boundary-guarded-atan2',
+    inputs: {vectors: Float32Array.from(vectors.flat())},
+    outputLength: vectors.length * 2,
+    invocationCount: vectors.length,
+    declarations: `${dggs.source}\n${H3_BOUNDARY_WGSL}`,
+    body: `let unitVector = vec3f(vectors[vectorsOffset + 3u * index], vectors[vectorsOffset + 3u * index + 1u], vectors[vectorsOffset + 3u * index + 2u]);
+  let point = cellIndexH3BoundaryUnitVectorToLngLat(unitVector);
+  output[outputOffset + 2u * index] = bitcast<u32>(point.x);
+  output[outputOffset + 2u * index + 1u] = bitcast<u32>(point.y);`
+  });
+  const points = getFloatWords(words);
+  const mismatches: string[] = [];
+  vectors.forEach(([x, y, z], index) => {
+    const [fx, fy, fz] = [x, y, z].map(Math.fround);
+    const longitude = (Math.atan2(fy, fx) * 180) / Math.PI;
+    const latitude = (Math.atan2(fz, Math.hypot(fx, fy)) * 180) / Math.PI;
+    const actualLongitude = points[2 * index];
+    const actualLatitude = points[2 * index + 1];
+    if (Math.abs(actualLongitude - longitude) > MAXIMUM_DEGREE_ERROR) {
+      mismatches.push(
+        `(${Object.is(x, -0) ? '-0' : x}, ${y}) longitude ${actualLongitude} vs ${longitude}`
+      );
+    }
+    if (Math.abs(actualLatitude - latitude) > MAXIMUM_DEGREE_ERROR) {
+      mismatches.push(
+        `(${Object.is(x, -0) ? '-0' : x}, ${y}) latitude ${actualLatitude} vs ${latitude}`
+      );
+    }
+  });
+  expect(mismatches).toEqual([]);
+});

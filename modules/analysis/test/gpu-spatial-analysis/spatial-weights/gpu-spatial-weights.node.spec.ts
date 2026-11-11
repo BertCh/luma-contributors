@@ -68,6 +68,16 @@ it('GPUContiguityWeights validates props and declares nodes', () => {
     () => new GPUContiguityWeights({...base, output: {...output(2, 8), status: {}} as never})
   ).toThrow(/overflow/);
   expect(() => new GPUContiguityWeights({...base, snapTolerance: -1})).toThrow(/snapTolerance/);
+  // The snap range has a named limit: extent / tolerance at most 2^24 cells.
+  expect(
+    () => new GPUContiguityWeights({...base, snapTolerance: 1e-3, coordinateExtent: 16000})
+  ).not.toThrow();
+  expect(
+    () => new GPUContiguityWeights({...base, snapTolerance: 1e-3, coordinateExtent: 17000})
+  ).toThrow(/coordinateExtent \/ snapTolerance must be at most 16777216/);
+  expect(() => new GPUContiguityWeights({...base, coordinateExtent: -1})).toThrow(
+    /coordinateExtent/
+  );
   expect(() => new GPUContiguityWeights({...base, pairCapacity: 0})).toThrow(/pairCapacity/);
   const queen = new GPUContiguityWeights(base).getCommandNodes(graph).map(node => node.id);
   expect(queen[0]).toBe('contiguity-weights-vertex-topology');

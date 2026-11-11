@@ -9,9 +9,15 @@ import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const rootDirectory = join(dirname(fileURLToPath(import.meta.url)), '..');
-const keplerComputeExampleSpecs = JSON.parse(
+// Specs excluded from runs, plus specs that run but whose imports reach undeclared packages or
+// luma.gl names that are not published (see the reasons in the JSON).
+const keplerComputeExampleSpecLists = JSON.parse(
   readFileSync(join(rootDirectory, 'test/kepler-compute-example-specs.json'), 'utf8')
 );
+const keplerComputeExampleSpecs = [
+  ...Object.keys(keplerComputeExampleSpecLists.excludedFromRuns),
+  ...Object.keys(keplerComputeExampleSpecLists.excludedFromTypecheck)
+];
 
 const tsconfig = {
   extends: '../tsconfig.json',

@@ -13,7 +13,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -26,7 +26,8 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
-import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {GUARDED_ATAN2_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 
 const OPERATION = 'GPUShapeGenerator';
 
@@ -179,8 +180,9 @@ export type GPUShapeGeneratorProps = {
  * The segment count is a per-frame parameter up to the compile-time `maximumSegments`, so a
  * slider changes ring smoothness without recompiling; every feature uses the same count, so ring
  * offsets are `f * V` and positions are packed with no gaps. Planar rings offset the center by
- * `radius * [sin bearing, cos bearing]`; geodesic rings apply the spherical `destination`
- * formula turf uses. No atomics; deterministic.
+ * `radius * [sin bearing, cos bearing]`; geodesic rings apply the spherical `destination` of
+ * turf through the shared `geodesicDestination` (half-angle form, so a ring of tens of meters
+ * keeps its radius to the f32 spacing of the output at any latitude). No atomics; deterministic.
  *
  * Differences from turf: vertices are evenly spaced in bearing (circle, sector arc) or, by default,
  * in the ellipse parameter. Use `ellipseSpacing: 'arc-length'` for approximately equal ellipse arc
@@ -234,12 +236,12 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
     this.maximumSegments = props.maximumSegments ?? 64;
     const minimum = getGPUShapeMinimumSegments(props.shape);
     validateCapacity(id, 'maximumSegments', this.maximumSegments, minimum, 65536);
-    validatePackedView(props.centers, ['float32x2'], `${id} centers`);
+    validateSinglePackedView(props.centers, ['float32x2'], `${id} centers`);
     this.featureCount = props.centers.length;
     if (this.featureCount < 1) {
       throw new Error(`${id} centers must hold at least one row`);
     }
-    validatePackedView(
+    validateSinglePackedView(
       props.radii,
       [props.shape === 'ellipse' ? 'float32x2' : 'float32'],
       `${id} radii`
@@ -251,7 +253,7 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
       if (!props.bearings) {
         throw new Error(`${id} sector shapes need bearings`);
       }
-      validatePackedView(props.bearings, ['float32x2'], `${id} bearings`);
+      validateSinglePackedView(props.bearings, ['float32x2'], `${id} bearings`);
       if (props.bearings.length !== this.featureCount) {
         throw new Error(`${id} bearings must have one row per center`);
       }
@@ -262,29 +264,29 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
       if (props.shape !== 'ellipse') {
         throw new Error(`${id} only ellipse shapes have rotations`);
       }
-      validatePackedView(props.rotations, ['float32'], `${id} rotations`);
+      validateSinglePackedView(props.rotations, ['float32'], `${id} rotations`);
       if (props.rotations.length !== this.featureCount) {
         throw new Error(`${id} rotations must have one row per center`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_SHAPE_GENERATOR_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_SHAPE_GENERATOR_PARAMETER_LENGTH} float32 values`
       );
     }
     const {positions, offsets, vertexCount} = props.output;
-    validatePackedView(positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(positions, ['float32x2'], `${id} output.positions`);
     const capacity = this.featureCount * getGPUShapeVertexCount(props.shape, this.maximumSegments);
     if (positions.length < capacity) {
       throw new Error(`${id} output.positions must hold at least ${capacity} rows`);
     }
-    validatePackedView(offsets, ['uint32'], `${id} output.offsets`);
+    validateSinglePackedView(offsets, ['uint32'], `${id} output.offsets`);
     if (offsets.length !== this.featureCount + 1) {
       throw new Error(`${id} output.offsets must hold featureCount + 1 rows`);
     }
     if (vertexCount) {
-      validatePackedView(vertexCount, ['uint32'], `${id} output.vertexCount`);
+      validateSinglePackedView(vertexCount, ['uint32'], `${id} output.vertexCount`);
       if (vertexCount.length < 1) {
         throw new Error(`${id} output.vertexCount must hold one uint32`);
       }
@@ -450,25 +452,19 @@ fn getEllipsePhase(feature: u32, step: u32, segments: u32, axes: vec2<f32>) -> f
 }
 
 ${IS_FINITE_BITS_WGSL}
+${GUARDED_ATAN2_WGSL}
+${geodesic ? GEODESIC_WGSL : ''}
 
 // Point at the given distance (world units, or meters for geodesic) and bearing (radians
 // clockwise from north) from the center.
 fn getDestination(center: vec2<f32>, distance: f32, bearing: f32) -> vec2<f32> {
 ${
   geodesic
-    ? `  let angularDistance = distance / EARTH_RADIUS;
-  let latitude = center.y * DEGREES;
-  let sinDistance = sin(angularDistance);
-  let cosDistance = cos(angularDistance);
-  let sinLatitude = sin(latitude);
-  let cosLatitude = cos(latitude);
-  let sinLatitude2 = clamp(
-    sinLatitude * cosDistance + cosLatitude * sinDistance * cos(bearing), -1.0, 1.0);
-  let latitude2 = asin(sinLatitude2);
-  // Longitude difference directly, so the small offset is not lost to radians rounding.
-  let longitudeDelta = atan2(
-    sin(bearing) * sinDistance * cosLatitude, cosDistance - sinLatitude * sinLatitude2);
-  return vec2<f32>(center.x + longitudeDelta / DEGREES, latitude2 / DEGREES);`
+    ? `  // The shared half-angle destination (geodesicDestination): sin(lat2) - sin(lat) is formed from
+  // half-angle terms and the latitude change is recovered as 2 asin(delta / (2 cos(mid latitude))).
+  // The textbook asin(sin(lat) cos(d) + cos(lat) sin(d) cos(b)) in f32 loses a 50 m radius to
+  // rounding (0.8 m at latitude 45, 10 m at 88.6).
+  return geodesicDestination(center, bearing * GEODESIC_RADIANS_TO_DEGREES, distance / EARTH_RADIUS);`
     : '  return center + distance * vec2<f32>(sin(bearing), cos(bearing));'
 }
 }`,
@@ -498,7 +494,9 @@ ${
     arcLengths && !geodesic
       ? 'position = center + vec2<f32>(rotatedEast, rotatedNorth);'
       : `let distance = length(vec2<f32>(rotatedEast, rotatedNorth));
-  var bearing = atan2(rotatedEast, rotatedNorth);
+  // The north offset is -0.0 for a collapsed axis in the lower half turn, and both offsets are
+  // zero for a zero radius: the guarded form keeps the east side and returns bearing 0.
+  var bearing = guardedAtan2(rotatedEast, rotatedNorth);
   ${
     arcLengths
       ? `// Avoid backend atan2 signed-zero ambiguity for an east/west degenerate axis.

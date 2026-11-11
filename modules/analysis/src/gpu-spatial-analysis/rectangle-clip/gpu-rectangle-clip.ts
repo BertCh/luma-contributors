@@ -13,13 +13,14 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPULineGeometryFields,
   GPUPolygonGeometryFields
 } from '../../analysis-core/contracts/index';
 import {
+  createLineGeometryCountNode,
   getLineGeometryOutputViews,
   validateLineGeometryOutput
 } from '../line-segmentize/line-geometry-output';
@@ -125,8 +126,11 @@ export type GPURectangleClipProps = (
   /** Per-frame packed float32 view written with {@link getGPURectangleClipParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /**
-   * Bounded output. `positions.length` is the vertex capacity and `output.status.count` counts
-   * output vertices (`status.lineCount` counts output lines or rings). For `'polygons'`,
+   * Bounded output. `positions.length` is the vertex capacity. `output.status.count` and
+   * `requiredCount` count output lines, or for `'polygons'` output rings (the input ring count,
+   * since every ring is kept, possibly empty); `vertexCount` and `requiredVertexCount` count
+   * vertices. For polygons the vertex requirement is the last stage's total, a lower bound when an
+   * earlier stage overflowed. For `'polygons'`,
    * `output.lineOffsets` holds the output ring offsets and must have the length of the input
    * `ringOffsets` (one output ring per input ring, possibly empty), so the input `featureOffsets`
    * and `polygonOffsets` describe the output rings unchanged; `sourceLineIndices`, `sourceRows` and
@@ -157,8 +161,14 @@ export type GPURectangleClipProps = (
  *
  * Output is bounded by `output.positions.length` (all four stages share that capacity); when it
  * overflows, `overflow` is 1 and later vertices and lines are truncated while offsets stay
- * valid. Deterministic, no atomics. Precision: f32; intersections lie on the rectangle edges
- * exactly in the clipped coordinate and within an f32 rounding of the true crossing in the other.
+ * valid. Deterministic, no atomics. Precision: f32. Polygon intersections lie on the rectangle
+ * edges exactly in the clipped coordinate (the bound itself is written) and within an f32 rounding
+ * of the true crossing in the other; the crossing is interpolated from the lexicographically
+ * smaller endpoint of the edge, so two polygons that share an edge get bit-identical clip points
+ * and a clipped coverage still matches vertex for vertex. Line clip points are `a + (b - a) * t`
+ * from the segment's own start: both coordinates are within an f32 rounding of the true crossing,
+ * so the clipped coordinate can be one f32 step off the rectangle edge (about 1 in 100 random
+ * segments), and a segment clipped from its two directions can differ by one step.
  */
 export class GPURectangleClip implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -184,20 +194,20 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
     if (props.geometryType !== 'lines' && props.geometryType !== 'polygons') {
       throw new Error(`${id} geometryType must be 'lines' or 'polygons'`);
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
     const offsetsName = props.geometryType === 'polygons' ? 'ringOffsets' : 'lineOffsets';
-    validatePackedView(this.boundaryOffsets, ['uint32'], `${id} ${offsetsName}`);
+    validateSinglePackedView(this.boundaryOffsets, ['uint32'], `${id} ${offsetsName}`);
     if (this.boundaryOffsets.length < 2) {
       throw new Error(`${id} ${offsetsName} needs two rows`);
     }
     if (props.geometryType === 'polygons') {
-      validatePackedView(props.featureOffsets, ['uint32'], `${id} featureOffsets`);
-      validatePackedView(props.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
+      validateSinglePackedView(props.featureOffsets, ['uint32'], `${id} featureOffsets`);
+      validateSinglePackedView(props.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_RECTANGLE_CLIP_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_RECTANGLE_CLIP_PARAMETER_LENGTH} float32 values`
@@ -261,7 +271,7 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
     const startFlags = createTransientView(graph, `${id}-start-flags`, 'uint32', rowCount);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', rowCount);
     const lineIndices = createTransientView(graph, `${id}-line-indices`, 'uint32', rowCount);
-    const totals = createTransientView(graph, `${id}-totals`, 'uint32', 2);
+    const totals = createTransientView(graph, `${id}-totals`, 'uint32', 4);
     return [
       createLineClipCountNode<Parameters>(graph, {
         ...inputs,
@@ -300,9 +310,7 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
         lineIndices,
         startFlags,
         totals,
-        count: output.status.count,
-        overflow: output.status.overflow,
-        requiredCount: output.status.requiredCount
+        overflow: output.status.overflow
       }),
       createLineTailNode<Parameters>(graph, {
         id: `${id}-line-tail`,
@@ -310,7 +318,10 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
         totals,
         lineOffsets: output.lineOffsets,
         sourceLineIndices: output.sourceLineIndices,
-        lineCount: output.status.lineCount
+        count: output.status.count,
+        requiredCount: output.status.requiredCount,
+        vertexCount: output.status.vertexCount,
+        requiredVertexCount: output.status.requiredVertexCount
       })
     ];
   }
@@ -386,12 +397,16 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
         id: `${id}-publish`,
         operation: OPERATION,
         capacity,
-        ringCount,
         stageFlags,
-        count: output.status.count,
         overflow: output.status.overflow,
-        requiredCount: output.status.requiredCount,
-        lineCount: output.status.lineCount
+        vertexCount: output.status.vertexCount,
+        requiredVertexCount: output.status.requiredVertexCount
+      }),
+      createLineGeometryCountNode<Parameters>(graph, {
+        id,
+        operation: OPERATION,
+        output,
+        lineCapacity: ringCount
       })
     );
     return nodes;

@@ -17,7 +17,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {COLOR_SCALE_WGSL} from './color-scale-wgsl';
@@ -145,18 +145,18 @@ export class GPUColorScale implements GPUCommandNodeProducer {
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
-    validatePackedView(props.values, ['float32', 'uint32', 'sint32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32', 'uint32', 'sint32'], `${id} values`);
     if (
       props.integerValues !== undefined &&
       !['ordinal', 'numeric'].includes(props.integerValues)
     ) {
       throw new Error(`${id} integerValues must be 'ordinal' or 'numeric'`);
     }
-    validatePackedView(props.domain, ['float32'], `${id} domain`);
-    validatePackedView(props.palette, ['uint32'], `${id} palette`);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.domain, ['float32'], `${id} domain`);
+    validateSinglePackedView(props.palette, ['uint32'], `${id} palette`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal values length`);
       }
@@ -173,7 +173,7 @@ export class GPUColorScale implements GPUCommandNodeProducer {
       );
     }
     if (props.domainCount) {
-      validatePackedView(props.domainCount, ['uint32'], `${id} domainCount`);
+      validateSinglePackedView(props.domainCount, ['uint32'], `${id} domainCount`);
       if (props.domainCount.length < 1) {
         throw new Error(`${id} domainCount must contain one uint32 row`);
       }
@@ -181,14 +181,14 @@ export class GPUColorScale implements GPUCommandNodeProducer {
     for (const name of ['colors', 'classIndices'] as const) {
       const view = output[name];
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < rows) {
           throw new Error(`${id} output.${name} must hold one row per value`);
         }
       }
     }
     if (output.classCounts) {
-      validatePackedView(output.classCounts, ['uint32'], `${id} output.classCounts`);
+      validateSinglePackedView(output.classCounts, ['uint32'], `${id} output.classCounts`);
       if (output.classCounts.length < maximumPaletteCount) {
         throw new Error(`${id} output.classCounts must hold maximumPaletteCount rows`);
       }

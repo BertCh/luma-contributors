@@ -104,25 +104,35 @@ ascending order (`pairs`, `weights` and `relate` are not allowed with it). When 
 the left rows whose candidates were dropped cannot be classified (they may have a match among the dropped
 candidates), so they are kept out of `output.unmatched` and counted in `output.status.candidateTruncatedCount`;
 the anti output then never lists a row that may have a match, and may omit true unmatched rows among the
-truncated ones. (Before this change those rows were emitted as unmatched.) A BVH overflow still drops leaves
-without marking rows, so check `output.unmatched.overflow` too.
+truncated ones. (Before this change those rows were emitted as unmatched.) A BVH overflow (more right features
+than `leafCapacity`) drops right features that any row may match, so since 2026-11-10 it marks every left row and
+the anti output is empty; before, it listed rows whose only matches were among the dropped features.
 
 **Candidate overflow.** Candidates are written in left-row order, so the slots past `candidateCapacity` are the
 tail of that layout: the row whose candidates cross the capacity keeps its first ones, and every later row that
-had a candidate keeps none; earlier rows are complete. `output.status.candidateOverflow` is 1 when the candidate
-total exceeded the capacity (BVH overflow is not part of it, and `output.status.overflow` keeps its combined
-meaning), and the optional `output.candidateTruncated` (one `uint32` per left feature) is 1 for exactly the rows
-described above. `output.status.candidateTruncatedCount` counts them. `GPUPointInPolygonJoin` and the
-nearest-feature mode of `GPUNearestFeatureJoin` (planar or native metric) take the same `output.candidateTruncated`
-and `output.status.candidateOverflow`, one flag per point; a flagged point may show no feature, or in nearest-feature
-mode a farther one. `GPUSpatialJoinPrepared` holds only the right-hand BVH and has no candidate stage.
+had a candidate keeps none; earlier rows are complete. A BVH leaf overflow (more right features than
+`leafCapacity`, in the join's own build or in a `GPUSpatialJoinPrepared`) drops features that any row may match,
+so it marks every row. `output.status.candidateOverflow` is 1 when either happened (`output.status.overflow` keeps
+its combined meaning), and the optional `output.candidateTruncated` (one `uint32` per left feature) is 1 for exactly
+the rows described above. `output.status.candidateTruncatedCount` counts them. `GPUPointInPolygonJoin` and every
+mode of `GPUNearestFeatureJoin` (nearest-feature, planar or great-circle, and neighbors) take the same
+`output.candidateTruncated` and `output.status.candidateOverflow`, one flag per query; a flagged query may show no
+feature, or a farther one. Neighbors mode and the great-circle search have no candidate table, so a BVH overflow is
+their only cause. `GPUSpatialJoinPrepared` holds only the right-hand BVH and has no candidate stage. The join
+consumers pass the flags through: `GPUZonalStatistics` (`output.candidateTruncated` per point and
+`output.status.candidateOverflow`), `GPUBufferSelection` (the same pair) and `GPULineLengthPerPolygon`
+(`output.status.candidateOverflow` only; its output is per polygon).
 
 **Exactness.** Every orientation sign is exact, in the short-circuiting kernels (`engine: 'fast'`) and in
 the relate engine alike: an f32 filter decides the clear cases and the rest fall back to exact integer
 arithmetic (256-bit), with one inlined copy per kernel. So touches, crosses, covers, `intersects`,
 `contains` and the other predicates do not depend on f32 rounding of the orientation test, and the result
 does not depend on the engine or on the feature size that `engine: 'auto'` looks at, including
-shared-edge and collinear configurations. The exactness is with respect to the f32 vertices; edge piece
+shared-edge and collinear configurations. Polygon `contains` / `within` in the fast kernel decides on
+which side of a shared boundary run the two interiors lie with a symbolic probe (a point just beyond an
+outer vertex and just off its edge, never formed in f32), so an inner polygon that fills a hole of the
+outer one, or has a hole of the outer one inscribed in it, is not contained for any vertex coordinates.
+The exactness is with respect to the f32 vertices; edge piece
 midpoints, break parameters and distances are computed in f32: the location of a piece shorter than about
 one ulp is not exact, so a line starting one ulp outside a polygon edge can have its `crosses` piece
 classified as boundary.
@@ -497,7 +507,9 @@ join's `neighborIds`, `neighborCounts`, optional `neighborDistances` and its `ne
 `slotCapacity`. Pass the join's resolved `spatialContext` to the adapter (omitted means native planar);
 `distanceFloor` uses its length unit and `outputWeights.spatialContext` carries it to consumers. Per row it keeps the first `k` valid slots in the join's distance order, drops padding and
 (with `excludeSelf`, for self-joins run with `k + 1`) the row's own ID, then sorts the IDs ascending. Short rows
-stay short. `weightType` is `'binary'` (default) or `'inverse-distance'` (`1 / max(d, distanceFloor)^power`),
+stay short. `weightType` is `'binary'` (default) or `'inverse-distance'` (`1 / max(d, distanceFloor)^power`;
+`distanceFloor` defaults to `1e-6`, the same default as `GPUNeighborSearch`, so coincident or touching features weigh `1e6^power`
+and dominate a row once it is standardized; pass a floor on the scale of the data when that is not wanted),
 and `output.distances` is filled when present (in the join's context length unit, also used by `distanceFloor`). The output is directed, so for `'symmetrize'` or symmetric
 statistics take the union of the weights and their `GPUSpatialWeightsTranspose`. `excludeSelf` compares IDs to
 the query row, so do not use feature `sourceIds` in the join with it. `output` is a
@@ -694,7 +706,9 @@ coordinate units by default; with `spatialContext: {coordinateSpace: 'longitude-
 'great-circle'}` it is a great-circle distance in the context's length unit (meters by default; kilometers
 with `units: 'kilometers'`). The context is forwarded to `GPUNearestFeatureJoin`, whose section lists the
 edge model, sphere radius and rejected combinations; `candidateCapacity` is ignored.
-It measures distance, so `local-lambert-equal-area` frames throw.
+It measures distance, so `local-lambert-equal-area` frames throw. Optional `output.candidateTruncated` (one
+packed `uint32` per point) and `output.status.candidateOverflow` pass the join's candidate status through: a
+flagged point may be left out although a feature lies within the distance (see **Candidate overflow** above).
 
 ```ts
 graph.add(new GPUBufferSelection({

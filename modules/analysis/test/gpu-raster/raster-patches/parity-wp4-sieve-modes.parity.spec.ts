@@ -72,7 +72,7 @@ for (const scene of sieveCases) {
             pixelInterpretation: 'area'
           },
           labels: rig.input('labels', 'uint32', new Uint32Array(scene.labels)),
-          validity: validity.importToGraph(rig.graph),
+          mask: validity.importToGraph(rig.graph),
           status: {
             componentCount: componentCount.importToGraph(rig.graph),
             converged: converged.importToGraph(rig.graph),

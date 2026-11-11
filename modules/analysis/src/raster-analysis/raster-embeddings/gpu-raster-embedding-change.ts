@@ -10,6 +10,7 @@ import {
   type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateFiniteNumber,
   validateRequirement
@@ -55,7 +56,12 @@ export function getGPURasterEmbeddingChangeParameterValues(
 export type GPURasterEmbeddingChangeOutput = {
   /** Cosine similarity of the two years' vectors, in `[-1, 1]`; NaN where either year is invalid. */
   similarity?: GraphDataView<'float32'>;
-  /** Angle between the vectors in radians, `acos(similarity)`, in `[0, pi]`; NaN where invalid. */
+  /**
+   * Angle between the vectors in radians, in `[0, pi]`; NaN where invalid. Computed as
+   * `2 atan2(|u - v|, |u + v|)` of the two unit vectors, not as `acos(similarity)`, so angles far
+   * below the float32 step of the cosine (about 5e-4 rad) are resolved. Two zero vectors give 0;
+   * exactly one zero vector gives `pi / 2`.
+   */
   angle?: GraphDataView<'float32'>;
   /** Length of the change vector `|after - before|`; NaN where invalid. */
   magnitude?: GraphDataView<'float32'>;
@@ -74,9 +80,9 @@ export type GPURasterEmbeddingChangeProps = {
   /** Decoded vectors of the later year. */
   after: GraphDataView<'float32'>;
   /** Per-pixel QA of the earlier year; zero makes the pixel invalid. */
-  beforeValidity?: GraphDataView<'uint32'>;
+  beforeMask?: GraphDataView<'uint32'>;
   /** Per-pixel QA of the later year. */
-  afterValidity?: GraphDataView<'uint32'>;
+  afterMask?: GraphDataView<'uint32'>;
   /** Float32, see {@link getGPURasterEmbeddingChangeParameterValues}. Needed with `output.changed`. */
   parameters?: GraphDataView<'float32'>;
   output: GPURasterEmbeddingChangeOutput;
@@ -106,7 +112,7 @@ export class GPURasterEmbeddingChange implements GPUCommandNodeProducer {
       props.before,
       pixelCount,
       dimensions,
-      props.beforeValidity
+      props.beforeMask
     );
     validateRasterEmbeddingVectors(
       id,
@@ -114,7 +120,7 @@ export class GPURasterEmbeddingChange implements GPUCommandNodeProducer {
       props.after,
       pixelCount,
       dimensions,
-      props.afterValidity
+      props.afterMask
     );
     validateRequirement(
       id,
@@ -137,12 +143,12 @@ export class GPURasterEmbeddingChange implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {before, after, beforeValidity, afterValidity, parameters} = this.props;
+    const {before, after, beforeMask, afterMask, parameters} = this.props;
     return [
       before,
       after,
-      ...(beforeValidity ? [beforeValidity] : []),
-      ...(afterValidity ? [afterValidity] : []),
+      ...(beforeMask ? [beforeMask] : []),
+      ...(afterMask ? [afterMask] : []),
       ...(parameters ? [parameters] : [])
     ];
   }
@@ -175,21 +181,21 @@ export class GPURasterEmbeddingChange implements GPUCommandNodeProducer {
         bindings: [
           rasterBinding('before', props.before),
           rasterBinding('after', props.after),
-          ...(props.beforeValidity ? [rasterBinding('beforeValidity', props.beforeValidity)] : []),
-          ...(props.afterValidity ? [rasterBinding('afterValidity', props.afterValidity)] : []),
+          ...(props.beforeMask ? [rasterBinding('beforeMask', props.beforeMask)] : []),
+          ...(props.afterMask ? [rasterBinding('afterMask', props.afterMask)] : []),
           ...(similarity ? [rasterBinding('similarity', similarity, true)] : []),
           ...(output.angle ? [rasterBinding('angle', output.angle, true)] : []),
           ...(output.magnitude ? [rasterBinding('magnitude', output.magnitude, true)] : [])
         ],
-        declarations: RASTER_FINITE_WGSL,
+        declarations: `${RASTER_FINITE_WGSL}\n${GUARDED_ATAN2_WGSL}`,
         body: `var dotProduct = 0.0;
 var beforeLength = 0.0;
 var afterLength = 0.0;
 var differenceLength = 0.0;
 var isValid = ${
           [
-            props.beforeValidity ? 'beforeValidity[beforeValidityOffset + index] != 0u' : '',
-            props.afterValidity ? 'afterValidity[afterValidityOffset + index] != 0u' : ''
+            props.beforeMask ? 'beforeMask[beforeMaskOffset + index] != 0u' : '',
+            props.afterMask ? 'afterMask[afterMaskOffset + index] != 0u' : ''
           ]
             .filter(Boolean)
             .join(' && ') || 'true'
@@ -206,7 +212,28 @@ for (var band = 0u; band < ${dimensions}u; band++) {
 let denominator = sqrt(beforeLength * afterLength);
 let cosine = select(select(0.0, 1.0, beforeLength == 0.0 && afterLength == 0.0), clamp(dotProduct / denominator, -1.0, 1.0), denominator > 0.0);
 ${similarity ? 'similarity[similarityOffset + index] = select(missing(), cosine, isValid);' : ''}
-${output.angle ? 'angle[angleOffset + index] = select(missing(), acos(cosine), isValid);' : ''}
+${
+  output.angle
+    ? `// acos of a float32 cosine cannot resolve angles below about 5e-4 rad (the cosine is within one
+// float32 step of 1). The angle is taken from the chord and the sum of the two unit vectors,
+// 2 atan2(|u - v|, |u + v|), which keeps its relative accuracy at every angle.
+var angleValue = acos(cosine);
+if (beforeLength > 0.0 && afterLength > 0.0) {
+  let beforeScale = 1.0 / sqrt(beforeLength);
+  let afterScale = 1.0 / sqrt(afterLength);
+  var chordSquared = 0.0;
+  var sumSquared = 0.0;
+  for (var band = 0u; band < ${dimensions}u; band++) {
+    let left = before[beforeOffset + index * ${dimensions}u + band] * beforeScale;
+    let right = after[afterOffset + index * ${dimensions}u + band] * afterScale;
+    chordSquared += (left - right) * (left - right);
+    sumSquared += (left + right) * (left + right);
+  }
+  angleValue = 2.0 * guardedAtan2(sqrt(chordSquared), sqrt(sumSquared));
+}
+angle[angleOffset + index] = select(missing(), angleValue, isValid);`
+    : ''
+}
 ${output.magnitude ? 'magnitude[magnitudeOffset + index] = select(missing(), sqrt(differenceLength), isValid);' : ''}`
       })
     ];

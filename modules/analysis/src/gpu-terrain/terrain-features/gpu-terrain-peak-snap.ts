@@ -20,7 +20,7 @@ import {
   getStorageBindingElementLimit,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterGridGeoreference,
@@ -271,7 +271,7 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
     validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     validateTerrainFeaturesMaximumRadiusPixels(id, props.maximumRadiusPixels);
-    validatePackedView(props.candidates, ['float32x2'], `${id} candidates`);
+    validateSinglePackedView(props.candidates, ['float32x2'], `${id} candidates`);
     const candidateCount = props.candidates.length;
     if (candidateCount < 1) {
       throw new Error(`${id} candidates must contain at least one row`);
@@ -286,21 +286,21 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['float32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       if (view.length !== candidateCount) {
         throw new Error(`${id} ${name} must contain one value per candidate`);
       }
     }
-    validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
     if (output.positions.length !== candidateCount) {
       throw new Error(`${id} output.positions must contain one value per candidate`);
     }
-    validatePackedView(output.snapStatus, ['uint32'], `${id} output.snapStatus`);
+    validateSinglePackedView(output.snapStatus, ['uint32'], `${id} output.snapStatus`);
     if (output.snapStatus.length !== candidateCount) {
       throw new Error(`${id} output.snapStatus must contain one value per candidate`);
     }
     if (radiusClamped) {
-      validatePackedView(radiusClamped, ['uint32'], `${id} output.status.radiusClamped`);
+      validateSinglePackedView(radiusClamped, ['uint32'], `${id} output.status.radiusClamped`);
       if (radiusClamped.length < 1) {
         throw new Error(`${id} output.status.radiusClamped must contain one row`);
       }
@@ -466,7 +466,7 @@ fn sampleElevation(position: vec2<f32>, seed: u32) -> f32 {
   let fraction = position - floor(position);
   if (!isValidPixel(base.x, base.y) || !isValidPixel(next.x, base.y) ||
       !isValidPixel(base.x, next.y) || !isValidPixel(next.x, next.y)) {
-    return getNan(seed);
+    return getQuietNaN(seed);
   }
   let top = mix(getElevation(base.x, base.y), getElevation(next.x, base.y), fraction.x);
   let bottom = mix(getElevation(base.x, next.y), getElevation(next.x, next.y), fraction.x);
@@ -481,7 +481,7 @@ var<private> snapDemHeight: f32;
 fn prepareSnap(index: u32, candidate: vec2<f32>, isLeader: bool) -> bool {
   snapStatus = STATUS_OUTSIDE;
   snapPosition = candidate;
-  snapHeight = getNan(index);
+  snapHeight = getQuietNaN(index);
   snapDistanceValue = 0.0;
   if (!(isFiniteValue(candidate.x) && isFiniteValue(candidate.y) &&
       candidate.x >= 0.0 && candidate.y >= 0.0 &&
@@ -557,7 +557,7 @@ fn finishSnap(index: u32, candidate: vec2<f32>, bestIndex: u32, bestHeight: f32)
   }
   snapStatus = STATUS_OUTSIDE;
   snapPosition = candidate;
-  snapHeight = getNan(candidateIndex);
+  snapHeight = getQuietNaN(candidateIndex);
   snapDistanceValue = 0.0;
   let prepared = inRange && prepareSnap(candidateIndex, candidate, isLeader);
   // The whole workgroup scans one candidate's disc; the (height, -index) maximum is order independent.

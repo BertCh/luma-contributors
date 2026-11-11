@@ -24,7 +24,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   DOT_DENSITY_CANDIDATE_PURPOSE,
@@ -150,10 +150,10 @@ export type DotSamplingConfig = GPUPolygonGeometryFields & {
 /** Validates a shared dot sampling configuration and returns the feature count. @internal */
 export function validateDotSamplingConfig(config: DotSamplingConfig): number {
   const {id, output, mask} = config;
-  validatePackedView(config.positions, ['float32x2'], `${id} positions`);
-  validatePackedView(config.featureOffsets, ['uint32'], `${id} featureOffsets`);
-  validatePackedView(config.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
-  validatePackedView(config.ringOffsets, ['uint32'], `${id} ringOffsets`);
+  validateSinglePackedView(config.positions, ['float32x2'], `${id} positions`);
+  validateSinglePackedView(config.featureOffsets, ['uint32'], `${id} featureOffsets`);
+  validateSinglePackedView(config.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
+  validateSinglePackedView(config.ringOffsets, ['uint32'], `${id} ringOffsets`);
   const featureCount = config.featureOffsets.length - 1;
   if (featureCount < 1) {
     throw new Error(`${id} featureOffsets must describe at least one feature`);
@@ -161,17 +161,17 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
   validateCapacity(id, 'categoryCount', config.categoryCount);
   const slotCount = featureCount * config.categoryCount;
   if (config.source.kind === 'values') {
-    validatePackedView(config.source.values, ['float32'], `${id} values`);
+    validateSinglePackedView(config.source.values, ['float32'], `${id} values`);
     if (config.source.values.length !== slotCount) {
       throw new Error(`${id} values must have featureCount * categoryCount rows`);
     }
   } else {
-    validatePackedView(config.source.counts, ['uint32'], `${id} counts`);
+    validateSinglePackedView(config.source.counts, ['uint32'], `${id} counts`);
     if (config.source.counts.length !== featureCount) {
       throw new Error(`${id} counts must have one row per feature`);
     }
   }
-  validatePackedView(config.parameters, ['uint32'], `${id} parameters`);
+  validateSinglePackedView(config.parameters, ['uint32'], `${id} parameters`);
   if (config.parameters.length < GPU_DOT_DENSITY_PARAMETER_LENGTH) {
     throw new Error(
       `${id} parameters must contain ${GPU_DOT_DENSITY_PARAMETER_LENGTH} uint32 rows`
@@ -179,7 +179,7 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
   }
   validateCapacity(id, 'maximumAttempts', config.maximumAttempts);
   if (mask) {
-    validatePackedView(mask.weights, ['float32'], `${id} mask.weights`);
+    validateSinglePackedView(mask.weights, ['float32'], `${id} mask.weights`);
     if (
       !Number.isInteger(mask.width) ||
       !Number.isInteger(mask.height) ||
@@ -190,21 +190,21 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
       throw new Error(`${id} mask.weights must have mask.width * mask.height rows`);
     }
   }
-  validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+  validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
   validateCompactOutput(id, output.dots);
   const capacity = output.positions.length;
   if (capacity < 1 || output.dots.ids.length !== capacity) {
     throw new Error(`${id} output.positions and output.dots.ids must share a positive capacity`);
   }
   if (output.categories) {
-    validatePackedView(output.categories, ['uint32'], `${id} output.categories`);
+    validateSinglePackedView(output.categories, ['uint32'], `${id} output.categories`);
     if (output.categories.length !== capacity) {
       throw new Error(`${id} output.categories must have capacity rows`);
     }
   }
   const failedCountView = output.status?.failedCount;
   if (failedCountView) {
-    validatePackedView(failedCountView, ['uint32'], `${id} output.status.failedCount`);
+    validateSinglePackedView(failedCountView, ['uint32'], `${id} output.status.failedCount`);
     if (failedCountView.length < 1) {
       throw new Error(`${id} output.status.failedCount must contain one uint32 row`);
     }
@@ -214,7 +214,7 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
     ['slotOffsets', output.slotOffsets]
   ] as const) {
     if (view) {
-      validatePackedView(view, ['uint32'], `${id} output.${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
       if (view.length !== slotCount) {
         throw new Error(`${id} output.${name} must have one row per slot`);
       }

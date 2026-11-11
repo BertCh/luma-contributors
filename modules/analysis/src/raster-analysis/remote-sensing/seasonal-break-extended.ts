@@ -33,14 +33,14 @@ export function createExtendedSeasonalBreakNodes<Parameters>(
       workgroupSize: 2,
       bindings: [
         rasterBinding('values', props.values),
-        ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+        ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
         ...(props.dateAxis ? [getGPURasterDateAxisBinding(props.dateAxis)] : []),
         ...Object.entries(props.output).map(([name, view]) => rasterBinding(name, view, true))
       ],
       declarations: `${RASTER_FINITE_WGSL}${getRasterLeastSquaresWGSL(history, columns, true)}${axisDeclarations}
 fn isObserved(cell: u32, slice: u32) -> bool {
   let source = cell * ${slices}u + slice;
-  return finite(values[valuesOffset + source]) ${props.validity ? '&& validity[validityOffset + source] != 0u' : ''};
+  return finite(values[valuesOffset + source]) ${props.mask ? '&& mask[maskOffset + source] != 0u' : ''};
 }
 fn seasonalBasis(slice: u32, column: u32) -> f32 { ${seasonalBasis} }
 struct ModelFit { coefficients: array<f32, ${columns}>, residual: f32, valid: bool, converged: bool, iterations: u32 }

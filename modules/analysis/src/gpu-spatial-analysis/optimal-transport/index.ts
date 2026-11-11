@@ -18,3 +18,16 @@ export {
   GPU_SINKHORN_DIVERGENCE_PARAMETER_LENGTH
 } from './sinkhorn-divergence-parameters';
 export type {GPUSinkhornDivergenceSettings} from './sinkhorn-divergence-parameters';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  CPU_SINKHORN_DIVERGENCE_MAXIMUM_CELL_COUNT,
+  computeSinkhornDivergenceOnCPU,
+  CPUSinkhornDivergenceOperation
+} from './cpu-sinkhorn-divergence-operation';
+export type {
+  CPUSinkhornDivergenceOptions,
+  CPUSinkhornDivergenceResult
+} from './cpu-sinkhorn-divergence-operation';
+export {GPUSinkhornDivergenceOperation} from './gpu-sinkhorn-divergence-operation';
+export type {SinkhornDivergenceOperationProps} from './gpu-sinkhorn-divergence-operation';

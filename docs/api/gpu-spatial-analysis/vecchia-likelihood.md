@@ -30,7 +30,7 @@ import {
 
 `neighborhoods` and `neighborhoodOffsets` are the CSR above; `positions` and `observations` have one row per site; `parameters` is written by `getGPUVecchiaLogLikelihoodParameterValues({model, range, sill, nugget})`, per frame, with no recompile.
 
-Each site's solve is the `simple` mode of `GPULocalKriging` over its conditioning set: `d_i` is `values.y`, and the observation error variance of the site is added to it. Observations are residuals from any known mean; subtract an estimated trend first.
+Each site's solve is the `simple` mode of `GPULocalKriging` over its conditioning set: `d_i` is `values.y`, and the observation error variance of the site is added to it. A site with an empty conditioning set, or whose conditioning rows are all unusable (validity 0, non-finite value, error variance or position), contributes its marginal term with variance `sill + nugget`, in this class, in the space-time class and in `GPUVecchiaFisherScoring` alike; rebuilding the sets after changing `validity` is therefore not required for a finite likelihood. Observations are residuals from any known mean; subtract an estimated trend first.
 
 **Outputs** (`output`):
 

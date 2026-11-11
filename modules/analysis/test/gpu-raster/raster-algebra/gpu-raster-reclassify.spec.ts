@@ -68,7 +68,7 @@ it('GPURasterReclassify matches the CPU oracle as breaks and closure change with
     new GPURasterReclassify({
       id: 'reclassify',
       values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', rowCount),
-      validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', rowCount),
+      mask: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', rowCount),
       noDataValue: -9999,
       breaks: importGraphBuffer(graph, 'breaks', breaksBuffer, 'float32', maximumBreakCount),
       classValues: importGraphBuffer(

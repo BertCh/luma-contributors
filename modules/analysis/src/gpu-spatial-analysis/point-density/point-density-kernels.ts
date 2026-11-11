@@ -228,7 +228,14 @@ export const POINT_DENSITY_WORKGROUP_SUM_SIZE = 256;
 
 /**
  * Writes one row-major grid cell key per position in `keys`, or `0xffffffff` for non-finite and
- * out-of-bounds rows. Uses the same cell arithmetic as `GPUGridBinning`.
+ * out-of-bounds rows.
+ *
+ * `getCoordinate` is the cell arithmetic of the published `GPUGridBinning`, which writes the
+ * counts these keys are paired with: `(value - minimum) / (maximum - minimum) * size`, with no
+ * rescaling when the bounds straddle zero. (`GPUGridIndex` rescales in that case and can put a
+ * point on a cell edge in the neighbouring cell, so its variant must not be used here.) luma.gl
+ * does not export the function; `point-density-grid-coordinate-pin.node.spec.ts` compares this
+ * text with the published kernel.
  *
  * @internal
  */
@@ -279,16 +286,6 @@ ${IS_FINITE_BITS_WGSL}
 fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   if (maximum == minimum || value == minimum) { return 0u; }
   if (value == maximum) { return size - 1u; }
-  if (minimum < 0.0 && maximum > 0.0) {
-    let scale = max(abs(minimum), abs(maximum));
-    let scaledValue = value / scale;
-    let scaledMinimum = minimum / scale;
-    let scaledMaximum = maximum / scale;
-    return min(
-      u32((scaledValue - scaledMinimum) / (scaledMaximum - scaledMinimum) * f32(size)),
-      size - 1u
-    );
-  }
   return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
 }`,
     body: `${boundsSource}

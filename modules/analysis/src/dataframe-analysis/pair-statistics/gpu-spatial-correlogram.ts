@@ -19,7 +19,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getPairHistogramNodes,
@@ -103,7 +103,10 @@ export type GPUSpatialCorrelogramOutput = {
   moransI: GraphDataView<'float32'>;
   /** Optional caller-owned z-score per band. Quiet NaN when undefined. */
   zScores?: GraphDataView<'float32'>;
-  /** Optional caller-owned two-sided normal p-value per band. Quiet NaN when undefined. */
+  /**
+   * Optional caller-owned two-sided normal p-value per band, never below the smallest normal
+   * float32 (`2^-126`, reached beyond `|z|` of about 13). Quiet NaN when undefined.
+   */
   pValues?: GraphDataView<'float32'>;
   /** Optional caller-owned expected I, `-1 / (n - 1)`, per band. */
   expectedI?: GraphDataView<'float32'>;
@@ -266,7 +269,7 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
       ['output.varianceI', output.varianceI]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length < bandCount) {
           throw new Error(`${id} ${name} must hold bandCount rows`);
         }
@@ -285,7 +288,7 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
       }
     }
     if (output.statistics) {
-      validatePackedView(output.statistics, ['float32'], `${id} output.statistics`);
+      validateSinglePackedView(output.statistics, ['float32'], `${id} output.statistics`);
       if (output.statistics.length < GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH) {
         throw new Error(
           `${id} output.statistics must hold ${GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH} rows`
@@ -408,7 +411,7 @@ fn getProductScale() -> f32 {
         declarations: PAIR_STATISTICS_FLOAT_WGSL,
         body: `let centered = statistics[statisticsOffset + index];
   let square = centered * centered;
-  fourthTerms[fourthTermsOffset + index] = select(0.0, square * square, isFiniteFloat(centered));`
+  fourthTerms[fourthTermsOffset + index] = select(0.0, square * square, isFiniteValue(centered));`
       }),
       ...getPairStatisticsTotalSumNodes<Parameters>(graph, {
         id: `${id}-fourth-sum`,
@@ -554,7 +557,7 @@ fn toFloat(sum: vec2<u32>) -> f32 {
       variance = (firstTerm - secondTerm) / denominator - expected * expected;
       magnitude = (abs(firstTerm) + abs(secondTerm)) / denominator + expected * expected;
     }
-    if (isFiniteFloat(variance) && variance > VARIANCE_CANCELLATION * magnitude) {
+    if (isFiniteValue(variance) && variance > VARIANCE_CANCELLATION * magnitude) {
       zScore = (moransI - expected) / sqrt(variance);
     } else {
       variance = nan;
@@ -593,7 +596,7 @@ fn toFloat(sum: vec2<u32>) -> f32 {
         access: 'read_write'
       });
       outputLines.push(`let zScore = bandResults[bandResultsOffset + base + 3u];
-  pValues[pValuesOffset + index] = select(getQuietNaN(index), getTwoSidedPValue(zScore), isFiniteFloat(zScore));`);
+  pValues[pValuesOffset + index] = select(getQuietNaN(index), getTwoSidedPValue(zScore), isFiniteValue(zScore));`);
     }
     if (output.pairCounts) {
       publishBindings.push(
@@ -684,7 +687,7 @@ fn readZ(band: u32) -> f32 {
   var maximumZ = 0.0;
   for (var band = 0u; band < BAND_COUNT; band++) {
     let z = readZ(band);
-    if (!isFiniteFloat(z)) {
+    if (!isFiniteValue(z)) {
       continue;
     }
     if (maximumBand == NO_BAND || z > maximumZ) {
@@ -694,7 +697,7 @@ fn readZ(band: u32) -> f32 {
     if (firstPeak == NO_BAND && band > 0u && band + 1u < BAND_COUNT) {
       let previous = readZ(band - 1u);
       let next = readZ(band + 1u);
-      if (isFiniteFloat(previous) && isFiniteFloat(next) && z > previous && z > next) {
+      if (isFiniteValue(previous) && isFiniteValue(next) && z > previous && z > next) {
         firstPeak = band;
       }
     }
@@ -734,11 +737,17 @@ fn readZ(band: u32) -> f32 {
 
 /**
  * Two-sided normal p-value `erfc(|z| / sqrt(2))` using the shared `erfcValue` Chebyshev fit
- * (fractional error below 1.2e-7 in exact arithmetic).
+ * (fractional error below 1.2e-7 in exact arithmetic). The result is floored at the smallest
+ * normal float32, the rule of `getTwoSidedPValue` in
+ * `gpu-spatial-analysis/spatial-autocorrelation/spatial-autocorrelation-kernels.ts`
+ * (`ANALYTIC_P_VALUE_FLOOR`): beyond `|z|` of about 13 the float32 erfc reads exactly 0, and a
+ * positive floor keeps such p-values ordered in a multiple-testing correction and safe under log().
  */
 const TWO_SIDED_P_VALUE_WGSL = /* wgsl */ `
 ${ERFC_VALUE_WGSL}
+const ANALYTIC_P_VALUE_FLOOR: f32 = 1.17549435e-38;
+
 fn getTwoSidedPValue(z: f32) -> f32 {
-  return min(erfcValue(abs(z) * 0.70710678118654752), 1.0);
+  return clamp(erfcValue(abs(z) * 0.70710678118654752), ANALYTIC_P_VALUE_FLOOR, 1.0);
 }
 `;

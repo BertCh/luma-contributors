@@ -516,7 +516,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     operators: [
       'GPUSpatialClustering',
       'GPUHierarchicalDensityClustering',
-      'GPUKMeans',
+      'GPUSpatialKMeans',
       'GPUSpatialWeightsMinimumSpanningTree',
       'GPUSkaterRegions',
       'GPURegionPartitionEvaluation',

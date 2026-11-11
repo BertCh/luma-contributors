@@ -10,7 +10,7 @@ import {
 import type {ArrowAnalyticsTimeUnit} from '../../analysis-core/graph-support/arrow-analytics-normalization';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -49,7 +49,7 @@ export function resolveGPURasterIrregularDateAxis(
     encodings: ['int64-words'],
     axisKinds: ['irregular']
   });
-  validatePackedView(axis.acquisitionTimes, ['uint32x2'], `${id} dateAxis.acquisitionTimes`);
+  validateSinglePackedView(axis.acquisitionTimes, ['uint32x2'], `${id} dateAxis.acquisitionTimes`);
   validateRequirement(
     id,
     axis.acquisitionTimes.length >= sliceCount,

@@ -17,7 +17,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {CELL_KEY_WGSL, getCellKeyLayout, type GPUCellFamily} from '../cell-aggregation/cell-keys';
 import type {GPUCellWordOrder} from '../cell-aggregation/gpu-cell-aggregation';
@@ -170,15 +170,15 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
-    validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
+    validateSinglePackedView(props.cells, ['uint32x2'], `${id} cells`);
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal the row count`);
       }
     }
     const {output} = props;
-    validatePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
+    validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
     if (output.cells.length !== rows * this.stride) {
       throw new Error(`${id} output.cells length must be rows * stride = ${rows * this.stride}`);
     }
@@ -186,13 +186,13 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
       if (props.operation.type !== 'disk') {
         throw new Error(`${id} output.distances is only available for the disk operation`);
       }
-      validatePackedView(output.distances, ['uint32'], `${id} output.distances`);
+      validateSinglePackedView(output.distances, ['uint32'], `${id} output.distances`);
       if (output.distances.length !== rows * this.stride) {
         throw new Error(`${id} output.distances length must equal output.cells length`);
       }
     }
     if (output.counts) {
-      validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
+      validateSinglePackedView(output.counts, ['uint32'], `${id} output.counts`);
       if (output.counts.length !== rows) {
         throw new Error(`${id} output.counts length must equal the row count`);
       }

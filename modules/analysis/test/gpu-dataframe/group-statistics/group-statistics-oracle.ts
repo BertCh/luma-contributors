@@ -24,8 +24,9 @@ export function createRandom(seed: number): () => number {
 export type OracleColumnStatistics = {
   /** Finite values. */
   count: number;
-  /** Exact fixed-point sum (`roundHalfEven(fround(v * sumScale))` summed). */
+  /** Exact fixed-point sum (`roundHalfEven(fround(v * sumScale))` summed), the `sums` words. */
   sum: bigint;
+  /** Float64 sum of the values (`sumValues`). */
   sumValue: number;
   mean: number;
   minimum: number;
@@ -107,14 +108,15 @@ export function computeColumnStatistics(
     sum += getScaledValue(value, props.sumScale);
   }
   const sorted = [...finite].sort((left, right) => left - right);
-  const sumValue = Number(sum) / props.sumScale;
+  // The float sum and mean are those of the values themselves (float64), not of the
+  // `1 / sumScale` words: the kernel must be right to float32 at any magnitude.
+  let sumValue = 0;
+  for (const value of finite) {
+    sumValue += value;
+  }
   const mean = count > 0 ? sumValue / count : NaN;
   // Float64 central moments about the true mean of the values.
-  let trueMean = 0;
-  for (const value of finite) {
-    trueMean += value;
-  }
-  trueMean /= Math.max(count, 1);
+  const trueMean = sumValue / Math.max(count, 1);
   const isConstant = count === 0 || sorted[0] === sorted[count - 1];
   let m2 = 0;
   let m3 = 0;

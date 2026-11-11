@@ -27,7 +27,7 @@ import {
   validateCapacity,
   validateCommandNodeBudget,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
@@ -165,10 +165,10 @@ export class GPUS2CapCovering implements GPUCommandNodeProducer {
       props.spatialContext ?? GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
       GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
     );
-    validatePackedView(props.caps, ['float32x4'], this.id);
-    validatePackedView(props.output.cells, ['uint32x2'], this.id);
-    validatePackedView(props.output.counts, ['uint32x2'], this.id);
-    validatePackedView(props.output.status, ['uint32'], this.id);
+    validateSinglePackedView(props.caps, ['float32x4'], this.id);
+    validateSinglePackedView(props.output.cells, ['uint32x2'], this.id);
+    validateSinglePackedView(props.output.counts, ['uint32x2'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32'], this.id);
     validateRequirement(
       this.id,
       props.refinement === undefined ||

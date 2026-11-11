@@ -24,7 +24,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateCommandNodeBudget,
   validateCompactOutput,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createRasterIterationFinalizeNode,
@@ -395,17 +395,17 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       1,
       GPU_LINE_SIMPLIFICATION_MAXIMUM_ITERATIONS
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rowCount = props.positions.length;
     if (rowCount < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    validateSinglePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
     if (props.lineOffsets.length < 2) {
       throw new Error(`${id} lineOffsets needs two rows`);
     }
     const lineCount = props.lineOffsets.length - 1;
-    validatePackedView(props.importance, ['float32'], `${id} importance`);
+    validateSinglePackedView(props.importance, ['float32'], `${id} importance`);
     if (props.importance.length !== rowCount) {
       throw new Error(`${id} importance length must equal positions length`);
     }
@@ -413,7 +413,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       if (!props.timestamps) {
         throw new Error(`${id} metric 'time-ratio' requires timestamps`);
       }
-      validatePackedView(props.timestamps, ['float32'], `${id} timestamps`);
+      validateSinglePackedView(props.timestamps, ['float32'], `${id} timestamps`);
       if (props.timestamps.length !== rowCount) {
         throw new Error(`${id} timestamps length must equal positions length`);
       }
@@ -426,7 +426,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       ['iterationCount', status?.iterationCount]
     ] as const) {
       if (scalar) {
-        validatePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
+        validateSinglePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
         if (scalar.length < 1) {
           throw new Error(`${id} output.status.${name} needs one row`);
         }
@@ -436,7 +436,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       if (!props.parameters) {
         throw new Error(`${id} parameters are required to select rows`);
       }
-      validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
       if (props.parameters.length < GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH) {
         throw new Error(
           `${id} parameters must hold ${GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH} float32 values`
@@ -444,7 +444,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       }
       validateCompactOutput(id, selection);
       if (selection.outputMask) {
-        validatePackedView(selection.outputMask, ['uint32'], `${id} output.outputMask`);
+        validateSinglePackedView(selection.outputMask, ['uint32'], `${id} output.outputMask`);
         if (selection.outputMask.length !== rowCount) {
           throw new Error(`${id} output.outputMask length must equal positions length`);
         }
@@ -454,7 +454,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
         ['lineStarts', selection.lineStarts]
       ] as const) {
         if (view) {
-          validatePackedView(view, ['uint32'], `${id} output.${name}`);
+          validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
           if (view.length !== lineCount) {
             throw new Error(`${id} output.${name} length must equal the line count`);
           }

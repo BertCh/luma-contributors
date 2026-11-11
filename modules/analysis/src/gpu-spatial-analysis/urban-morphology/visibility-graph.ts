@@ -13,7 +13,14 @@ import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {classifyUrbanViewpoints, type UrbanFreeSpaceRegion} from './classify-viewpoints';
-import {URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT, getUrbanRayDeclarations} from './urban-ray-utils';
+import {
+  URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT,
+  addUrbanObstacleBVH,
+  getUrbanRayBVHBindings,
+  getUrbanRayDeclarations,
+  resolveUrbanObstacleIndex,
+  type UrbanObstacleIndex
+} from './urban-ray-utils';
 
 /**
  * Most viewpoints: the adjacency and Brandes choice tables hold viewpoints squared entries, and
@@ -26,13 +33,19 @@ export type GPUVisibilityGraphOutput = {
   adjacency: GraphDataView<'uint32'>;
   /** `uint32x2`, `edgeCapacity` rows: visible pairs (first < second), padded with 0xffffffff. */
   edges: GraphDataView<'uint32x2'>;
-  /** `float32x4`, one row per viewpoint: degree, reachable count, total depth, mean depth inverse. */
+  /** `float32x4`, one row per viewpoint: degree, reachable count, total depth, mean depth inverse. NaN rows when any viewpoint is invalid. */
   metrics: GraphDataView<'float32x4'>;
   /** `float32`, one row per viewpoint: unnormalised undirected betweenness. */
   choice: GraphDataView<'float32'>;
   /** `float32x4`, one row per viewpoint: mean depth, asymmetry, real relative asymmetry, Hillier. */
   integration: GraphDataView<'float32x4'>;
-  /** `float32`, one row per viewpoint: normalised choice. */
+  /**
+   * `float32`, one row per viewpoint: normalised choice, `2 * choice / ((n - 1) * (n - 2))` with
+   * `n = positions.length`. NaN is the contract in two cases: every viewpoint is NaN when any
+   * viewpoint is invalid (`status` word 3 is not 0: a viewpoint within tolerance of an obstacle, or
+   * non-finite), and every viewpoint is NaN when `n < 3`, where the normalisation is undefined.
+   * Otherwise it is finite: a viewpoint that sees nothing scores 0.
+   */
   normalizedChoice: GraphDataView<'float32'>;
   /** `uint32`, one row per viewpoint: 0 free, 1 blocked, 2 boundary, 3 non-finite. */
   viewpointClassifications: GraphDataView<'uint32'>;
@@ -51,6 +64,13 @@ export type GPUVisibilityGraphProps = {
   tolerance?: number;
   /** Optional explicit filled-ring free-space classification. Default checks boundaries only. */
   region?: UrbanFreeSpaceRegion;
+  /**
+   * How sightlines and the viewpoint classification find obstacle segments. 'brute-force' tests
+   * every segment, 'bvh' builds a segment BVH, and the default 'auto' picks brute force up to
+   * `URBAN_BRUTE_FORCE_MAXIMUM_SEGMENT_COUNT` segments and the BVH above it. Both give the same
+   * result. Compile-time.
+   */
+  obstacleIndex?: UrbanObstacleIndex;
   /**
    * Caller-owned result views. Any view that is absent is a graph-owned transient view, as before.
    * Formats and lengths are those of {@link GPUVisibilityGraphOutput}.
@@ -92,11 +112,21 @@ export function addVisibilityGraphRecipe<Parameters>(
     'edgeCapacity must be a positive integer'
   );
   const output = props.output;
+  const obstacleBVH =
+    resolveUrbanObstacleIndex(props.obstacleIndex, props.segments.length) === 'bvh'
+      ? addUrbanObstacleBVH(graph, {
+          id: `${id}-obstacles`,
+          operation: id,
+          segments: props.segments,
+          tolerance
+        })
+      : undefined;
   const viewpointClassifications = classifyUrbanViewpoints(graph, {
     id,
     positions: props.positions,
     segments: props.segments,
     tolerance,
+    obstacleBVH,
     region: props.region,
     output: output?.viewpointClassifications
   });
@@ -145,11 +175,13 @@ export function addVisibilityGraphRecipe<Parameters>(
       operation: id,
       invocationCount: count * count,
       declarations:
-        IS_FINITE_VALUE_WGSL + getUrbanRayDeclarations(props.segments.length, tolerance),
+        IS_FINITE_VALUE_WGSL +
+        getUrbanRayDeclarations(props.segments.length, tolerance, obstacleBVH),
       bindings: [
         {name: 'classifications', view: viewpointClassifications, type: 'u32', access: 'read'},
         {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
         {name: 'segments', view: props.segments, type: 'f32', access: 'read'},
+        ...(obstacleBVH ? getUrbanRayBVHBindings(obstacleBVH) : []),
         {name: 'output', view: adjacency, type: 'u32', access: 'read_write'}
       ],
       // Segment finiteness and clearance of both viewpoints are part of their classification
@@ -278,6 +310,7 @@ if(distances[neighbor]==distances[vertex]+1){paths[neighbor]+=paths[vertex];}
 }}
 var reverse=tail;loop{if(reverse==0u){break;}reverse--;let vertex=queue[reverse];for(var predecessor=0u;predecessor<${count}u;predecessor++){if(adjacency[adjacencyOffset+predecessor*${count}u+vertex]==1u&&distances[predecessor]==distances[vertex] - 1){dependency[predecessor]+=paths[predecessor]/paths[vertex]*(1.0+dependency[vertex]);}}}
 var maximum=0.0;for(var vertex=0u;vertex<${count}u;vertex++){maximum=max(maximum,f32(distances[vertex]));}maximumDepth[maximumDepthOffset+index]=maximum;
+// Contract: one invalid viewpoint (status word 3) invalidates the summary metrics of every viewpoint.
 let valid=status[statusOffset+3u]==0u;let missing=bitcast<f32>(0x7fc00000u | (index & 0u));
 metrics[metricsOffset+4u*index]=select(missing,degree,valid);metrics[metricsOffset+4u*index+1u]=select(missing,f32(tail - 1u),valid);metrics[metricsOffset+4u*index+2u]=select(missing,distanceSum,valid);metrics[metricsOffset+4u*index+3u]=select(missing,f32(tail - 1u)/distanceSum,valid&&distanceSum>0.0);
 for(var vertex=0u;vertex<${count}u;vertex++){contributions[contributionsOffset+index*${count}u+vertex]=select(missing,select(dependency[vertex],0.0,vertex==index),valid);}`
@@ -337,6 +370,7 @@ normalized[normalizedOffset+index]=select(missing,2.0*choice[choiceOffset+index]
       maximumDistance: props.maximumDistance,
       tolerance,
       region: props.region,
+      obstacleIndex: obstacleBVH ? ('bvh' as const) : ('brute-force' as const),
       integration: 'reachable-component-hillier-hanson' as const,
       choice: 'unnormalized-undirected-betweenness' as const
     }

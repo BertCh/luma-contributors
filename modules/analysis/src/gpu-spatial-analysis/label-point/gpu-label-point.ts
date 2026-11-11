@@ -17,7 +17,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
@@ -121,9 +121,10 @@ export type GPULabelPointProps = GPUPolygonGeometryFields & {
  * inside the polygon (outside holes) whenever the polygon has interior; `degenerate` flags the
  * rest. When no part is hit by the three feature scanlines (an archipelago of tiny parts in a large
  * extent) the scanlines are repeated through the bounds of the largest ring before the search
- * falls back to the first vertex. **Precision.** The final grid spacing is
- * `2 * halfExtent * (2 / initialGridSize) * (2 / refinementGridSize)^refinementRounds /
- * refinementGridSize` (about `1e-5` of the bounds with the defaults), but the search is greedy:
+ * falls back to the first vertex. **Precision.** The grid spacing of the last refinement round is
+ * `2 * halfExtent * (2 / initialGridSize) * (2 / refinementGridSize)^(refinementRounds - 1) /
+ * refinementGridSize` (`3.05e-5` of the half extent, about `1.5e-5` of the bounds, with the
+ * defaults; `2 * halfExtent / initialGridSize` with no refinement round), but the search is greedy:
  * it refines only the best coarse cells, so long thin or multi-lobed shapes can return the best
  * point of a lobe that is a bit smaller than the true pole. Raise `initialGridSize` or
  * `refinementCandidates` for such shapes.
@@ -183,30 +184,30 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
     validateCapacity(id, 'refinementRounds', this.refinementRounds, 0);
     validateCapacity(id, 'refinementCandidates', this.refinementCandidates, 1, 16);
     validateCapacity(id, 'smallFeatureVertexLimit', this.smallFeatureVertexLimit, 0);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
     for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
-      validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(props[name], ['uint32'], `${id} ${name}`);
       if (props[name].length < 2) {
         throw new Error(`${id} ${name} must contain at least two rows`);
       }
     }
     this.featureCount = props.featureOffsets.length - 1;
     const {points, distances, degenerate} = props.output;
-    validatePackedView(points, ['float32x2'], `${id} output.points`);
+    validateSinglePackedView(points, ['float32x2'], `${id} output.points`);
     if (points.length !== this.featureCount) {
       throw new Error(`${id} output.points must hold ${this.featureCount} rows`);
     }
     if (distances) {
-      validatePackedView(distances, ['float32'], `${id} output.distances`);
+      validateSinglePackedView(distances, ['float32'], `${id} output.distances`);
       if (distances.length !== this.featureCount) {
         throw new Error(`${id} output.distances must hold ${this.featureCount} rows`);
       }
     }
     if (degenerate) {
-      validatePackedView(degenerate, ['uint32'], `${id} output.degenerate`);
+      validateSinglePackedView(degenerate, ['uint32'], `${id} output.degenerate`);
       if (degenerate.length !== this.featureCount) {
         throw new Error(`${id} output.degenerate must hold ${this.featureCount} rows`);
       }

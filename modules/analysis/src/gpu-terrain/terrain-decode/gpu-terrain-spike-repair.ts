@@ -9,7 +9,6 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {GPUGraphAlgorithmsConnectedComponents} from '@luma.gl/graph/gpu-graph-algorithms';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
@@ -17,18 +16,18 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
-  captureGraphCommandNodes,
   getStorageBindingElementLimit,
   importGraphBuffer,
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createMaskedWeakComponentNodes} from '../../analysis-core/kernels/masked-weak-components';
 import {
-  createNetworkAnalyticsTopology,
-  getGraphViewGPUVector
-} from '../../analysis-core/network-topology';
+  createTerrainStatusPortNodes,
+  validateTerrainStatusPorts
+} from '../terrain-processing/terrain-processing-utils';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
@@ -65,8 +64,8 @@ export const GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED = 0xffffffff;
 export const GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH = 5;
 
 /**
- * Default `maximumComponentIterations`. Each iteration is one relaxation plus pointer-jumping round
- * of `GPUGraphAlgorithmsConnectedComponents`; see
+ * Default `maximumComponentIterations`. Each iteration is one minimum-label round with pointer
+ * jumping of the weak-component kernel (`createMaskedWeakComponentNodes`); see
  * {@link GPUTerrainSpikeRepairProps.maximumComponentIterations}.
  */
 export const GPU_TERRAIN_SPIKE_REPAIR_DEFAULT_MAXIMUM_COMPONENT_ITERATIONS = 32;
@@ -108,6 +107,13 @@ export type GPUTerrainSpikeRepairOutput = {
   labels?: GraphDataView<'uint32'>;
   /** Optional `uint32` view of at least 5 words, see {@link GPU_TERRAIN_SPIKE_REPAIR_STATISTICS}. */
   statistics?: GraphDataView<'uint32'>;
+  /** Optional named one-row status ports. */
+  status?: {
+    /** 1 when component labelling reached a fixed point (same as `statistics` word `converged`). */
+    converged?: GraphDataView<'uint32'>;
+    /** 1 when `maximumComponentIterations` ran out before labelling converged. */
+    iterationLimitReached?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -144,7 +150,7 @@ export type GPUTerrainSpikeRepairProps = {
    */
   maximumComponentFraction?: number;
   /**
-   * Compiled `GPUGraphAlgorithmsConnectedComponents` iterations (1 to 1024). Default
+   * Compiled component-labelling iterations (1 to 1024). Default
    * {@link GPU_TERRAIN_SPIKE_REPAIR_DEFAULT_MAXIMUM_COMPONENT_ITERATIONS}. If labelling has not
    * converged nothing is repaired and the outputs are marked instead of copied, because an
    * unchanged copy reads as "nothing to repair": `output.values` of valid pixels hold `+Infinity`,
@@ -183,10 +189,13 @@ function getHundredths(value: number | undefined, fallback: number): number | un
  * median, which is a separate, explicit choice that this contributor does not make. Nodata never bleeds:
  * invalid pixels are isolated, never seams, and their value slot is never read as a height.
  *
- * Components use `GPUGraphAlgorithmsConnectedComponents` over a fixed-stride forward CSR (two slots per
+ * Components use the analysis-domain weak-component kernel (bounded minimum-label propagation
+ * with pointer jumping) over a fixed-stride forward CSR (two slots per
  * pixel: right and down neighbour, `0xffffffff` unless both pixels are valid and
  * `|dh| <= jump`). The gpu-raster `GPURasterConnectedComponents` only labels a binary foreground
- * mask and cannot express an edge predicate, so the graph primitive is used. Labels are the lowest
+ * mask and cannot express an edge predicate, and the official
+ * `GPUGraphAlgorithmsConnectedComponents` accepts only a topology it rebuilt from source edge
+ * columns, not a caller-built CSR, so a local kernel is used. Labels are the lowest
  * member pixel index. Everything after labelling is exact integer atomics and deterministic.
  *
  * Main component: the maximum size, ties to the lowest label. This equals mt-image, whose BFS
@@ -239,7 +248,6 @@ export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
     neighbors: Buffer;
     labels: Buffer;
     converged: Buffer;
-    status: Buffer;
   };
 
   constructor(props: GPUTerrainSpikeRepairProps) {
@@ -280,23 +288,34 @@ export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
       ['labels', output.labels, 'uint32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} output.${name}`);
+        validateSinglePackedView(view, [format], `${id} output.${name}`);
         if (view.length !== pixelCount) {
           throw new Error(`${id} output.${name} must contain one value per pixel`);
         }
       }
     }
     if (output.statistics) {
-      validatePackedView(output.statistics, ['uint32'], `${id} output.statistics`);
+      validateSinglePackedView(output.statistics, ['uint32'], `${id} output.statistics`);
       if (output.statistics.length < GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH) {
         throw new Error(
           `${id} output.statistics must contain at least ${GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH} rows`
         );
       }
     }
+    validateTerrainStatusPorts(id, {
+      converged: output.status?.converged,
+      iterationLimitReached: output.status?.iterationLimitReached
+    });
     validateRasterBuffersDistinct(
       id,
-      [output.values, output.outputValidity, output.labels, output.statistics],
+      [
+        output.values,
+        output.outputValidity,
+        output.labels,
+        output.statistics,
+        output.status?.converged,
+        output.status?.iterationLimitReached
+      ],
       getRasterBandViews(props.elevation)
     );
   }
@@ -314,7 +333,9 @@ export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
       output.values,
       output.outputValidity,
       output.labels,
-      output.statistics
+      output.statistics,
+      output.status?.converged,
+      output.status?.iterationLimitReached
     ]);
     validateMaximumCount(
       id,
@@ -336,8 +357,7 @@ export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
         offsets: create('offsets', pixelCount + 1),
         neighbors: create('neighbors', 2 * pixelCount),
         labels: create('labels', pixelCount),
-        converged: create('converged', 1),
-        status: create('status', 4)
+        converged: create('converged', 1)
       };
     }
     const owned = this.ownedBuffers;
@@ -470,22 +490,19 @@ fn getEdge(pixel: u32, direction: u32) -> u32 {
       })
     );
 
+    // The analysis-domain weak-component helper reads this caller-built CSR directly. The official
+    // `GPUGraphAlgorithmsConnectedComponents` takes only a `GPUGraphAlgorithmsTopology` rebuilt
+    // from source edge columns, whose constructor a caller-built CSR cannot satisfy.
     nodes.push(
-      ...captureGraphCommandNodes(graph, () => {
-        const topology = createNetworkAnalyticsTopology({
-          id,
-          nodeCount: pixelCount,
-          offsets,
-          neighbors,
-          status: owned.status
-        });
-        new GPUGraphAlgorithmsConnectedComponents({
-          id: `${id}-components`,
-          topology,
-          output: getGraphViewGPUVector(id, 'component labels', labels),
-          iterations: this.maximumComponentIterations,
-          converged: getGraphViewGPUVector(id, 'component converged', converged)
-        }).addToGraph(graph);
+      ...createMaskedWeakComponentNodes(graph, {
+        id: `${id}-components`,
+        operation,
+        nodeCount: pixelCount,
+        offsets,
+        neighbors,
+        labels,
+        converged,
+        iterations: this.maximumComponentIterations
       })
     );
 
@@ -904,6 +921,10 @@ fn isWideLessOrEqual(left: vec2<u32>, right: vec2<u32>) -> bool {
   }`
       })
     );
+    // The labelling runs exactly `maximumComponentIterations` rounds, and its only other way to
+    // clear `converged` is a topology overflow, which the fixed-stride CSR (two slots per pixel)
+    // cannot produce. So an unconverged run is one whose iterations ran out, and
+    // `iterationLimitReached` is the complement of `converged`.
     // Unresolved outputs hold no finite heights to recount; nothing was repaired, so the remaining
     // jumps are the original ones.
     nodes.push(
@@ -920,6 +941,19 @@ fn isWideLessOrEqual(left: vec2<u32>, right: vec2<u32>) -> bool {
     statistics[statisticsOffset + ${word.remainingJumpCount}u] =
       statistics[statisticsOffset + ${word.jumpCount}u];
   }`
+      }),
+      ...createTerrainStatusPortNodes(graph, {
+        id,
+        operation,
+        source: converged,
+        ports: [
+          {name: 'converged', view: output.status?.converged, expression: 'source[sourceOffset]'},
+          {
+            name: 'iterationLimitReached',
+            view: output.status?.iterationLimitReached,
+            expression: '1u - source[sourceOffset]'
+          }
+        ]
       })
     );
     return nodes;

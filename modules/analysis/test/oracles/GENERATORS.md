@@ -14,6 +14,18 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 
 ## Literal mappings
 
+### `coverage-validity-gaps.py`
+
+`coverage-validity-gaps.json` (Shapely 2.2.0 on GEOS 3.14.1 `coverage_invalid_edges` and `coverage_is_valid` at several gap widths, run with the pinned CPython 3.14 set: staggered rectangles, disjoint polygon pairs and jittered triangulations near the origin and at projected-metre coordinates; SciPy 1.16.3 `Delaunay` builds the triangulations)
+
+### `ring-assembly-float32-choices.py`
+
+`ring-assembly-float32-choices.json` (Shapely 2.2.0 on GEOS 3.14.1, run with the pinned CPython 3.14 set: `build_area` hole ownership of thin nested wedges near the origin and nested bands at projected-metre coordinates, and `union_all` of two disjoint triangles whose tips are a quarter unit apart; nesting is also checked with exact `fractions`. Since the review fixes of 2026-11-11 also `roundedTurns`: 64 pairs of triangles that meet within the tolerance, with the continuation that exact `fractions` directions give, the one that float32 differences give, and `union_all` of each pair; and `polarTurns`: 240 such pairs beside the antimeridian and the pole, three with a candidate exactly opposite to the incoming segment, with `union_all` of each pair)
+
+### `polygon-triangulation-touching-rings.py`
+
+`polygon-triangulation-touching-rings.json` (Shapely 2.2.0 on GEOS 3.14.1, run with the pinned CPython 3.14 set: `Polygon.is_valid` and `Polygon.area` of 16 inputs named in `fix-review-closing-geometry.md` and of 1,043 of 7,938 seeded lattice polygons whose holes touch the shell or another hole at single points, among them the 59 that `GPUPolygonTriangulation` flagged or triangulated wrongly before the fixes)
+
 ### `rts08-healpix-geo.py`
 
 `rts08-healpix-geo.json` (healpix-geo 0.4.1 on the sphere with marray 0.0.12, installed with `pip install --target --no-deps`; also `pya5` 1.0.0 was installed for the A5 part, which is not done)
@@ -26,13 +38,31 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 
 `rts02-whittaker-hants-scipy.json` (binary64 SciPy/NumPy references written from the published definitions; phenofit and GRASS r.hants were not run)
 
+### `rts02-whittaker-sparse-exact.py`
+
+`rts02-whittaker-sparse-exact.json` (exact rational solve of the Whittaker system with the Python standard library `fractions`, for 2, 3 and 5 observations out of 256 slices; no library, any CPython 3.9 or later; recorded with CPython 3.14.8, the same values as the first run on 3.9.6)
+
+### `raster-stretch-references.py`
+
+`raster-stretch-references.json` (OpenCV 4.12.0 `equalizeHist`, NumPy 2.5.4 `percentile(method='lower')` and a NumPy evaluation of the rio-color sigmoidal formula, run with the pinned CPython 3.14 set plus `opencv-python-headless==4.12.0.88` installed with `--no-deps`, which `requirements.txt` does not list; the first run on the system CPython 3.9.6 with NumPy 2.0.2 gave the same values; rio-color and rasterio were not run)
+
 ### `rts05-compositing-numpy.py`
 
 `rts05-compositing-numpy.json` (binary64 NumPy/SciPy implementations of the hdmedians medoid and geometric median definitions, the Griffiths best-available-pixel score and threshold-crossing phenology metrics; hdmedians, phenofit and TIMESAT were not run)
 
+### `trajectories-lines-numpy-checks.py`
+
+`trajectories-lines-numpy-checks.json` (NumPy 2.5.4 `cumsum` and `interp` for the arc-length resample of a long track, and a stable `argsort` with `cumsum` for six-cell volume isopleths; second checks of hand-computed expectations, run with the pinned CPython 3.14 set; the first run on the system CPython 3.9.6 with NumPy 2.0.2 gave the same values)
+
 ### `rts04-change-monitoring-numpy.py`
 
-`rts04-change-monitoring-numpy.json` (binary64 NumPy references written from the published definitions; pyxccd and bfast were not run, the pyxccd fixture is pending)
+`rts04-change-monitoring-numpy.json` (binary64 NumPy references written from the published definitions; pyxccd and bfast were not run here; pyxccd is run by `rts04-cold-pyxccd.py`, below. Regenerated 2026-11-11 on the pinned CPython 3.14 set, NumPy 2.5.4 and SciPy 1.16.3, with the stability test taking the larger end residual as pyxccd does)
+
+### `rts04-cold-pyxccd.py`
+
+`rts04-cold-pyxccd.json` (pyxccd 1.1.0 `cold_detect` at `lam=20` and `lam=0` on eight synthetic seven-band series with known breaks; CPython 3.12.13, NumPy 2.5.4, SciPy 1.18.1; pyxccd publishes no wheel for the pinned CPython 3.14, so this generator has its own environment, with PyYAML installed for the import)
+
+`rts04-cold-pyxccd-break-sizes.json` (the same generator and environment: pyxccd's segment starts and confirmed breaks at `lam=0` and `lam=20` on 160 series with one break of a quarter, a half and the full disturbance, and the five scored bands of each input)
 
 ### `rts07-snapshot-eof-numpy.py`
 
@@ -66,6 +96,10 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 
 `dataframe-class-breaks.json`
 
+### `dataframe-quantile-rational-rank.py`
+
+`dataframe-quantile-rational-rank.json` (NumPy 2.5.4 `quantile` and exact Python rationals for the rational-probability rank of `GPUColumnQuantiles`; added 2026-11-11)
+
 ### `dataframe-time-zones.py`
 
 `dataframe-time-zones.json`
@@ -73,6 +107,10 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 ### `dataframe-variogram.py`
 
 `dataframe-variogram.json`
+
+### `distribution-class-assignment-numpy.py`
+
+`distribution-class-assignment-numpy.json` (NumPy 2.5.4 `digitize(right=True)` and `digitize(right=False)` on fixed edges and on pooled `percentile` quantile edges, with the transition counts of the pooled classes, run with the pinned CPython 3.14 set; the script asserts that mapclassify 2.11.0 `bin1d`, `UserDefined` and `Quantiles` and giddy 2.3.9 `Markov` give the right-closed values; the first run on the system CPython 3.9.6 with NumPy 2.0.2 gave the same values)
 
 ### `distribution-mapclassify-fit.py`
 
@@ -157,6 +195,10 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 ### `geospatial-expansion-statistics.py`
 
 `geospatial-expansion-statistics.json`
+
+### `interpolation-rbf-default-degree.py`
+
+`interpolation-rbf-default-degree.json` (SciPy `RBFInterpolator` at the default polynomial degree of each `GPULocalRBF` kernel, on the `radial` block of `interpolation-advanced-reference.json`; generated with the pinned NumPy 2.5.4 and SciPy 1.16.3, recorded in the fixture, within 3.9e-14 relative of the first run on NumPy 2.0.2 and SciPy 1.13.1; math correctness review 2026-11-10, interpolation-density-12)
 
 ### `losh-backlog-inference.py`
 
@@ -444,7 +486,7 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 
 ### `parity-wp3-noding.py`
 
-`parity-wp3-noding-chicago-loop.json`, `parity-wp3-noding-chicago-west.json`, `parity-wp3-noding-cross-overlap.json`, `parity-wp3-noding-showcase-large-snap.json`, `parity-wp3-noding-snap-cells.json`
+`parity-wp3-noding-chicago-loop.json`, `parity-wp3-noding-chicago-west.json`, `parity-wp3-noding-cross-overlap.json`, `parity-wp3-noding-snap-cells.json` (the showcase-large-snap noding fixture is written through this script's `generate` by `parity-wp3-topology-modes.py` and is listed there)
 
 ### `parity-wp3-routing.py`
 
@@ -468,7 +510,7 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 
 ### `parity-wp3-topology-modes.py`
 
-`parity-wp3-graph-communities-undirected.json`, `parity-wp3-neighborhood-showcase.json`, `parity-wp3-network-analysis-synthetic-directed-input.json`, `parity-wp3-network-analysis-synthetic-directed-outgoing.json`
+`parity-wp3-graph-communities-undirected.json`, `parity-wp3-neighborhood-showcase.json`, `parity-wp3-noding-showcase-large-snap.json`, `parity-wp3-network-analysis-synthetic-directed-input.json`, `parity-wp3-network-analysis-synthetic-directed-outgoing.json`
 
 ### `parity-wp4-advection.py`
 
@@ -650,6 +692,10 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 
 `rs02-fractional-categories.json`
 
+### `scoring-rules-fair.py`
+
+`scoring-rules-fair.json` (fair CRPS by order statistics and fair energy score over distinct pairs, plus the SciPy closed-form Gaussian scores the fair estimators are unbiased for; the pinned NumPy 2.5.4 and SciPy 1.16.3, recorded in the fixture, the same values as the first run on NumPy 2.0.2 and SciPy 1.13.1; math correctness review 2026-11-10, interpolation-density-12)
+
 ### `scoring-rules.py`
 
 `scoring-rules.json`
@@ -665,6 +711,10 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 ### `space-time-near-repeat.py`
 
 `space-time-near-repeat.json`
+
+### `space-time-diggle-splancs-port.py`
+
+`space-time-diggle-splancs-port.json` (a NumPy port written from a reading of the splancs 2.01-45 source, not a run of R; splancs is GPL (>= 2) and no splancs code is copied or executed; added 2026-11-11)
 
 ### `space-time-metric-gstools.py`
 
@@ -750,6 +800,10 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 
 `statistics-permutation-alternative.json`
 
+### `statistics-probit-tails.py`
+
+`statistics-probit-tails.json` (statsmodels 0.15.0 `Probit`, `GLM(Binomial(Probit))` standard errors and a Newton solve of the tail-exact likelihood with SciPy 1.16.3 `log_ndtr`, NumPy 2.5.4, CPython 3.14: probit maxima with a linear predictor far into the tails; separated scenes, including quasi-separation by an indicator of a few rows and of 2e-5 of the rows or less in samples of 100,000 to 1,000,000 rows, each with the optimum of a SciPy `linprog` program over separating directions; three scenes with their inputs written out: 3,002 rows within 1.5e-5 of separation, a predictor near 2^24 with statsmodels `predict` and `get_margeff` and the spatial diagnostics of spreg 1.9.1 `Probit(spat_diag=True)` (libpysal 4.15.0), and a three-valued predictor quasi-separated at its middle value; read by `math-review-probit-bound.spec.ts`; about a minute to run)
+
 ### `statistics-rate-cluster-recipe.py`
 
 `statistics-rate-cluster-recipe.json`
@@ -761,6 +815,18 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 ### `statistics-rate-standardization.py`
 
 `statistics-rate-standardization.json`
+
+### `statistics-regression-lag-conditioning.py`
+
+`statistics-regression-lag-conditioning.json` (spreg 1.9.1 `ML_Lag` and `GM_Lag`, libpysal 4.15.0, NumPy 2.5.4, SciPy 1.16.3, CPython 3.14: 36 lag-model scenes that stress float32 conditioning, namely fits whose residual sum of squares is 1e-10 to 1e-7 of `e0'e0`, rows without neighbours, an inexact float32 lag of a response near 10,000 on five kinds of weights, and a predictor near 4,096; the pins are the float64 maximum of the concentrated likelihood and a centered float64 two-stage solve, which the generator holds to spreg; `edgeCases`, five scenes with their inputs stored in full: a zero minimum of `u'u` outside the search interval, a lag column in the span of `[1, X]`, a response scaled by 1e-10, 1 and 1e10, a fit whose standard error of `rho` is below its float32 spacing (pinned by exact rational arithmetic), and signed weights of zero total with the Anselin-Kelejian statistic in its cancelled form on spreg `GM_Lag`'s fit; read by `math-review-lag-conditioning.spec.ts`)
+
+### `statistics-regression-panel-lag-conditioning.py`
+
+`statistics-regression-panel-lag-conditioning.json` (spreg 1.9.1 `Panel_FE_Lag` and `Panel_RE_Lag` with `epsilon=1e-9`, libpysal 4.15.0, NumPy 2.5.4, SciPy 1.16.3, CPython 3.14: 11 panel lag scenes of 16 entities and 16 periods whose residual sum of squares is 0.7 down to 3e-9 of that of the response on the predictor; the generator holds spreg to float64 maxima of both likelihoods found another way; `opposingEffectScene`, entity effects of +3000 and -3000 with residuals of 0.004 (`Panel_FE_Lag`, and `Panel_RE_Lag` with a `phi` of 2.5e-7 held to the first-order condition in `phi`), and `phiBelowLimitScene`, effects of 16,000,000 with residuals of 0.5 (spreg `phi` 9.1e-9, stored alone); read by `math-review-panel-lag-conditioning.spec.ts`)
+
+### `statistics-regression-large-mean.py`
+
+`statistics-regression-large-mean.json` (spreg 1.9.1 `OLS`, `ML_Lag`, `GM_Lag`, `GM_Error_Hom` and the exact minimum of the `GM_Error` moment objective, libpysal 4.15.0, NumPy 2.5.4, SciPy 1.16.3, CPython 3.14, on a response of 10,000 with residuals of 0.002 to 0.004; read by `math-review-closing-residuals.spec.ts` and `math-review-large-response-mean.spec.ts`)
 
 ### `statistics-regression-scenes.node.spec.ts`
 
@@ -801,6 +867,10 @@ Other oracle sources not producing `fixtures/`: `*.R` (R/terra/gstat/blockCV/lan
 ### `terrain-hydrology.py`
 
 `terrain-hydrology.json`
+
+### `terrain-sky-view-rvt.py`
+
+`terrain-sky-view-rvt.json` (unmodified rvt-py 2.2.1 `rvt.vis.sky_view_factor` and `sky_view_factor_compute` with NumPy 2.5.4: sky-view factor, anisotropic sky-view factor for main directions around the compass with both presets and an odd level, positive and negative openness, on walls and ramps at the four compass sides and the diagonals; the generator asserts rvt's direction convention; needs no GDAL, only `rvt.vis`)
 
 ### `track-similarity-dtw-frechet.py`
 

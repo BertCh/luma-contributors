@@ -23,7 +23,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUSpatialWeightsTranspose,
@@ -49,6 +49,7 @@ import {
   type GPUSpatialWeightsTracesMode
 } from './spatial-weights-traces-parameters';
 import type {GPUStatusScalar} from '../../analysis-core/contracts/status';
+import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
 
 const OPERATION = 'GPUSpatialWeightsTraces';
 const TILE_WORKGROUP_SIZE = 64;
@@ -152,7 +153,7 @@ export function validateGPUSpatialWeightsTracesParameters(
   if (!view) {
     return;
   }
-  validatePackedView(view, ['uint32'], `${id} ${name}`);
+  validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
   if (view.length < GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH) {
     throw new Error(
       `${id} ${name} must hold ${GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH} uint32`
@@ -185,7 +186,7 @@ export function validateGPUSpatialWeightsTracesParameters(
  *
  * Probes run in batches sized so the two ping-pong vectors stay within 64 MiB
  * (`max(1, floor(8M / rows))` probes per batch). Every dot product is a fixed-order tile sum
- * followed by a Kahan merge, so results are deterministic and no float atomics are used. Nothing
+ * followed by a fixed pairwise merge, so results are deterministic and no float atomics are used. Nothing
  * is read back. The shaders do not depend on the power, the batch or the probe index (rule 12):
  * per-power and per-batch tables are 64-element aligned sub-views, and a uint32 batch table holds
  * each batch's first probe and probe count, so the pipeline count is independent of
@@ -238,12 +239,12 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
     if (props.tileRowCount !== undefined) {
       validateCapacity(id, 'tileRowCount', props.tileRowCount);
     }
-    validatePackedView(output.powerTraces, ['float32'], `${id} output.powerTraces`);
+    validateSinglePackedView(output.powerTraces, ['float32'], `${id} output.powerTraces`);
     if (output.powerTraces.length < maximumPower) {
       throw new Error(`${id} output.powerTraces must hold maximumPower float32 values`);
     }
     if (output.powerTraceStandardErrors) {
-      validatePackedView(
+      validateSinglePackedView(
         output.powerTraceStandardErrors,
         ['float32'],
         `${id} output.powerTraceStandardErrors`
@@ -254,7 +255,7 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
         );
       }
     }
-    validatePackedView(output.powerSums, ['float32'], `${id} output.powerSums`);
+    validateSinglePackedView(output.powerSums, ['float32'], `${id} output.powerSums`);
     if (output.powerSums.length < maximumPower) {
       throw new Error(`${id} output.powerSums must hold maximumPower float32 values`);
     }
@@ -263,19 +264,19 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
       throw new Error(`${id} output.gramTraces is required exactly when includeGramTraces is true`);
     }
     if (output.gramTraces) {
-      validatePackedView(output.gramTraces, ['float32'], `${id} output.gramTraces`);
+      validateSinglePackedView(output.gramTraces, ['float32'], `${id} output.gramTraces`);
       if (output.gramTraces.length < GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_LENGTH) {
         throw new Error(`${id} output.gramTraces must hold 4 float32 values`);
       }
     }
     if (output.infinityNorm) {
-      validatePackedView(output.infinityNorm, ['float32'], `${id} output.infinityNorm`);
+      validateSinglePackedView(output.infinityNorm, ['float32'], `${id} output.infinityNorm`);
       if (output.infinityNorm.length < 1) {
         throw new Error(`${id} output.infinityNorm must hold one float32 value`);
       }
     }
     if (output.status?.approximation) {
-      validatePackedView(
+      validateSinglePackedView(
         output.status.approximation,
         ['uint32'],
         `${id} output.status.approximation`
@@ -322,7 +323,7 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
   /**
    * Returns the command nodes in dependency order: the ones-vector chain for `powerSums`, the
    * Gram transpose and exact moments (when requested), the batch table, the probe batches (per
-   * step one matrix-vector tile pass and, per target row of the dot table, one per-probe Kahan
+   * step one matrix-vector tile pass and, per target row of the dot table, one per-probe pairwise
    * merge), and the final probe merge that writes `powerTraces` and `gramTraces`.
    */
   getCommandNodes<Parameters>(
@@ -395,19 +396,11 @@ const PROBE_TOTAL: u32 = ${probeTotal}u;`;
       u32(prefix ? `${prefix}Neighbors` : 'neighbors', csr.neighbors, 'read'),
       f32(prefix ? `${prefix}Weights` : 'weights', csr.weights, 'read')
     ];
-    const kahanLoop = (
-      source: string,
-      indexExpression: string,
-      stride: string,
-      count: string
-    ) => `var sum = 0.0;
-  var compensation = 0.0;
-  for (var item = 0u; item < ${count}; item++) {
-    let term = ${source}[${source}Offset + ${indexExpression} + item * ${stride}] - compensation;
-    let next = sum + term;
-    compensation = (next - sum) - term;
-    sum = next;
-  }`;
+    const kahanLoop = (source: string, indexExpression: string, stride: string, count: string) =>
+      getPairwiseSumWGSL({
+        count,
+        term: `${source}[${source}Offset + ${indexExpression} + sumItem * ${stride}]`
+      });
     const nodes: GPUCommandNode<Parameters>[] = [];
     const {dispatches} = getGPUSpatialWeightsTilePlan(weights, tileRowCount);
     // Chunked weights with Gram traces are rejected in the constructor.
@@ -481,7 +474,7 @@ const PROBE_TOTAL: u32 = ${probeTotal}u;`;
         weights: scaledWeightViews[chunkIndex]
       });
 
-    // ---- powerSums: one chain from the ones vector, tile partial sums then a Kahan merge. ----
+    // ---- powerSums: one chain from the ones vector, tile partial sums then a pairwise merge. ----
     // One 64-element aligned row per power, so each step binds its own row as a sub-view.
     const sumsPartial = transient('sums-partial', maximumPower * sumsStride);
     const onesVectors = [transient('ones-a', rowCount), transient('ones-b', rowCount)];

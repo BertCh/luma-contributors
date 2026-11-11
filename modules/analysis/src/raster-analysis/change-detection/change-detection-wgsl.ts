@@ -8,7 +8,7 @@ export const BETA_CONTINUED_FRACTION_ITERATIONS = 64;
 /** Convergence threshold of the continued fraction, `|delta - 1|`. */
 export const BETA_CONTINUED_FRACTION_TOLERANCE = 3e-7;
 
-/** NaN helpers shared by every change-detection kernel. */
+/** NaN and missing-sample helpers shared by every change-detection kernel. */
 export const NAN_WGSL = /* wgsl */ `
 fn quietNan() -> f32 {
   // A runtime value: WGSL rejects constant-expression NaN.
@@ -17,6 +17,11 @@ fn quietNan() -> f32 {
 }
 fn isNanValue(value: f32) -> bool {
   return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u;
+}
+// A sample is missing when it is not finite (NaN or an infinity): the rule of every
+// raster-time-series and remote-sensing contributor (contributor contract section 7).
+fn isMissingSample(value: f32) -> bool {
+  return (bitcast<u32>(value) & 0x7f800000u) == 0x7f800000u;
 }
 `;
 

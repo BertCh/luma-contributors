@@ -66,8 +66,12 @@ export function convolveLineIntegralOnCPU(
   const originY = fround(parameters[5]);
   const cellWidth = fround(parameters[6]);
   const cellHeight = fround(parameters[7]);
-  const stepX = fround(fround(parameters[8]) * cellWidth);
-  const stepY = fround(fround(parameters[8]) * cellHeight);
+  const stepLength = fround(parameters[8]);
+  // One positive scalar times the unit world direction, `stepLength` output pixels long.
+  const getStepVector = (direction: [number, number]): [number, number] => {
+    const scale = stepLength / Math.hypot(direction[0] / cellWidth, direction[1] / cellHeight);
+    return [scale * direction[0], scale * direction[1]];
+  };
   const minimumSpeed = fround(parameters[9]);
   const phase = fround(parameters[10]);
   const period = fround(parameters[11]);
@@ -112,16 +116,18 @@ export function convolveLineIntegralOnCPU(
           if (!first) {
             break;
           }
+          const firstStep = getStepVector(first);
           const middle = getDirection(
-            fround(x + 0.5 * stepX * first[0]),
-            fround(y + 0.5 * stepY * first[1]),
+            fround(x + 0.5 * firstStep[0]),
+            fround(y + 0.5 * firstStep[1]),
             sign
           );
           if (!middle) {
             break;
           }
-          x = fround(x + stepX * middle[0]);
-          y = fround(y + stepY * middle[1]);
+          const middleStep = getStepVector(middle);
+          x = fround(x + middleStep[0]);
+          y = fround(y + middleStep[1]);
           const sampleColumn = Math.floor((x - originX) / cellWidth);
           const sampleRow = Math.floor((y - originY) / cellHeight);
           if (sampleColumn < 0 || sampleRow < 0 || sampleColumn >= width || sampleRow >= height) {

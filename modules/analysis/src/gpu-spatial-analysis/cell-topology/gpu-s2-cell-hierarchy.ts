@@ -11,7 +11,7 @@ import {dggs} from '@luma.gl/shaders';
 import {S2_POSITION_TO_IJ, S2_POSITION_TO_ORIENTATION} from '../cell-indexing/cell-index-wgsl';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateCapacity,
   validateRequirement,
   validateGraphViewsBelongToGraph,
@@ -59,9 +59,9 @@ export class GPUS2CellHierarchy implements GPUCommandNodeProducer {
         : props.operation === 'range'
           ? 2
           : 1;
-    validatePackedView(props.cells, ['uint32x2'], this.id);
-    validatePackedView(props.output.cells, ['uint32x2'], this.id);
-    validatePackedView(props.output.status, ['uint32'], this.id);
+    validateSinglePackedView(props.cells, ['uint32x2'], this.id);
+    validateSinglePackedView(props.output.cells, ['uint32x2'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32'], this.id);
     // Parent levels and aligned output strides are structural constraints.
     if (props.operation === 'parent') {
       validateCapacity(this.id, 'level', props.level as number, 0, S2_MAXIMUM_LEVEL);

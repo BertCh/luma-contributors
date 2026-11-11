@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGraphOutputViews} from '../../analysis-core/kernels/gpu-contributor-utils';
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -17,8 +15,13 @@ import {
 } from '../delaunay-tessellation/gpu-delaunay-tessellation';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
+  getGraphOutputViews,
+  validateCapacity,
+  validateFiniteNumber,
   validateGraphViewsBelongToGraph,
-  validateGraphOutputsDisjointFromInputs
+  validateGraphOutputsDisjointFromInputs,
+  validateRequirement,
+  validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
@@ -46,6 +49,34 @@ export type GPUConcaveHullProps = {
 };
 
 /**
+ * Checks the fixed output reservation: `triangleCapacity` triangle rows and three boundary-edge
+ * rows per triangle (the Delaunay bound per group), `convergedRows` status rows, and one buffer
+ * per output so no kernel aliases another's writes.
+ */
+function validateConcaveHullOutput(
+  id: string,
+  output: GPUConcaveHullProps['output'],
+  triangleCapacity: number,
+  convergedRows: number
+): void {
+  validateViewLength(id, 'output.triangles', output.triangles, triangleCapacity);
+  validateViewLength(id, 'output.triangleValidity', output.triangleValidity, triangleCapacity);
+  validateViewLength(id, 'output.boundaryEdges', output.boundaryEdges, 3 * triangleCapacity);
+  validateViewLength(id, 'output.edgeValidity', output.edgeValidity, 3 * triangleCapacity);
+  validateRequirement(
+    id,
+    output.status.converged.length >= convergedRows,
+    `output.status.converged must have at least ${convergedRows} rows`
+  );
+  const outputViews = getGraphOutputViews(output);
+  validateRequirement(
+    id,
+    new Set(outputViews.map(view => view.buffer)).size === outputViews.length,
+    'output views must use distinct buffers'
+  );
+}
+
+/**
  * Planar alpha-complex hull: retain triangles whose circumradius does not exceed the requested
  * radius, then expose their oriented boundary. Holes and disconnected components are preserved.
  * This deliberately uses radius-based alpha-shape semantics, not GEOS's ratio-based concave hull.
@@ -60,20 +91,13 @@ export class GPUConcaveHull implements GPUCommandNodeProducer {
     this.props = props;
     const capacity = getDelaunayMaximumTriangleCount(props.positions.length);
     // maximumCircumradius must be positive and representable as a finite f32.
-    assert(
-      Number.isFinite(Math.fround(props.maximumCircumradius)) && props.maximumCircumradius > 0
+    validateFiniteNumber(this.id, 'maximumCircumradius', props.maximumCircumradius, 0);
+    validateRequirement(
+      this.id,
+      props.maximumCircumradius > 0,
+      'maximumCircumradius must be greater than 0'
     );
-    assert(
-      props.output.triangles.length === capacity &&
-        props.output.triangleValidity.length === capacity &&
-        props.output.boundaryEdges.length === 3 * capacity &&
-        props.output.edgeValidity.length === 3 * capacity &&
-        props.output.status.converged.length >= 1
-    );
-    assert(
-      new Set(getGraphOutputViews(props.output).map(view => view.buffer)).size ===
-        getGraphOutputViews(props.output).length
-    );
+    validateConcaveHullOutput(this.id, props.output, capacity, 1);
     validateGraphOutputsDisjointFromInputs(this.id, getGraphOutputViews(props.output), [
       props.positions
     ]);
@@ -255,23 +279,14 @@ export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
   constructor(props: GPUGroupConcaveHullProps) {
     this.id = props.id ?? 'group-concave-hull';
     this.props = props;
+    validateCapacity(this.id, 'groupCount', props.groupCount);
+    validateRequirement(
+      this.id,
+      props.groupIds.length === props.positions.length,
+      `groupIds must have exactly ${props.positions.length} rows (one per position, as GPUDelaunayTessellation requires)`
+    );
     const capacity = getDelaunayMaximumTriangleCount(props.positions.length) * props.groupCount;
-    assert(
-      Number.isInteger(props.groupCount) &&
-        props.groupCount > 0 &&
-        props.groupIds.length >= props.positions.length
-    );
-    assert(
-      props.output.triangles.length === capacity &&
-        props.output.triangleValidity.length === capacity &&
-        props.output.boundaryEdges.length === 3 * capacity &&
-        props.output.edgeValidity.length === 3 * capacity &&
-        props.output.status.converged.length >= props.groupCount
-    );
-    assert(
-      new Set(getGraphOutputViews(props.output).map(view => view.buffer)).size ===
-        getGraphOutputViews(props.output).length
-    );
+    validateConcaveHullOutput(this.id, props.output, capacity, props.groupCount);
     validateGraphOutputsDisjointFromInputs(this.id, getGraphOutputViews(props.output), [
       props.positions,
       props.groupIds

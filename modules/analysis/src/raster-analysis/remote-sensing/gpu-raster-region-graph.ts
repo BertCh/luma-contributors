@@ -12,6 +12,7 @@ import {
 } from '../../analysis-core/kernels/fixed-point-accumulator';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {validateRasterGrid} from '../raster-band-utils';
+import {validateGPUStatusPort} from '../../analysis-core/contracts/status';
 import {
   createTransientView,
   type GraphDataView,
@@ -57,8 +58,11 @@ export type GPURasterRegionGraphProps = {
     weights: GraphDataView<'float32'>;
     /** Original region to smallest connected source region after the bounded rounds. */
     mapping: GraphDataView<'uint32'>;
-    /** One word, 1 if another fixed propagation or adaptive merge is possible, otherwise 0. */
-    status: GraphDataView<'uint32'>;
+    /** Named status words (`GPUIterationStatusPort` names). */
+    status: {
+      /** One word, 1 if another fixed propagation or adaptive merge is possible, otherwise 0. */
+      iterationLimitReached: GraphDataView<'uint32'>;
+    };
   };
 };
 /** Four-neighbor region adjacency with bounded fixed or adaptive mean-difference merging. Explicit rounds use ping-pong graph scratch; no cross-workgroup barrier.
@@ -124,10 +128,20 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
       props.output.adjacency.length >= props.regionCount ** 2 &&
         props.output.weights.length >= props.regionCount ** 2 &&
         props.output.mapping.length >= props.regionCount &&
-        props.output.status.length >= 1,
-      'output.adjacency and output.weights must hold regionCount squared entries, output.mapping regionCount entries and output.status one'
+        props.output.status.iterationLimitReached.length >= 1,
+      'output.adjacency and output.weights must hold regionCount squared entries, output.mapping regionCount entries and output.status.iterationLimitReached one'
     );
-    validateRasterViews(this.id, [props.labels, props.values], Object.values(props.output));
+    validateGPUStatusPort(this.id, props.output.status);
+    validateRasterViews(
+      this.id,
+      [props.labels, props.values],
+      [
+        props.output.adjacency,
+        props.output.weights,
+        props.output.mapping,
+        props.output.status.iterationLimitReached
+      ]
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -135,7 +149,17 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
     const {props, id} = this;
     const count = props.grid.width * props.grid.height;
     const regions = props.regionCount;
-    validateRasterGraph(id, graph, [props.labels, props.values], Object.values(props.output));
+    validateRasterGraph(
+      id,
+      graph,
+      [props.labels, props.values],
+      [
+        props.output.adjacency,
+        props.output.weights,
+        props.output.mapping,
+        props.output.status.iterationLimitReached
+      ]
+    );
     const means = createTransientView(graph, `${id}-means`, 'float32', regions);
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', regions);
     const mapping = createTransientView(graph, `${id}-mapping`, 'uint32', regions);
@@ -280,10 +304,10 @@ means[meansOffset + index] = select(missing(), mean, count > 0u && finite(mean))
           rasterBinding('weights', props.output.weights),
           rasterBinding('source', source),
           rasterBinding('mapping', props.output.mapping, true),
-          rasterBinding('status', props.output.status, true)
+          rasterBinding('iterationLimitReached', props.output.status.iterationLimitReached, true)
         ],
         declarations: RASTER_FINITE_WGSL,
-        body: `var pending = 0u; for (var region = 0u; region < ${regions}u; region++) { let current = source[sourceOffset + region]; mapping[mappingOffset + region] = current; for (var neighbor = 0u; neighbor < ${regions}u; neighbor++) { let weight = weights[weightsOffset + region * ${regions}u + neighbor]; if (finite(weight) && weight <= ${props.mergeThreshold} && source[sourceOffset + neighbor] < current) { pending = 1u; } } } status[statusOffset] = pending;`
+        body: `var pending = 0u; for (var region = 0u; region < ${regions}u; region++) { let current = source[sourceOffset + region]; mapping[mappingOffset + region] = current; for (var neighbor = 0u; neighbor < ${regions}u; neighbor++) { let weight = weights[weightsOffset + region * ${regions}u + neighbor]; if (finite(weight) && weight <= ${props.mergeThreshold} && source[sourceOffset + neighbor] < current) { pending = 1u; } } } iterationLimitReached[iterationLimitReachedOffset] = pending;`
       })
     );
     return nodes;
@@ -342,7 +366,11 @@ componentMeans[componentMeansOffset + index] = select(missing(), mean, count > 0
           ...(finalRound
             ? [
                 rasterBinding('weights', props.output.weights, true),
-                rasterBinding('status', props.output.status, true)
+                rasterBinding(
+                  'iterationLimitReached',
+                  props.output.status.iterationLimitReached,
+                  true
+                )
               ]
             : [])
         ],
@@ -360,7 +388,7 @@ for (var first = 0u; first < ${regions}u; first++) {
   }
 }
 for (var region = 0u; region < ${regions}u; region++) { let root = source[sourceOffset + region]; destination[destinationOffset + region] = ${finalRound ? 'root' : 'select(root, selectedFirst, root == selectedSecond)'}; }
-${finalRound ? 'status[statusOffset] = select(0u, 1u, selectedFirst != 0xffffffffu);' : ''}`
+${finalRound ? 'iterationLimitReached[iterationLimitReachedOffset] = select(0u, 1u, selectedFirst != 0xffffffffu);' : ''}`
       })
     );
     [source, destination] = [destination, source];

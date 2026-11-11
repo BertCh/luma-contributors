@@ -18,13 +18,14 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /** Most frame rows: each lattice candidate scans the frame serially inside one wave invocation. */
 const MAXIMUM_FRAME_ROW_COUNT = 4096;
@@ -110,7 +111,7 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
     this.id = id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     const {frame} = props;
-    validatePackedView(frame.positions, ['float32x2'], id);
+    validateSinglePackedView(frame.positions, ['float32x2'], id);
     validateCapacity(
       id,
       'frame.positions rows',
@@ -144,7 +145,11 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
     validateCapacity(id, 'seed', props.seed, 0, 0xffffffff);
     validateCapacity(id, 'replicate', props.replicate ?? 0, 0, 0xffffffff - waves + 1);
     if (frame.legacySites) {
-      validatePackedView(frame.legacySites, [frame.type === 'line' ? 'float32' : 'float32x2'], id);
+      validateSinglePackedView(
+        frame.legacySites,
+        [frame.type === 'line' ? 'float32' : 'float32x2'],
+        id
+      );
       validateCapacity(
         id,
         'frame.legacySites rows',
@@ -173,7 +178,7 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
       );
     }
     if (props.parameters) {
-      validatePackedView(props.parameters, ['uint32'], id);
+      validateSinglePackedView(props.parameters, ['uint32'], id);
       validateViewLength(id, 'parameters', props.parameters, 2);
     }
     for (const [view, format] of [
@@ -182,7 +187,7 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
       [props.output.provenance, 'uint32x4'],
       [props.output.status, 'uint32x4']
     ] as const)
-      validatePackedView(view, [format], id);
+      validateSinglePackedView(view, [format], id);
     validateRequirement(
       id,
       props.output.positions.length === waves * props.capacity &&
@@ -263,7 +268,7 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
         declarations: `${PHILOX_WGSL}
 const SAMPLE_SPACING: f32 = ${getWGSLFloatLiteral(props.spacing)};
 const SAMPLE_CAPACITY: u32 = ${props.capacity}u;
-fn sampleFinite(value:f32)->bool{return (bitcast<u32>(value)&0x7f800000u)!=0x7f800000u;}
+${IS_FINITE_VALUE_WGSL}
 fn samplePosition(row:u32)->vec2f{let offset=framePositionsOffset+2u*row;return vec2f(framePositions[offset],framePositions[offset+1u]);}
 fn sampleCross(first:vec2f,second:vec2f)->f32{return first.x*second.y-first.y*second.x;}
 fn samplePrimitive(point:vec2f)->u32 {
@@ -299,15 +304,15 @@ let replicate=initialReplicate+index;
 let words=philox4x32(vec4u(replicate,0u,0u,0u),vec2u(seed,${PHILOX_PURPOSES.continuousSpatialSampling.id}u));
 let phase=vec2f(philoxUnitFloat(words.x),philoxUnitFloat(words.y))*SAMPLE_SPACING;
 for(var vertex=0u;vertex<${frame.positions.length}u;vertex++){
- let point=samplePosition(vertex);if(!sampleFinite(point.x)||!sampleFinite(point.y)||max(abs(point.x),abs(point.y))*0.00000095367431640625>SAMPLE_SPACING){failure=1u;}
+ let point=samplePosition(vertex);if(!isFiniteValue(point.x)||!isFiniteValue(point.y)||max(abs(point.x),abs(point.y))*0.00000095367431640625>SAMPLE_SPACING){failure=1u;}
  ${area ? `if(any(point<vec2f(${frame.bounds.slice(0, 2).map(getWGSLFloatLiteral).join(',')}))||any(point>vec2f(${frame.bounds.slice(2).map(getWGSLFloatLiteral).join(',')}))){failure=1u;}` : `if(vertex+1u<${frame.positions.length}u){measure+=distance(point,samplePosition(vertex+1u));}`}
 }
-${area ? `for(var triangle=0u;triangle<${frame.positions.length / 3}u;triangle++){let first=samplePosition(triangle*3u);let determinant=sampleCross(samplePosition(triangle*3u+1u)-first,samplePosition(triangle*3u+2u)-first);if(!sampleFinite(determinant)||determinant==0.0){failure=1u;}}` : 'if(!sampleFinite(measure)||measure<=0.0){failure=1u;}'}
+${area ? `for(var triangle=0u;triangle<${frame.positions.length / 3}u;triangle++){let first=samplePosition(triangle*3u);let determinant=sampleCross(samplePosition(triangle*3u+1u)-first,samplePosition(triangle*3u+2u)-first);if(!isFiniteValue(determinant)||determinant==0.0){failure=1u;}}` : 'if(!isFiniteValue(measure)||measure<=0.0){failure=1u;}'}
 ${
   frame.legacySites
     ? `for(var fixed=0u;fixed<${legacyCount}u;fixed++){
  let point=sampleLegacy(fixed);
- if(!sampleFinite(point.x)||!sampleFinite(point.y)||!sampleFinite(point.z)${area ? '||samplePrimitive(point.xy)==0xffffffffu' : '||point.z<0.0||point.z>measure'}){failure=1u;}
+ if(!isFiniteValue(point.x)||!isFiniteValue(point.y)||!isFiniteValue(point.z)${area ? '||samplePrimitive(point.xy)==0xffffffffu' : '||point.z<0.0||point.z>measure'}){failure=1u;}
  for(var previous=0u;previous<fixed;previous++){let other=sampleLegacy(previous);if(${area ? 'distance(point.xy,other.xy)' : 'abs(point.z-other.z)'}<SAMPLE_SPACING){failure=1u;}}
 }`
     : ''

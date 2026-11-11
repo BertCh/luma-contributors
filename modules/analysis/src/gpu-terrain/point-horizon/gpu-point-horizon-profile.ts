@@ -45,7 +45,9 @@ export const GPU_POINT_HORIZON_RAYS_PER_DISPATCH = 65536;
  *
  * Projection and cell-size model: `'planar'` rasters are in projected meters with the cell size
  * of the grid; `'web-mercator'` rasters are windows of EPSG:3857 meters whose world size and top
- * edge the packer derives from the grid, with great-circle rays on a sphere of radius 6371008.8 m.
+ * edge the packer derives from the grid. Rays are great circles traced on a sphere of radius
+ * 6371008.8 m; azimuths and distances are ground bearings and ground meters in the WGS84 metric
+ * at the observer latitude, the row scale every raster-grid terrain contributor uses.
  * See {@link GPUPointHorizonProjection} and the settings type in `point-horizon-parameters`.
  *
  * Curvature convention: terrain drops by `c * d^2` with `c = (1 - k) / (2R)` (see
@@ -280,7 +282,13 @@ ${march}`,
     ${writes('nan')}
     return;
   }
-  let direction = azimuthSinCos(FIRST_AZIMUTH + azimuthOffset, AZIMUTH_COUNT);
+  let bearing = azimuthSinCos(FIRST_AZIMUTH + azimuthOffset, AZIMUTH_COUNT);
+  ${
+    model.projection === 'web-mercator'
+      ? `// Azimuths are ground bearings on the WGS84 ellipsoid; the ray is traced on the sphere.
+  let direction = getSphereAzimuth(eye, bearing.x, bearing.y);`
+      : 'let direction = bearing;'
+  }
   let result = marchRay(eye, direction.x, direction.y, 0.0, false);
   ${writes('result')}`
         })

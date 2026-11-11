@@ -630,8 +630,8 @@ it.each([
         runs: {
           positions: fixture.input('wall', new Float32Array([2, 0, 2, 2]), 'float32x2', 2),
           offsets: fixture.input('wall-offsets', new Uint32Array([0, 2]), 'uint32', 2),
-          leftLineIds: fixture.input('left', new Uint32Array([0]), 'uint32', 1),
-          rightLineIds: fixture.input('right', new Uint32Array([1]), 'uint32', 1),
+          leftSourceIds: fixture.input('left', new Uint32Array([0]), 'uint32', 1),
+          rightSourceIds: fixture.input('right', new Uint32Array([1]), 'uint32', 1),
           forward: fixture.input('forward', new Uint32Array([0]), 'uint32', 1)
         },
         status: {

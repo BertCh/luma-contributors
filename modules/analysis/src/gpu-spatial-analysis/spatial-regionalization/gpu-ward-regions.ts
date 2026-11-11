@@ -25,7 +25,7 @@ import {
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -213,16 +213,16 @@ export class GPUWardRegions implements GPUCommandNodeProducer {
       throw new Error(`${id} mergeSchedule must be 'sequential' or 'mutual-nearest'`);
     }
     validateRegionalizationParameters(id, props.parameters, GPU_WARD_REGIONS_PARAMETER_LENGTH);
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rowCount * columnCount) {
       throw new Error(`${id} values length must equal rows * columnCount`);
     }
-    validatePackedView(output.labels, ['uint32'], `${id} output.labels`);
+    validateSinglePackedView(output.labels, ['uint32'], `${id} output.labels`);
     if (output.labels.length !== rowCount) {
       throw new Error(`${id} output.labels length must equal the weights row count`);
     }
-    validatePackedView(output.objective, ['float32'], `${id} output.objective`);
-    validatePackedView(output.status, ['uint32'], `${id} output.status`);
+    validateSinglePackedView(output.objective, ['float32'], `${id} output.objective`);
+    validateSinglePackedView(output.status, ['uint32'], `${id} output.status`);
     if (output.objective.length < 1) {
       throw new Error(`${id} output.objective must hold one value`);
     }

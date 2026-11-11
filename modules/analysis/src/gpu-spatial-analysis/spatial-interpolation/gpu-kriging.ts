@@ -17,6 +17,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {getDenseLUWGSL} from '../../analysis-core/kernels/dense-solve-wgsl';
 import {createTiledWGSLKernelNodes} from '../../analysis-core/kernels/wgsl-kernel-tiles';
 import {validateGPUStatusPort, type GPUSpatialContext} from '../../analysis-core/contracts/index';
 import {
@@ -25,7 +26,7 @@ import {
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -37,14 +38,13 @@ import {
   type InterpolationSeparation
 } from './separation-wgsl';
 import {GPU_KRIGING_PARAMETER_LENGTH, KRIGING_PIVOT_RATIO_TOLERANCE} from './kriging-parameters';
-import {
-  MATERN_3_2_RANGE_FACTOR,
-  MATERN_5_2_RANGE_FACTOR
-} from '../../dataframe-analysis/pair-statistics/variogram-model';
+import {VARIOGRAM_MODEL_SHAPE_WGSL} from '../../dataframe-analysis/pair-statistics/variogram-model';
 
 const OPERATION = 'GPUKriging';
 /** Largest compile-time neighborhood; the per-cell system is `(k + 1) x (k + 1)`. */
 const MAXIMUM_NEIGHBOR_CAPACITY = 16;
+/** Size of the shared LU: the neighbors and the unbiasedness row. */
+const SYSTEM_CAPACITY = MAXIMUM_NEIGHBOR_CAPACITY + 1;
 
 /**
  * A pivot at or below this fraction of the largest entry of the original system is treated as
@@ -260,8 +260,8 @@ export class GPUKriging implements GPUCommandNodeProducer {
       MAXIMUM_NEIGHBOR_CAPACITY
     );
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     const sampleCount = props.values.length;
     if (sampleCount < 1) {
       throw new Error(`${id} needs at least one sample`);
@@ -270,21 +270,21 @@ export class GPUKriging implements GPUCommandNodeProducer {
       throw new Error(`${id} positions length must equal values length`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== sampleCount) {
         throw new Error(`${id} mask length must equal values length`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_KRIGING_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must hold ${GPU_KRIGING_PARAMETER_LENGTH} float32 values`);
     }
-    validatePackedView(output.values, ['float32'], `${id} output.values`);
+    validateSinglePackedView(output.values, ['float32'], `${id} output.values`);
     if (output.values.length < this.cellCount) {
       throw new Error(`${id} output.values must hold grid.width * grid.height rows`);
     }
     if (output.variance) {
-      validatePackedView(output.variance, ['float32'], `${id} output.variance`);
+      validateSinglePackedView(output.variance, ['float32'], `${id} output.variance`);
       if (output.variance.length < this.cellCount) {
         throw new Error(`${id} output.variance must hold grid.width * grid.height rows`);
       }
@@ -305,7 +305,7 @@ export class GPUKriging implements GPUCommandNodeProducer {
         if (!view) {
           continue;
         }
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length < sampleCount) {
           throw new Error(`${id} output.${name} must hold one row per sample`);
         }
@@ -422,7 +422,7 @@ export class GPUKriging implements GPUCommandNodeProducer {
     const sharedDeclarations = `const INDEX_WIDTH: u32 = ${indexGridSize[0]}u;
 const INDEX_HEIGHT: u32 = ${indexGridSize[1]}u;
 const MAX_NEIGHBORS: u32 = ${maximumNeighborCount}u;
-const SYSTEM_STRIDE: u32 = ${maximumNeighborCount + 2}u;
+const SYSTEM_STRIDE: u32 = ${SYSTEM_CAPACITY}u;
 const DOMAIN_MIN: vec2f = vec2f(${getWGSLFloatLiteral(indexBounds[0])}, ${getWGSLFloatLiteral(indexBounds[1])});
 const DOMAIN_MAX: vec2f = vec2f(${getWGSLFloatLiteral(indexBounds[2])}, ${getWGSLFloatLiteral(indexBounds[3])});
 const RELATIVE_PIVOT_TOLERANCE: f32 = ${getWGSLFloatLiteral(KRIGING_RELATIVE_PIVOT_TOLERANCE)};
@@ -611,73 +611,20 @@ struct KrigingEstimate {
   status: u32,
 }
 
-// Variogram normalized by its total sill; gamma(0) = 0.
+${VARIOGRAM_MODEL_SHAPE_WGSL}
+// Variogram normalized by its total sill; gamma(0) = 0. The shape is the shared float32
+// definition, which keeps its digits at lags that are a small fraction of the range.
 fn evaluateVariogram(distance: f32, modelCode: u32, nugget: f32, sill: f32, range: f32) -> f32 {
   if (distance <= 0.0) { return 0.0; }
-  let scaled = distance / range;
-  var shape = 1.0;
-  if (modelCode == 0u) {
-    shape = select(1.5 * scaled - 0.5 * scaled * scaled * scaled, 1.0, scaled >= 1.0);
-  } else if (modelCode == 1u) {
-    shape = 1.0 - exp(-3.0 * scaled);
-  } else if (modelCode == 2u) {
-    shape = 1.0 - exp(-3.0 * scaled * scaled);
-  } else if (modelCode == 3u) {
-    let argument = ${getWGSLFloatLiteral(MATERN_3_2_RANGE_FACTOR)} * scaled;
-    shape = 1.0 - (1.0 + argument) * exp(-argument);
-  } else {
-    let argument = ${getWGSLFloatLiteral(MATERN_5_2_RANGE_FACTOR)} * scaled;
-    shape = 1.0 - (1.0 + argument + argument * argument / 3.0) * exp(-argument);
-  }
+  let shape = getVariogramModelShape(modelCode, distance / range);
   return (nugget + sill * shape) / (nugget + sill);
 }
 
-// Gaussian elimination with partial pivoting on an n x (n + 1) augmented system stored row-major
-// with SYSTEM_STRIDE columns; leaves the solution in column n. Returns false when a pivot is
-// negligible against the system scale or the pivot ratio (a condition estimate) is too small.
-fn solveSystem(system: ptr<function, array<f32, ${(MAXIMUM_NEIGHBOR_CAPACITY + 1) * (MAXIMUM_NEIGHBOR_CAPACITY + 2)}>>, n: u32, scale: f32) -> bool {
-  var minimumPivot = 3.0e38;
-  var maximumPivot = 0.0;
-  for (var column = 0u; column < n; column++) {
-    var pivotRow = column;
-    var pivotMagnitude = abs((*system)[column * SYSTEM_STRIDE + column]);
-    for (var row = column + 1u; row < n; row++) {
-      let magnitude = abs((*system)[row * SYSTEM_STRIDE + column]);
-      if (magnitude > pivotMagnitude) {
-        pivotMagnitude = magnitude;
-        pivotRow = row;
-      }
-    }
-    if (!(pivotMagnitude > RELATIVE_PIVOT_TOLERANCE * scale)) { return false; }
-    minimumPivot = min(minimumPivot, pivotMagnitude);
-    maximumPivot = max(maximumPivot, pivotMagnitude);
-    if (pivotRow != column) {
-      for (var k = column; k <= n; k++) {
-        let held = (*system)[column * SYSTEM_STRIDE + k];
-        (*system)[column * SYSTEM_STRIDE + k] = (*system)[pivotRow * SYSTEM_STRIDE + k];
-        (*system)[pivotRow * SYSTEM_STRIDE + k] = held;
-      }
-    }
-    let pivot = (*system)[column * SYSTEM_STRIDE + column];
-    for (var row = column + 1u; row < n; row++) {
-      let factor = (*system)[row * SYSTEM_STRIDE + column] / pivot;
-      for (var k = column; k <= n; k++) {
-        (*system)[row * SYSTEM_STRIDE + k] -= factor * (*system)[column * SYSTEM_STRIDE + k];
-      }
-    }
-  }
-  if (!(minimumPivot >= PIVOT_RATIO_TOLERANCE * maximumPivot)) { return false; }
-  for (var step = 0u; step < n; step++) {
-    let row = n - 1u - step;
-    var sum = (*system)[row * SYSTEM_STRIDE + n];
-    for (var k = row + 1u; k < n; k++) {
-      sum -= (*system)[row * SYSTEM_STRIDE + k] * (*system)[k * SYSTEM_STRIDE + n];
-    }
-    (*system)[row * SYSTEM_STRIDE + n] = sum / (*system)[row * SYSTEM_STRIDE + row];
-  }
-  return true;
-}
-
+// The bordered system is solved by the shared LU with partial pivoting of analysis-core
+// (factorDenseLU_${SYSTEM_CAPACITY}), without equilibration. It is rejected when a pivot is
+// negligible against the largest entry (RELATIVE_PIVOT_TOLERANCE) or the pivot ratio (a condition
+// estimate) is below PIVOT_RATIO_TOLERANCE.
+${getDenseLUWGSL(SYSTEM_CAPACITY)}
 // Ordinary kriging estimate at one query point. center is the absolute position (used only to
 // find index cells); localCenter and origin give the same point as an offset from origin, and
 // every distance is a difference of offsets. excludeRow removes one sample (leave-one-out).
@@ -788,9 +735,10 @@ fn estimateKriging(center: vec2f, localCenter: vec2f, origin: vec2f, excludeRow:
   }
 
   let n = uniqueCount + 1u;
-  var system: array<f32, ${(MAXIMUM_NEIGHBOR_CAPACITY + 1) * (MAXIMUM_NEIGHBOR_CAPACITY + 2)}>;
+  var system: array<f32, ${SYSTEM_CAPACITY * SYSTEM_CAPACITY}>;
+  // The right-hand side, then the weights and the Lagrange multiplier.
+  var solution: array<f32, ${SYSTEM_CAPACITY}>;
   var targetGamma: array<f32, MAX_NEIGHBORS>;
-  var systemScale = 1.0;
   for (var i = 0u; i < uniqueCount; i++) {
     system[i * SYSTEM_STRIDE + i] = 0.0;
     // The variogram matrix is symmetric: one evaluation fills both triangles.
@@ -798,24 +746,25 @@ fn estimateKriging(center: vec2f, localCenter: vec2f, origin: vec2f, excludeRow:
       let gamma = evaluateVariogram(getPairMeters(uniquePositions[i], uniquePositions[j]), modelCode, nugget, sill, range);
       system[i * SYSTEM_STRIDE + j] = gamma;
       system[j * SYSTEM_STRIDE + i] = gamma;
-      systemScale = max(systemScale, abs(gamma));
     }
     system[i * SYSTEM_STRIDE + uniqueCount] = 1.0;
     system[uniqueCount * SYSTEM_STRIDE + i] = 1.0;
     targetGamma[i] = evaluateVariogram(getSeparationMeters(uniqueDistances[i]), modelCode, nugget, sill, range);
-    system[i * SYSTEM_STRIDE + n] = targetGamma[i];
+    solution[i] = targetGamma[i];
   }
   system[uniqueCount * SYSTEM_STRIDE + uniqueCount] = 0.0;
-  system[uniqueCount * SYSTEM_STRIDE + n] = 1.0;
-  if (!solveSystem(&system, n, systemScale)) {
+  solution[uniqueCount] = 1.0;
+  var factorization = factorDenseLU_${SYSTEM_CAPACITY}(&system, n, 0u, RELATIVE_PIVOT_TOLERANCE, PIVOT_RATIO_TOLERANCE);
+  if (factorization.status != 0u) {
     estimate.status = STATUS_UNCERTAIN;
     return estimate;
   }
+  solveDenseLU_${SYSTEM_CAPACITY}(&system, &factorization, &solution);
   let baseValue = uniqueValueSums[0] / uniqueMultiplicities[0];
   var prediction = 0.0;
-  var predictionVariance = system[uniqueCount * SYSTEM_STRIDE + n];
+  var predictionVariance = solution[uniqueCount];
   for (var i = 0u; i < uniqueCount; i++) {
-    let weight = system[i * SYSTEM_STRIDE + n];
+    let weight = solution[i];
     prediction += weight * (uniqueValueSums[i] / uniqueMultiplicities[i] - baseValue);
     predictionVariance += weight * targetGamma[i];
   }

@@ -21,7 +21,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
 import {
@@ -91,6 +91,12 @@ export type GPUTrajectoryClosestApproachOutput = {
     entryOverflow: GraphDataView<'uint32'>;
     /** 1 when the segment-pair hits exceeded `hitCapacity`. */
     hitOverflow: GraphDataView<'uint32'>;
+    /**
+     * Optional one row, the status vocabulary of `GPUCandidateStatusPort` and of
+     * `GPUTrajectoryEncounters`: 1 when `entryOverflow` or `hitOverflow` is 1 (candidate-stage
+     * incompleteness), else 0.
+     */
+    candidateOverflow?: GraphDataView<'uint32'>;
   };
 };
 
@@ -110,7 +116,7 @@ export type GPUTrajectoryClosestApproachProps = GPUTrajectoryGeometryFields & {
    */
   spatialContext?: GPUSpatialContext;
   /** Optional per-track flags, `trackCount` rows. Zero ignores the track. */
-  trackValid?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /**
    * Per-frame distance in position units, one float32 row. Two tracks are an encounter while
    * their linearly interpolated positions are at most this far apart. Negative, NaN or infinite
@@ -170,7 +176,9 @@ export type GPUTrajectoryClosestApproachProps = GPUTrajectoryGeometryFields & {
  * are compacted with `GPUCompaction`, and reduction kernels write the per-pair minimum distance,
  * its time, the first enter time and the total time within the distance. Times are measured from
  * a segment's own start row, so `uint32x2` word timestamps stay exact until the final f32
- * difference.
+ * difference. Only the candidate boxes measure time from row 0 as a float32; each box is padded by
+ * `1e-6` of that time (eight times the two float32 roundings involved), so rounding there can add
+ * candidates but cannot drop a pair, and the pair test itself does not use those times.
  *
  * Bounds: `entryCapacity` (cell entries) and `hitCapacity` (segment-pair hits) are scratch
  * capacities reported in `output.status`; `output.pairs.status.overflow` reports the pair capacity.
@@ -185,8 +193,9 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
   /** Number of tracks. */
   readonly trackCount: number;
 
-  constructor(props: GPUTrajectoryClosestApproachProps) {
-    this.id = props.id ?? 'trajectory-closest-approach';
+  constructor(input: GPUTrajectoryClosestApproachProps) {
+    this.id = input.id ?? 'trajectory-closest-approach';
+    const props = input;
     this.props = props;
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(
@@ -194,9 +203,9 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
       props.spatialContext,
       SPATIAL_CONTEXT_SUPPORT
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
-    validatePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
     if (props.timestamps.length !== props.positions.length) {
       throw new Error(`${id} timestamps length must equal positions length`);
     }
@@ -204,18 +213,18 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
       throw new Error(`${id} trackOffsets must contain at least two rows`);
     }
     this.trackCount = props.trackOffsets.length - 1;
-    if (props.trackValid) {
-      validatePackedView(props.trackValid, ['uint32'], `${id} trackValid`);
-      if (props.trackValid.length !== this.trackCount) {
-        throw new Error(`${id} trackValid length must equal the track count`);
+    if (props.mask) {
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
+      if (props.mask.length !== this.trackCount) {
+        throw new Error(`${id} mask length must equal the track count`);
       }
     }
-    validatePackedView(props.distance, ['float32'], `${id} distance`);
+    validateSinglePackedView(props.distance, ['float32'], `${id} distance`);
     if (props.distance.length < 1) {
       throw new Error(`${id} distance must contain one float32 row`);
     }
     if (props.maximumGap) {
-      validatePackedView(props.maximumGap, ['float32'], `${id} maximumGap`);
+      validateSinglePackedView(props.maximumGap, ['float32'], `${id} maximumGap`);
     }
     resolveGPUTrajectoryTemporalContext(id, props.timestamps, props.temporalContext);
     for (const [name, value] of [
@@ -232,9 +241,13 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
     validateCompactOutput(id, pairs);
     for (const [name, view] of [
       ['status.entryOverflow', status.entryOverflow],
-      ['status.hitOverflow', status.hitOverflow]
+      ['status.hitOverflow', status.hitOverflow],
+      ['status.candidateOverflow', status.candidateOverflow]
     ] as const) {
-      validatePackedView(view, ['uint32'], `${id} ${name}`);
+      if (view === undefined) {
+        continue;
+      }
+      validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length < 1) {
         throw new Error(`${id} ${name} must hold one row`);
       }
@@ -248,7 +261,7 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
       ['durations', pairs.durations, 'float32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} pairs.${name}`);
+        validateSinglePackedView(view, [format], `${id} pairs.${name}`);
         if (view.length !== capacity) {
           throw new Error(`${id} pairs.${name} length must equal the capacity`);
         }
@@ -263,7 +276,7 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
       props.positions,
       props.timestamps,
       props.trackOffsets,
-      props.trackValid,
+      props.mask,
       props.distance,
       props.maximumGap
     ];
@@ -282,7 +295,8 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
       pairs.firstTimes,
       pairs.durations,
       status.entryOverflow,
-      status.hitOverflow
+      status.hitOverflow,
+      status.candidateOverflow
     ];
   }
 
@@ -339,7 +353,7 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
               shape,
               timestamps: props.timestamps,
               trackOffsets: props.trackOffsets,
-              trackValid: props.trackValid,
+              trackValid: props.mask,
               maximumGap: props.maximumGap,
               rowSkip
             })
@@ -358,7 +372,7 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
         positions: props.positions,
         timestamps: props.timestamps,
         trackOffsets: props.trackOffsets,
-        trackValid: props.trackValid,
+        trackValid: props.mask,
         distance: props.distance,
         rowSkip,
         segmentRecords,
@@ -504,7 +518,8 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
         shape,
         state,
         entryOverflow: status.entryOverflow,
-        hitOverflow: status.hitOverflow
+        hitOverflow: status.hitOverflow,
+        candidateOverflow: status.candidateOverflow
       }),
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,

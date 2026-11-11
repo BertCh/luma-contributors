@@ -138,6 +138,12 @@ export type GPUParticleAdvectionProps = {
  * textures and advances them with a stateful `step()` call. The two are not interchangeable and
  * are not merged; they use different state layouts (storage buffers here, render-target textures
  * there) and different random generators.
+ *
+ * Row direction: every field raster places row 0 at the smallest y (`originY` of its extent) and
+ * rows advance toward larger y; `v` is the velocity toward larger y. No grid affine is read and
+ * nothing is checked at construction. A north-up field (row 0 at the top, the usual raster order)
+ * must have its row order reversed by the caller before upload, or the flow is mirrored north to
+ * south. Following a grid affine is deferred (roadmap 12.4).
  */
 export class GPUParticleAdvection implements GPUCommandNodeProducer {
   /** Prefix for graph node IDs. */

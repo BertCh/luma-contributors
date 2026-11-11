@@ -25,7 +25,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -164,8 +164,12 @@ export type GPUSinkhornDivergenceProps = {
  * `epsilon`), and disarms a GPU dispatch gate, so finished iterations launch nothing. When
  * `maximumIterations` is reached first, the latest potentials are used and
  * `status.iterationLimitReached` is set. The divergence is evaluated from the potentials as
- * `sum a (f_ab - f_aa) + sum b (g_ab - g_bb)`, combining the differences before the tiled,
- * compensated reduction, which keeps the cancellation small.
+ * `sum a (f_ab - f_aa) + sum b (g_ab - g_bb)`, combining the differences before the reduction,
+ * which keeps the cancellation small. Every sum over cells (mass totals, marginal error, dual
+ * objective) is the tiled sum of `getRowTileSumNodes`: plain float32 inside a tile of a few
+ * hundred cells, then a fixed pairwise merge of the tile totals. It is not a compensated (Kahan
+ * or Neumaier) sum, which the shader compiler of the test GPU removes; a million equal masses
+ * sum to float32 accuracy (pinned in `stm09-sinkhorn-divergence.spec.ts`).
  *
  * Float32: the exponents are the potentials over epsilon plus log masses minus squared distance
  * over epsilon, up to `maximum cost / epsilon` in size, each rounded to a relative `6e-8`. Keep
@@ -226,9 +230,9 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
       GPU_SINKHORN_DIVERGENCE_MAXIMUM_GRID_SIDE
     );
     this.isExactBlur = this.blurRadius >= fullRadius;
-    validatePackedView(props.source, ['float32'], `${id} source`);
-    validatePackedView(props.target, ['float32'], `${id} target`);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.source, ['float32'], `${id} source`);
+    validateSinglePackedView(props.target, ['float32'], `${id} target`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       props.source.length === cellCount && props.target.length === cellCount,
@@ -240,14 +244,14 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
       `parameters must hold ${GPU_SINKHORN_DIVERGENCE_PARAMETER_LENGTH} float32 values`
     );
     const {output} = props;
-    validatePackedView(output.divergence, ['float32'], `${id} output.divergence`);
+    validateSinglePackedView(output.divergence, ['float32'], `${id} output.divergence`);
     validateRequirement(
       id,
       output.divergence.length === 1,
       'output.divergence must contain exactly one row'
     );
     if (output.components) {
-      validatePackedView(output.components, ['float32'], `${id} output.components`);
+      validateSinglePackedView(output.components, ['float32'], `${id} output.components`);
       validateRequirement(
         id,
         output.components.length === 3,
@@ -255,7 +259,7 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
       );
     }
     if (output.marginalError) {
-      validatePackedView(output.marginalError, ['float32'], `${id} output.marginalError`);
+      validateSinglePackedView(output.marginalError, ['float32'], `${id} output.marginalError`);
       validateRequirement(
         id,
         output.marginalError.length === 1,
@@ -264,7 +268,7 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
     }
     for (const [name, view] of Object.entries(output.status ?? {})) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
         validateRequirement(
           id,
           view.length === 1,

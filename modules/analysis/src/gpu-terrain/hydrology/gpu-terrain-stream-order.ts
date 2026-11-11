@@ -40,9 +40,12 @@ import {
   TERRAIN_FLOW_TOUR_RESOLVED_WGSL
 } from './terrain-flow-euler-tour';
 import {
+  createTerrainIterationLimitNode,
   getTerrainFlowTracingWGSL,
+  validateTerrainFlowDirectionEncoding,
   validateTerrainTracingCellView,
-  validateTerrainTracingStatus
+  validateTerrainTracingStatus,
+  type GPUTerrainFlowDirectionEncoding
 } from './terrain-flow-tracing';
 
 const OPERATION = 'GPUTerrainStreamOrder';
@@ -52,9 +55,15 @@ export type GPUTerrainStreamOrderStatus = {
   /**
    * One row set to 1 when every stream cell resolved. Conservative on the pull fallback: can be 0
    * when the last round finished everything. On the Euler-tour path it is 1 unless a receiver cycle
-   * was found.
+   * was found (a cycle is not an iteration limit).
    */
   converged?: GraphDataView<'uint32'>;
+  /**
+   * One row set to 1 only when the iteration budget ran out before the loop converged (the pull
+   * fallback). The Euler-tour path ranks in a fixed number of rounds that always suffices, so it
+   * stays 0 there, also when a receiver cycle clears `converged`.
+   */
+  iterationLimitReached?: GraphDataView<'uint32'>;
   /** One row: gated rounds executed (list-ranking rounds on the Euler-tour path). */
   iterationCount?: GraphDataView<'uint32'>;
 };
@@ -94,9 +103,17 @@ export type GPUTerrainStreamOrderProps = {
    * `GPU_TERRAIN_FLOW_UNRESOLVED` (0xfffffffe) unknown: a stream cell with that direction, and a
    * stream cell with a stream neighbor of that direction (which might donate to it), keep the
    * unresolved order. Any other code, and any code pointing outside the grid, is treated as
-   * terminal. Typically `GPUTerrainFlow.flowDirections`. Per-frame.
+   * terminal. Typically `GPUTerrainFlow.flowDirections`. A grid in another numbering needs
+   * `directionEncoding`. Per-frame.
    */
   flowDirections: GraphDataView<'uint32'>;
+  /**
+   * Numbering of `flowDirections`: `'esri'` (default), `'whitebox'` (the WhiteboxTools default
+   * pointer) or `'taudem'`, see {@link GPUTerrainFlowDirectionEncoding}. Zero and the two
+   * sentinels mean the same in each. The codes are raster offsets ("south" is `row + 1`), not
+   * compass bearings: the row sign of the grid affine is not read. Compile-time.
+   */
+  directionEncoding?: GPUTerrainFlowDirectionEncoding;
   /**
    * Stream mask, one word per cell, non-zero for stream cells. Typically `GPUTerrainFlow.streams`,
    * whose `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` word (accumulation round limit hit) marks a cell of
@@ -151,6 +168,7 @@ export class GPUTerrainStreamOrder implements GPUCommandNodeProducer {
     const {output} = props;
     const cellCount = validateRasterGrid(id, props.grid);
     validateRasterIterations(id, 'maximumIterations', props.maximumIterations ?? 64);
+    validateTerrainFlowDirectionEncoding(id, props.directionEncoding);
     validateTerrainTracingCellView(id, 'flowDirections', props.flowDirections, 'uint32', cellCount);
     validateTerrainTracingCellView(id, 'streams', props.streams, 'uint32', cellCount);
     validateTerrainTracingCellView(
@@ -161,7 +179,12 @@ export class GPUTerrainStreamOrder implements GPUCommandNodeProducer {
       cellCount
     );
     validateTerrainTracingStatus(id, output.status);
-    const outputs = [output.streamOrder, output.status?.converged, output.status?.iterationCount];
+    const outputs = [
+      output.streamOrder,
+      output.status?.converged,
+      output.status?.iterationLimitReached,
+      output.status?.iterationCount
+    ];
     validateGraphOutputsDisjointFromInputs(id, outputs, [props.flowDirections, props.streams]);
     validateRasterBuffersDistinct(id, outputs, []);
   }
@@ -192,6 +215,7 @@ export class GPUTerrainStreamOrder implements GPUCommandNodeProducer {
       props.streams,
       output.streamOrder,
       output.status?.converged,
+      output.status?.iterationLimitReached,
       output.status?.iterationCount
     ]);
     const cellCount = width * height;
@@ -207,7 +231,7 @@ export class GPUTerrainStreamOrder implements GPUCommandNodeProducer {
       {name: 'flowDirections', view: props.flowDirections, type: 'u32', access: 'read'},
       {name: 'streams', view: props.streams, type: 'u32', access: 'read'}
     ];
-    const tracing = getTerrainFlowTracingWGSL(width, height);
+    const tracing = getTerrainFlowTracingWGSL(width, height, props.directionEncoding);
     // The stream forest: a stream cell's parent is its D8 receiver when that is a stream cell too.
     const parentDeclarations = `fn isStreamCell(cell: u32) -> bool {
   return streams[streamsOffset + cell] != 0u && flowDirections[flowDirectionsOffset + cell] != NO_CELL;
@@ -215,7 +239,7 @@ export class GPUTerrainStreamOrder implements GPUCommandNodeProducer {
 
 fn getTourParent(cell: u32) -> u32 {
   if (!isStreamCell(cell)) { return NO_CELL; }
-  let receiver = getFlowReceiver(cell, flowDirections[flowDirectionsOffset + cell]);
+  let receiver = getFlowReceiver(cell, getFlowDirectionCode(flowDirections[flowDirectionsOffset + cell]));
   if (receiver == NO_CELL || !isStreamCell(receiver)) { return NO_CELL; }
   return receiver;
 }`;
@@ -257,6 +281,18 @@ ${TERRAIN_FLOW_TOUR_RESOLVED_WGSL}`;
   member[memberOffset + index] = select(0u, 1u, isStream);`
       }),
       ...tour.nodes,
+      // Read straight after the ranking rounds: the unknown-order gather below clears the converged
+      // word when it finds a receiver cycle, which is not an iteration limit.
+      ...(output.status?.iterationLimitReached
+        ? [
+            createTerrainIterationLimitNode<Parameters>(graph, {
+              id: `${id}-order-limit`,
+              operation: OPERATION,
+              state: tour.state,
+              iterationLimitReached: output.status.iterationLimitReached
+            })
+          ]
+        : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-order-root-length`,
         operation: OPERATION,
@@ -512,12 +548,13 @@ ${TERRAIN_FLOW_TOUR_RESOLVED_WGSL}`;
       props.streams,
       output.streamOrder,
       output.status?.converged,
+      output.status?.iterationLimitReached,
       output.status?.iterationCount
     ]);
     const cellCount = width * height;
     const maxIterations = props.maximumIterations ?? 64;
     const state = createRasterIterationState(graph, `${id}-order`, OPERATION, cellCount, id);
-    const tracing = getTerrainFlowTracingWGSL(width, height);
+    const tracing = getTerrainFlowTracingWGSL(width, height, props.directionEncoding);
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-order-init`,
@@ -570,7 +607,7 @@ fn tryFinalize(cell: u32) -> bool {
     if (streams[streamsOffset + donor] == 0u) { continue; }
     // A stream neighbor with an unknown direction might donate: this order cannot be known.
     if (flowDirections[flowDirectionsOffset + donor] == UNRESOLVED_DIRECTION) { return false; }
-    if (flowDirections[flowDirectionsOffset + donor] != (1u << ((direction + 4u) & 7u))) { continue; }
+    if (getFlowDirectionCode(flowDirections[flowDirectionsOffset + donor]) != (1u << ((direction + 4u) & 7u))) { continue; }
     let donorOrder = atomicLoad(&order[orderOffset + donor]);
     if (donorOrder == SENTINEL) { return false; }
     if (donorOrder > maximumOrder) {
@@ -592,10 +629,10 @@ fn tryFinalize(cell: u32) -> bool {
   // Stays unresolved without marking a change: no round can resolve it.
   if (isUnresolvedStream(index)) { return; }
   if (tryFinalize(index)) {
-    var walk = getFlowReceiver(index, flowDirections[flowDirectionsOffset + index]);
+    var walk = getFlowReceiver(index, getFlowDirectionCode(flowDirections[flowDirectionsOffset + index]));
     for (var step = 0u; step < MAX_WALK_LENGTH; step++) {
       if (walk == NO_CELL || !tryFinalize(walk)) { break; }
-      walk = getFlowReceiver(walk, flowDirections[flowDirectionsOffset + walk]);
+      walk = getFlowReceiver(walk, getFlowDirectionCode(flowDirections[flowDirectionsOffset + walk]));
     }
   }
   if (atomicLoad(&order[orderOffset + index]) == SENTINEL) {
@@ -630,6 +667,16 @@ fn tryFinalize(cell: u32) -> bool {
           state,
           converged: output.status.converged,
           iterationCount: output.status.iterationCount
+        })
+      );
+    }
+    if (output.status?.iterationLimitReached) {
+      nodes.push(
+        createTerrainIterationLimitNode<Parameters>(graph, {
+          id: `${id}-order-limit`,
+          operation: OPERATION,
+          state: state,
+          iterationLimitReached: output.status.iterationLimitReached
         })
       );
     }

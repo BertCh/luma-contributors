@@ -70,10 +70,21 @@ table therefore feeds the projection directly.
   is measured, so only metric `'none'` is accepted.
 - **Cell table** (`GPUCellTable`). Capacity is `cells.length`. Rows `[0, status.count)` hold occupied
   cells in ascending key order. Later rows hold the empty key `0xffffffff` in both words, count 0
-  and NaN extremes. Columns: `counts`, exact fixed-point `sums` (signed 64-bit words of
+  and NaN extremes. Columns: `counts`, fixed-point `sums` (signed 64-bit words of
   `roundHalfEven(fround(value * sumScale))`, default scale 65536), `sumValues` (f32
   `sums / sumScale`), `minimums` and `maximums`. On overflow the table keeps the smallest keys
   and sets `status.overflow`.
+- **Accuracy of sums.** The integer sum is exact, order independent and equal under roll-up; the
+  values are not: each row is rounded to the nearest multiple of `1 / sumScale` before it is added.
+  With the default 65536 that is an absolute error of up to `2^-17` (7.6e-6) per row, a value
+  below it adds 0, and a column of constant `1e-4` sums 6.8% high (`7 / 65536` per row). The
+  default suits values of about 0.01 and above. For small or very large values pass
+  `sumScale: getGPUCellSumScale(maximumMagnitude, maximumRowCount)` (exported beside
+  `GPU_CELL_DEFAULT_SUM_SCALE`): the largest power of two that keeps `maximumRowCount` rows of
+  that magnitude below `2^61`, so rows within a factor of 32 of the maximum are added without
+  rounding at the default row count of `2^31`. Use one `sumScale` for every table that is rolled
+  up or compared together (`GPUCellAggregation`, `GPUCellRollup`, `GPUCellPyramid`,
+  `GPUCellTableCompare`).
 - **Roll-up.** `GPUCellRollup` reduces a table to a coarser resolution without re-reading rows
   or sorting. Parent keys truncate the cell path (`cellToParent`), which preserves key order.
   Counts and sums are integer sums, so a roll-up equals direct aggregation bit for bit. The
@@ -195,6 +206,10 @@ and `GPUH3CellProjection` read. The zero key means "no cell".
   - Input is `cells` (`wordOrder` option).
   - Outputs are `centers` (lng/lat) and optional `boundaries` with a fixed `maximumVertexCount`
     stride and `vertexCounts`. Families are the five above plus `'a5'`.
+  - An invalid key (the zero key included) gets a `NaN` centre, vertex count 0 and zero boundary
+    rows. The optional `validity` output (`uint32`, 1 for a valid cell, 0 otherwise) follows luma.gl
+    `GPUDGGSCellProjection`, which decodes H3 and A5 centres with the same shader functions but
+    writes a zero centre for an invalid cell.
   - H3 boundaries follow h3-js `cellToBoundary` exactly in vertex count and order. That includes
     face-crossing distortion vertices (up to 10, so use stride 10) and pentagons.
   - Quadbin, quadkey, geohash and S2 have 4 vertices; A5 has 5.
@@ -354,8 +369,9 @@ H3 gap kernels (`family: 'h3'`), integer-exact where possible.
   `areaModel: 'sphere-polygon'`, units). Cell identifiers carry no coordinates, so the class has no
   `spatialContext`. Single-face hexagons are exact from lattice
   offsets, within 1e-6 relative at resolutions 0 to 15. Pentagons and cells straddling a face edge use f32
-  boundary vectors: 6e-7 at resolution 0, 2e-5 at 2, 2.5e-4 at 4 and about 1e-2 at 6, so treat them as
-  unreliable beyond resolution 5. Open: directed edges and vertexes.
+  boundary vectors, which resolve about 0.4 m on the ground: measured relative error 6e-7 at resolution 0,
+  5e-5 at 3 and 4, at most 5e-4 up to resolution 8 and 2e-2 at 9 and 10 (areas alone: 2e-5 at 4, 1.5e-4 at 8,
+  5e-3 at 9 and 10), so treat them as unreliable beyond resolution 10. Open: directed edges and vertexes.
 
 #### How it computes
 
@@ -623,15 +639,36 @@ graph.add(new GPUSegmentRingAssembly({
   `vertexTolerance`. `status.overflow` is also set when a valid segment has a non-finite coordinate.
 - **Shells and holes.** The signed area (shoelace, relative to the first vertex) is compared with
   `interiorSide`: with `'left'` shells are counter-clockwise. `ringIsHole` flags holes. `ringShells`
-  assigns every hole to its innermost enclosing shell (smallest area, lowest index on ties, same group), a
-  shell to itself, and a hole without a shell to `GPU_SEGMENT_RING_ASSEMBLY_NONE`. This costs one pass over
+  assigns every hole to its innermost enclosing shell (same group), a
+  shell to itself, and a hole without a shell to `GPU_SEGMENT_RING_ASSEMBLY_NONE`. Of two shells that
+  contain the hole, the inner one is the one whose bounding box lies inside the other's, which is exact
+  for a planar boundary; float32 areas order only shells whose boxes are equal or do not nest (smaller
+  first, lowest index on ties). Until 2026-11-11 the choice was the smallest float32 area among shells
+  larger than the hole, which left a hole unowned, or gave it to an outer shell, when a thin shell and its
+  hole had areas that rounded to the wrong order. This costs one pass over
   every written vertex per hole. Containment is exact: the probe is the symbolic point infinitesimally
   beside the midpoint of the hole's first edge, on the side away from the hole, classified with the exact
   point-in-ring rule of `utils/exact-geometry-wgsl.ts`, so a hole whose edge runs along another ring is
-  still assigned correctly.
+  still assigned correctly. A ring of area 0 is an empty walk and is left out of `polygons`; a face
+  thinner than one float32 step, whose float32 area sums to exactly 0 although it has an exact non-zero
+  turn at a lowest vertex it passes once, reports `1.17549435e-38` with the sign of that turn in
+  `ringAreas` and is kept.
 - **Touching vertices.** When more than one segment starts at a segment's end vertex (Quadbin cells that
   meet at a corner; H3 hexagons never do), the continuation is the outgoing segment that turns tightest
-  toward the interior, so regions that touch at a point stay separate rings. With `splitTouchingRings` a
+  toward the interior, so regions that touch at a point stay separate rings. The turns
+  are ordered exactly: at the shared vertex when every candidate starts on it, and otherwise (a candidate
+  matched within `vertexTolerance` but not equal) by the exact signs of the cross products of the segment
+  directions `end - start`, computed from the four endpoints. Until 2026-11-11 those signs were taken
+  from the float32 differences, which round when the two ends of a segment differ in magnitude; with
+  edges about 1e-7 radians apart at a matched vertex that lost rings. Longitude/latitude input is ordered
+  by the same exact tests: its turns are measured with longitude differences scaled by the cosine of the
+  latitude, a positive scale of one axis, which changes no orientation sign and so no order. It used a
+  float32 turn key before, which sent near-parallel candidates to the lowest index. Only non-finite
+  coordinates still fall back to that key. A candidate that exactly reverses the incoming segment (and is
+  not removed as its paired or cancelled twin) is the tightest turn for either `interiorSide`, so a scene
+  and its mirror image with the interior on the other side give the same rings; until 2026-11-11 it was
+  the first choice for `'left'` and the last for `'right'`, and a square with a zero-width spike came back
+  as two rings with the interior on the left and as one ring with two open segments when mirrored. With `splitTouchingRings` a
   second tracing pass swaps the continuations of segment pairs that end at one vertex and lie on one ring,
   so two holes meeting at a corner, or a hole pinched to its shell, become simple rings. Choices taken
   twice resolve to the lowest segment index. `status.touchingSegmentCount` and `segmentFlags`
@@ -705,8 +742,12 @@ These contributors form the bounded planar geometry-topology substrate:
   available through diagnostics rather than being converted to mixed geometry. Parity is probed
   exactly at the symbolic point infinitesimally left of the midpoint of the first edge of each face
   shell (the shared probe of `utils/exact-geometry-wgsl.ts`; strictly inside the face, no rounded
-  sample point), brute force over the noded segments, one thread per face. A face whose
-  orientation cannot be certified is kept. `status.count` is the number of kept polygons.
+  sample point: the ray's height is the exact midpoint of the edge's two heights, so an edge one
+  float32 step tall is handled), brute force over the noded segments, one thread per face. A face whose
+  orientation cannot be certified is kept. `status.count` is the number of kept polygons. Rings close
+  implicitly: the edge from a ring's last vertex back to its first is always part of the boundary,
+  whether or not the ring repeats its first vertex. `GPULineNoding` emits no zero-length row for a
+  repeated vertex.
 
 All three require an explicit `GPUTopologyPrecisionPolicy`. The current policy uses the shared exact
 orientation predicates with an uncertainty counter, float32 coordinate storage, and a caller-chosen
@@ -771,7 +812,7 @@ graph.add(new GPUCellTableCompare({
 - `before` / `after`: the measure (`'count'`, or `'sum'` decoded from the fixed-point `sums`), 0 when absent.
 - `delta = after - before`, computed exactly as a 64-bit integer difference (counts and fixed-point sums) and only then rounded to f32, so large sums with small differences are not lost to f32 cancellation.
 - `ratio = after / before` and `percentChange = 100 * (after - before) / before`, NaN when `before` is 0.
-- `zScore`: `'poisson'` (default for counts) is `delta / sqrt(before + after)`, 0 when both are 0. `'standardized'` (default for sums) is `(delta - mean) / sd` over the union rows with the population standard deviation, 0 when sd is 0. The mean and sd are reduced in three fixed-order stages (per-workgroup partial sums, per-workgroup partial squares around the combined mean, then one combining workgroup), so a re-encode is bitwise identical.
+- `zScore`: `'poisson'` (default for counts) is `delta / sqrt(before + after)`, 0 when both are 0. It is a statistic of counts: with `measure: 'sum'` use it only for sums of non-negative values, and a row where `before + after` is negative, or is 0 while the sums differ, gets NaN. `'standardized'` (default for sums) is `(delta - mean) / sd` over the union rows with the population standard deviation, 0 when sd is 0. The mean and sd are reduced in three fixed-order stages (per-workgroup partial sums, per-workgroup partial squares around the combined mean, then one combining workgroup), so a re-encode is bitwise identical.
 - Rows past `status.count` hold the empty key (all ones), presence 0, `before`/`after` 0, and NaN in `delta`, `ratio`, `percentChange` and `zScore`.
 
 The merge is a binary-search merge path with an exclusive scan of matched rows, so every union row is written by exactly one invocation and no atomics are used. Cost is O((n + m) log(n + m)). Table contents are per-frame (re-encode without recompiling); capacities, columns, `measure` and `zScore` are topology.

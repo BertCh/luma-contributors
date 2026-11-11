@@ -47,7 +47,7 @@ for (const scene of ringCases) {
       new GPUIsobandRings({
         grid,
         values: owner.input('values', 'float32', new Float32Array(values)),
-        validity: owner.input('validity', 'uint32', new Uint32Array(validity)),
+        mask: owner.input('validity', 'uint32', new Uint32Array(validity)),
         noDataValue: -9999,
         breaks: owner.input('breaks', 'float32', new Float32Array(scene.breaks)),
         parameters: owner.input(

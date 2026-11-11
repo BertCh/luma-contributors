@@ -50,7 +50,8 @@ const BOUNDED_STATUS = ['count', 'requiredCount', 'overflow'] as const;
 const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
   ...KEPLER_ANALYSIS_OPERATOR_OVERRIDES,
   ...COVERAGE_EXPANSION_OPERATOR_OVERRIDES,
-  ...NESTED_VALIDATION_OPERATOR_OVERRIDE,
+  GPUNestedInterpolationValidation:
+    NESTED_VALIDATION_OPERATOR_OVERRIDE.GPUNestedInterpolationValidation,
   addDasymetricRedistributionRecipe: {
     inputs: ['polygons', 'surface', 'attributes'],
     outputs: ['attributes', 'summary'],
@@ -513,6 +514,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     documentation: 'docs/api/gpu-terrain/operators.md'
   },
   GPUParameterBuffer: {
+    package: '@luma-contributors/analysis/analysis-core',
     inputs: [],
     outputs: ['parameters'],
     coordinateModels: ['none'],
@@ -638,8 +640,17 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     cardinality: 'capacity-bounded',
     semantics: 'approximate',
     deterministic: true,
-    status: [...BOUNDED_STATUS, 'candidateOverflow', 'uncertainCount'],
-    contract: 'GPUPolygonOverlayOutput & GPUGeneratedGeometryPort',
+    // Rule 8: no feature `requiredCount` (unknown once rings drop); rings carry the requirement.
+    status: [
+      'count',
+      'overflow',
+      'candidateOverflow',
+      'uncertainCount',
+      'ringCount',
+      'requiredRingCount',
+      'nodedSegmentRequiredCount'
+    ],
+    contract: 'GPUPolygonOverlayOutput',
     evidence: 'proven',
     tests: 'modules/analysis/test/gpu-spatial-analysis/polygon-overlay/polygon-overlay.spec.ts'
   },
@@ -652,8 +663,17 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     cardinality: 'capacity-bounded',
     semantics: 'approximate',
     deterministic: true,
-    status: [...BOUNDED_STATUS, 'candidateOverflow', 'uncertainCount'],
-    contract: 'GPUPolygonOverlayOutput & GPUGeneratedGeometryPort',
+    // Rule 8: no feature `requiredCount` (unknown once rings drop); rings carry the requirement.
+    status: [
+      'count',
+      'overflow',
+      'candidateOverflow',
+      'uncertainCount',
+      'ringCount',
+      'requiredRingCount',
+      'nodedSegmentRequiredCount'
+    ],
+    contract: 'GPUPolygonOverlayOutput',
     evidence: 'proven',
     tests: 'modules/analysis/test/gpu-spatial-analysis/polygon-buffer/polygon-buffer.spec.ts'
   },

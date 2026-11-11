@@ -218,8 +218,9 @@ export function computeFocalStatisticsOnCPU(
   const windowRadius = radius >= 0 ? Math.min(Math.floor(radius), input.maximumRadius) : -1;
   const radiusSquared = f(radius * radius);
   const minimumCount = Math.max(input.minimumCount, 1);
+  // Every non-finite sample (NaN or an infinity) is nodata, the published band rule.
   const isValid = (cell: number) =>
-    !Number.isNaN(values[cell]) &&
+    Number.isFinite(values[cell]) &&
     (input.noDataValue === undefined || values[cell] !== f(input.noDataValue)) &&
     (!input.validity || input.validity[cell] !== 0);
 

@@ -58,6 +58,8 @@ type Options = {
   timeWindow?: readonly [number, number];
   /** Scene seed, default 7. */
   seed?: number;
+  /** Number of slices, default {@link SLICES}. */
+  sliceCount?: number;
 };
 
 function getSettings(options: Options) {
@@ -72,7 +74,8 @@ function getSettings(options: Options) {
 
 async function runDensity(device: Device, options: Options, scene: SpaceTimeDensityScene) {
   const grid = makeExtentGrid(COLUMNS, ROWS, EXTENT);
-  const voxelCount = COLUMNS * ROWS * SLICES;
+  const sliceCount = options.sliceCount ?? SLICES;
+  const voxelCount = COLUMNS * ROWS * sliceCount;
   const pointCount = scene.times.length;
   const buffers: Buffer[] = [];
   const track = (buffer: Buffer) => {
@@ -117,7 +120,7 @@ async function runDensity(device: Device, options: Options, scene: SpaceTimeDens
           : undefined,
       parameters: parameterBuffer.importToGraph(graph),
       grid,
-      sliceCount: SLICES,
+      sliceCount,
       indexGridSize: [4, 3],
       indexBounds: EXTENT,
       spatialKernel: options.spatialKernel,
@@ -137,7 +140,7 @@ async function runDensity(device: Device, options: Options, scene: SpaceTimeDens
   const compiled = graph.compile();
   try {
     parameterBuffer.write(
-      getGPUSpaceTimeKernelDensityParameterValues(getSettings(options), grid, SLICES)
+      getGPUSpaceTimeKernelDensityParameterValues(getSettings(options), grid, sliceCount)
     );
     submitGraph(device, compiled, undefined);
     return {
@@ -164,7 +167,7 @@ function getReference(options: Options, scene: SpaceTimeDensityScene) {
     temporalBandwidth: TEMPORAL_BANDWIDTH,
     firstSliceTime: FIRST_SLICE_TIME,
     sliceInterval: SLICE_INTERVAL,
-    sliceCount: SLICES,
+    sliceCount: options.sliceCount ?? SLICES,
     spatialKernel: options.spatialKernel,
     temporalKernel: options.temporalKernel,
     spatialEdge: options.spatialEdge,
@@ -235,12 +238,36 @@ const CASES: Options[] = [
     weighted: true,
     timeWindow: [2, 11],
     seed: 9
+  },
+  {
+    // Math correctness review, interpolation-density-07: one slice and no time window. The
+    // packer used to throw (its default window `[first slice, last slice]` is one instant).
+    spatialKernel: 'gaussian',
+    temporalKernel: 'quartic',
+    spatialEdge: true,
+    temporalEdge: false,
+    normalization: 'intensity',
+    weighted: true,
+    sliceCount: 1,
+    seed: 13
+  },
+  {
+    // One slice with an explicit window and the uniform temporal correction.
+    spatialKernel: 'epanechnikov',
+    temporalKernel: 'gaussian',
+    spatialEdge: false,
+    temporalEdge: true,
+    normalization: 'intensity',
+    weighted: false,
+    sliceCount: 1,
+    timeWindow: [-2, 9],
+    seed: 15
   }
 ];
 
 it.each(
   CASES.map(options => ({
-    name: `${options.spatialKernel}/${options.temporalKernel} space ${options.spatialEdge ? 'uniform' : 'none'} time ${options.temporalEdge ? 'uniform' : 'none'} ${options.normalization} weighted=${options.weighted}`,
+    name: `${options.spatialKernel}/${options.temporalKernel} space ${options.spatialEdge ? 'uniform' : 'none'} time ${options.temporalEdge ? 'uniform' : 'none'} ${options.normalization} weighted=${options.weighted} slices=${options.sliceCount ?? SLICES}`,
     options
   }))
 )('GPUSpaceTimeKernelDensity matches the binary64 reference: $name', async ({options}) => {

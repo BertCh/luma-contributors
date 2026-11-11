@@ -49,7 +49,7 @@ function similarity(context: KernelAuditContext, metric: 'cosine' | 'dot', query
       queryCount,
       metric,
       vectors: view('float32', pixelCount * DIMENSIONS),
-      validity: view('uint32', pixelCount),
+      mask: view('uint32', pixelCount),
       queries: view('float32', queryCount * DIMENSIONS),
       parameters: view('float32', 1),
       output: {
@@ -75,7 +75,7 @@ function classifier(
       dimensions: DIMENSIONS,
       metric,
       vectors: view('float32', pixelCount * DIMENSIONS),
-      validity: view('uint32', pixelCount),
+      mask: view('uint32', pixelCount),
       trainingVectors: view('float32', trainingCount * DIMENSIONS),
       trainingLabels: view('uint32', trainingCount),
       trainingCount,
@@ -99,7 +99,7 @@ function covariance(context: KernelAuditContext, rangeCount = 256): void {
       dimensions: DIMENSIONS,
       rangeCount,
       vectors: view('float32', pixelCount * DIMENSIONS),
-      validity: view('uint32', pixelCount),
+      mask: view('uint32', pixelCount),
       output: {
         mean: view('float32', DIMENSIONS),
         covariance: view('float32', DIMENSIONS * DIMENSIONS),
@@ -118,7 +118,7 @@ function projection(context: KernelAuditContext, componentCount = 16): void {
       dimensions: DIMENSIONS,
       componentCount,
       vectors: view('float32', pixelCount * DIMENSIONS),
-      validity: view('uint32', pixelCount),
+      mask: view('uint32', pixelCount),
       mean: view('float32', DIMENSIONS),
       components: view('float32', componentCount * DIMENSIONS),
       parameters: view('float32', 6),
@@ -144,7 +144,7 @@ function zoneMean(
       dimensions: DIMENSIONS,
       zoneCount,
       vectors: view('float32', pixelCount * DIMENSIONS),
-      validity: view('uint32', pixelCount),
+      mask: view('uint32', pixelCount),
       ...(source === 'tuples'
         ? {
             tuples: {
@@ -179,7 +179,7 @@ function pyramid(context: KernelAuditContext, source: 'vectors' | 'quantized', s
       ...(source === 'vectors'
         ? {vectors: view('float32', sourcePixels * DIMENSIONS)}
         : {quantized: view('uint32', (sourcePixels * DIMENSIONS) / 4)}),
-      validity: view('uint32', sourcePixels),
+      mask: view('uint32', sourcePixels),
       output: {
         vectors: view('float32', outputPixels * DIMENSIONS),
         validity: view('uint32', outputPixels),
@@ -275,7 +275,7 @@ export const RTS_01_03_EMBEDDING_FDR_AUDIT_CASES: readonly KernelAuditCase[] = [
         pixelCount,
         dimensions: DIMENSIONS,
         vectors: view('float32', pixelCount * DIMENSIONS),
-        validity: view('uint32', pixelCount),
+        mask: view('uint32', pixelCount),
         queryCount: 64,
         queries: view('float32', 64 * DIMENSIONS),
         resultCount: 16,
@@ -299,8 +299,8 @@ export const RTS_01_03_EMBEDDING_FDR_AUDIT_CASES: readonly KernelAuditCase[] = [
           dimensions: DIMENSIONS,
           before: view('float32', pixelCount * DIMENSIONS),
           after: view('float32', pixelCount * DIMENSIONS),
-          beforeValidity: view('uint32', pixelCount),
-          afterValidity: view('uint32', pixelCount),
+          beforeMask: view('uint32', pixelCount),
+          afterMask: view('uint32', pixelCount),
           parameters: view('float32', 1),
           output: {
             similarity: view('float32', pixelCount),
@@ -322,7 +322,7 @@ export const RTS_01_03_EMBEDDING_FDR_AUDIT_CASES: readonly KernelAuditCase[] = [
         pixelCount,
         dimensions: DIMENSIONS,
         vectors: view('float32', pixelCount * DIMENSIONS),
-        validity: view('uint32', pixelCount),
+        mask: view('uint32', pixelCount),
         clusterCount: 64,
         maximumIterations: 64,
         output: {
@@ -361,7 +361,7 @@ export const RTS_01_03_EMBEDDING_FDR_AUDIT_CASES: readonly KernelAuditCase[] = [
           dimensions: DIMENSIONS,
           classCount: 64,
           vectors: view('float32', pixelCount * DIMENSIONS),
-          validity: view('uint32', pixelCount),
+          mask: view('uint32', pixelCount),
           weights: view('float32', 64 * DIMENSIONS),
           bias: view('float32', 64),
           output: {

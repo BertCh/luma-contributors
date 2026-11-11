@@ -193,7 +193,7 @@ lengths[lengthsOffset + index] = 0u; status[statusOffset + index] = 0u;
 for (var step = 0u; step <= ${props.maximumSteps}u; step++) { paths[pathOffset + step] = NO_CELL; }
 if (pit >= ${count}u) { return; }
 let base = elevation[elevationOffset + pit];
-if (!finite(base) || !(base - ${decrement} < base)) { return; }
+if (!isFiniteValue(base) || !(base - ${decrement} < base)) { return; }
 let origin = vec2<u32>(u32(clamp(i32(pit % GRID_WIDTH) - ${props.maximumSteps}, 0, ${props.grid.width - searchWidth})), u32(clamp(i32(pit / GRID_WIDTH) - ${props.maximumSteps}, 0, ${props.grid.height - searchHeight})));
 let workOffset = scratchOffset + index * ${(props.maximumSteps + 1) * searchCount * 2}u;
 for (var entry = 0u; entry < ${(props.maximumSteps + 1) * searchCount}u; entry++) { scratch[workOffset + entry * 2u] = 0x7f800000u; scratch[workOffset + entry * 2u + 1u] = NO_CELL; }
@@ -205,7 +205,7 @@ for (var step = 1u; step <= ${props.maximumSteps}u; step++) {
   let cell = (origin.y + localCell / ${searchWidth}u) * GRID_WIDTH + origin.x + localCell % ${searchWidth}u;
   let original = elevation[elevationOffset + cell];
   let cut = max(original - level, 0.0);
-  if (!finite(original) || cut > ${getWGSLFloatLiteral(props.maximumCutDepth)}) { continue; }
+  if (!isFiniteValue(original) || cut > ${getWGSLFloatLiteral(props.maximumCutDepth)}) { continue; }
   var predecessor = NO_CELL; var cost = infinity();
   for (var direction = 0u; direction < 8u; direction++) {
    let neighbor = getFlowReceiver(cell, 1u << direction); if (neighbor == NO_CELL) { continue; }
@@ -270,11 +270,11 @@ atomicMin(&edits[editsOffset + cell], select(bits ^ 0x80000000u, ~bits, (bits & 
           ...(props.burnDepth ? [terrainBinding('burn', props.burnDepth)] : [])
         ],
         body: `let original = source[sourceOffset + index]; var edited = original; var flags = 0u;
-if (finite(original)) {
+if (isFiniteValue(original)) {
  let key = edits[editsOffset + index];
  edited = bitcast<f32>(select(~key, key ^ 0x80000000u, (key & 0x80000000u) != 0u));
  if (edited < original) { flags |= 1u; }
- ${props.burnDepth ? 'let burnDepth = burn[burnOffset + index]; if (!finite(burnDepth) || burnDepth < 0.0) { edited = missing(); flags |= 4u; } else if (burnDepth > 0.0) { edited -= burnDepth; flags |= 2u; }' : ''}
+ ${props.burnDepth ? 'let burnDepth = burn[burnOffset + index]; if (!isFiniteValue(burnDepth) || burnDepth < 0.0) { edited = getNaN(); flags |= 4u; } else if (burnDepth > 0.0) { edited -= burnDepth; flags |= 2u; }' : ''}
 }
 elevation[elevationOffset + index] = edited; depth[depthOffset + index] = original - edited; mask[maskOffset + index] = flags;`
       }),
@@ -297,7 +297,7 @@ for (var step = 1u; step < pathLength; step++) {
  let current = paths[pathsOffset + index * ${props.maximumSteps + 1}u + step];
  let previousElevation = elevation[elevationOffset + previous];
  let currentElevation = elevation[elevationOffset + current];
- if (((mask[maskOffset + previous] | mask[maskOffset + current]) & 4u) != 0u || !finite(previousElevation) || !finite(currentElevation) || !(currentElevation < previousElevation)) { status[statusOffset + index] = 2u; }
+ if (((mask[maskOffset + previous] | mask[maskOffset + current]) & 4u) != 0u || !isFiniteValue(previousElevation) || !isFiniteValue(currentElevation) || !(currentElevation < previousElevation)) { status[statusOffset + index] = 2u; }
 }`
       }),
       ...createRasterCountNodes(graph, {

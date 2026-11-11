@@ -138,6 +138,102 @@ for (const [shape, segments] of [
   });
 }
 
+// Math correctness review 2026-11-10, geometry-measures-07. A 50 m circle near a pole: the
+// expected vertices are the spherical destination formula in binary64 on the f32 center. The
+// private `asin(sin(lat) cos(d) + cos(lat) sin(d) cos(b))` the kernel used to evaluate in f32 put
+// vertices 0.8 m off at latitude 45.2, 1.7 m at 80.3, 3.4 m at 85.2 and 10.7 m at 88.6. The shared
+// half-angle `geodesicDestination` stays within the f32 spacing of the output latitude.
+it('GPUShapeGenerator geodesic circles keep their radius near the poles', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const centers = [
+    [10.3, 45.2],
+    [10.3, 80.3],
+    [-20.7, 85.2],
+    [10.3, 88.6],
+    [30.1, -86.4]
+  ];
+  const segments = 64;
+  const radius = 50;
+  const fixture = createShapeFixture(
+    device,
+    'circle',
+    'geodesic',
+    centers,
+    centers.map(() => [radius]),
+    segments
+  );
+  try {
+    const result = await fixture.run(getGPUShapeGeneratorParameterValues({segmentCount: segments}));
+    const vertices = getGPUShapeVertexCount('circle', segments);
+    const metersPerDegree = (GPU_EARTH_MEAN_RADIUS_METERS * Math.PI) / 180;
+    centers.forEach((center, feature) => {
+      const longitude = Math.fround(center[0]);
+      const latitude = (Math.fround(center[1]) * Math.PI) / 180;
+      const angle = radius / GPU_EARTH_MEAN_RADIUS_METERS;
+      // Spacing of f32 latitudes at the center, in meters: the best an f32 output can do.
+      const spacing =
+        (Math.fround(Math.abs(center[1]) * (1 + 2 ** -23)) - Math.fround(Math.abs(center[1]))) *
+        metersPerDegree;
+      let maximumError = 0;
+      for (let vertex = 0; vertex < vertices; vertex++) {
+        const bearing = (-2 * Math.PI * (vertex % segments)) / segments;
+        const latitude2 = Math.asin(
+          Math.sin(latitude) * Math.cos(angle) +
+            Math.cos(latitude) * Math.sin(angle) * Math.cos(bearing)
+        );
+        const longitudeDelta = Math.atan2(
+          Math.sin(bearing) * Math.sin(angle) * Math.cos(latitude),
+          Math.cos(angle) - Math.sin(latitude) * Math.sin(latitude2)
+        );
+        const base = 2 * (feature * vertices + vertex);
+        const east =
+          (result['positions'][base] - (longitude + (longitudeDelta * 180) / Math.PI)) *
+          metersPerDegree *
+          Math.cos(latitude2);
+        const north =
+          (result['positions'][base + 1] - (latitude2 * 180) / Math.PI) * metersPerDegree;
+        maximumError = Math.max(maximumError, Math.hypot(east, north));
+      }
+      expect(maximumError, `center ${feature}`).toBeLessThan(0.8 * spacing);
+    });
+  } finally {
+    fixture.destroy();
+  }
+});
+
+// Fix review follow-up (atan2 with a zero second argument). A uniform-parameter ellipse turns its
+// (east, north) offset into a bearing with atan2(east, north). With a collapsed semi-minor axis
+// the north offset is 0 * sin(phase), which is -0.0 in the lower half turn, and the test GPU
+// returns -pi/2 for atan2(positive, -0.0): the vertex at phase 315 degrees came out west of the
+// center instead of east. With both semi-axes zero the builtin returns NaN there.
+it('GPUShapeGenerator uniform ellipses keep a collapsed axis on the right side', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const center = [3, -2];
+  const fixture = createShapeFixture(device, 'ellipse', 'planar', [center], [[10, 0]], 8, {
+    rotations: [0]
+  });
+  try {
+    const result = await fixture.run(getGPUShapeGeneratorParameterValues({segmentCount: 8}));
+    for (let vertex = 0; vertex <= 8; vertex++) {
+      // Phase 2 pi vertex / 8 counter-clockwise from east: the ring runs along the x axis.
+      const expectedX = center[0] + 10 * Math.cos((2 * Math.PI * vertex) / 8);
+      expect(result['positions'][2 * vertex], `vertex ${vertex} x`).toBeCloseTo(expectedX, 4);
+      expect(result['positions'][2 * vertex + 1], `vertex ${vertex} y`).toBeCloseTo(center[1], 4);
+    }
+    const collapsed = await fixture.run(
+      getGPUShapeGeneratorParameterValues({segmentCount: 8, radiusScale: 0})
+    );
+    for (let vertex = 0; vertex <= 8; vertex++) {
+      expect(collapsed['positions'][2 * vertex], `zero scale ${vertex} x`).toBe(center[0]);
+      expect(collapsed['positions'][2 * vertex + 1], `zero scale ${vertex} y`).toBe(center[1]);
+    }
+  } finally {
+    fixture.destroy();
+  }
+});
+
 it('GPUShapeGenerator planar rings are exact offsets by radius and bearing', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

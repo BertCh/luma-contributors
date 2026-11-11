@@ -75,7 +75,7 @@ export type GPURasterBFASTMonitorProps = {
   /** Cell-major `cell * sliceCount + slice`; nonfinite samples are missing. */
   values: GraphDataView<'float32'>;
   /** Per-observation QA; zero rejects the sample. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Float32, see {@link getGPURasterBFASTMonitorParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Acquisition dates; the model is defined on real elapsed years. */
@@ -145,8 +145,8 @@ export class GPURasterBFASTMonitor implements GPUCommandNodeProducer {
     validateCapacity(id, 'cellCount times sliceCount', observations);
     validateRequirement(
       id,
-      [props.values, props.validity].every(view => !view || view.length >= observations),
-      'values and validity must hold cellCount times sliceCount entries'
+      [props.values, props.mask].every(view => !view || view.length >= observations),
+      'values and mask must hold cellCount times sliceCount entries'
     );
     validateRequirement(
       id,
@@ -178,8 +178,8 @@ export class GPURasterBFASTMonitor implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, parameters} = this.props;
-    return [values, parameters, ...(validity ? [validity] : [])];
+    const {values, mask, parameters} = this.props;
+    return [values, parameters, ...(mask ? [mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -195,7 +195,7 @@ export class GPURasterBFASTMonitor implements GPUCommandNodeProducer {
       sliceCount: slices,
       historySliceCount: history,
       values,
-      validity,
+      mask,
       parameters,
       output
     } = props;
@@ -211,7 +211,7 @@ export class GPURasterBFASTMonitor implements GPUCommandNodeProducer {
         bindings: [
           rasterBinding('values', values),
           rasterBinding('parameters', parameters),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           getGPURasterDateAxisBinding(props.dateAxis),
           rasterBinding('coefficients', output.coefficients, true),
           rasterBinding('scores', output.scores, true),
@@ -245,7 +245,7 @@ var response: array<f32, ${history}>;
 for (var slice = 0u; slice < ${slices}u; slice++) {
   let source = index * ${slices}u + slice;
   let value = values[valuesOffset + source];
-  if (!finite(value) ${validity ? '|| validity[validityOffset + source] == 0u' : ''}) { continue; }
+  if (!finite(value) ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
   slicesUsed[total] = slice;
   total++;
   if (slice < ${history}u) {

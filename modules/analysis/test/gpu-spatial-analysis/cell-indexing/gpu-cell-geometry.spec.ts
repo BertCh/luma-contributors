@@ -4,6 +4,7 @@
 
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUDGGSCellProjection} from '@luma.gl/graph/gpu-dggs';
 import {dggs} from '@luma.gl/shaders';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {cellToBoundary as a5CellToBoundary, cellToLonLat, lonLatToCell} from 'a5-js';
@@ -12,6 +13,7 @@ import {
   cellToLatLng,
   getPentagons,
   getRes0Cells,
+  isValidCell,
   latLngToCell
 } from 'h3-js';
 import {expect, it} from 'vitest';
@@ -497,4 +499,151 @@ it('GPUCellGeometry follows per-frame keys without recompiling', async () => {
   }
   expect(seen.size).toBeGreaterThan(2);
   geometry.destroy();
+});
+
+// Math review luma-official-09: `output.validity` follows published `GPUDGGSCellProjection`
+// (uint32, nonzero is valid). The existing outputs keep their values: an invalid cell still gets
+// a NaN centre here, where the official class writes zeros.
+it('GPUCellGeometry writes validity and agrees with official GPUDGGSCellProjection on H3 and A5', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const points = getRandomPoints(9, 60);
+  // Keys that are not cells. For H3 the reference is h3-js `isValidCell`. The A5 bit layout
+  // accepts most 64-bit patterns, so only the zero key is known to be invalid there.
+  const invalidKeysByFamily = {
+    h3: [0n, 0xffffffffffffffffn, quadbinPointToCell(10, 50, 8), 1n],
+    a5: [0n]
+  };
+  for (const key of invalidKeysByFamily.h3) {
+    expect(isValidCell(key.toString(16))).toBe(false);
+  }
+  const families = {
+    h3: [0, 4, 9, 15].flatMap(resolution =>
+      points.map(([lng, lat]) => h3ToBigInt(latLngToCell(lat, lng, resolution)))
+    ),
+    a5: [1, 6, 12].flatMap(resolution =>
+      points.map(point => lonLatToCell(point as never, resolution))
+    )
+  };
+  for (const family of ['h3', 'a5'] as const) {
+    // Invalid keys are interleaved so a row offset mistake cannot hide.
+    const invalidKeys = invalidKeysByFamily[family];
+    const keys = families[family].flatMap((key, row) =>
+      row % 16 === 0 ? [invalidKeys[(row / 16) % invalidKeys.length], key] : [key]
+    );
+    const rows = keys.length;
+    const words = new Uint32Array(2 * rows);
+    keys.forEach((key, row) => {
+      [words[2 * row], words[2 * row + 1]] = splitKey(key);
+    });
+    const cells = createInputBuffer(device, words);
+    const centers = createOutputBuffer(device, 2 * rows);
+    const validity = createOutputBuffer(device, rows);
+    const officialCenters = createOutputBuffer(device, 2 * rows);
+    const officialValidity = createOutputBuffer(device, rows);
+    const graph = new GPUCommandGraph(device, {id: `cell-geometry-validity-${family}`});
+    const cellsView = importGraphBuffer(graph, 'cells', cells, 'uint32x2', rows);
+    graph.add(
+      new GPUCellGeometry({
+        family,
+        cells: cellsView,
+        output: {
+          centers: importGraphBuffer(graph, 'centers', centers, 'float32x2', rows),
+          validity: importGraphBuffer(graph, 'validity', validity, 'uint32', rows)
+        }
+      })
+    );
+    new GPUDGGSCellProjection({
+      family,
+      cells: cellsView,
+      output: importGraphBuffer(graph, 'official-centers', officialCenters, 'float32x2', rows),
+      validity: importGraphBuffer(graph, 'official-validity', officialValidity, 'uint32', rows)
+    }).addToGraph(graph);
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const localCenters = await readFloat32(centers, 2 * rows);
+    const localValidity = await readUint32(validity, rows);
+    const publishedCenters = await readFloat32(officialCenters, 2 * rows);
+    const publishedValidity = await readUint32(officialValidity, rows);
+    // The interleaved invalid keys, by construction.
+    const expectedValidity = keys.map(key => (invalidKeys.includes(key) ? 0 : 1));
+    expect(expectedValidity.filter(flag => flag === 0).length).toBeGreaterThan(5);
+    expect(Array.from(localValidity), `${family} validity`).toEqual(expectedValidity);
+    expect(Array.from(publishedValidity), `${family} official validity`).toEqual(expectedValidity);
+    for (let row = 0; row < rows; row++) {
+      for (let component = 0; component < 2; component++) {
+        const local = localCenters[2 * row + component];
+        const published = publishedCenters[2 * row + component];
+        if (expectedValidity[row] === 1) {
+          // Same published shader function in both kernels: bit-identical centres.
+          expect(Object.is(local, published), `${family} row ${row} centre`).toBe(true);
+        } else {
+          expect(Number.isNaN(local), `${family} row ${row} invalid centre`).toBe(true);
+          expect(published, `${family} row ${row} official invalid centre`).toBe(0);
+        }
+      }
+    }
+    compiled.destroy();
+    for (const buffer of [cells, centers, validity, officialCenters, officialValidity]) {
+      buffer.destroy();
+    }
+  }
+});
+
+it('GPUCellGeometry validity is 1 exactly on the rows with a geometry, for every family', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const validKeys: Record<GPUCellGeometryFamily, bigint> = {
+    quadbin: quadbinPointToCell(10, 50, 8),
+    quadkey: quadkeyPointToCell(10, 50, 8),
+    geohash: geohashPointToCell(10, 50, 6),
+    s2: s2PointToCell(10, 50, 12),
+    h3: h3ToBigInt(latLngToCell(50, 10, 7)),
+    a5: lonLatToCell([10, 50] as never, 7)
+  };
+  for (const family of Object.keys(validKeys) as GPUCellGeometryFamily[]) {
+    // The all-ones key is not a cell of any family except A5, whose bit layout accepts it.
+    const secondInvalidKey = family === 'a5' ? 0n : 0xffffffffffffffffn;
+    const keys = [0n, validKeys[family], secondInvalidKey, validKeys[family]];
+    const rows = keys.length;
+    const words = new Uint32Array(2 * rows);
+    keys.forEach((key, row) => {
+      [words[2 * row], words[2 * row + 1]] = splitKey(key);
+    });
+    const stride = GPU_CELL_GEOMETRY_VERTEX_COUNTS[family];
+    const cells = createInputBuffer(device, words);
+    const boundaries = createOutputBuffer(device, 2 * rows * stride);
+    const vertexCounts = createOutputBuffer(device, rows);
+    const validity = createOutputBuffer(device, rows);
+    const graph = new GPUCommandGraph(device, {id: `cell-geometry-validity-all-${family}`});
+    graph.add(
+      new GPUCellGeometry({
+        family,
+        cells: importGraphBuffer(graph, 'cells', cells, 'uint32x2', rows),
+        output: {
+          boundaries: importGraphBuffer(
+            graph,
+            'boundaries',
+            boundaries,
+            'float32x2',
+            rows * stride
+          ),
+          vertexCounts: importGraphBuffer(graph, 'vertex-counts', vertexCounts, 'uint32', rows),
+          validity: importGraphBuffer(graph, 'validity', validity, 'uint32', rows)
+        }
+      })
+    );
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(validity, rows), family).toEqual([0, 1, 0, 1]);
+    const counts = await readUint32(vertexCounts, rows);
+    expect(
+      counts.map(count => (count > 0 ? 1 : 0)),
+      `${family} vertex counts`
+    ).toEqual([0, 1, 0, 1]);
+    compiled.destroy();
+    for (const buffer of [cells, boundaries, vertexCounts, validity]) {
+      buffer.destroy();
+    }
+  }
 });

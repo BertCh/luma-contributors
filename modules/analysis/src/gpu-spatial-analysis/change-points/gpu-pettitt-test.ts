@@ -15,7 +15,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpaceTimeWeightsLayout} from '../spatial-weights/spatial-weights-space-time-stages';
@@ -75,13 +75,13 @@ export class GPUPettittTest implements GPUCommandNodeProducer {
     const {values, cellCount, sliceCount, output} = props;
     validateCapacity(id, 'cellCount', cellCount);
     validateCapacity(id, 'sliceCount', sliceCount, 1, GPU_PETTITT_TEST_MAXIMUM_SLICE_COUNT);
-    validatePackedView(values, ['float32'], `${id} values`);
+    validateSinglePackedView(values, ['float32'], `${id} values`);
     validateViewLength(id, 'values', values, cellCount * sliceCount);
-    validatePackedView(output.statistic, ['uint32'], `${id} statistic`);
+    validateSinglePackedView(output.statistic, ['uint32'], `${id} statistic`);
     validateViewLength(id, 'statistic', output.statistic, cellCount);
-    validatePackedView(output.changeSlice, ['uint32'], `${id} changeSlice`);
+    validateSinglePackedView(output.changeSlice, ['uint32'], `${id} changeSlice`);
     validateViewLength(id, 'changeSlice', output.changeSlice, cellCount);
-    validatePackedView(output.pValues, ['float32'], `${id} pValues`);
+    validateSinglePackedView(output.pValues, ['float32'], `${id} pValues`);
     validateViewLength(id, 'pValues', output.pValues, cellCount);
     validateGraphOutputsDisjointFromInputs(
       id,

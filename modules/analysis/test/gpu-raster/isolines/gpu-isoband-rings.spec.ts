@@ -107,7 +107,7 @@ for (const integerSamples of [false, true]) {
         id: 'rings',
         grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
         values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', sampleCount),
-        validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', sampleCount),
+        mask: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', sampleCount),
         breaks: importGraphBuffer(graph, 'breaks', breaksBuffer, 'float32', MAXIMUM_BREAK_COUNT),
         parameters: parameterBuffer.importToGraph(graph),
         edgeCapacity: EDGE_CAPACITY,

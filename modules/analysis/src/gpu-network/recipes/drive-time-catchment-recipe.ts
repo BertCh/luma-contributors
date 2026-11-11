@@ -4,9 +4,12 @@
 
 import {
   createTransientView,
+  GPUSort,
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
+import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {GPUGroupStatistics} from '../../dataframe-analysis/group-statistics/index';
 import {GPUNetworkSnapping} from '../network-accessibility/index';
 import {createNetworkEdgeSourceNodes} from '../network-accessibility/network-edge-sources';
@@ -167,7 +170,9 @@ export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
    */
   maximumSnapDistance?: GraphDataView<'float32'>;
   /**
-   * Compile-time BVH candidate capacity of the snapping; omit for the exact all-edges scan. When
+   * Compile-time BVH candidate capacity of the snapping; omit for the exact all-edges scan, which
+   * tests every point against every edge with no index and raises the snapping's unindexed-work
+   * limit, so it becomes slow once points times edges reaches about 2^27 (a frame). When
    * set, each snapping reports candidate overflow (the returned `snapping`, stages `snap-facilities` and
    * `snap-demand`): an overflow means some facilities or demand may be snapped to a farther edge.
    * Great-circle searches ignore the capacity; kilometer contexts scan directly and report no overflow.
@@ -179,7 +184,9 @@ export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
   maximumIterations?: number;
   /**
    * Ascending drive-time upper bounds, one per band. Band `k` is the first with
-   * `time < costBreaks[k]`; slower, unreached or unsnapped demand gets no band. Per-frame values.
+   * `time <= costBreaks[k]`, so it holds `(costBreaks[k - 1], costBreaks[k]]` and a time exactly
+   * on a break is within it, the rule of the `GPUNetworkReachability` and `GPUNetworkIsochrones`
+   * bands. Slower, unreached or unsnapped demand gets no band. Per-frame values.
    */
   costBreaks: GraphDataView<'float32'>;
   /** Rows of the band table; defaults to `costBreaks.length`. */
@@ -266,16 +273,120 @@ function getIsochroneStatusStages(
   return stages;
 }
 
+/**
+ * Adds the kernel that turns snapped edge rows into roads: per point the two end nodes of its
+ * edge (source, then target; both `0xffffffff` when unsnapped) and the cost of driving the whole
+ * road source -> target, then target -> source. A direction costs the weight of the cheapest
+ * passable edge going that way, and -1 when the topology has no such edge (a one-way edge).
+ * `keys` names the road whatever edge row the point snapped to: the smallest edge row between the
+ * two end nodes in either direction, or the edge capacity for an unsnapped point.
+ */
+function addSnappedRoadNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    snappedEdges: GraphDataView<'uint32'>;
+    edgeSources: GraphDataView<'uint32'>;
+    topology: GPUNetworkTopology;
+    nodeCount: number;
+  }
+): {
+  nodes: GraphDataView<'uint32x2'>;
+  costs: GraphDataView<'float32x2'>;
+  keys: GraphDataView<'uint32'>;
+} {
+  const {id, snappedEdges, edgeSources, topology, nodeCount} = props;
+  const nodes = createTransientView(graph, `${id}-nodes`, 'uint32x2', snappedEdges.length);
+  const costs = createTransientView(graph, `${id}-costs`, 'float32x2', snappedEdges.length);
+  const keys = createTransientView(graph, `${id}-keys`, 'uint32', snappedEdges.length);
+  graph.add(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-kernel`,
+      operation: 'GPURecipeDriveTimeCatchment',
+      variant: 'snapped-roads',
+      bindings: [
+        {name: 'snappedEdges', view: snappedEdges, type: 'u32', access: 'read'},
+        {name: 'edgeSources', view: edgeSources, type: 'u32', access: 'read'},
+        {name: 'offsets', view: topology.offsets, type: 'u32', access: 'read'},
+        {name: 'neighbors', view: topology.neighbors, type: 'u32', access: 'read'},
+        {name: 'weights', view: topology.weights, type: 'f32', access: 'read'},
+        {name: 'roads', view: nodes, type: 'u32', access: 'read_write'},
+        {name: 'roadCosts', view: costs, type: 'f32', access: 'read_write'},
+        {name: 'roadKeys', view: keys, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: snappedEdges.length,
+      declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
+const EDGE_COUNT: u32 = ${topology.neighbors.length}u;
+const NONE: u32 = 0xffffffffu;
+const IMPASSABLE: f32 = 3.0e38;
+fn getRoadCost(fromNode: u32, toNode: u32) -> f32 {
+  var roadCost = -1.0;
+  let end = min(offsets[offsetsOffset + fromNode + 1u], EDGE_COUNT);
+  for (var edge = offsets[offsetsOffset + fromNode]; edge < end; edge++) {
+    let weight = weights[weightsOffset + edge];
+    if (neighbors[neighborsOffset + edge] == toNode && weight >= 0.0 && weight < IMPASSABLE && (roadCost < 0.0 || weight < roadCost)) {
+      roadCost = weight;
+    }
+  }
+  return roadCost;
+}
+// Smallest edge row from the first node to the second, passable or not, or the edge capacity.
+fn getFirstRoadEdge(fromNode: u32, toNode: u32) -> u32 {
+  let end = min(offsets[offsetsOffset + fromNode + 1u], EDGE_COUNT);
+  for (var edge = offsets[offsetsOffset + fromNode]; edge < end; edge++) {
+    if (neighbors[neighborsOffset + edge] == toNode) {
+      return edge;
+    }
+  }
+  return EDGE_COUNT;
+}`,
+      body: `let edge = snappedEdges[snappedEdgesOffset + index];
+  var sourceNode = NONE;
+  var targetNode = NONE;
+  if (edge < EDGE_COUNT) {
+    sourceNode = edgeSources[edgeSourcesOffset + edge];
+    targetNode = neighbors[neighborsOffset + edge];
+  }
+  var forwardCost = -1.0;
+  var reverseCost = -1.0;
+  var roadKey = EDGE_COUNT;
+  if (sourceNode < NODE_COUNT && targetNode < NODE_COUNT) {
+    forwardCost = getRoadCost(sourceNode, targetNode);
+    reverseCost = getRoadCost(targetNode, sourceNode);
+    roadKey = min(getFirstRoadEdge(sourceNode, targetNode), getFirstRoadEdge(targetNode, sourceNode));
+  } else {
+    sourceNode = NONE;
+    targetNode = NONE;
+  }
+  roads[roadsOffset + 2u * index] = sourceNode;
+  roads[roadsOffset + 2u * index + 1u] = targetNode;
+  roadCosts[roadCostsOffset + 2u * index] = forwardCost;
+  roadCosts[roadCostsOffset + 2u * index + 1u] = reverseCost;
+  roadKeys[roadKeysOffset + index] = roadKey;`
+    })
+  );
+  return {nodes, costs, keys};
+}
+
 /** Named outputs of {@link addDriveTimeCatchmentRecipe}. */
 export type GPUDriveTimeCatchmentRecipeOutput = GPURecipeResult & {
   /** Resolved coordinate context of the positions. */
   spatialContext: GPUSpatialContext;
-  /** Facility start nodes (`2 * facilityCount` rows, two edge endpoints per facility). */
+  /**
+   * Facility start nodes (`2 * facilityCount` rows, two edge endpoints per facility: the edge
+   * source, then the edge target). A row is `0xffffffff` when the facility is unsnapped or no
+   * edge lets it drive to that endpoint (the source of a one-way edge).
+   */
   startNodes: GraphDataView<'uint32'>;
-  /** Cost from each facility to its start nodes, aligned with `startNodes`. */
+  /** Cost from each facility to its start nodes, aligned with `startNodes`; -1 on a missing row. */
   startCosts: GraphDataView<'float32'>;
   assignments: GraphDataView<'uint32'>;
   nodeCosts: GraphDataView<'float32'>;
+  /**
+   * Drive time of each demand point. `+Infinity` when the point is unsnapped or no facility
+   * reaches it: an unreachable cost, the value `nodeCosts` holds for an unreached node, not a
+   * missing value. Such a point gets `GPU_DRIVE_TIME_CATCHMENT_NO_BAND`.
+   */
   demandTimes: GraphDataView<'float32'>;
   demandBands: GraphDataView<'uint32'>;
   /** Status words next to the per-stage `stages`. */
@@ -317,11 +428,25 @@ export type GPUDriveTimeCatchmentRecipeOutput = GPURecipeResult & {
 /**
  * Drive-time catchment recipe: which demand is within each drive-time band of the facilities.
  *
- * Chain: `GPUNetworkSnapping` (facilities) -> `GPUNetworkServiceAreas` (multi-source costs) ->
- * optional `GPUNetworkIsochrones` (isoband triangles, or cell-outline rings) ->
- * `GPUNetworkSnapping` (demand) -> adapter kernels (demand time =
- * `min(cost[source] + sourceCost, cost[target] + targetCost)` of the snapped edge, then the band)
- * -> `GPUGroupStatistics` keyed by band.
+ * Chain: `GPUNetworkSnapping` (facilities) -> start-row adapter -> `GPUNetworkServiceAreas`
+ * (multi-source costs) -> optional `GPUNetworkIsochrones` (isoband triangles, or cell-outline
+ * rings) -> `GPUNetworkSnapping` (demand) -> adapter kernels (demand time, then the band) ->
+ * `GPUGroupStatistics` keyed by band.
+ *
+ * Roads and direction: a snapped point lies at fraction `f` of the straight road between the two
+ * end nodes of its edge. Driving that road from one end to the other costs the weight of the
+ * cheapest passable edge going that way, and is not possible when the topology has no such edge.
+ * So a facility starts at the edge target with cost `(1 - f) * w(source -> target)` and at the
+ * edge source with cost `f * w(target -> source)`, and a one-way edge gives one start row. The
+ * demand time is the smallest of `cost[source] + f * w(source -> target)`,
+ * `cost[target] + (1 - f) * w(target -> source)`, and, for every facility snapped to the same
+ * road, the way straight along it: `(f - f_facility) * w(source -> target)` when the demand is
+ * ahead of the facility and `(f_facility - f) * w(target -> source)` when it is behind. On a
+ * two-way road of one cost that last term is `abs(f - f_facility) * w`. The facilities are
+ * sorted by road (the published `GPUSort`, keyed by the smallest edge row between the two end
+ * nodes) and each demand point binary-searches its own road, so it is compared only with the
+ * facilities snapped to that road: no demand point scans every facility, and the facility count
+ * needs no cap.
  *
  * Bands are classified in network space (exact at the snapped edge, no polygon approximation):
  * isoband output has a GPU-written, data-dependent triangle count that `GPUPointInPolygonJoin`
@@ -435,6 +560,19 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
     2 * facilityCount,
     scratch.startCosts
   );
+  const facilityEdges = getOrCreateView(
+    graph,
+    `${id}-facility-edges`,
+    'uint32',
+    facilityCount,
+    scratch.facilityEdges
+  );
+  const facilityFractions = createTransientView(
+    graph,
+    `${id}-facility-fractions`,
+    'float32',
+    facilityCount
+  );
   builder.add(
     new GPUNetworkSnapping({
       id: `${id}-snap-facilities`,
@@ -443,20 +581,99 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
       topology,
       maximumSnapDistance: props.maximumSnapDistance,
       candidateCapacity: props.candidateCapacity,
+      // The exact scan has no size limit here, as before the snapping limit existed.
+      maximumUnindexedWork: Number.MAX_SAFE_INTEGER,
       output: {
         status: {overflow: snapping?.status.facilitiesOverflow},
-        snappedEdges: getOrCreateView(
-          graph,
-          `${id}-facility-edges`,
-          'uint32',
-          facilityCount,
-          scratch.facilityEdges
-        ),
-        startNodes,
-        startCosts
+        snappedEdges: facilityEdges,
+        snapFractions: facilityFractions
       }
     })
   );
+
+  // Adapter: the start rows of each facility, honouring edge direction. A facility reaches the
+  // target of its road by driving source -> target and the source by driving target -> source,
+  // each at the cost of an edge that goes that way; a direction with no edge gets no start row.
+  // The roads of the facilities are kept so the demand adapter can find facilities on its road.
+  const facilityRoads = addSnappedRoadNodes(graph, {
+    id: `${id}-facility-roads`,
+    snappedEdges: facilityEdges,
+    edgeSources,
+    topology,
+    nodeCount
+  });
+  graph.add(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-facility-starts-kernel`,
+      operation: 'GPURecipeDriveTimeCatchment',
+      variant: 'facility-starts',
+      bindings: [
+        {name: 'roads', view: facilityRoads.nodes, type: 'u32', access: 'read'},
+        {name: 'roadCosts', view: facilityRoads.costs, type: 'f32', access: 'read'},
+        {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
+        {name: 'startNodes', view: startNodes, type: 'u32', access: 'read_write'},
+        {name: 'startCosts', view: startCosts, type: 'f32', access: 'read_write'}
+      ],
+      invocationCount: facilityCount,
+      declarations: 'const NONE: u32 = 0xffffffffu;',
+      body: `let fraction = fractions[fractionsOffset + index];
+  let forwardCost = roadCosts[roadCostsOffset + 2u * index];
+  let reverseCost = roadCosts[roadCostsOffset + 2u * index + 1u];
+  let useSource = reverseCost >= 0.0;
+  let useTarget = forwardCost >= 0.0;
+  startNodes[startNodesOffset + 2u * index] = select(NONE, roads[roadsOffset + 2u * index], useSource);
+  startCosts[startCostsOffset + 2u * index] = select(-1.0, fraction * reverseCost, useSource);
+  startNodes[startNodesOffset + 2u * index + 1u] = select(NONE, roads[roadsOffset + 2u * index + 1u], useTarget);
+  startCosts[startCostsOffset + 2u * index + 1u] = select(-1.0, (1.0 - fraction) * forwardCost, useTarget);`
+    })
+  );
+  // Facilities sorted by road key, so a demand point finds the facilities on its road by a
+  // binary search instead of a scan of every facility (contract sections 2 and 3: candidates
+  // through a sort plus search). The sorted payload is the facility's fraction along its edge
+  // with the sign bit set when that edge runs from the higher node ID to the lower, which lets
+  // the demand adapter turn it into a fraction along its own edge without a second lookup.
+  const facilityOrientedFractions = createTransientView(
+    graph,
+    `${id}-facility-oriented-fractions`,
+    'uint32',
+    facilityCount
+  );
+  const sortedFacilityKeys = createTransientView(
+    graph,
+    `${id}-sorted-facility-keys`,
+    'uint32',
+    facilityCount
+  );
+  const sortedFacilityFractions = createTransientView(
+    graph,
+    `${id}-sorted-facility-fractions`,
+    'uint32',
+    facilityCount
+  );
+  graph.add([
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-facility-oriented-fractions-kernel`,
+      operation: 'GPURecipeDriveTimeCatchment',
+      variant: 'facility-oriented-fractions',
+      bindings: [
+        {name: 'roads', view: facilityRoads.nodes, type: 'u32', access: 'read'},
+        {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
+        {name: 'oriented', view: facilityOrientedFractions, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: facilityCount,
+      body: `let isReversed = roads[roadsOffset + 2u * index] > roads[roadsOffset + 2u * index + 1u];
+  let fractionBits = bitcast<u32>(fractions[fractionsOffset + index]) & 0x7fffffffu;
+  oriented[orientedOffset + index] = fractionBits | select(0u, 0x80000000u, isReversed);`
+    }),
+    ...new GPUSort({
+      id: `${id}-facility-road-sort`,
+      keys: facilityRoads.keys,
+      values: facilityOrientedFractions,
+      outputKeys: sortedFacilityKeys,
+      outputValues: sortedFacilityFractions,
+      keyBits: getSortKeyBits(edgeCount)
+    }).getCommandNodes(graph)
+  ]);
 
   const assignments = getOrCreateView(
     graph,
@@ -576,19 +793,11 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
     demandCount,
     scratch.demandEdges
   );
-  const sourceCosts = getOrCreateView(
+  const demandFractions = createTransientView(
     graph,
-    `${id}-demand-source-costs`,
+    `${id}-demand-fractions`,
     'float32',
-    demandCount,
-    scratch.demandSourceCosts
-  );
-  const targetCosts = getOrCreateView(
-    graph,
-    `${id}-demand-target-costs`,
-    'float32',
-    demandCount,
-    scratch.demandTargetCosts
+    demandCount
   );
   builder.add(
     new GPUNetworkSnapping({
@@ -598,16 +807,23 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
       topology,
       maximumSnapDistance: props.maximumSnapDistance,
       candidateCapacity: props.candidateCapacity,
+      // The exact scan has no size limit here, as before the snapping limit existed.
+      maximumUnindexedWork: Number.MAX_SAFE_INTEGER,
       output: {
         status: {overflow: snapping?.status.demandOverflow},
         snappedEdges,
-        sourceCosts,
-        targetCosts
+        snapFractions: demandFractions,
+        // The demand adapter splits the road cost itself; these two are written for a caller
+        // that supplied them.
+        sourceCosts: scratch.demandSourceCosts,
+        targetCosts: scratch.demandTargetCosts
       }
     })
   );
 
-  // Adapter: demand drive time from the snapped edge and the node costs.
+  // Adapter: demand drive time from the snapped road, the node costs and the facilities on the
+  // same road. Demand is reached from the road's source driving source -> target, from its target
+  // driving target -> source, or straight along the road from a facility snapped to it.
   const demandTimes = getOrCreateView(
     graph,
     `${id}-demand-times`,
@@ -615,41 +831,77 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
     demandCount,
     outputs.demandTimes
   );
+  const demandRoads = addSnappedRoadNodes(graph, {
+    id: `${id}-demand-roads`,
+    snappedEdges,
+    edgeSources,
+    topology,
+    nodeCount
+  });
   graph.add(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-demand-times-kernel`,
       operation: 'GPURecipeDriveTimeCatchment',
       variant: 'demand-time',
       bindings: [
-        {name: 'snappedEdges', view: snappedEdges, type: 'u32', access: 'read'},
-        {name: 'sourceCosts', view: sourceCosts, type: 'f32', access: 'read'},
-        {name: 'targetCosts', view: targetCosts, type: 'f32', access: 'read'},
-        {name: 'edgeSources', view: edgeSources, type: 'u32', access: 'read'},
-        {name: 'neighbors', view: topology.neighbors, type: 'u32', access: 'read'},
+        {name: 'roads', view: demandRoads.nodes, type: 'u32', access: 'read'},
+        {name: 'roadCosts', view: demandRoads.costs, type: 'f32', access: 'read'},
+        {name: 'roadKeys', view: demandRoads.keys, type: 'u32', access: 'read'},
+        {name: 'fractions', view: demandFractions, type: 'f32', access: 'read'},
         {name: 'nodeCosts', view: nodeCosts, type: 'f32', access: 'read'},
+        {name: 'sortedFacilityKeys', view: sortedFacilityKeys, type: 'u32', access: 'read'},
+        {
+          name: 'sortedFacilityFractions',
+          view: sortedFacilityFractions,
+          type: 'u32',
+          access: 'read'
+        },
         {name: 'times', view: demandTimes, type: 'f32', access: 'read_write'}
       ],
       invocationCount: demandCount,
       declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
-const UNREACHED: f32 = 3.0e38;`,
-      body: `let edge = snappedEdges[snappedEdgesOffset + index];
+const FACILITY_COUNT: u32 = ${facilityCount}u;
+const UNREACHED: f32 = 3.0e38;
+${getBinarySearchWGSL('sortedFacilityKeys')}`,
+      body: `let sourceNode = roads[roadsOffset + 2u * index];
+  let targetNode = roads[roadsOffset + 2u * index + 1u];
   var best = UNREACHED;
-  if (edge != 0xffffffffu) {
-    let sourceNode = edgeSources[edgeSourcesOffset + edge];
-    let targetNode = neighbors[neighborsOffset + edge];
-    var viaSource = UNREACHED;
-    if (sourceNode < NODE_COUNT) {
-      viaSource = nodeCosts[nodeCostsOffset + sourceNode] + sourceCosts[sourceCostsOffset + index];
+  if (sourceNode < NODE_COUNT && targetNode < NODE_COUNT) {
+    let fraction = fractions[fractionsOffset + index];
+    let forwardCost = roadCosts[roadCostsOffset + 2u * index];
+    let reverseCost = roadCosts[roadCostsOffset + 2u * index + 1u];
+    if (forwardCost >= 0.0) {
+      let viaSource = nodeCosts[nodeCostsOffset + sourceNode] + fraction * forwardCost;
+      if (viaSource < best) {
+        best = viaSource;
+      }
     }
-    var viaTarget = UNREACHED;
-    if (targetNode < NODE_COUNT) {
-      viaTarget = nodeCosts[nodeCostsOffset + targetNode] + targetCosts[targetCostsOffset + index];
+    if (reverseCost >= 0.0) {
+      let viaTarget = nodeCosts[nodeCostsOffset + targetNode] + (1.0 - fraction) * reverseCost;
+      if (viaTarget < best) {
+        best = viaTarget;
+      }
     }
-    if (viaSource < best) {
-      best = viaSource;
-    }
-    if (viaTarget < best) {
-      best = viaTarget;
+    // The facilities on this road are one run of the sorted keys: a bounded neighbourhood of the
+    // demand point (the facilities that share its road), not a scan of every facility.
+    let roadKey = roadKeys[roadKeysOffset + index];
+    let isReversed = sourceNode > targetNode;
+    for (
+      var position = lowerBoundSortedFacilityKeys(0u, FACILITY_COUNT, roadKey);
+      position < FACILITY_COUNT && sortedFacilityKeys[sortedFacilityKeysOffset + position] == roadKey;
+      position++
+    ) {
+      // Fraction of the facility along this demand's edge, then the signed way from it.
+      let facilityBits = sortedFacilityFractions[sortedFacilityFractionsOffset + position];
+      let facilityFraction = bitcast<f32>(facilityBits & 0x7fffffffu);
+      let sameDirection = ((facilityBits & 0x80000000u) != 0u) == isReversed;
+      let ahead = fraction - select(1.0 - facilityFraction, facilityFraction, sameDirection);
+      if (ahead >= 0.0 && forwardCost >= 0.0 && ahead * forwardCost < best) {
+        best = ahead * forwardCost;
+      }
+      if (ahead <= 0.0 && reverseCost >= 0.0 && -ahead * reverseCost < best) {
+        best = -ahead * reverseCost;
+      }
     }
   }
   if (best < UNREACHED) {
@@ -684,7 +936,7 @@ const UNREACHED: f32 = 3.0e38;`,
   var band = 0xffffffffu;
   if (time < 3.0e38) {
     for (var k = 0u; k < BAND_COUNT; k++) {
-      if (time < bandBreaks[bandBreaksOffset + k]) {
+      if (time <= bandBreaks[bandBreaksOffset + k]) {
         band = k;
         break;
       }

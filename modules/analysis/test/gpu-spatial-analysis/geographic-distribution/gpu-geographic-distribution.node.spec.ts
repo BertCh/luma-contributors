@@ -188,7 +188,7 @@ it('getGPUGeographicDistributionParameterValues packs and validates', () => {
   );
   expect(() =>
     getGPUGeographicDistributionParameterValues({
-      ellipseConvention: 'other' as 'arcgis'
+      ellipseConvention: 'other' as 'root-two'
     })
   ).toThrow('ellipseConvention');
   expect(() => getGPUGeographicDistributionParameterValues({}, new Float32Array(3))).toThrow(
@@ -199,14 +199,14 @@ it('getGPUGeographicDistributionParameterValues packs and validates', () => {
 it('oracle: axis-aligned data gives the known ellipse', () => {
   // Variances: Sxx = 2, Syy = 0.5, so the long axis is x and ArcGIS calls it the "y" axis.
   const positions = [-2, 0, 2, 0, 0, -1, 0, 1];
-  const arcgis = computeGeographicDistribution({positions, groupCount: 1});
-  const [angle, sigmaX, sigmaY] = arcgis.ellipses;
+  const rootTwo = computeGeographicDistribution({positions, groupCount: 1});
+  const [angle, sigmaX, sigmaY] = rootTwo.ellipses;
   closeTo(angle, Math.PI / 2);
   closeTo(sigmaX, 1);
   closeTo(sigmaY, 2);
-  closeTo(arcgis.standardDistances[0], Math.sqrt(2.5));
-  expect(arcgis.counts).toEqual([4]);
-  expect(arcgis.meanCenters).toEqual([0, 0]);
+  closeTo(rootTwo.standardDistances[0], Math.sqrt(2.5));
+  expect(rootTwo.counts).toEqual([4]);
+  expect(rootTwo.meanCenters).toEqual([0, 0]);
   const standard = computeGeographicDistribution({
     positions,
     groupCount: 1,
@@ -216,9 +216,9 @@ it('oracle: axis-aligned data gives the known ellipse', () => {
   closeTo(standard.ellipses[1], 2 * Math.sqrt(0.5));
   closeTo(standard.ellipses[2], 2 * Math.SQRT2);
   closeTo(standard.standardDistances[0], 2 * Math.sqrt(2.5));
-  // For the ArcGIS convention the ring touches the data extreme (2, 0).
-  const arcgisRing = arcgis.ellipseVertices;
-  const peak = Math.max(...arcgisRing.filter((_, index) => index % 2 === 0));
+  // For the root-two convention the ring touches the data extreme (2, 0).
+  const rootTwoRing = rootTwo.ellipseVertices;
+  const peak = Math.max(...rootTwoRing.filter((_, index) => index % 2 === 0));
   closeTo(peak, 2, 1e-9);
 });
 

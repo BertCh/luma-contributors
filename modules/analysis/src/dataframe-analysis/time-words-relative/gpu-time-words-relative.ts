@@ -18,7 +18,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -105,8 +105,8 @@ export class GPUTimeWordsRelative implements GPUCommandNodeProducer {
     );
     this.outputTemporalContext = {...inputContext, encoding: 'float32-relative', epoch: origin};
     validateGPUTemporalContext(id, this.outputTemporalContext);
-    validatePackedView(timestamps, ['uint32x2'], `${id} timestamps`);
-    validatePackedView(output, ['float32'], `${id} output`);
+    validateSinglePackedView(timestamps, ['uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(output, ['float32'], `${id} output`);
     this.rowCount = timestamps.length;
     validateRequirement(id, this.rowCount >= 1, 'needs at least one row');
     validateViewLength(id, 'output', output, this.rowCount);

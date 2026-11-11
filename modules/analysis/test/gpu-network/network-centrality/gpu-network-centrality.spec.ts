@@ -392,8 +392,21 @@ it('GPUNetworkCentrality preserves local frontier spills and zero cycles with bo
   for (let branch = 1; branch <= branchCount; branch++) {
     edges.push([0, branch, 1], [branch, sink, 1]);
   }
-  // The zero-cost cycle is reached, but is excluded from the strict-cost dependency graph.
-  edges.push([1, 2, 0], [2, 1, 0], [0, sink, -1], [0, sink, NaN], [0, sink, Infinity]);
+  edges.push([0, sink, -1], [0, sink, NaN], [0, sink, Infinity]);
+  // A zero-cost cycle between two branches of equal cost: both zero-weight slots are tight, so
+  // the shortest-path count is not defined. The search and closeness are unaffected, and the
+  // betweenness phases report it by clearing `converged` (review network-paths-02; the strict
+  // rule this spec used to pin left such a cycle out silently). The flag itself is pinned in
+  // gpu-network-centrality-path-counts.spec.ts.
+  const cyclic = await runCentrality(
+    device,
+    nodeCount,
+    [...edges, [1, 2, 0], [2, 1, 0]],
+    [0, NONE, 0],
+    {laneCount: 2, localIterations: 64, maximumIterations: 1024}
+  );
+  expect(cyclic.converged).toBe(0);
+  expect(Array.from(cyclic.reachedCounts)).toEqual([nodeCount, 0, nodeCount]);
   const complete = await runCentrality(device, nodeCount, edges, [0, NONE, 0], {
     laneCount: 2,
     localIterations: 64,

@@ -5,7 +5,8 @@
 import {
   getGraphOutputViews,
   validateCapacity,
-  validateCommandNodeBudget
+  validateCommandNodeBudget,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
@@ -22,9 +23,16 @@ import {
   validateRasterCellSizeMode,
   type GPURasterCellSizeMode
 } from '../../analysis-core/raster-grid';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {validateRasterGridAxisAligned} from '../../raster-analysis/raster-band-utils';
-import {getTerrainFlowTracingWGSL} from './terrain-flow-tracing';
+import {
+  getTerrainFlowTracingWGSL,
+  validateTerrainFlowDirectionEncoding,
+  type GPUTerrainFlowDirectionEncoding
+} from './terrain-flow-tracing';
 import {
   createRasterJacobiLoopNodes,
   getRasterJacobiLoopNodeCount,
@@ -40,8 +48,33 @@ import {
 export type GPUTerrainStreamNetworkProps = {
   id?: string;
   grid: GPURasterMetadata;
+  /**
+   * D8 codes, one per cell, ESRI by default (1 east, clockwise powers of two; 0 terminal;
+   * `0xffffffff` invalid; `0xfffffffe` unresolved). A nonzero code without a receiver is
+   * unresolved.
+   */
   flowDirections: GraphDataView<'uint32'>;
+  /**
+   * Numbering of `flowDirections`: `'esri'` (default), `'whitebox'` (the WhiteboxTools default
+   * pointer) or `'taudem'`, see {@link GPUTerrainFlowDirectionEncoding}. Compile-time.
+   */
+  directionEncoding?: GPUTerrainFlowDirectionEncoding;
+  /**
+   * Stream mask: a nonzero word is a stream cell. The words `0xffffffff` and `0xfffffffe` mark a
+   * stream cell of unknown status, which is counted in `output.unresolvedCount`.
+   */
   streams: GraphDataView<'uint32'>;
+  /**
+   * Float64 point that `output.positions` are written relative to; add it back on the CPU or as
+   * the layer's coordinate origin. Defaults to `[0, 0]` (absolute world coordinates). Pass the
+   * grid origin `[grid.affine[2], grid.affine[5]]` (or a tile corner) for projected grids:
+   * absolute float32 positions are quantized to 0.5 m at a UTM northing of 4.5e6 m, so a vertex
+   * is up to 0.25 cell off for 1 m cells, while origin-relative ones keep about `1.2e-7` of their
+   * distance from the origin (1.2 cm at 100 km). The translation `affine - localOrigin` is formed
+   * in float64 before it reaches the shader. Compile-time. The resolved value is the
+   * `localOrigin` field of the contributor.
+   */
+  localOrigin?: readonly [number, number];
   /** Ground model for `output.lengths`. Default `'uniform'` (affine units). `'web-mercator'` and `'geographic'` need an axis-aligned grid. Compile-time. */
   cellSizeMode?: GPURasterCellSizeMode;
   /**
@@ -56,7 +89,11 @@ export type GPUTerrainStreamNetworkProps = {
     targetCells: GraphDataView<'uint32'>;
     /** Reach polyline offsets, capacity sourceCells.length + 1. */
     vertexOffsets: GraphDataView<'uint32'>;
-    /** Cell centers in the grid's world coordinates (the affine's own units). */
+    /**
+     * Cell centers in the grid's world coordinates (the affine's own units) minus `localOrigin`.
+     * With the default origin `[0, 0]` they are absolute float32 coordinates, exact only to the
+     * float32 spacing at their magnitude (0.5 m at 4.5e6, 7.6e-6 degree at longitude 122).
+     */
     positions: GraphDataView<'float32x2'>;
     /** Reach lengths in affine units by default (geographic degrees are not ground meters), or ground meters under `cellSizeMode`. */
     lengths: GraphDataView<'float32'>;
@@ -85,9 +122,18 @@ export class GPUTerrainStreamNetwork implements GPUCommandNodeProducer {
   readonly props: GPUTerrainStreamNetworkProps;
   /** Number of command nodes `getCommandNodes` returns; bounded by the command node budget. */
   readonly estimatedCommandNodeCount: number;
+  /** Float64 point to add to `output.positions` for world coordinates; `[0, 0]` by default. */
+  readonly localOrigin: readonly [number, number];
   constructor(props: GPUTerrainStreamNetworkProps) {
     this.id = props.id ?? 'terrain-stream-network';
     this.props = props;
+    this.localOrigin = props.localOrigin ?? [0, 0];
+    validateRequirement(
+      this.id,
+      this.localOrigin.length === 2 && this.localOrigin.every(Number.isFinite),
+      'localOrigin must be two finite numbers'
+    );
+    validateTerrainFlowDirectionEncoding(this.id, props.directionEncoding);
     const count = validateRasterExpansionViews(
       this.id,
       props.grid,
@@ -146,7 +192,8 @@ export class GPUTerrainStreamNetwork implements GPUCommandNodeProducer {
     const reachTotal = createTransientView(graph, `${id}-reach-total`, 'uint32', 1);
     const rowVertices = createTransientView(graph, `${id}-row-vertices`, 'uint32', count);
     const rowEnds = createTransientView(graph, `${id}-row-ends`, 'uint32', count);
-    const declarations = `${getTerrainFlowTracingWGSL(grid.width, grid.height)}
+    const tracing = getTerrainFlowTracingWGSL(grid.width, grid.height, props.directionEncoding);
+    const declarations = `${tracing}
 fn isStream(cell:u32)->bool {return streams[streamsOffset+cell]!=0u;}
 fn incomingCount(cell:u32)->u32 {
  var incoming=0u; let column=i32(cell%GRID_WIDTH); let row=i32(cell/GRID_WIDTH);
@@ -154,7 +201,7 @@ fn incomingCount(cell:u32)->u32 {
  let otherColumn=column+columnOffset;let otherRow=row+rowOffset;
  if(otherColumn<0||otherRow<0||otherColumn>=i32(GRID_WIDTH)||otherRow>=i32(GRID_HEIGHT)||(columnOffset==0&&rowOffset==0)){continue;}
  let other=u32(otherRow)*GRID_WIDTH+u32(otherColumn);
- if(isStream(other)&&getFlowReceiver(other,directions[directionsOffset+other])==cell){incoming++;}
+ if(isStream(other)&&getFlowReceiver(other,getFlowDirectionCode(directions[directionsOffset+other]))==cell){incoming++;}
  }}return incoming;
 }`;
     const streamBindings = [
@@ -179,7 +226,7 @@ fn incomingCount(cell:u32)->u32 {
         body: `var nextCell=NO_CELL;var steps=1u;var outcome=0u;var reachNext=NO_CELL;var reachHops=0u;
 if(isStream(index)){
  let stream=streams[streamsOffset+index];
- let code=directions[directionsOffset+index];
+ let code=getFlowDirectionCode(directions[directionsOffset+index]);
  let receiver=getFlowReceiver(index,code);
  let leaves=receiver==NO_CELL||!isStream(receiver);
  if(stream==NO_CELL||stream==UNRESOLVED_DIRECTION||(code!=0u&&receiver==NO_CELL)){outcome=2u;}
@@ -343,15 +390,17 @@ if(!nextKept){reachCount[reachCountOffset]=index+1u;vertexCount[vertexCountOffse
           {name: 'targets', view: output.targetCells, type: 'u32', access: 'read_write'},
           {name: 'lengths', view: output.lengths, type: 'f32', access: 'read_write'}
         ],
-        declarations: `${getTerrainFlowTracingWGSL(grid.width, grid.height)}
+        // The translation is the affine's minus localOrigin, formed in float64 here: with the grid
+        // origin as localOrigin it is zero and the float32 products keep the cell centre exactly.
+        declarations: `${tracing}
 ${getTerrainGroundMeasureWGSL(grid, props.cellSizeMode)}
-fn position(cell:u32)->vec2<f32>{let column=f32(cell%GRID_WIDTH)+${grid.pixelInterpretation === 'area' ? '0.5' : '0.0'};let row=f32(cell/GRID_WIDTH)+${grid.pixelInterpretation === 'area' ? '0.5' : '0.0'};return vec2<f32>(${grid.affine[0]}*column+${grid.affine[1]}*row+${grid.affine[2]},${grid.affine[3]}*column+${grid.affine[4]}*row+${grid.affine[5]});}`,
+fn position(cell:u32)->vec2<f32>{let column=f32(cell%GRID_WIDTH)+${grid.pixelInterpretation === 'area' ? '0.5' : '0.0'};let row=f32(cell/GRID_WIDTH)+${grid.pixelInterpretation === 'area' ? '0.5' : '0.0'};return vec2<f32>(${getWGSLFloatLiteral(grid.affine[0])}*column+${getWGSLFloatLiteral(grid.affine[1])}*row+${getWGSLFloatLiteral(grid.affine[2] - this.localOrigin[0])},${getWGSLFloatLiteral(grid.affine[3])}*column+${getWGSLFloatLiteral(grid.affine[4])}*row+${getWGSLFloatLiteral(grid.affine[5] - this.localOrigin[1])});}`,
         body: `if(index>=reachCount[reachCountOffset]){return;}var current=sources[sourcesOffset+index];var total=0.0;var previousCell=current;
 for(var vertex=offsets[offsetsOffset+index];vertex<offsets[offsetsOffset+index+1u];vertex++){
  let point=position(current);positions[positionsOffset+vertex*2u]=point.x;positions[positionsOffset+vertex*2u+1u]=point.y;
  // Measure the displacement between cells before adding the origin, which can round away small edges.
  total+=getGroundEdgeLength(previousCell,current);previousCell=current;
- if(vertex+1u<offsets[offsetsOffset+index+1u]){current=getFlowReceiver(current,directions[directionsOffset+current]);}
+ if(vertex+1u<offsets[offsetsOffset+index+1u]){current=getFlowReceiver(current,getFlowDirectionCode(directions[directionsOffset+current]));}
 }targets[targetsOffset+index]=current;lengths[lengthsOffset+index]=total;`
       })
     ];

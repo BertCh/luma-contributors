@@ -7,7 +7,7 @@ import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
@@ -52,7 +52,7 @@ export function validateRasterAlgebraView(
   if (!view) {
     return;
   }
-  validatePackedView(view, [format], `${id} ${name}`);
+  validateSinglePackedView(view, [format], `${id} ${name}`);
   if (view.length < rowCount) {
     throw new Error(`${id} ${name} must hold at least ${rowCount} rows`);
   }

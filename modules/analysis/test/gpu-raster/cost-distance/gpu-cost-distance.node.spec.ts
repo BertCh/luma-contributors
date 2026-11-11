@@ -571,3 +571,55 @@ it('back-links of a cost relaxation that hit maximumIterations are all unresolve
   invalid[5] = 3;
   expect(walkBackLinksTwin(20, 10, invalid, 5).path).toEqual([]);
 });
+
+it('raster-fields-03: a sheared grid is rejected and a rotated grid keeps its exact diagonal', () => {
+  const device = createNullWebGPUDevice();
+  const construct = (affine: [number, number, number, number, number, number]) => {
+    const graph = new GPUCommandGraph(device);
+    return new GPUCostDistance({
+      ...createProps(graph),
+      grid: {width: WIDTH, height: HEIGHT, affine, pixelInterpretation: 'area'}
+    });
+  };
+  // The report's grid: column axis (1, 0), row axis (0.5, 1). The kernel's one diagonal length is
+  // sqrt(1 + 1.25) = 1.5, but the two diagonal moves are 1.803 and 1.118 world units long.
+  const sheared: [number, number, number, number, number, number] = [1, 0.5, 0, 0, 1, 0];
+  expect(Math.hypot(sheared[0] + sheared[1], sheared[3] + sheared[4])).toBeCloseTo(1.8028, 4);
+  expect(Math.hypot(sheared[0] - sheared[1], sheared[3] - sheared[4])).toBeCloseTo(1.118, 4);
+  expect(() => construct(sheared)).toThrow(
+    /cost-distance grid\.affine must have orthogonal pixel axes/
+  );
+  expect(() =>
+    getGPUCostDistanceParameterValues(
+      {},
+      {width: WIDTH, height: HEIGHT, affine: sheared, pixelInterpretation: 'area'}
+    )
+  ).toThrow(/getGPUCostDistanceParameterValues grid\.affine must have orthogonal pixel axes/);
+  // A 2 x 3 cell grid rotated by 30 degrees: both diagonals are sqrt(4 + 9) long, which is what
+  // the packed cell sizes give, so it constructs and packs.
+  const angle = Math.PI / 6;
+  const rotated: [number, number, number, number, number, number] = [
+    2 * Math.cos(angle),
+    -3 * Math.sin(angle),
+    500000,
+    2 * Math.sin(angle),
+    3 * Math.cos(angle),
+    4600000
+  ];
+  expect(() => construct(rotated)).not.toThrow();
+  const packed = getGPUCostDistanceParameterValues(
+    {},
+    {width: WIDTH, height: HEIGHT, affine: rotated, pixelInterpretation: 'area'}
+  );
+  expect(packed[0]).toBeCloseTo(2, 6);
+  expect(packed[1]).toBeCloseTo(3, 6);
+  for (const sign of [1, -1]) {
+    expect(Math.hypot(rotated[0] + sign * rotated[1], rotated[3] + sign * rotated[4])).toBeCloseTo(
+      Math.hypot(packed[0], packed[1]),
+      6
+    );
+  }
+  // North-up and south-up axis-aligned grids are unaffected.
+  expect(() => construct([10, 0, 0, 0, -10, 100])).not.toThrow();
+  expect(() => construct([10, 0, 0, 0, 10, 0])).not.toThrow();
+});

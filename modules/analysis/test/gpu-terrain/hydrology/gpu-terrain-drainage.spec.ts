@@ -58,12 +58,16 @@ async function runDrainage(device: Device, input: DrainageInput) {
     hand: createOutputBuffer(device, cellCount),
     drainage: createOutputBuffer(device, cellCount),
     handConverged: createOutputBuffer(device, 1),
+    handLimit: createOutputBuffer(device, 1),
     basins: createOutputBuffer(device, cellCount),
     basinsConverged: createOutputBuffer(device, 1),
+    basinsLimit: createOutputBuffer(device, 1),
     pour: createOutputBuffer(device, cellCount),
     pourConverged: createOutputBuffer(device, 1),
+    pourLimit: createOutputBuffer(device, 1),
     order: createOutputBuffer(device, cellCount),
-    orderConverged: createOutputBuffer(device, 1)
+    orderConverged: createOutputBuffer(device, 1),
+    orderLimit: createOutputBuffer(device, 1)
   };
   const graph = new GPUCommandGraph(device, {id: 'terrain-drainage-test'});
   const elevation = importGraphBuffer(graph, 'elevation', inputBuffers[0], 'float32', cellCount);
@@ -83,7 +87,10 @@ async function runDrainage(device: Device, input: DrainageInput) {
       output: {
         heightAboveDrainage: view('hand', 'float32'),
         drainageCells: view('drainage', 'uint32'),
-        status: {converged: view('handConverged', 'uint32', 1)}
+        status: {
+          converged: view('handConverged', 'uint32', 1),
+          iterationLimitReached: view('handLimit', 'uint32', 1)
+        }
       },
       maximumIterations: input.maxIterations
     })
@@ -95,7 +102,10 @@ async function runDrainage(device: Device, input: DrainageInput) {
       flowDirections: directions,
       output: {
         labels: view('basins', 'uint32'),
-        status: {converged: view('basinsConverged', 'uint32', 1)}
+        status: {
+          converged: view('basinsConverged', 'uint32', 1),
+          iterationLimitReached: view('basinsLimit', 'uint32', 1)
+        }
       },
       maximumIterations: input.maxIterations
     })
@@ -115,7 +125,10 @@ async function runDrainage(device: Device, input: DrainageInput) {
         ),
         output: {
           labels: view('pour', 'uint32'),
-          status: {converged: view('pourConverged', 'uint32', 1)}
+          status: {
+            converged: view('pourConverged', 'uint32', 1),
+            iterationLimitReached: view('pourLimit', 'uint32', 1)
+          }
         },
         maximumIterations: input.maxIterations
       })
@@ -128,7 +141,10 @@ async function runDrainage(device: Device, input: DrainageInput) {
       streams,
       output: {
         streamOrder: view('order', 'uint32'),
-        status: {converged: view('orderConverged', 'uint32', 1)}
+        status: {
+          converged: view('orderConverged', 'uint32', 1),
+          iterationLimitReached: view('orderLimit', 'uint32', 1)
+        }
       },
       maximumIterations: input.maxOrderIterations
     })
@@ -139,12 +155,16 @@ async function runDrainage(device: Device, input: DrainageInput) {
     hand: Float32Array.from(await readFloat32(outputs.hand, cellCount)),
     drainage: Uint32Array.from(await readUint32(outputs.drainage, cellCount)),
     handConverged: (await readUint32(outputs.handConverged, 1))[0],
+    handLimit: (await readUint32(outputs.handLimit, 1))[0],
     basins: Uint32Array.from(await readUint32(outputs.basins, cellCount)),
     basinsConverged: (await readUint32(outputs.basinsConverged, 1))[0],
+    basinsLimit: (await readUint32(outputs.basinsLimit, 1))[0],
     pour: Uint32Array.from(await readUint32(outputs.pour, cellCount)),
     pourConverged: (await readUint32(outputs.pourConverged, 1))[0],
+    pourLimit: (await readUint32(outputs.pourLimit, 1))[0],
     order: Uint32Array.from(await readUint32(outputs.order, cellCount)),
-    orderConverged: (await readUint32(outputs.orderConverged, 1))[0]
+    orderConverged: (await readUint32(outputs.orderConverged, 1))[0],
+    orderLimit: (await readUint32(outputs.orderLimit, 1))[0]
   };
   compiled.destroy();
   for (const buffer of [...inputBuffers, ...Object.values(outputs)]) {
@@ -279,6 +299,7 @@ it('a 1x3000 strip needs about 12 doubling rounds', async () => {
   const result = await runDrainage(device, input);
   expect(result.handConverged).toBe(1);
   expect(result.basinsConverged).toBe(1);
+  expect([result.handLimit, result.basinsLimit, result.orderLimit]).toEqual([0, 0, 0]);
   expect(result.drainage[0]).toBe(length - 10);
   expect(result.hand[0]).toBe(length - 10);
   expect(result.basins[0]).toBe(length - 1);
@@ -293,6 +314,8 @@ it('a 1x3000 strip needs about 12 doubling rounds', async () => {
   const limited = await runDrainage(device, {...input, maxIterations: 2});
   expect(limited.handConverged).toBe(0);
   expect(limited.basinsConverged).toBe(0);
+  // iterationLimitReached is the named complement of converged.
+  expect([limited.handLimit, limited.basinsLimit]).toEqual([1, 1]);
   device.destroy();
 });
 
@@ -350,6 +373,27 @@ it('GPUTerrainStreamOrder follows Strahler on a hand-built network', async () =>
   expect(Array.from(computeStreamOrderOnCPU(directions, streams, width, height))).toEqual(
     Array.from(expected)
   );
+  device.destroy();
+});
+
+it('GPUTerrainStreamOrder reports a receiver cycle as unconverged, not as an iteration limit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Cells 0 and 1 drain into each other (east, then west): a receiver cycle with no root. Cell 3
+  // is a stream outlet, so the rest of the raster resolves. The ranking rounds are a fixed bound
+  // sized for the raster, so no iteration limit is ever involved.
+  const width = 4;
+  const result = await runDrainage(device, {
+    width,
+    height: 1,
+    elevation: new Float32Array(width),
+    directions: Uint32Array.of(1, 16, 0, 0),
+    streams: Uint32Array.of(1, 1, 0, 1)
+  });
+  expect(result.order[0]).toBe(0xffffffff);
+  expect(result.order[1]).toBe(0xffffffff);
+  expect(result.orderConverged).toBe(0);
+  expect(result.orderLimit).toBe(0);
   device.destroy();
 });
 

@@ -16,7 +16,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {CELL_KEY_WGSL, getCellKeyLayout, QUADBIN_TILE_WGSL} from '../cell-aggregation/cell-keys';
 import {validateCellIndexResolution, type GPUCellIndexFamily} from './cell-index-families';
@@ -136,23 +136,23 @@ export class GPUPointToCell implements GPUCommandNodeProducer {
     );
     const id = this.id;
     validateCellIndexResolution(id, props.family, props.resolution);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal the row count`);
       }
     }
-    validatePackedView(props.output.cells, ['uint32x2'], `${id} output.cells`);
+    validateSinglePackedView(props.output.cells, ['uint32x2'], `${id} output.cells`);
     if (props.output.cells.length !== rows) {
       throw new Error(`${id} output.cells length must equal the row count`);
     }
     if (props.output.validity) {
-      validatePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
+      validateSinglePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
       if (props.output.validity.length !== rows) {
         throw new Error(`${id} output.validity length must equal the row count`);
       }

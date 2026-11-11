@@ -51,7 +51,7 @@ export type GPURasterLaggedCorrelationProps = {
   /** Cell-major `cell * sliceCount + slice`; nonfinite samples are missing. */
   values: GraphDataView<'float32'>;
   /** Per-observation QA; zero rejects the sample. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** The reference series, one value per slice, nonfinite where missing (for example Nino3.4). */
   referenceIndex: GraphDataView<'float32'>;
   /** Float32, see {@link getGPURasterLaggedCorrelationParameterValues}. */
@@ -98,8 +98,8 @@ export class GPURasterLaggedCorrelation implements GPUCommandNodeProducer {
     validateCapacity(id, 'cellCount times sliceCount', observations);
     validateRequirement(
       id,
-      [props.values, props.validity].every(view => !view || view.length >= observations),
-      'values and validity must hold cellCount times sliceCount entries'
+      [props.values, props.mask].every(view => !view || view.length >= observations),
+      'values and mask must hold cellCount times sliceCount entries'
     );
     validateRequirement(
       id,
@@ -123,8 +123,8 @@ export class GPURasterLaggedCorrelation implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, referenceIndex, parameters} = this.props;
-    return [values, referenceIndex, parameters, ...(validity ? [validity] : [])];
+    const {values, mask, referenceIndex, parameters} = this.props;
+    return [values, referenceIndex, parameters, ...(mask ? [mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -136,7 +136,7 @@ export class GPURasterLaggedCorrelation implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    const {sliceCount: slices, values, validity, referenceIndex, parameters, lags, output} = props;
+    const {sliceCount: slices, values, mask, referenceIndex, parameters, lags, output} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const lagCount = lags.length;
     return [
@@ -149,7 +149,7 @@ export class GPURasterLaggedCorrelation implements GPUCommandNodeProducer {
           rasterBinding('values', values),
           rasterBinding('referenceIndex', referenceIndex),
           rasterBinding('parameters', parameters),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           rasterBinding('correlations', output.correlations, true),
           rasterBinding('status', output.status, true),
           ...(output.pairCount ? [rasterBinding('pairCount', output.pairCount, true)] : [])
@@ -168,7 +168,7 @@ for (var lagIndex = 0u; lagIndex < ${lagCount}u; lagIndex++) {
     let indexValue = referenceIndex[referenceIndexOffset + u32(slice)];
     let source = index * ${slices}u + u32(targetSlice);
     let cellValue = values[valuesOffset + source];
-    if (!finite(indexValue) || !finite(cellValue) ${validity ? '|| validity[validityOffset + source] == 0u' : ''}) { continue; }
+    if (!finite(indexValue) || !finite(cellValue) ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
     count++;
     indexTotal += indexValue;
     cellTotal += cellValue;
@@ -187,7 +187,7 @@ for (var lagIndex = 0u; lagIndex < ${lagCount}u; lagIndex++) {
       let indexValue = referenceIndex[referenceIndexOffset + u32(slice)];
       let source = index * ${slices}u + u32(targetSlice);
       let cellValue = values[valuesOffset + source];
-      if (!finite(indexValue) || !finite(cellValue) ${validity ? '|| validity[validityOffset + source] == 0u' : ''}) { continue; }
+      if (!finite(indexValue) || !finite(cellValue) ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
       let indexAnomaly = indexValue - indexMean;
       let cellAnomaly = cellValue - cellMean;
       crossTotal += indexAnomaly * cellAnomaly;

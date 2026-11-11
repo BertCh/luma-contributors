@@ -28,7 +28,7 @@ import {
   getGraphViewChunks,
   validateCapacity,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -321,8 +321,8 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       if (props.origins || props.destinations) {
         throw new Error(`${id} ids zones do not accept origins or destinations`);
       }
-      validatePackedView(props.originZoneIds, ['uint32'], `${id} originZoneIds`);
-      validatePackedView(props.destinationZoneIds, ['uint32'], `${id} destinationZoneIds`);
+      validateSinglePackedView(props.originZoneIds, ['uint32'], `${id} originZoneIds`);
+      validateSinglePackedView(props.destinationZoneIds, ['uint32'], `${id} destinationZoneIds`);
       this.rowCount = props.originZoneIds.length;
       if (props.destinationZoneIds.length !== this.rowCount) {
         throw new Error(`${id} destinationZoneIds length must equal originZoneIds length`);
@@ -335,10 +335,10 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
         throw new Error(`${id} ${zones.kind} zones do not accept zone IDs`);
       }
       for (const chunk of getGraphViewChunks(props.origins)) {
-        validatePackedView(chunk, ['float32x2'], `${id} origins`);
+        validateSinglePackedView(chunk, ['float32x2'], `${id} origins`);
       }
       for (const chunk of getGraphViewChunks(props.destinations)) {
-        validatePackedView(chunk, ['float32x2'], `${id} destinations`);
+        validateSinglePackedView(chunk, ['float32x2'], `${id} destinations`);
       }
       this.rowCount = props.origins.length;
       if (props.destinations.length !== this.rowCount) {
@@ -346,7 +346,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       }
       validateFlowBounds(id, zones.bounds);
       if (zones.activeGridSize) {
-        validatePackedView(zones.activeGridSize, ['uint32'], `${id} activeGridSize`);
+        validateSinglePackedView(zones.activeGridSize, ['uint32'], `${id} activeGridSize`);
         if (zones.activeGridSize.length < 2) {
           throw new Error(`${id} activeGridSize must contain two uint32 rows [columns, rows]`);
         }
@@ -358,7 +358,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
             throw new Error(`${id} hexagon radius must be positive and finite`);
           }
         } else {
-          validatePackedView(radius, ['float32'], `${id} hexagon radius`);
+          validateSinglePackedView(radius, ['float32'], `${id} hexagon radius`);
           if (radius.length < 1) {
             throw new Error(`${id} hexagon radius must contain one float32 row`);
           }
@@ -368,21 +368,21 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
 
     if (weights) {
       for (const chunk of getGraphViewChunks(weights)) {
-        validatePackedView(chunk, ['float32'], `${id} weights`);
+        validateSinglePackedView(chunk, ['float32'], `${id} weights`);
       }
       if (weights.length !== this.rowCount) {
         throw new Error(`${id} weights length must equal the row count`);
       }
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
     }
     if (props.timeWindow) {
       const {timestamps, timestampsLow, window} = props.timeWindow;
-      validatePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+      validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
       if (timestamps.length !== this.rowCount) {
         throw new Error(`${id} timestamps length must equal the row count`);
       }
@@ -391,20 +391,20 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
         if (isWordTime) {
           throw new Error(`${id} timestampsLow requires float32 timestamps`);
         }
-        validatePackedView(timestampsLow, ['float32'], `${id} timestampsLow`);
+        validateSinglePackedView(timestampsLow, ['float32'], `${id} timestampsLow`);
         if (timestampsLow.length !== this.rowCount) {
           throw new Error(`${id} timestampsLow length must equal the row count`);
         }
       }
       if (isWordTime) {
-        validatePackedView(window, ['uint32'], `${id} word window`);
+        validateSinglePackedView(window, ['uint32'], `${id} word window`);
         if (window.length < GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH) {
           throw new Error(
             `${id} word window must hold ${GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH} uint32 values`
           );
         }
       } else {
-        validatePackedView(window, ['float32'], `${id} window`);
+        validateSinglePackedView(window, ['float32'], `${id} window`);
         if (window.length < GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH) {
           throw new Error(
             `${id} window must hold ${GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} float32 values`
@@ -440,14 +440,14 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       ['flowCounts', output.flowCounts]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== topCount) {
           throw new Error(`${id} output.${name} length must equal output.ids length`);
         }
       }
     }
     if (output.flowWeights) {
-      validatePackedView(output.flowWeights, ['float32'], `${id} output.flowWeights`);
+      validateSinglePackedView(output.flowWeights, ['float32'], `${id} output.flowWeights`);
       if (output.flowWeights.length !== topCount) {
         throw new Error(`${id} output.flowWeights length must equal output.ids length`);
       }
@@ -457,7 +457,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       ['drawInstanceCount', output.drawInstanceCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < 1) {
           throw new Error(`${id} output.${name} must contain one uint32 row`);
         }
@@ -468,7 +468,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       ['zoneInCounts', output.zoneInCounts]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== this.zoneCount) {
           throw new Error(`${id} output.${name} length must equal the zone count`);
         }
@@ -479,7 +479,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       ['zoneInCountExtent', output.zoneInCountExtent]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== 2) {
           throw new Error(`${id} output.${name} must contain two float32 rows`);
         }
@@ -496,7 +496,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       if (name !== 'flowWeights' && !weights) {
         throw new Error(`${id} output.${name} requires weights`);
       }
-      validatePackedView(view, ['float32'], `${id} output.${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
       if (name !== 'flowWeights' && view.length !== this.zoneCount) {
         throw new Error(`${id} output.${name} length must equal the zone count`);
       }
@@ -1021,7 +1021,7 @@ function validateFlowBounds(id: string, bounds: GPUFlowAggregationBounds): void 
     return;
   }
   const view = bounds as GraphDataView;
-  validatePackedView(view, ['float32x4', 'float32'], `${id} bounds`);
+  validateSinglePackedView(view, ['float32x4', 'float32'], `${id} bounds`);
   if (
     (view.format === 'float32x4' && view.length !== 1) ||
     (view.format === 'float32' && view.length !== 4)

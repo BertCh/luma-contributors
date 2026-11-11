@@ -13,7 +13,7 @@ import {
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getColumnProfileNodes, type ColumnProfileColumn} from './column-profile-kernels';
@@ -130,9 +130,15 @@ export type GPUColumnProfileProps = {
  * with partial means stored relative to separately retained first-value origins. This keeps
  * mean updates at the scale of the deviations when the column has a large common offset.
  * Histogram counts, registers, and category counts are integer
- * atomics and are exact. Histogram bins use `width = fround(range * fround(1 / binCount))`, the
- * estimate `floor(d / width)` and one correction step each way against correctly rounded
- * products, which a CPU mirror reproduces with `Math.fround`.
+ * atomics and are exact. Histogram bins have the convention of the official `GPUHistogram` of
+ * `@luma.gl/graph/gpu-core`: bin `floor((v - minimum) / (maximum - minimum) * binCount)`, so a
+ * value on a bin edge is in the upper bin and the maximum is in the last one. The bin is decided
+ * by correctly rounded float32 products (`k * range <= (v - minimum) * binCount < (k + 1) * range`)
+ * instead of one division, so it is the same on every adapter and a CPU mirror reproduces it with
+ * `Math.fround`; it can differ from the official kernel only for a value within a few units in
+ * the last place of an edge. The official class is not used directly because it takes one
+ * domain and one output view per histogram, and this panel resolves a per-column domain (NaN
+ * bounds mean the finite extent) on the GPU and writes every column into one view.
  *
  * HyperLogLog: the value bits (f32 with `-0` canonicalised to `+0`, NaN skipped; u32 codes as is)
  * are hashed with murmur3 `fmix32(bits ^ seed)`, `seed = (column + 1) * 0x9e3779b9`. The register
@@ -197,7 +203,7 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} length must equal columns[0] length`);
       }
       if (column.kind === 'category') {
-        validatePackedView(column.values, ['uint32'], `${id} ${name}.values`);
+        validateSinglePackedView(column.values, ['uint32'], `${id} ${name}.values`);
         validateCapacity(id, `${name}.categoryCount`, column.categoryCount, 1, MAXIMUM_ROW_COUNT);
         const base = categoryBase;
         categoryBase += column.categoryCount;
@@ -211,17 +217,17 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
       if (column.kind !== undefined && column.kind !== 'numeric') {
         throw new Error(`${id} ${name}.kind must be 'numeric' or 'category'`);
       }
-      validatePackedView(column.values, ['float32'], `${id} ${name}.values`);
+      validateSinglePackedView(column.values, ['float32'], `${id} ${name}.values`);
       return {kind: 'numeric' as const, values: column.values, categoryCount: 0, categoryBase: 0};
     });
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rowCount) {
         throw new Error(`${id} mask length must equal the column length`);
       }
     }
     if (props.parameters) {
-      validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
       const parameterLength = getGPUColumnProfileParameterLength(columnCount);
       if (props.parameters.length < parameterLength) {
         throw new Error(`${id} parameters must hold ${parameterLength} float32 values`);
@@ -232,7 +238,7 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
         throw new Error(`${id} output.${name} must hold ${length} rows`);
       }
     };
-    validatePackedView(output.statistics, ['float32'], `${id} output.statistics`);
+    validateSinglePackedView(output.statistics, ['float32'], `${id} output.statistics`);
     requireLength(
       'statistics',
       output.statistics,
@@ -250,7 +256,7 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
       ['topCategoryCounts', output.topCategoryCounts, columnCount * this.topCategoryCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         requireLength(name, view, length);
       }
     }

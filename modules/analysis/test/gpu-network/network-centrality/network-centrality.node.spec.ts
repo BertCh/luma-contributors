@@ -235,10 +235,10 @@ it('GPUNetworkCentrality kernels parse, bind at most eight buffers and fit core 
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
   }
-  // The sigma and delta rounds bind the adjacency, the costs, the scratch array and the four
-  // frontier arrays.
-  expect(getStorageBindingCount(sources.get('centrality-batch-0-sigma-1')!)).toBe(7);
-  expect(getStorageBindingCount(sources.get('centrality-batch-0-delta-1')!)).toBe(7);
+  // The sigma and delta rounds bind the adjacency, the costs, the scratch array, the path-count
+  // exponents (review network-paths-03) and the four frontier arrays: the core limit of eight.
+  expect(getStorageBindingCount(sources.get('centrality-batch-0-sigma-1')!)).toBe(8);
+  expect(getStorageBindingCount(sources.get('centrality-batch-0-delta-1')!)).toBe(8);
 });
 
 it('GPUNetworkCentrality compiles the same pipelines for every batch and round count', () => {

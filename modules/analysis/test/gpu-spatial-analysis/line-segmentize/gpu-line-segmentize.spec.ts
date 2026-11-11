@@ -61,9 +61,16 @@ const MAXIMUM_TEST_ARC_ANGLE = 2.6;
 function createSegmentizeFixture(
   device: Device,
   lines: FlatLines,
-  options: {capacity: number; spherical?: boolean; maximumPieces?: number; closedLines?: boolean}
+  options: {
+    capacity: number;
+    spherical?: boolean;
+    maximumPieces?: number;
+    closedLines?: boolean;
+    minimalStatus?: boolean;
+  }
 ) {
   return createLineLineFixture(device, {
+    minimalStatus: options.minimalStatus,
     inputs: {
       positions: {values: lines.positions, format: 'float32x2'},
       lineOffsets: {values: lines.lineOffsets, format: 'uint32'}
@@ -121,7 +128,8 @@ it('GPULineSegmentize densifies planar lines like the f64 oracle and changes len
       maximumPieces: 64
     });
     expectLineLineParity(actual, expected, capacity, 2e-5 * 100, 1e-5);
-    expect(actual.lineCount).toBe(400);
+    expect(actual.count).toBe(400);
+    expect(actual.requiredCount).toBe(400);
     expect(actual.sourceLineIndices).toEqual(Array.from({length: 400}, (_, index) => index));
   }
   expect(fixture.getCompileCount()).toBe(0);
@@ -145,7 +153,7 @@ it('GPULineSegmentize clamps line offsets and reports overflow at capacity', asy
   expect(actual.overflow).toBe(1);
   const relaxed = await fixture.run(getGPULineSegmentizeParameterValues({maximumSegmentLength: 0}));
   expect(relaxed.overflow).toBe(0);
-  expect(relaxed.count).toBe(lines.positions.length / 2);
+  expect(relaxed.vertexCount).toBe(lines.positions.length / 2);
   fixture.destroy();
 });
 
@@ -323,8 +331,11 @@ it('GPUGreatCircleArcs reports overflow and clamps offsets', async () => {
       minimumSegments: 8
     })
   );
-  expect(actual.requiredCount).toBe(27);
-  expect(actual.count).toBe(20);
+  expect(actual.requiredVertexCount).toBe(27);
+  expect(actual.vertexCount).toBe(20);
+  // Three pairs, three lines: the last one is truncated by the vertex capacity but still counts.
+  expect(actual.count).toBe(3);
+  expect(actual.requiredCount).toBe(3);
   expect(actual.overflow).toBe(1);
   expect(actual.lineOffsets).toEqual([0, 9, 18, 20]);
   fixture.destroy();
@@ -749,4 +760,31 @@ it('GPUGreatCircleArcs flags an arc clamped at maximumSegmentCount through statu
   const exact = create(256);
   expect((await exact.run(parameters)).approximation).toBe(0);
   exact.destroy();
+});
+
+it('GPULineSegmentize counts lines in count and vertices in vertexCount at an undersized capacity', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const lines = createRandomPlanarLines(7, 60);
+  const capacity = 250;
+  const maximumSegmentLength = 0.5;
+  const expected = segmentizeLines(lines, {maximumSegmentLength, maximumPieces: 1024});
+  const expectedVertexCount = expected.positions.length;
+  expect(expectedVertexCount).toBeGreaterThan(capacity);
+  for (const minimalStatus of [false, true]) {
+    const fixture = createSegmentizeFixture(device, lines, {capacity, minimalStatus});
+    const actual = await fixture.run(getGPULineSegmentizeParameterValues({maximumSegmentLength}));
+    expect(actual.overflow).toBe(1);
+    // One output line per input line: the 60 lines are all written, the last ones truncated.
+    expect(actual.count).toBe(60);
+    expect(actual.lineOffsets[60]).toBe(capacity);
+    if (!minimalStatus) {
+      expect(actual.requiredCount).toBe(60);
+      expect(actual.vertexCount).toBe(capacity);
+      expect(actual.requiredVertexCount).toBe(expectedVertexCount);
+    }
+    // The source row of line p is p.
+    expect(actual.sourceLineIndices).toEqual(Array.from({length: 60}, (_, index) => index));
+    fixture.destroy();
+  }
 });

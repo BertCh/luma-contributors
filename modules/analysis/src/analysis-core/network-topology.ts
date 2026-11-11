@@ -6,12 +6,7 @@ import type {Buffer} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/core/dynamic';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUVector} from '@luma.gl/graph/gpu-data';
-import {
-  GPUGraphAlgorithmsData,
-  type GPUGraphAlgorithmsAdjacency,
-  type GPUGraphAlgorithmsTopology
-} from '@luma.gl/graph/gpu-graph-algorithms';
-import {validatePackedView} from './kernels/gpu-contributor-utils';
+import {validateSinglePackedView} from './kernels/gpu-contributor-utils';
 
 /**
  * A network in compressed sparse row (CSR) form, the one network input of every `gpu-network`
@@ -77,15 +72,15 @@ export function validateGPUNetworkTopology(
   if (!topology) {
     throw new Error(`${id} topology is required`);
   }
-  validatePackedView(topology.offsets, ['uint32'], `${id} topology.offsets`);
-  validatePackedView(topology.neighbors, ['uint32'], `${id} topology.neighbors`);
+  validateSinglePackedView(topology.offsets, ['uint32'], `${id} topology.offsets`);
+  validateSinglePackedView(topology.neighbors, ['uint32'], `${id} topology.neighbors`);
   const nodeCount = topology.offsets.length - 1;
   const edgeCount = topology.neighbors.length;
   if (nodeCount < 1) {
     throw new Error(`${id} topology.offsets must contain at least two rows`);
   }
   if (topology.weights) {
-    validatePackedView(topology.weights, ['float32'], `${id} topology.weights`);
+    validateSinglePackedView(topology.weights, ['float32'], `${id} topology.weights`);
     if (topology.weights.length !== edgeCount) {
       throw new Error(`${id} topology.weights length must equal topology.neighbors length`);
     }
@@ -93,7 +88,7 @@ export function validateGPUNetworkTopology(
     throw new Error(`${id} topology.weights is required`);
   }
   if (topology.nodePositions) {
-    validatePackedView(topology.nodePositions, ['float32x2'], `${id} topology.nodePositions`);
+    validateSinglePackedView(topology.nodePositions, ['float32x2'], `${id} topology.nodePositions`);
     if (topology.nodePositions.length !== nodeCount) {
       throw new Error(`${id} topology.nodePositions must contain one row per node`);
     }
@@ -160,86 +155,4 @@ export function getGraphViewGPUVector<Format extends 'uint32' | 'float32'>(
     length: view.length,
     byteOffset: view.byteOffset
   });
-}
-
-/** Properties for {@link createNetworkAnalyticsTopology}. @internal */
-export type NetworkAnalyticsTopologyProps = {
-  /** Contributor ID used in error messages. */
-  id: string;
-  /** Number of nodes. */
-  nodeCount: number;
-  /** Forward CSR offsets with `nodeCount + 1` rows. */
-  offsets: GraphDataView<'uint32'>;
-  /** Forward CSR neighbors. */
-  neighbors: GraphDataView<'uint32'>;
-  /** Reverse CSR offsets; presence makes the graph directed. */
-  reverseOffsets?: GraphDataView<'uint32'>;
-  /** Reverse CSR neighbors; required with `reverseOffsets`. */
-  reverseNeighbors?: GraphDataView<'uint32'>;
-  /** Contributor-owned zero-filled uint32 buffer used as the always-zero count and overflow word. */
-  status: Buffer;
-};
-
-/**
- * Presents an already-built CSR road network as a `GPUGraphAlgorithmsTopology` for gpu-graph algorithms.
- *
- * Every gpu-graph algorithm reads only `graph.vertexCount`, `graph.directed`, and
- * `forward`/`reverse` `offsets`, `neighbors`, and `overflow`. The other fields only feed those
- * classes' allocation-disjointness checks. `overflow` points at a contributor-owned zero word because
- * a caller-built CSR is exact.
- *
- * @internal
- */
-export function createNetworkAnalyticsTopology(
-  props: NetworkAnalyticsTopologyProps
-): GPUGraphAlgorithmsTopology {
-  const {id, nodeCount, status} = props;
-  const forwardNeighbors = getGraphViewGPUVector(id, 'neighbors', props.neighbors);
-  const statusVector = new GPUVector<'uint32'>({
-    type: 'buffer',
-    name: `${id}-status`,
-    buffer: status,
-    format: 'uint32',
-    length: 1
-  });
-  const createAdjacency = (
-    offsets: GraphDataView<'uint32'>,
-    neighbors: GPUVector<'uint32'>,
-    name: string
-  ): GPUGraphAlgorithmsAdjacency => ({
-    offsets: getGraphViewGPUVector(id, name === 'forward' ? 'offsets' : 'reverseOffsets', offsets),
-    neighbors,
-    edgeIds: neighbors,
-    count: statusVector,
-    overflow: statusVector
-  });
-  const forward = createAdjacency(props.offsets, forwardNeighbors, 'forward');
-  const reverse =
-    props.reverseOffsets && props.reverseNeighbors
-      ? createAdjacency(
-          props.reverseOffsets,
-          getGraphViewGPUVector(id, 'reverseNeighbors', props.reverseNeighbors),
-          'reverse'
-        )
-      : undefined;
-  const graph = new GPUGraphAlgorithmsData({
-    vertexCount: nodeCount,
-    sourceVertices: forwardNeighbors,
-    targetVertices: forwardNeighbors,
-    directed: Boolean(reverse)
-  });
-  // The real `GPUGraphAlgorithmsTopology` constructor validates the outputs of a topology *rebuild*: it
-  // demands distinct physical allocations per adjacency field and a rebuild-sized `invalidEdgeCount`.
-  // This adapter deliberately aliases fields (edge IDs reuse neighbors, count and overflow share one
-  // status word) and never rebuilds, so it supplies the structural shape the algorithms read.
-  return {
-    id: `${id}-topology`,
-    graph,
-    forward,
-    reverse,
-    invalidEdgeCount: statusVector,
-    addToGraph: () => {
-      throw new Error(`${id} topology adapter is read-only and cannot rebuild adjacency`);
-    }
-  } as unknown as GPUGraphAlgorithmsTopology;
 }

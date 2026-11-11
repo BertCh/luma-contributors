@@ -12,7 +12,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Properties for {@link GPUGaussianPredictiveScores}. */
@@ -61,7 +61,7 @@ export class GPUGaussianPredictiveScores implements GPUCommandNodeProducer {
       ['observations', props.observations],
       ['output.crps', props.output.crps]
     ] as const) {
-      validatePackedView(view, ['float32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} ${name}`);
     }
     const count = props.means.length;
     if (

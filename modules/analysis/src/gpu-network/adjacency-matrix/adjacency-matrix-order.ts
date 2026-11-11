@@ -12,7 +12,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -71,8 +71,8 @@ export class GPUAdjacencyMatrixOrder implements GPUCommandNodeProducer {
   constructor(props: GPUAdjacencyMatrixOrderProps) {
     this.id = props.id ?? 'adjacency-matrix-order';
     this.props = props;
-    validatePackedView(props.groups, ['uint32'], `${this.id} groups`);
-    validatePackedView(props.output.order, ['uint32'], `${this.id} output.order`);
+    validateSinglePackedView(props.groups, ['uint32'], `${this.id} groups`);
+    validateSinglePackedView(props.output.order, ['uint32'], `${this.id} output.order`);
     if (props.groups.length < 1) {
       throw new Error(`${this.id} groups must contain at least one row`);
     }
@@ -83,7 +83,7 @@ export class GPUAdjacencyMatrixOrder implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['uint32'], `${this.id} ${name}`);
+      validateSinglePackedView(view, ['uint32'], `${this.id} ${name}`);
       if (view.length !== props.groups.length) {
         throw new Error(`${this.id} ${name} must contain one row per node`);
       }

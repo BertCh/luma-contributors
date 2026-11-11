@@ -14,7 +14,7 @@ import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-cont
 import {GPULineSplit} from '../line-split/gpu-line-split';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -50,10 +50,10 @@ export class GPULineLoopRemoval implements GPUCommandNodeProducer {
     this.id = props.id ?? 'line-loop-removal';
     this.props = props;
     validateCapacity(this.id, 'intersectionCapacity', props.intersectionCapacity, 1);
-    validatePackedView(props.output.positions, ['float32x2'], this.id);
-    validatePackedView(props.output.lineOffsets, ['uint32'], this.id);
-    validatePackedView(props.output.sourceEdges, ['uint32'], this.id);
-    validatePackedView(props.output.status, ['uint32x4'], this.id);
+    validateSinglePackedView(props.output.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.output.lineOffsets, ['uint32'], this.id);
+    validateSinglePackedView(props.output.sourceEdges, ['uint32'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32x4'], this.id);
     if (
       props.output.lineOffsets.length !== props.lines.lineOffsets.length ||
       props.output.sourceEdges.length !== props.output.positions.length ||

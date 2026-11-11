@@ -27,13 +27,18 @@ import {
 import {addSparseResistanceSolveNodes} from './sparse-resistance-solver';
 
 /** Largest vertex count: 2^20 keeps the vertex-wide reduction trees and label arrays within one binding. */
-const MAXIMUM_VERTEX_COUNT = 1048576;
+export const SPARSE_RESISTANCE_CONNECTIVITY_MAXIMUM_VERTEX_COUNT = 1048576;
 /** Largest edge count: 2^21 edges give 2^22 half-edge entries, within one 128 MiB binding of uint32 pairs. */
-const MAXIMUM_EDGE_COUNT = 2097152;
+export const SPARSE_RESISTANCE_CONNECTIVITY_MAXIMUM_EDGE_COUNT = 2097152;
+const MAXIMUM_VERTEX_COUNT = SPARSE_RESISTANCE_CONNECTIVITY_MAXIMUM_VERTEX_COUNT;
+const MAXIMUM_EDGE_COUNT = SPARSE_RESISTANCE_CONNECTIVITY_MAXIMUM_EDGE_COUNT;
 /** Largest PCG iteration count: the iterations are unrolled, five command nodes each (20,480 at the limit). */
-const MAXIMUM_ITERATIONS = 4096;
+export const SPARSE_RESISTANCE_CONNECTIVITY_MAXIMUM_ITERATIONS = 4096;
 /** Largest label-propagation round count: rounds are unrolled, two command nodes each. */
-const MAXIMUM_CONNECTIVITY_ITERATIONS = 1024;
+export const SPARSE_RESISTANCE_CONNECTIVITY_MAXIMUM_CONNECTIVITY_ITERATIONS = 1024;
+const MAXIMUM_ITERATIONS = SPARSE_RESISTANCE_CONNECTIVITY_MAXIMUM_ITERATIONS;
+const MAXIMUM_CONNECTIVITY_ITERATIONS =
+  SPARSE_RESISTANCE_CONNECTIVITY_MAXIMUM_CONNECTIVITY_ITERATIONS;
 const OPERATION = 'addSparseResistanceConnectivityRecipe';
 
 /** Command nodes of one unrolled PCG iteration: curvature, alpha, update, beta, search. */

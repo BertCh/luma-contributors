@@ -44,23 +44,22 @@ function polygon(graph: GPUCommandGraph, vertices = 8, rings = 2, polygons = 1) 
 }
 
 function output(graph: GPUCommandGraph, vertices = 64, rings = 16): GPUPolygonOverlayOutput {
-  const sourceIds = view(graph, 'uint32', rings);
-  const status = () => ({
+  // The overlay result has no `requiredCount` (rule 8); its boundary has one.
+  const geometryStatus = () => ({
     count: view(graph, 'uint32', 1),
-    requiredCount: view(graph, 'uint32', 1),
     overflow: view(graph, 'uint32', 1),
     candidateOverflow: view(graph, 'uint32', 1)
   });
+  const status = () => ({...geometryStatus(), requiredCount: view(graph, 'uint32', 1)});
   return {
     geometry: {
       kind: 'polygons',
       positions: view(graph, 'float32x2', vertices),
       featureOffsets: view(graph, 'uint32', rings + 1),
       polygonOffsets: view(graph, 'uint32', rings + 1),
-      ringOffsets: view(graph, 'uint32', rings + 1),
-      sourceIds
+      ringOffsets: view(graph, 'uint32', rings + 1)
     },
-    status: status(),
+    status: geometryStatus(),
     boundary: {
       endpoints: view(graph, 'float32x4', 64),
       operandIds: view(graph, 'uint32', 64),
@@ -90,7 +89,7 @@ it('GPUPolygonOverlay builds a noded Boolean boundary and compact polygon surfac
   expect(ids).not.toContain('polygon-overlay-publish-required');
 });
 
-it('GPUPolygonOverlay enforces unary dissolve and shared canonical source IDs', () => {
+it('GPUPolygonOverlay enforces unary dissolve, one ring capacity and no output source IDs', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'overlay-validation'});
   expect(
     () =>
@@ -113,10 +112,9 @@ it('GPUPolygonOverlay enforces unary dissolve and shared canonical source IDs', 
         output: output(graph)
       })
   ).toThrow(/accepts only the left operand/);
-  // The output has no top-level `sourceIds`: `geometry.sourceIds` is the only source-ID view, so only
-  // its length (one entry per ring) is checked.
+  // Every offsets view of the output shares the ring capacity.
   const mismatched = output(graph);
-  mismatched.geometry.sourceIds = view(graph, 'uint32', 15);
+  mismatched.geometry.polygonOffsets = view(graph, 'uint32', 16);
   expect(
     () =>
       new GPUPolygonOverlay({
@@ -127,6 +125,21 @@ it('GPUPolygonOverlay enforces unary dissolve and shared canonical source IDs', 
         output: mismatched
       })
   ).toThrow(/share one ring capacity/);
+  // An overlay polygon has no single source row, so a `geometry.sourceIds` view is rejected.
+  const withSourceIds = output(graph);
+  expect(
+    () =>
+      new GPUPolygonOverlay({
+        left: polygon(graph),
+        operation: 'dissolve',
+        capacity: {intersections: 8, nodedSegments: 16},
+        vertexTolerance: 1e-5,
+        output: {
+          ...withSourceIds,
+          geometry: {...withSourceIds.geometry, sourceIds: view(graph, 'uint32', 16)} as never
+        }
+      })
+  ).toThrow('polygon-overlay output.geometry.sourceIds is not written');
 });
 
 it('GPUBufferSurface composes joins, line caps and topology repair', () => {

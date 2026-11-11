@@ -27,12 +27,21 @@ function getAreaTolerance(fixture: PolygonBufferFixture): number {
   return fixture.joinStyle === 'round' ? 5e-3 : 1e-4;
 }
 
-async function runFixture(fixture: PolygonBufferFixture) {
+async function runFixture(
+  fixture: PolygonBufferFixture,
+  capacity = {vertices: 512, rings: 32, boundary: 512, intersections: 1024, nodedSegments: 1024}
+) {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: `polygon-buffer-${fixture.name}`});
   const graphBuffers = createBufferGraph(device, graph);
-  const result = createBufferResult(graphBuffers, 'result');
+  const result = createBufferResult(
+    graphBuffers,
+    'result',
+    capacity.vertices,
+    capacity.rings,
+    capacity.boundary
+  );
   const coordinates = fixture.rings.flat();
   const positions = graphBuffers.input(
     'positions',
@@ -85,7 +94,7 @@ async function runFixture(fixture: PolygonBufferFixture) {
       capStyle: fixture.capStyle,
       quadSegments: 8,
       vertexTolerance: 1e-5,
-      capacity: {intersections: 1024, nodedSegments: 1024},
+      capacity: {intersections: capacity.intersections, nodedSegments: capacity.nodedSegments},
       output: result.output
     })
   );
@@ -93,12 +102,12 @@ async function runFixture(fixture: PolygonBufferFixture) {
   submitGraph(device, compiled, undefined);
   const polygons = await readResultPolygons(result);
   const [overflow] = await readUint32(result.overflow, 1);
-  const [requiredCount] = await readUint32(result.requiredCount, 1);
+  const [requiredRingCount] = await readUint32(result.requiredRingCount, 1);
   compiled.destroy();
   for (const buffer of graphBuffers.buffers) {
     buffer.destroy();
   }
-  return {polygons, overflow, requiredCount};
+  return {polygons, overflow, requiredRingCount};
 }
 
 // Collapsed and merged holes (review finding D-02, test/oracles/geometry-buffer-collapsed-holes.py):
@@ -131,7 +140,8 @@ for (const fixture of [
       return;
     }
     expect(run.overflow).toBe(0);
-    expect(run.requiredCount).toBeGreaterThanOrEqual(run.polygons.length);
+    const ringCount = run.polygons.reduce((total, polygon) => total + polygon.length, 0);
+    expect(run.requiredRingCount).toBeGreaterThanOrEqual(ringCount);
     const area = getPolygonsArea(run.polygons);
     expect(Math.abs(area - fixture.area) / fixture.area).toBeLessThan(getAreaTolerance(fixture));
     const [x0, y0, x1, y1] = fixture.bounds;
@@ -152,5 +162,92 @@ for (const fixture of [
       }
     }
     expect(mismatches).toEqual([]);
+  });
+}
+
+// Math correctness review 2026-11-10, polygon-topology-09. A thin counter-clockwise strip, 2.8
+// units wide and 22.8 million long, with one long side densified to 220 edges. Its exact doubled
+// area is 129,085,523, while a float32 shoelace sum about its first vertex is unreliable: a CPU
+// replica gives between -9.7e7 and -4.3e8 under seven evaluation orders, with and without fused
+// multiply-add (products near 2.6e14 round to multiples of 3.3e7 and the errors of 221 terms add
+// up). The kernel used to pick the offset ring to collapse from that sum; it now uses the ring's
+// role after the exact orientation pass. This spec does not tell the two apart: it passed before
+// the change as well. Either the GPU's sum kept the right sign, or collapsing the other ring
+// leaves the same surface (for a strip this thin the two offset rings are mirror images to
+// float32 precision); which of the two was not established. It pins that such a ring is buffered
+// correctly. Hand value: to float32 precision the strip is a segment of length L, whose
+// buffer is a stadium of area 2 L d + pi d^2 (round joins of 8 segments per quadrant lose 0.3%).
+it('GPUBufferSurface buffers a thin strip whose float32 shoelace sum is unreliable', async () => {
+  const farX = 16116802;
+  const farY = 16173021;
+  const width = 2;
+  const edgeCount = 220;
+  const ring: number[] = [0, 0, farX, farY, farX - width, farY + width];
+  for (let step = edgeCount - 1; step >= 1; step--) {
+    const fraction = step / edgeCount;
+    ring.push(Math.round(-width + fraction * farX), Math.round(width + fraction * farY));
+  }
+  ring.push(-width, width);
+  let doubledArea = 0n;
+  for (let row = 0; row < ring.length / 2; row++) {
+    const next = (row + 1) % (ring.length / 2);
+    doubledArea +=
+      BigInt(ring[2 * row]) * BigInt(ring[2 * next + 1]) -
+      BigInt(ring[2 * next]) * BigInt(ring[2 * row + 1]);
+  }
+  expect(doubledArea).toBe(129085523n);
+  const distance = 1e7;
+  const run = await runFixture(
+    {
+      name: 'thin-strip',
+      kind: 'polygon',
+      rings: [ring],
+      distance,
+      joinStyle: 'round',
+      capStyle: 'round'
+    } as unknown as PolygonBufferFixture,
+    {vertices: 16384, rings: 64, boundary: 65536, intersections: 65536, nodedSegments: 65536}
+  );
+  if (!run) {
+    return;
+  }
+  expect(run.overflow).toBe(0);
+  expect(run.polygons.length).toBe(1);
+  const expectedArea = 2 * Math.hypot(farX, farY) * distance + Math.PI * distance * distance;
+  const area = getPolygonsArea(run.polygons);
+  expect(Math.abs(area - expectedArea) / expectedArea).toBeLessThan(1e-2);
+});
+
+// Sub-step slivers (fix review of 2026-11-10, polygon-topology follow-up). Triangles of exact
+// doubled area 1 whose long sides are 23.7 million units: thinner than one float32 step. At the
+// tip the two long edges reverse within 6e-8 radians, and the float32 cross product of the unit
+// directions lost the sign of that turn, so the round join went to the wrong side and the end cap
+// was missing (areas 20% and 40% low). The turn is now an exact orientation sign. Hand value: to
+// float32 precision the sliver is a segment of length L, whose buffer is a stadium of area
+// 2 L d + pi d^2 (round joins of 8 segments per quadrant lose 0.3%).
+for (const [name, ring] of [
+  ['second product exact', [0, 0, 16777215, 16777214, 16777216, 16777215]],
+  ['first product exact', [0, 0, 16769025, 16773119, 16773121, 16777216]]
+] as const) {
+  it(`GPUBufferSurface keeps the end caps of a sub-step sliver: ${name}`, async () => {
+    const distance = 1e7;
+    const length = Math.hypot(ring[4], ring[5]);
+    const run = await runFixture({
+      name: `sliver-${name}`,
+      kind: 'polygon',
+      rings: [[...ring]],
+      distance,
+      joinStyle: 'round',
+      capStyle: 'round'
+    } as unknown as PolygonBufferFixture);
+    if (!run) {
+      return;
+    }
+    expect(run.overflow).toBe(0);
+    expect(run.polygons.length).toBe(1);
+    expect(run.polygons[0].length).toBe(1);
+    const expectedArea = 2 * length * distance + Math.PI * distance * distance;
+    const area = getPolygonsArea(run.polygons);
+    expect(Math.abs(area - expectedArea) / expectedArea).toBeLessThan(1e-2);
   });
 }

@@ -36,7 +36,7 @@ export type GPURasterEOFProjectionProps = {
   modeCount: number;
   /** The same field given to `GPURasterSnapshotCovariance`, cell-major. */
   values: GraphDataView<'float32'>;
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** The same area weights given to `GPURasterSnapshotCovariance`. */
   weights?: GraphDataView<'float32'>;
   /** The parameters view of `GPURasterSnapshotCovariance`. */
@@ -90,8 +90,8 @@ export class GPURasterEOFProjection implements GPUCommandNodeProducer {
     validateCapacity(id, 'cellCount times sliceCount', observations);
     validateRequirement(
       id,
-      [props.values, props.validity].every(view => !view || view.length >= observations),
-      'values and validity must hold cellCount times sliceCount entries'
+      [props.values, props.mask].every(view => !view || view.length >= observations),
+      'values and mask must hold cellCount times sliceCount entries'
     );
     validateRequirement(
       id,
@@ -127,13 +127,13 @@ export class GPURasterEOFProjection implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, weights, parameters, temporalModes, singularValues} = this.props;
+    const {values, mask, weights, parameters, temporalModes, singularValues} = this.props;
     return [
       values,
       parameters,
       temporalModes,
       singularValues,
-      ...(validity ? [validity] : []),
+      ...(mask ? [mask] : []),
       ...(weights ? [weights] : [])
     ];
   }
@@ -146,15 +146,7 @@ export class GPURasterEOFProjection implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, componentSpace} = this;
-    const {
-      sliceCount: slices,
-      modeCount: modes,
-      values,
-      validity,
-      weights,
-      parameters,
-      output
-    } = props;
+    const {sliceCount: slices, modeCount: modes, values, mask, weights, parameters, output} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const scaleExpression =
       componentSpace === 'weighted' && weights ? 'sqrt(weights[weightsOffset + index])' : '1.0';
@@ -169,7 +161,7 @@ export class GPURasterEOFProjection implements GPUCommandNodeProducer {
           rasterBinding('parameters', parameters),
           rasterBinding('temporalModes', props.temporalModes),
           rasterBinding('singularValues', props.singularValues),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           ...(weights ? [rasterBinding('weights', weights)] : []),
           rasterBinding('eofs', output.eofs, true),
           rasterBinding('status', output.status, true)
@@ -182,7 +174,7 @@ var total = 0.0;
 for (var slice = 0u; slice < ${slices}u; slice++) {
   let source = index * ${slices}u + slice;
   let value = values[valuesOffset + source];
-  if (!finite(value) || abs(value) > limit ${validity ? '|| validity[validityOffset + source] == 0u' : ''}) { kept = false; break; }
+  if (!finite(value) || abs(value) > limit ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { kept = false; break; }
   total += value;
 }
 let mean = total / ${slices}.0;

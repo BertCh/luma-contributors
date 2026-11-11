@@ -326,3 +326,60 @@ it('raster-algebra barrier kernels pass the workgroup size their WGSL assumes', 
     expect(classifySources[0].source).toContain('@workgroup_size(256)');
   });
 });
+
+it('raster-algebra contributors validate the mask input', () => {
+  withGraph(graph => {
+    const parameters = view(graph, 'float32', 8);
+    expect(
+      () =>
+        new GPURasterArithmetic({
+          cellCount: 4,
+          a: view(graph, 'float32', 4),
+          mask: view(graph, 'uint32', 3),
+          parameters,
+          output: {values: view(graph, 'float32', 4)}
+        })
+    ).toThrow(/^raster-arithmetic mask must hold at least 4 rows/);
+    expect(
+      () =>
+        new GPURasterCellStatistics({
+          stack: view(graph, 'float32', 8),
+          layerCount: 2,
+          cellCount: 4,
+          mask: view(graph, 'float32', 4) as never,
+          parameters: view(graph, 'float32', 4),
+          output: {mean: view(graph, 'float32', 4)}
+        })
+    ).toThrow(/^raster-cell-statistics mask/);
+    expect(
+      () =>
+        new GPUWeightedOverlay({
+          stack: view(graph, 'float32', 8),
+          layerCount: 2,
+          cellCount: 4,
+          mask: view(graph, 'uint32', 2),
+          parameters: view(graph, 'float32', getGPUWeightedOverlayParameterLength(2)),
+          output: {score: view(graph, 'float32', 4)}
+        })
+    ).toThrow(/^weighted-overlay mask must hold at least 4 rows/);
+    expect(
+      () =>
+        new GPUWeightedOverlay({
+          stack: view(graph, 'float32', 8),
+          layerCount: 2,
+          cellCount: 4,
+          parameters: view(graph, 'float32', getGPUWeightedOverlayParameterLength(2)),
+          output: {score: view(graph, 'float32', 4), validity: view(graph, 'uint32', 3)}
+        })
+    ).toThrow(/^weighted-overlay output.validity must hold at least 4 rows/);
+    expect(
+      () =>
+        new GPURasterConditional({
+          cellCount: 4,
+          conditionValues: view(graph, 'float32', 4),
+          parameters,
+          output: {values: view(graph, 'float32', 4), conditionResult: view(graph, 'uint32', 3)}
+        })
+    ).toThrow(/^raster-conditional output.conditionResult must hold at least 4 rows/);
+  });
+});

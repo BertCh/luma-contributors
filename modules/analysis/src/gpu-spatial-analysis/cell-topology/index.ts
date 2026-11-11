@@ -68,3 +68,26 @@ export type {
   GPUS2PolygonCoveringProps,
   GPUS2PolygonCoveringRefinement
 } from './gpu-s2-polygon-covering';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeS2CapCoveringOnCPU,
+  CPUS2CapCoveringOperation
+} from './cpu-s2-cap-covering-operation';
+export type {
+  CPUS2CapCoveringOptions,
+  CPUS2CapCoveringResult
+} from './cpu-s2-cap-covering-operation';
+export {
+  computeS2PolygonCoveringOnCPU,
+  CPUS2PolygonCoveringOperation
+} from './cpu-s2-polygon-covering-operation';
+export type {
+  CPUS2PolygonCoveringInput,
+  CPUS2PolygonCoveringOptions,
+  CPUS2PolygonCoveringResult
+} from './cpu-s2-polygon-covering-operation';
+export {GPUS2CapCoveringOperation} from './gpu-s2-cap-covering-operation';
+export type {S2CapCoveringOperationProps} from './gpu-s2-cap-covering-operation';
+export {GPUS2PolygonCoveringOperation} from './gpu-s2-polygon-covering-operation';
+export type {S2PolygonCoveringOperationProps} from './gpu-s2-polygon-covering-operation';

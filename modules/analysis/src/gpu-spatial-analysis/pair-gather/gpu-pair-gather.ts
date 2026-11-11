@@ -16,7 +16,7 @@ import {
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -160,7 +160,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
       ['status.matchedCount', output.status.matchedCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
       }
     }
     const capacity = output.leftRows.length;
@@ -183,18 +183,18 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     if (props.pairs) {
       const {pairs} = props;
       validateGPUCompactPairPort(id, pairs);
-      validatePackedView(pairs.leftIds, ['uint32'], `${id} pairs.leftIds`);
-      validatePackedView(pairs.rightIds, ['uint32'], `${id} pairs.rightIds`);
-      validatePackedView(pairs.status.count, ['uint32'], `${id} pairs.count`);
-      validatePackedView(pairs.status.overflow, ['uint32'], `${id} pairs.overflow`);
+      validateSinglePackedView(pairs.leftIds, ['uint32'], `${id} pairs.leftIds`);
+      validateSinglePackedView(pairs.rightIds, ['uint32'], `${id} pairs.rightIds`);
+      validateSinglePackedView(pairs.status.count, ['uint32'], `${id} pairs.count`);
+      validateSinglePackedView(pairs.status.overflow, ['uint32'], `${id} pairs.overflow`);
       if (pairs.rightIds.length !== pairs.leftIds.length) {
         throw new Error(`${id} pairs.rightIds length must equal pairs.leftIds length`);
       }
       slotCount = pairs.leftIds.length;
     } else {
       const {neighbors} = props;
-      validatePackedView(neighbors!.ids, ['uint32'], `${id} neighbors.ids`);
-      validatePackedView(neighbors!.counts, ['uint32'], `${id} neighbors.counts`);
+      validateSinglePackedView(neighbors!.ids, ['uint32'], `${id} neighbors.ids`);
+      validateSinglePackedView(neighbors!.counts, ['uint32'], `${id} neighbors.counts`);
       validateCapacity(id, 'neighbors.capacity', neighbors!.capacity);
       if (neighbors!.ids.length !== neighbors!.counts.length * neighbors!.capacity) {
         throw new Error(`${id} neighbors.ids length must equal counts length * capacity`);
@@ -214,14 +214,18 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     ] as const) {
       for (const [index, column] of (columns ?? []).entries()) {
         const label = `${id} ${name}[${index}]`;
-        validatePackedView(column.source, [column.source.format as 'float32' | 'uint32'], label);
+        validateSinglePackedView(
+          column.source,
+          [column.source.format as 'float32' | 'uint32'],
+          label
+        );
         if (column.source.format !== 'float32' && column.source.format !== 'uint32') {
           throw new Error(`${label} must be float32 or uint32`);
         }
         if (column.output.format !== column.source.format) {
           throw new Error(`${label} output format must equal source format`);
         }
-        validatePackedView(column.output, [column.output.format], `${label} output`);
+        validateSinglePackedView(column.output, [column.output.format], `${label} output`);
         if (column.output.length !== rows) {
           throw new Error(`${label} output length must equal output.leftRows length`);
         }
@@ -231,7 +235,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
       }
     }
     for (const flag of props.overflowSources ?? []) {
-      validatePackedView(flag, ['uint32'], `${id} overflowSources`);
+      validateSinglePackedView(flag, ['uint32'], `${id} overflowSources`);
     }
     validateGraphOutputsDisjointFromInputs(id, this._getOutputViews(), this._getInputViews());
   }

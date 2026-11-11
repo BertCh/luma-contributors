@@ -61,13 +61,13 @@ as `GPU_POINT_CLOUD_<NAME>_STATUS_*`.
   (6 values per row).
 - Status bits: 1 `..._FEATURES_STATUS_DEGENERATE` (fewer than three neighbors, or collinear or
   coincident neighbors: normal and shape are zero), 2 `..._TRUNCATED` (counts above `capacity`),
-  4 `..._NOT_CONVERGED` (24 Jacobi sweeps were not enough).
-- Limits: capacity 64, per-lane arrays and the unrolled 24-sweep eigensolve.
+  4 `..._NOT_CONVERGED` (24 Jacobi rotations, one pivot each, were not enough).
+- Limits: capacity 64, per-lane arrays and the 24-rotation eigensolve.
 
 ### GPUPointCloudStatisticalFilter
 
 - Props: `squaredDistances`, `counts`, `capacity` (1 to 64), `standardDeviations` (default 2).
-- Outputs: `meanDistances` (`-1` without support), `mask` (1 inlier, 0 outlier).
+- Outputs: `meanDistances` (`-1` without support), `validity` (1 inlier, 0 outlier).
 - Status: none per row. A row without neighbors is an outlier by definition.
 - Limits: capacity 64. The global statistics are three `GPUReduction` sums plus one single-row
   threshold kernel; no kernel loops over the rows.
@@ -77,7 +77,8 @@ as `GPU_POINT_CLOUD_<NAME>_STATUS_*`.
 - Props: `positions`, `classifications`, `grid` (`PointCloudRasterGrid`), `groundClass` (default 2).
 - Outputs: `terrain`, `surface`, `canopy`, `coverage` (one per cell).
 - Coverage bits: 1 `GPU_POINT_CLOUD_COVERAGE_ANY_POINT`, 2 `GPU_POINT_CLOUD_COVERAGE_GROUND`.
-- Limits: grid cells below 2^32 (`GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS`), row 0 at the minimum y (rows run north).
+- Limits: grid cells below 2^32 (`GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS`), 
+- Row order: `grid.rowDirection` is `'south'` by default (row 0 at the maximum y, rows run toward decreasing y), the order of the raster and terrain families (GDAL and image order, `GPURasterMetadata`, D8 flow codes), so these rasters feed `GPUTerrainFlow`, the derivatives and the illumination contributors without flipping rows. Pass `'north'` for row 0 at the minimum y. Unlike the terrain classes, `PointCloudRasterGrid` has no affine or signed cell height, so the direction cannot be derived from the grid and a contradiction cannot be detected: give every point-cloud contributor that shares the grid the same direction. `GPUPointCloudSurfaces`, `GPUPointCloudHeight`, `GPUPointCloudGround` and `GPUPointCloudSMRF` honour it; a point on a cell boundary belongs to the cell above in either order. Membership is the same half-open test in both orders, on `o = (y - origin.y) / cellSize`: the point is inside when `0 <= o < height`, in north row `floor(o)` or south row `height - 1 - floor(o)`. Before this change the default was `'north'`, so a caller that left the prop out now gets the rows mirrored.
 
 ### GPUPointCloudHeight
 
@@ -107,8 +108,9 @@ as `GPU_POINT_CLOUD_<NAME>_STATUS_*`.
 - Status bits: 1 `..._SMRF_STATUS_INVALID`, 2 `..._NO_TERRAIN`, 4 `..._EXCLUDED`, 8 `..._INPAINTED`
   (inpainted terrain, or within the filter margin of the grid edge). Bits 1, 2 and 4 are exclusive
   and exclude bit 8.
-- Limits: window at most 64 cells (`GPU_POINT_CLOUD_MAXIMUM_SMRF_WINDOW_CELLS`, unrolled openings grow as the
-  square of the radius: about 190 nodes at the default 18 and 2,100 at 64), cut at most 32 cells
+- Limits: window at most 64 cells (`GPU_POINT_CLOUD_MAXIMUM_SMRF_WINDOW_CELLS`; the openings are unrolled
+  into published `GPURasterErosion` and `GPURasterDilation` passes of radius at most 8, about 50 passes at
+  the default 18 and 350 at 64), cut at most 32 cells
   (`GPU_POINT_CLOUD_MAXIMUM_SMRF_CUT_CELLS`). The inpainting valid counts are published `GPUReduction` sums. The
   inpainting ring search is still a per-cell loop that can reach `max(width, height)` rings on sparse coverage.
 
@@ -215,12 +217,22 @@ distance cannot overflow the accumulated moment. It performs no compaction or at
 A point exactly at the threshold can classify differently across devices, because the sums are
 tree-ordered and the reduction strategy depends on the device.
 
-An optional `centroids: float32x3[voxelCount]` on `GPUPointCloudVoxelDownsample` adds arithmetic
-means of positions. The existing `output` stays the sampled source position, and representatives
-stay original IDs. Centroids use a source anchor to reduce cancellation and traverse sorted voxel membership. Empty centroids are zero with zero counts. Optional `attribute: {values, means, counts}`
-adds scalar or vector means per voxel alongside centroids; nonfinite whole vectors are excluded, and
-attribute counts independently report finite-value support. Gather arbitrary sampled attributes
-using the representative IDs. `GPUPointCloudVoxelMerge` combines disjoint partition reductions as described below. Applications must supply complete
+The published `GPUPointCloudVoxelDownsample` (`@luma.gl/graph/gpu-pointcloud`, 10.0.0-alpha.10)
+takes `positions`, `origin`, `voxelSize` and `gridSize` and writes `representatives` (the smallest
+source row ID per voxel), `counts` and `output` (the representative's position). It has no
+`centroids` and no `attribute` option: an earlier version of this page described both, and they
+are not in the published release. Gather sampled attributes using the representative IDs.
+
+`GPUPointCloudVoxelMerge` needs a per-voxel `centroids` input (the arithmetic mean of the member
+positions) and, optionally, per-voxel attribute means with their own counts. Nothing published or
+local produces them, so today the caller computes them per part: on the CPU while the part is
+built, or on the GPU as a keyed mean, with the voxel index
+`(z * gridSize[1] + y) * gridSize[0] + x` of `floor((position - origin) / voxelSize)` as a dense
+`uint32` key and the coordinates (and attribute components) as columns, for example with
+`GPUGroupStatistics` and `keyCount = voxelCount`. Empty voxels must hold count 0. Do not pass the
+published `output` as `centroids`: the merge would then return a count-weighted mean of
+representative points, which is not the centroid. Voxel centroids and attribute means on
+`GPUPointCloudVoxelDownsample` are an upstream gap. `GPUPointCloudVoxelMerge` combines disjoint partition reductions as described below. Applications must supply complete
 neighborhood halos for tiled filtering; per-tile statistical thresholds are different from a
 global-cloud threshold.
 
@@ -250,8 +262,18 @@ original point positions and original classifications. Use `GPUPointCloudSurface
 all-equal classification input and that value as `groundClass` to prepare such a minimum surface.
 `radii` is a strictly increasing array of 1–32 cell radii. Each stage opens the original minimum
 surface using square erosion then dilation, and rejects points whose elevation above the opening
-exceeds `min(maximumThreshold, initialThreshold + slope * cellSize * radiusIncrement)`.
+exceeds `min(maximumThreshold, initialThreshold + slope * cellSize * radiusIncrement)`, where
+`radiusIncrement` is `radii[k] - radii[k - 1]` and the first stage uses `radii[0]`.
 A point rejected at an earlier stage stays rejected. Negative residuals remain ground candidates.
+
+This threshold is a convention of this class, not equation 7 of Zhang et al. (2003). Zhang uses
+`initialThreshold` alone while the window is at most 3 cells wide, and
+`initialThreshold + slope * (w[k] - w[k - 1]) * cellSize` afterwards, with the full window width
+`w = 2 * radius + 1`. So the first stage here already adds `slope * cellSize * radii[0]`, and at
+later stages the same `slope` is half as permissive, because a radius increment is half a
+window-width increment: pass twice the slope to match Zhang's later stages. With `radii: [1, 2]`,
+`cellSize: 1`, `slope: 0.1` and `initialThreshold: 0.2` the thresholds here are 0.3 and 0.3;
+Zhang's are 0.2 and 0.4. No PCL or PDAL `filters.pmf` fixture pins this class.
 
 The output `groundMask` identifies survivors. `outputClassifications` sets survivors to LAS ground
 class 2, changes rejected former ground points to unclassified class 1, and retains other rejected
@@ -305,7 +327,7 @@ ordering is not a portable public contract; equally distant cutoff ties may sele
 anchors. The independent SciPy oracle covers holes, low outliers, slope scaling, scalar zero and
 net cutting. Its checked-in generator optionally invokes the actual PDAL CLI for differential
 classifications. Arithmetic is float32, so threshold-boundary decisions can differ from PDAL's
-double-precision implementation. Inpainting expands square rings and stops only after every cell capable of beating or tying the eighth distance is visited. It is exact and remains quadratic for large unsupported regions; completely anchorless grids are detected once and bypass searching. Diamond morphology uses repeated radius-one crosses, preserving clipped diamond semantics while reducing each radius-r pass to O(cells × r) work. Cell minima use a sorted index rather than scanning every point per cell. Provide full
+double-precision implementation. Inpainting expands square rings and stops only after every cell capable of beating or tying the eighth distance is visited. It is exact and remains quadratic for large unsupported regions; completely anchorless grids are detected once and bypass searching. Diamond morphology delegates to the published `GPURasterErosion` and `GPURasterDilation` (`@luma.gl/graph/gpu-raster`) with the `'cross'` structuring element, a `'nodata'` border and the `'ignore'` policy, so cells outside the grid do not take part. One pass covers a radius of at most 8 and a larger diamond is a sequence of passes, which preserves clipped diamond semantics exactly (a diamond is a Minkowski sum of smaller diamonds). A headless spec compares the windows with a full diamond scan for radii 1 to 37. Cell minima use a sorted index rather than scanning every point per cell. Provide full
 halos for tiled use: silently classifying independently cropped tiles is not partition-equivalent.
 
 ## Bounded rigid registration
@@ -432,7 +454,7 @@ device metadata, phase definitions and invocation are recorded in
 
 `GPUPointCloudFeatures` accepts a neighborhood row count independent of the number of candidate positions, so the owned-row neighborhoods compose directly. Covariance is centered on each neighborhood; viewpoint orientation uses its centroid. Read neighborhood halo-status separately from feature degeneracy/truncation status.
 
-Voxel `attribute` accepts matching float32 scalar or x2/x3/x4 input/output formats. A vector contributes only when all its components are finite; its finite-support count is separate from the geometric population. Centroids and attributes traverse sorted cell membership, making their work linear in the number of members after indexing.
+The `attribute` of `GPUPointCloudVoxelMerge` accepts matching float32 scalar or x2/x3/x4 means for the parts and the merged output. Its finite-support count is separate from the geometric population, so the caller that builds a part's means decides which vectors contribute (count only vectors whose components are all finite). The merge itself is linear in voxels times parts.
 
 `GPUPointCloudVoxelMerge` combines counts, centroids, minimum global representative IDs and optional vector means from aligned per-grid reductions. Every part declares `sourceRowOffset`; the caller certifies `partitionPolicy: 'disjoint-owned-rows'`. Exclude halo replicas before voxel reduction. Geometric and attribute means use their own population weights. Status bit 1 reports uint32 population overflow and bit 2 reports representative-ID overflow; reject flagged cells. Floating-point merge order can affect the last bits. Sampled positions can be gathered from the returned global representative IDs through the caller's global source mapping.
 
@@ -442,7 +464,7 @@ Voxel `attribute` accepts matching float32 scalar or x2/x3/x4 input/output forma
 
 ## Point-to-plane registration
 
-Set `metric: 'point-to-plane'` and supply target-row `targetNormals`. Nearest correspondence still uses Euclidean distance; the update minimizes weighted normal residuals through a six-parameter Gauss–Newton system. Normals are normalized, zero/nonfinite normals do not contribute, and the final mask includes normal validity. Six independent constraints and a full-rank system are required. Rank-deficient configurations, including an isolated flat plane, return status 3 rather than an arbitrary translation/rotation. The rotational increment uses Rodrigues' formula. History RMSE is the normal residual for this mode, versus Euclidean residual for point-to-point. Both remain local algorithms whose initialization matters.
+Set `metric: 'point-to-plane'` and supply target-row `targetNormals`. Nearest correspondence still uses Euclidean distance; the update minimizes weighted normal residuals through a six-parameter Gauss–Newton system. Normals are normalized, zero/nonfinite normals do not contribute, and the final mask includes normal validity. Six independent constraints and a full-rank system are required. The moments are taken about the centroid of the matched source points (256-row blocks, each about its own centre, moved to the common centroid before the solve), and the normal matrix is scaled to a unit diagonal before elimination, so the rank test does not depend on the coordinate unit or on how far the cloud lies from the origin: a room corner 500 m from the origin, a scene 10 km across and a scene in millimetres all solve. A pivot at or below 1e-5 of that scaled matrix is rank loss. Rank-deficient configurations, including an isolated flat plane, return status 3 rather than an arbitrary translation/rotation. The rotational increment uses Rodrigues' formula about the centroid and is composed back into the transform about the origin; the history's translation step is the change of that origin-frame translation, as in point-to-point mode. Float32 coordinates still limit the result to their own spacing, so use `origin` for large projected coordinates. History RMSE is the normal residual for this mode, versus Euclidean residual for point-to-point. Both remain local algorithms whose initialization matters.
 
 ## Declared uncertainty models
 

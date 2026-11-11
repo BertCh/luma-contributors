@@ -9,7 +9,7 @@ import {
 import {dggs} from '@luma.gl/shaders';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -70,7 +70,7 @@ export function addCellFlowTopologyRecipe<Parameters>(
     [props.destinations, 'uint32'],
     [props.values, 'float32']
   ] as const)
-    validatePackedView(view, [format], id);
+    validateSinglePackedView(view, [format], id);
   if (
     props.origins.length !== pairCount ||
     props.destinations.length !== pairCount ||
@@ -164,7 +164,7 @@ export function addCellFlowTopologyRecipe<Parameters>(
             : name === 'invalidCount'
               ? 1
               : edgeCount;
-    validatePackedView(view, [format], `${id} ${name}`);
+    validateSinglePackedView(view, [format], `${id} ${name}`);
     if (view.length !== length) throw new Error('Cell flow output length mismatch');
   }
   const outputBuffers = Object.values(getOutputColumns(outputs)).map(view => view.buffer);

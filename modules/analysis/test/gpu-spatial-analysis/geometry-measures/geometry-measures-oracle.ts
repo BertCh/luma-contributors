@@ -152,6 +152,31 @@ export function getSinAuthalicLatitude(latitudeDegrees: number): number {
 }
 
 /** Exact WGS84 area of a longitude/latitude box in square meters. */
+/**
+ * Geodetic latitude in degrees whose authalic sine is `sinAuthalicLatitude`: the exact inverse of
+ * {@link getSinAuthalicLatitude} by Newton iteration in binary64. Independent of the kernel's
+ * series (Snyder 3-18), which it pins.
+ */
+export function getLatitudeFromSinAuthalic(sinAuthalicLatitude: number): number {
+  let latitude = Math.asin(Math.max(-1, Math.min(1, sinAuthalicLatitude)));
+  for (let iteration = 0; iteration < 50; iteration++) {
+    const sinLatitude = Math.sin(latitude);
+    const derivative =
+      (2 * (1 - WGS84_E2) * Math.cos(latitude)) /
+      (1 - WGS84_E2 * sinLatitude * sinLatitude) ** 2 /
+      POLAR_Q;
+    if (derivative === 0) {
+      break;
+    }
+    const step = (getAuthalicQ(sinLatitude) / POLAR_Q - sinAuthalicLatitude) / derivative;
+    latitude -= step;
+    if (Math.abs(step) < 1e-15) {
+      break;
+    }
+  }
+  return latitude * RADIANS_TO_DEGREES;
+}
+
 export function getWgs84BoxArea(west: number, south: number, east: number, north: number): number {
   return (
     WGS84_AUTHALIC_RADIUS ** 2 *
@@ -310,13 +335,10 @@ export function measureFeature(
         Math.asin(Math.sin(origin[1] * DEGREES_TO_RADIANS) + localY) * RADIANS_TO_DEGREES
       ];
     } else {
-      const xi = Math.asin(getSinAuthalicLatitude(origin[1]) + localY);
-      const e4 = WGS84_E2 * WGS84_E2;
-      const latitude =
-        xi +
-        (WGS84_E2 / 3 + (31 * e4) / 180) * Math.sin(2 * xi) +
-        ((17 * e4) / 360) * Math.sin(4 * xi);
-      centroid = [origin[0] + localX * RADIANS_TO_DEGREES, latitude * RADIANS_TO_DEGREES];
+      centroid = [
+        origin[0] + localX * RADIANS_TO_DEGREES,
+        getLatitudeFromSinAuthalic(getSinAuthalicLatitude(origin[1]) + localY)
+      ];
     }
   } else if (!isPolygon && length > 0) {
     centroid = [origin[0] + lineMomentX / length, origin[1] + lineMomentY / length];

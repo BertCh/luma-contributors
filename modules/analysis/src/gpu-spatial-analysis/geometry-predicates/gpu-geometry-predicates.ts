@@ -19,7 +19,7 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSegmentIntersectionMaximumVertexCount,
@@ -231,7 +231,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       ['equalsIdentical', props.output.equalsIdentical]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length !== this.featureCount) {
           throw new Error(`${id} ${name} length must equal the feature count`);
         }
@@ -250,7 +250,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       ['intersectionCount', props.output.status?.intersectionCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length < 1) {
           throw new Error(`${id} ${name} must contain one uint32 row`);
         }
@@ -270,7 +270,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       if (!props.parameters) {
         throw new Error(`${id} equalsExact requires parameters`);
       }
-      validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
       if (props.parameters.length < GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH) {
         throw new Error(
           `${id} parameters must hold ${GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH} elements`
@@ -281,8 +281,12 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       if (!props.output.uniquePositions || !props.output.uniqueOffsets) {
         throw new Error(`${id} uniquePositions and uniqueOffsets must be given together`);
       }
-      validatePackedView(props.output.uniquePositions, ['float32x2'], `${id} uniquePositions`);
-      validatePackedView(props.output.uniqueOffsets, ['uint32'], `${id} uniqueOffsets`);
+      validateSinglePackedView(
+        props.output.uniquePositions,
+        ['float32x2'],
+        `${id} uniquePositions`
+      );
+      validateSinglePackedView(props.output.uniqueOffsets, ['uint32'], `${id} uniqueOffsets`);
       if (props.output.uniquePositions.length < this.vertexCount) {
         throw new Error(`${id} uniquePositions must hold at least the vertex count`);
       }
@@ -294,9 +298,9 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
 
   private validateGeometry(name: string, geometry: GPUSpatialJoinGeometry): void {
     const {id} = this;
-    validatePackedView(geometry.positions, ['float32x2'], `${id} ${name}.positions`);
+    validateSinglePackedView(geometry.positions, ['float32x2'], `${id} ${name}.positions`);
     for (const view of getPredicateGeometryViews(geometry).slice(1)) {
-      validatePackedView(view, ['uint32'], `${id} ${name} offsets`);
+      validateSinglePackedView(view, ['uint32'], `${id} ${name} offsets`);
       if (view.length < 1) {
         throw new Error(`${id} ${name} offsets require a terminal entry`);
       }

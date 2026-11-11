@@ -15,7 +15,7 @@ export type KMeansOracleResult = {
 const NOISE = 0xffffffff;
 
 /**
- * f64 Lloyd oracle with the same fixed rules as `GPUKMeans` for `'first-valid'` initialization:
+ * f64 Lloyd oracle with the same fixed rules as `GPUSpatialKMeans` for `'first-valid'` initialization:
  * first `k` finite points as centers, nearest center with lowest-ID ties, scikit-learn's
  * empty-cluster relocation inside every update (see {@link relocateEmptyClusters}), a final
  * assignment after the last update.
@@ -147,7 +147,7 @@ export function computeKMeansOracleFromCenters(
 }
 
 /**
- * The `GPUKMeans` restart rule: the run with the lowest total inertia wins, strictly, so ties go
+ * The `GPUSpatialKMeans` restart rule: the run with the lowest total inertia wins, strictly, so ties go
  * to the lowest restart index; a finite inertia replaces a NaN one. Returns the winning index.
  */
 export function selectBestKMeansRestart(inertias: readonly number[]): number {
@@ -191,7 +191,7 @@ export function createSeparatedBlobScene(blobs: number, perBlob: number): Float3
 export type SklearnRelocationFixture = {
   name: string;
   k: number;
-  /** Interleaved x, y. The first `k` rows are the initial centers (also GPUKMeans 'first-valid'). */
+  /** Interleaved x, y. The first `k` rows are the initial centers (also GPUSpatialKMeans 'first-valid'). */
   positions: number[];
   steps: Record<'1' | '2' | '3' | '50', {centers: number[]; labels: number[]; inertia: number}>;
 };

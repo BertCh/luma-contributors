@@ -127,3 +127,46 @@ export type {
   GPUInverseDistanceWeightingSettings,
   GPUInverseDistanceWeightingTaper
 } from './spatial-interpolation-parameters';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeConditionalGaussianSimulationOnCPU,
+  CPUConditionalGaussianSimulationOperation
+} from './cpu-conditional-gaussian-simulation-operation';
+export type {
+  CPUConditionalGaussianSimulationInput,
+  CPUConditionalGaussianSimulationOptions,
+  CPUConditionalGaussianSimulationResult
+} from './cpu-conditional-gaussian-simulation-operation';
+export {
+  computeVecchiaFisherScoringOnCPU,
+  CPUVecchiaFisherScoringOperation
+} from './cpu-vecchia-fisher-scoring-operation';
+export type {
+  CPUVecchiaFisherScoringInput,
+  CPUVecchiaFisherScoringResult
+} from './cpu-vecchia-fisher-scoring-operation';
+export {
+  computeVecchiaLogLikelihoodOnCPU,
+  CPUVecchiaLogLikelihoodOperation
+} from './cpu-vecchia-log-likelihood-operation';
+export type {
+  CPUVecchiaLogLikelihoodInput,
+  CPUVecchiaLogLikelihoodResult
+} from './cpu-vecchia-log-likelihood-operation';
+export {
+  computeVecchiaSpaceTimeLogLikelihoodOnCPU,
+  CPUVecchiaSpaceTimeLogLikelihoodOperation
+} from './cpu-vecchia-space-time-log-likelihood-operation';
+export type {
+  CPUVecchiaSpaceTimeLogLikelihoodInput,
+  CPUVecchiaSpaceTimeLogLikelihoodResult
+} from './cpu-vecchia-space-time-log-likelihood-operation';
+export {GPUConditionalGaussianSimulationOperation} from './gpu-conditional-gaussian-simulation-operation';
+export type {ConditionalGaussianSimulationOperationProps} from './gpu-conditional-gaussian-simulation-operation';
+export {GPUVecchiaFisherScoringOperation} from './gpu-vecchia-fisher-scoring-operation';
+export type {VecchiaFisherScoringOperationProps} from './gpu-vecchia-fisher-scoring-operation';
+export {GPUVecchiaLogLikelihoodOperation} from './gpu-vecchia-log-likelihood-operation';
+export type {VecchiaLogLikelihoodOperationProps} from './gpu-vecchia-log-likelihood-operation';
+export {GPUVecchiaSpaceTimeLogLikelihoodOperation} from './gpu-vecchia-space-time-log-likelihood-operation';
+export type {VecchiaSpaceTimeLogLikelihoodOperationProps} from './gpu-vecchia-space-time-log-likelihood-operation';

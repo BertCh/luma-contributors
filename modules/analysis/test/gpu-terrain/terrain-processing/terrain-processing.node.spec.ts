@@ -435,3 +435,24 @@ it('flow distance and stream network declare their command node count and stay w
     }
   }
 });
+
+it('flow fractions reject a sheared grid, whose two diagonal steps differ, and accept a rotated one', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  let identifier = 0;
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `fractions-${identifier++}`, format, length);
+  const create = (affine: readonly [number, number, number, number, number, number]) =>
+    new GPUTerrainFlowFractions({
+      grid: {width: 3, height: 1, affine, pixelInterpretation: 'area'},
+      elevation: view('float32', 3),
+      flowDirections: view('uint32', 3),
+      parameters: view('float32', 8),
+      routing: 'd-infinity',
+      output: {fractions: view('float32', 24), edgeLengths: view('float32', 24)}
+    });
+  expect(() => create([1, 0.5, 0, 0, -1, 0])).toThrow(
+    /^terrain-flow-fractions grid\.affine must have orthogonal pixel axes/
+  );
+  expect(() => create([0.6, 0.8, 0, 0.8, -0.6, 0])).not.toThrow();
+  expect(() => create([1, 0, 0, 0, 1, 0])).not.toThrow();
+});

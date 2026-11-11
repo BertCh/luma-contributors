@@ -16,7 +16,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateGPUStatusPort,
@@ -164,7 +164,7 @@ export class GPUTransitionDiagnostics implements GPUCommandNodeProducer {
       throw new Error(`${id} counts is too short`);
     }
     if (output.homogeneity) {
-      validatePackedView(output.homogeneity, ['float32'], `${id} output.homogeneity`);
+      validateSinglePackedView(output.homogeneity, ['float32'], `${id} output.homogeneity`);
       if (output.homogeneity.length < GPU_TRANSITION_HOMOGENEITY_LENGTH) {
         throw new Error(`${id} output.homogeneity is too short`);
       }
@@ -174,7 +174,7 @@ export class GPUTransitionDiagnostics implements GPUCommandNodeProducer {
       }
     }
     if (output.steadyStates) {
-      validatePackedView(output.steadyStates, ['float32'], `${id} output.steadyStates`);
+      validateSinglePackedView(output.steadyStates, ['float32'], `${id} output.steadyStates`);
       if (output.steadyStates.length < this.chainCount * classCount) {
         throw new Error(`${id} output.steadyStates is too short`);
       }

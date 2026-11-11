@@ -38,7 +38,7 @@ export type GPUBuildingTessellationOutput = {
   /**
    * One overlay output per building, holding the final polygons: the dissolved cells, or their
    * intersection with the enclosure in 'simple' mode. Each entry is the `output` of a
-   * `GPUPolygonOverlay` with the recipe's `capacity`.
+   * `GPUPolygonOverlay` with the recipe's `capacity`; the entry index is the building row.
    */
   overlays: readonly (GPUPolygonOverlayOutput | undefined)[];
   /** `float32x2`, `sampleCapacity` rows: boundary sample positions. */
@@ -392,9 +392,18 @@ for(var sample=0u;sample<${sampleCapacity}u;sample++){if(valid&&owners[ownersOff
     );
     const makeStatus = (name: string) => ({
       count: view(`${prefix}-${name}-count`, 'uint32', 1),
-      requiredCount: view(`${prefix}-${name}-required`, 'uint32', 1),
       overflow: view(`${prefix}-${name}-overflow`, 'uint32', 1),
       candidateOverflow: view(`${prefix}-${name}-candidates`, 'uint32', 1)
+    });
+    // The overlay geometry has no feature requirement (contract rule 8): its unclamped ring count
+    // sizes `capacity.rings`. The boundary requirement is `requiredCount`.
+    const makeGeometryStatus = (name: string) => ({
+      ...makeStatus(name),
+      requiredRingCount: view(`${prefix}-${name}-required`, 'uint32', 1)
+    });
+    const makeBoundaryStatus = (name: string) => ({
+      ...makeStatus(name),
+      requiredCount: view(`${prefix}-${name}-required`, 'uint32', 1)
     });
     // Transient overlay result views; `infix` is '' for the dissolve and 'clip-' for the clip.
     const makeOverlayOutput = (infix: string): GPUPolygonOverlayOutput => ({
@@ -403,10 +412,9 @@ for(var sample=0u;sample<${sampleCapacity}u;sample++){if(valid&&owners[ownersOff
         positions: view(`${prefix}-${infix}positions`, 'float32x2', props.capacity.vertices),
         featureOffsets: view(`${prefix}-${infix}features`, 'uint32', props.capacity.rings + 1),
         polygonOffsets: view(`${prefix}-${infix}polygons`, 'uint32', props.capacity.rings + 1),
-        ringOffsets: view(`${prefix}-${infix}rings`, 'uint32', props.capacity.rings + 1),
-        sourceIds: view(`${prefix}-${infix}sources`, 'uint32', props.capacity.rings)
+        ringOffsets: view(`${prefix}-${infix}rings`, 'uint32', props.capacity.rings + 1)
       },
-      status: makeStatus(`${infix}geometry`),
+      status: makeGeometryStatus(`${infix}geometry`),
       boundary: {
         endpoints: view(`${prefix}-${infix}boundary`, 'float32x4', props.capacity.nodedSegments),
         operandIds: view(`${prefix}-${infix}operands`, 'uint32', props.capacity.nodedSegments),
@@ -415,7 +423,7 @@ for(var sample=0u;sample<${sampleCapacity}u;sample++){if(valid&&owners[ownersOff
           'uint32',
           props.capacity.nodedSegments
         ),
-        status: makeStatus(`${infix}boundary`)
+        status: makeBoundaryStatus(`${infix}boundary`)
       }
     });
     const providedOverlay = output?.overlays?.[building];
@@ -461,23 +469,6 @@ for(var sample=0u;sample<${sampleCapacity}u;sample++){if(valid&&owners[ownersOff
     }
     const finalOverlay = overlay;
     outputs.push(finalOverlay);
-    graph.add(
-      createRecipeKernelNode(graph, {
-        id: `${id}-${prefix}-building-identity`,
-        operation: id,
-        invocationCount: props.capacity.rings,
-        bindings: [
-          {name: 'count', view: finalOverlay.status.count, type: 'u32', access: 'read'},
-          {
-            name: 'sourceIds',
-            view: finalOverlay.geometry.sourceIds,
-            type: 'u32',
-            access: 'read_write'
-          }
-        ],
-        body: `sourceIds[sourceIdsOffset+index]=select(0xffffffffu,${building}u,index<count[countOffset]);`
-      })
-    );
     graph.add(
       createRecipeKernelNode(graph, {
         id: `${id}-${prefix}-evidence`,

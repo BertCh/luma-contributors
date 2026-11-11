@@ -17,7 +17,7 @@ import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   CELL_KEY_WGSL,
@@ -227,12 +227,12 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
     if (props.wordOrder && props.wordOrder !== 'little-endian' && props.wordOrder !== 'high-low') {
       throw new Error(`${id} wordOrder must be 'little-endian' or 'high-low'`);
     }
-    validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
+    validateSinglePackedView(props.cells, ['uint32x2'], `${id} cells`);
     if (props.cells.length < 1) {
       throw new Error(`${id} cells must hold at least one row`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== props.cells.length) {
         throw new Error(`${id} mask must have the same length as cells`);
       }
@@ -247,12 +247,12 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length < 1) {
         throw new Error(`${id} ${name} must contain one uint32 row`);
       }
     }
-    validatePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
+    validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
     if (output.cells.length < 1) {
       throw new Error(`${id} output.cells must hold at least one row`);
     }

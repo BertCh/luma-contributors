@@ -4,7 +4,7 @@
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
-import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {GUARDED_ATAN2_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {classifyUrbanViewpoints, type UrbanFreeSpaceRegion} from './classify-viewpoints';
 import {
@@ -129,11 +129,21 @@ export function addIsovistsRecipe<Parameters>(
   );
   const output = props.output;
   const rayRows = viewpointCount * rayCount;
+  const obstacleBVH =
+    resolveUrbanObstacleIndex(props.obstacleIndex, segmentCount) === 'bvh'
+      ? addUrbanObstacleBVH(graph, {
+          id: `${id}-obstacles`,
+          operation: id,
+          segments: props.segments,
+          tolerance
+        })
+      : undefined;
   const viewpointClassifications = classifyUrbanViewpoints(graph, {
     id,
     positions: props.positions,
     segments: props.segments,
     tolerance,
+    obstacleBVH,
     region: props.region,
     output: output?.viewpointClassifications
   });
@@ -149,6 +159,7 @@ export function addIsovistsRecipe<Parameters>(
         {name: 'segments', view: props.segments, type: 'f32', access: 'read'},
         {name: 'angles', view: angles, type: 'f32', access: 'read_write'}
       ],
+      declarations: GUARDED_ATAN2_WGSL,
       // Per-viewpoint loops run over the ray capacity (at most 4096 for 'vertices' sampling).
       body: vertexSampling
         ? `let origin=vec2<f32>(positions[positionsOffset+2u*index],positions[positionsOffset+2u*index+1u]);
@@ -157,7 +168,8 @@ for(var ray=0u;ray<${props.rayCount}u;ray++){
 }
 for(var endpoint=0u;endpoint<${props.segments.length * 2}u;endpoint++){
   let point=vec2<f32>(segments[segmentsOffset+2u*endpoint],segments[segmentsOffset+2u*endpoint+1u])-origin;
-  let center=atan2(point.y,point.x);
+  // The second argument is a coordinate difference, which can be -0.0 (contract section 11).
+  let center=guardedAtan2(point.y,point.x);
   for(var side=0u;side<3u;side++){
     var angle=center+(f32(side)-1.0)*${angularEpsilon};
     angle=angle-floor(angle/6.283185307179586)*6.283185307179586;
@@ -196,15 +208,6 @@ for(var position=1u;position<${rayCount}u;position++){
     viewpointCount,
     output?.measures
   );
-  const obstacleBVH =
-    resolveUrbanObstacleIndex(props.obstacleIndex, segmentCount) === 'bvh'
-      ? addUrbanObstacleBVH(graph, {
-          id: `${id}-obstacles`,
-          operation: id,
-          segments: props.segments,
-          tolerance
-        })
-      : undefined;
   // Raw nearest hit per ray. Segment finiteness is already part of the viewpoint classification
   // (a non-finite segment classifies every viewpoint as 3), so the rays do not re-check it.
   graph.add(

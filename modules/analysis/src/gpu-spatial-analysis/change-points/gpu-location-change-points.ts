@@ -8,6 +8,7 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {POISSON_OBSERVED_TERM_WGSL} from '../../analysis-core/kernels/wgsl-poisson-observed-term';
@@ -17,7 +18,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -30,13 +31,13 @@ const OPERATION = 'GPULocationChangePoints';
 /** Elements of the `parameters` view: `[penalty, minimumSegmentLength]`. */
 export const GPU_LOCATION_CHANGE_POINTS_PARAMETER_LENGTH = 2;
 /**
- * Largest `sliceCount`. Every invocation keeps per-series prefix sums and the dynamic program in
- * private arrays and evaluates `sliceCount^2 / 2` segment costs, so the bound limits both.
+ * Largest `sliceCount`. Every location keeps its standardized series and the dynamic program in
+ * workgroup arrays and evaluates `sliceCount^2 / 2` segment costs, so the bound limits both.
  */
 export const GPU_LOCATION_CHANGE_POINTS_MAXIMUM_SLICE_COUNT = 512;
 /**
- * Largest `sliceCount` of the `'slope'` cost: it adds three prefix arrays (time-value, time, and
- * squared time sums) to the 16 KiB of workgroup memory the kernel keeps per location.
+ * Largest `sliceCount` of the `'slope'` cost: the time sums of a segment are exact unsigned
+ * integers, and `n * sum(t^2)` with positions below 256 stays below `2^32`.
  */
 export const GPU_LOCATION_CHANGE_POINTS_MAXIMUM_SLOPE_SLICE_COUNT = 256;
 /** Largest `maximumChangePoints` per location. */
@@ -139,9 +140,19 @@ export type GPULocationChangePointsProps = {
  *   indices, so missing slices keep their spacing); a unit-variance Normal cost like `'mean'`.
  *
  * Precision: values are centered and scaled by the series' own mean and standard deviation
- * (a deviance form for Poisson), and every prefix sum carries a Neumaier compensation, so a segment
- * sum keeps f32 relative accuracy over 512 slices. Constant series and all-zero count series have
- * no change points. Minimum segments count finite slices.
+ * (a deviance form for Poisson), so the partition does not depend on the unit of `values`. The
+ * moments of a segment are running sums that begin at the segment's own start, taken about its
+ * first value, so a quiet segment after a loud one keeps f32 relative accuracy over 512 slices;
+ * no difference of two long prefix sums is formed. The series mean and variance use a sum
+ * compensated by `getAdditionRoundingError`. Constant series and all-zero count series have no
+ * change points. Minimum segments count finite slices.
+ *
+ * Variance floor: for `'variance'` and `'mean-variance'` a segment variance below `1e-11` times the
+ * variance of the whole series is raised to that value, so a constant segment costs a finite
+ * amount whatever the unit. The `changepoint` package instead substitutes `1e-11` in data units
+ * when a segment variance is not positive; the two agree on which segments are affected only when
+ * the series variance is near 1. A constant series has no scale to be relative to: its
+ * `optimalCost` uses the package's `1e-11` in data units.
  *
  * Per-frame: the contents of `values` and `parameters` (`penalty`, `minimumSegmentLength`).
  * Compile-time: `cellCount`, `sliceCount`, `cost`, `layout`, `maximumChangePoints`, and which
@@ -185,20 +196,20 @@ export class GPULocationChangePoints implements GPUCommandNodeProducer {
       1,
       GPU_LOCATION_CHANGE_POINTS_MAXIMUM_CHANGE_POINTS
     );
-    validatePackedView(values, ['float32'], `${id} values`);
+    validateSinglePackedView(values, ['float32'], `${id} values`);
     validateViewLength(id, 'values', values, cellCount * sliceCount);
-    validatePackedView(parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       parameters.length >= GPU_LOCATION_CHANGE_POINTS_PARAMETER_LENGTH,
       `parameters needs ${GPU_LOCATION_CHANGE_POINTS_PARAMETER_LENGTH} rows`
     );
-    validatePackedView(output.changePointCount, ['uint32'], `${id} changePointCount`);
+    validateSinglePackedView(output.changePointCount, ['uint32'], `${id} changePointCount`);
     validateViewLength(id, 'changePointCount', output.changePointCount, cellCount);
-    validatePackedView(output.changePoints, ['uint32'], `${id} changePoints`);
+    validateSinglePackedView(output.changePoints, ['uint32'], `${id} changePoints`);
     validateViewLength(id, 'changePoints', output.changePoints, cellCount * maximumChangePoints);
     if (output.requiredChangePointCounts) {
-      validatePackedView(
+      validateSinglePackedView(
         output.requiredChangePointCounts,
         ['uint32'],
         `${id} requiredChangePointCounts`
@@ -211,11 +222,11 @@ export class GPULocationChangePoints implements GPUCommandNodeProducer {
       );
     }
     if (output.optimalCost) {
-      validatePackedView(output.optimalCost, ['float32'], `${id} optimalCost`);
+      validateSinglePackedView(output.optimalCost, ['float32'], `${id} optimalCost`);
       validateViewLength(id, 'optimalCost', output.optimalCost, cellCount);
     }
     if (output.status?.overflow) {
-      validatePackedView(output.status.overflow, ['uint32'], `${id} status.overflow`);
+      validateSinglePackedView(output.status.overflow, ['uint32'], `${id} status.overflow`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
@@ -340,8 +351,8 @@ export class GPULocationChangePoints implements GPUCommandNodeProducer {
             : [])
         ],
         invocationCount: cellCount * 2,
-        // One location per two-thread workgroup, the second thread idle: the prefix sums and the
-        // dynamic program live in workgroup memory (16 KiB by default), which unlike private arrays
+        // One location per two-thread workgroup, the second thread idle: the standardized series and
+        // the dynamic program live in workgroup memory (16 KiB by default), which unlike private arrays
         // does not grow the scratch of each invocation.
         workgroupSize: 2,
         declarations: getDeclarationsWGSL(cost, layout, cellCount, sliceCount, maximumChangePoints),
@@ -360,21 +371,13 @@ function getDeclarationsWGSL(
 ): string {
   const arraySize = sliceCount + 1;
   const isPoisson = cost === 'poisson';
-  const isSlope = cost === 'slope';
   return /* wgsl */ `
 ${IS_FINITE_VALUE_WGSL}
 ${GET_NAN_WGSL}
+${ADDITION_ROUNDING_ERROR_WGSL}
 ${isPoisson ? POISSON_OBSERVED_TERM_WGSL : ''}
 var<workgroup> position: array<u32, ${sliceCount}>;
-var<workgroup> firstMoment: array<vec2<f32>, ${arraySize}>;
-${isPoisson ? '' : `var<workgroup> secondMoment: array<vec2<f32>, ${arraySize}>;`}
-${
-  isSlope
-    ? `var<workgroup> timeValue: array<vec2<f32>, ${arraySize}>;
-var<workgroup> timeFirst: array<u32, ${arraySize}>;
-var<workgroup> timeSecond: array<u32, ${arraySize}>;`
-    : ''
-}
+var<workgroup> series: array<f32, ${sliceCount}>;
 var<workgroup> bestCost: array<f32, ${arraySize}>;
 var<workgroup> previousEnd: array<u32, ${arraySize}>;
 const CELL_COUNT: u32 = ${cellCount}u;
@@ -382,52 +385,43 @@ const SLICE_COUNT: u32 = ${sliceCount}u;
 const MAXIMUM_CHANGE_POINTS: u32 = ${maximumChangePoints}u;
 const NO_CHANGE_POINT: u32 = ${GPU_LOCATION_CHANGE_POINTS_NONE}u;
 const TAU: f32 = 6.283185307179586;
-// Smallest residual variance relative to the series variance: a segment with a zero variance would
-// otherwise cost minus infinity (the changepoint package floors the variance at 1e-11 likewise).
+// Smallest segment variance as a fraction of the series variance (segment variances are computed
+// from the standardized values, so the comparison is in standardized units and does not depend on
+// the unit of the data): a segment with a zero variance would otherwise cost minus infinity. The
+// changepoint package substitutes 1e-11 in data units when a variance is not positive.
 const VARIANCE_FLOOR: f32 = 1e-11;
 ${getChangePointSeriesReaderWGSL(layout)}
-// Neumaier compensated sum: (sum, compensation).
+// Compensated sum of the whole series: (sum, accumulated rounding error). The error comes from the
+// integer significands: the float form (sum - next) + value is algebraically zero and is folded away.
 fn addCompensated(accumulator: vec2<f32>, value: f32) -> vec2<f32> {
   let sum = accumulator.x + value;
-  let correction = select((value - sum) + accumulator.x, (accumulator.x - sum) + value, abs(accumulator.x) >= abs(value));
-  return vec2<f32>(sum, accumulator.y + correction);
-}
-fn getRangeSum(end: vec2<f32>, start: vec2<f32>) -> f32 {
-  return (end.x - start.x) + (end.y - start.y);
+  return vec2<f32>(sum, accumulator.y + getAdditionRoundingError(accumulator.x, value, sum));
 }`;
 }
 
-/** WGSL statements computing `segmentCost` for the segment `[start, end)` from the prefix arrays. */
+/**
+ * WGSL statements computing `segmentCost` for the segment `[start, end)` from its running sums:
+ * `total` and `squares` of the values less the segment's first value (less nothing for
+ * `'variance'` and `'poisson'`), and for `'slope'` `timeValue`, `timeFirst` and `timeSecond` over
+ * the slice positions less the segment's first position.
+ */
 function getSegmentCostWGSL(cost: GPULocationChangePointCost): string {
   switch (cost) {
     case 'mean':
-      return `let total = getRangeSum(firstMoment[end], firstMoment[start]);
-      let squares = getRangeSum(secondMoment[end], secondMoment[start]);
-      segmentCost = max(squares - total * total / segmentLength, 0.0);`;
+      return `segmentCost = max(squares - total * total / segmentLength, 0.0);`;
     case 'variance':
-      return `let squares = getRangeSum(secondMoment[end], secondMoment[start]);
-      let variance = max(squares / segmentLength, VARIANCE_FLOOR / scale);
+      return `let variance = max(squares / segmentLength, VARIANCE_FLOOR);
       segmentCost = segmentLength * log(variance);`;
     case 'mean-variance':
-      return `let total = getRangeSum(firstMoment[end], firstMoment[start]);
-      let squares = getRangeSum(secondMoment[end], secondMoment[start]);
-      let variance = max((squares - total * total / segmentLength) / segmentLength, VARIANCE_FLOOR / scale);
+      return `let variance = max((squares - total * total / segmentLength) / segmentLength, VARIANCE_FLOOR);
       segmentCost = segmentLength * log(variance);`;
     case 'poisson':
-      return `let total = max(getRangeSum(firstMoment[end], firstMoment[start]), 0.0);
-      segmentCost = -2.0 * getObservedTerm(total, segmentLength * overallRate);`;
+      return `segmentCost = -2.0 * getObservedTerm(max(total, 0.0), segmentLength * overallRate);`;
     case 'slope':
-      return `let total = getRangeSum(firstMoment[end], firstMoment[start]);
-      let squares = getRangeSum(secondMoment[end], secondMoment[start]);
-      let timeOrigin = position[start];
-      let originValue = f32(timeOrigin);
-      let timeSum = timeFirst[end] - timeFirst[start];
-      let relativeTime = f32(timeSum - (end - start) * timeOrigin);
-      let relativeTimeSquare = f32(timeSecond[end] - timeSecond[start] + (end - start) * timeOrigin * timeOrigin - 2u * timeOrigin * timeSum);
-      let relativeTimeValue = getRangeSum(timeValue[end], timeValue[start]) - originValue * total;
-      let centeredSquares = squares - total * total / segmentLength;
-      let timeVariance = relativeTimeSquare - relativeTime * relativeTime / segmentLength;
-      let covariance = relativeTimeValue - relativeTime * total / segmentLength;
+      return `let centeredSquares = squares - total * total / segmentLength;
+      // Exact in u32: positions are below ${GPU_LOCATION_CHANGE_POINTS_MAXIMUM_SLOPE_SLICE_COUNT}, so n * sum(t^2) stays below 2^32.
+      let timeVariance = f32((end - start) * timeSecond - timeFirst * timeFirst) / segmentLength;
+      let covariance = timeValue - f32(timeFirst) * total / segmentLength;
       var residual = centeredSquares;
       if (timeVariance > 0.0) {
         residual -= covariance * covariance / timeVariance;
@@ -445,7 +439,9 @@ function getDynamicProgramBodyWGSL(
   const isPoisson = cost === 'poisson';
   const isSlope = cost === 'slope';
   const usesSquareScale = cost === 'mean' || isSlope;
-  const usesSecondMoment = !isPoisson;
+  // 'variance' measures about the mean of the whole series (0 after standardizing) and 'poisson'
+  // needs the raw total; the other costs are unchanged by subtracting the segment's first value.
+  const usesSegmentOrigin = cost !== 'variance' && !isPoisson;
   const requiredWGSL = output.requiredChangePointCounts
     ? 'requiredChangePointCounts[requiredChangePointCountsOffset + cellIndex] = found;'
     : '';
@@ -492,42 +488,62 @@ function getDynamicProgramBodyWGSL(
     let deviationScale = ${isPoisson ? '1.0' : 'sqrt(scale)'};
     for (var row = 0u; row < seriesLength; row++) {
       let observed = readSeriesValue(cellIndex, position[row]);
-      let standardized = ${isPoisson ? 'observed' : '(observed - center) / deviationScale'};
-      firstMoment[row + 1u] = addCompensated(firstMoment[row], standardized);
-      ${usesSecondMoment ? 'secondMoment[row + 1u] = addCompensated(secondMoment[row], standardized * standardized);' : ''}
-      ${
-        isSlope
-          ? `timeValue[row + 1u] = addCompensated(timeValue[row], f32(position[row]) * standardized);
-      timeFirst[row + 1u] = timeFirst[row] + position[row];
-      timeSecond[row + 1u] = timeSecond[row] + position[row] * position[row];`
-          : ''
-      }
+      series[row] = ${isPoisson ? 'observed' : '(observed - center) / deviationScale'};
     }
     let penalty = parameters[parametersOffset]${usesSquareScale ? ' / scale' : ''};
     let minimumLength = max(u32(parameters[parametersOffset + 1u]), 1u);
     bestCost[0] = -penalty;
     for (var end = 1u; end <= seriesLength; end++) {
-      var bestValue = 0x1.fffffep+127f;
-      var bestStart = 0xffffffffu;
-      if (end >= minimumLength) {
-        for (var start = 0u; start <= end - minimumLength; start++) {
-          if (start > 0u && (start < minimumLength || previousEnd[start] == 0xffffffffu)) {
-            continue;
-          }
-          let segmentLength = f32(end - start);
-          var segmentCost = 0.0;
-          {
-            ${getSegmentCostWGSL(cost)}
-          }
-          let candidate = bestCost[start] + segmentCost + penalty;
-          if (candidate < bestValue) {
-            bestValue = candidate;
-            bestStart = start;
-          }
+      bestCost[end] = 0x1.fffffep+127f;
+      previousEnd[end] = 0xffffffffu;
+    }
+    // Forward form of F(end) = min over start of F(start) + C(start, end) + penalty: starts are
+    // visited in ascending order, so F(start) is final when its segments are relaxed, and the
+    // strict comparison keeps the smallest start among equal candidates. Each segment's moments
+    // are running sums that begin at its own start, about its own first value: no difference of
+    // two long prefix sums is taken, so nothing has to survive a cancellation (a shader compiler
+    // that reassociates float sums also reorders the difference of two compensated prefixes).
+    for (var start = 0u; start < seriesLength; start++) {
+      if (start > 0u && previousEnd[start] == 0xffffffffu) {
+        continue;
+      }
+      let origin = ${usesSegmentOrigin ? 'series[start]' : '0.0'};
+      var total = 0.0;
+      var squares = 0.0;
+      ${
+        isSlope
+          ? `let timeOrigin = position[start];
+      var timeValue = 0.0;
+      var timeFirst = 0u;
+      var timeSecond = 0u;`
+          : ''
+      }
+      for (var end = start + 1u; end <= seriesLength; end++) {
+        let offsetValue = series[end - 1u] - origin;
+        total += offsetValue;
+        squares += offsetValue * offsetValue;
+        ${
+          isSlope
+            ? `let relativeTime = position[end - 1u] - timeOrigin;
+        timeValue += f32(relativeTime) * offsetValue;
+        timeFirst += relativeTime;
+        timeSecond += relativeTime * relativeTime;`
+            : ''
+        }
+        if (end - start < minimumLength) {
+          continue;
+        }
+        let segmentLength = f32(end - start);
+        var segmentCost = 0.0;
+        {
+          ${getSegmentCostWGSL(cost)}
+        }
+        let candidate = bestCost[start] + segmentCost + penalty;
+        if (candidate < bestCost[end]) {
+          bestCost[end] = candidate;
+          previousEnd[end] = start;
         }
       }
-      bestCost[end] = bestValue;
-      previousEnd[end] = bestStart;
     }
     // Backtracking visits the partition from the end; the first walk counts the change points.
     var cursor = seriesLength;
@@ -595,7 +611,9 @@ function getFlatCostExpression(cost: GPULocationChangePointCost): string {
     case 'poisson':
       return '0.0';
     default:
-      // A constant series: the floored variance of the single segment (sigma^2 = VARIANCE_FLOOR).
+      // A constant series has zero variance, so the relative floor of the segment costs has nothing
+      // to be relative to: the single segment takes the changepoint package's substitute variance
+      // for a non-positive variance, 1e-11 in data units (the same number as VARIANCE_FLOOR).
       return 'count * (log(TAU) + log(VARIANCE_FLOOR) + 1.0)';
   }
 }

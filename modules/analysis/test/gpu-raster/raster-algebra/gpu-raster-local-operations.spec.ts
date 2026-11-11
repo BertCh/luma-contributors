@@ -189,7 +189,7 @@ it('GPURasterConditional evaluates comparisons, masks, views, and constants per 
       parameters: parameterBuffer.importToGraph(graph),
       output: {
         values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', cellCount),
-        outputMask: importGraphBuffer(graph, 'mask-out', maskOutBuffer, 'uint32', cellCount)
+        conditionResult: importGraphBuffer(graph, 'mask-out', maskOutBuffer, 'uint32', cellCount)
       }
     })
   );
@@ -398,6 +398,127 @@ it('GPURasterArithmetic switches operations per frame without rebuilding', async
   compiled.destroy();
   parameterBuffer.destroy();
   for (const buffer of [aBuffer, bBuffer, outBuffer, constantOutBuffer]) {
+    buffer.destroy();
+  }
+});
+
+// Finding raster-imagery-01: the sentinel applies to raster cells, never to a per-frame constant.
+// Expected values are written by hand (ArcGIS `Con`, `numpy.where`, `numpy.maximum`).
+it('GPURasterConditional and GPURasterArithmetic keep a constant that equals the sentinel', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const cellCount = 4;
+  const conditionValues = new Float32Array([5, 20, 0, NaN]);
+  const arithmeticValues = new Float32Array([-3, 7, 0, NaN]);
+  const rasterB = new Float32Array([0, 255, 3, 4]);
+  const conditionalParameters = new GPUParameterBuffer(device, {
+    id: 'sentinel-conditional-parameters',
+    format: 'float32',
+    length: 8
+  });
+  const arithmeticParameters = new GPUParameterBuffer(device, {
+    id: 'sentinel-arithmetic-parameters',
+    format: 'float32',
+    length: 8
+  });
+  const conditionBuffer = createInputBuffer(device, conditionValues);
+  const arithmeticBuffer = createInputBuffer(device, arithmeticValues);
+  const rasterBBuffer = createInputBuffer(device, rasterB);
+  const conditionalOut = createOutputBuffer(device, cellCount);
+  const conditionalRasterOut = createOutputBuffer(device, cellCount);
+  const arithmeticOut = createOutputBuffer(device, cellCount);
+  const graph = new GPUCommandGraph(device, {id: 'sentinel-constant-graph'});
+  graph.add(
+    new GPURasterConditional({
+      id: 'sentinel-conditional',
+      cellCount,
+      conditionValues: importGraphBuffer(graph, 'condition', conditionBuffer, 'float32', cellCount),
+      noDataValue: 0,
+      parameters: conditionalParameters.importToGraph(graph),
+      output: {values: importGraphBuffer(graph, 'con-out', conditionalOut, 'float32', cellCount)}
+    })
+  );
+  graph.add(
+    new GPURasterConditional({
+      id: 'sentinel-conditional-raster',
+      cellCount,
+      conditionValues: importGraphBuffer(
+        graph,
+        'condition-again',
+        conditionBuffer,
+        'float32',
+        cellCount
+      ),
+      b: importGraphBuffer(graph, 'raster-b', rasterBBuffer, 'float32', cellCount),
+      noDataValue: 0,
+      parameters: conditionalParameters.importToGraph(graph, 'sentinel-conditional-again'),
+      output: {
+        values: importGraphBuffer(
+          graph,
+          'con-raster-out',
+          conditionalRasterOut,
+          'float32',
+          cellCount
+        )
+      }
+    })
+  );
+  graph.add(
+    new GPURasterArithmetic({
+      id: 'sentinel-arithmetic',
+      cellCount,
+      a: importGraphBuffer(graph, 'arithmetic-a', arithmeticBuffer, 'float32', cellCount),
+      noDataValue: 0,
+      parameters: arithmeticParameters.importToGraph(graph),
+      output: {values: importGraphBuffer(graph, 'max-out', arithmeticOut, 'float32', cellCount)}
+    })
+  );
+  const compiled = graph.compile();
+
+  // Con(value > 10, 1, 0) with sentinel 0: the false branch is the constant 0, not nodata.
+  conditionalParameters.write(
+    getGPURasterConditionalParameterValues({comparison: '>', threshold: 10})
+  );
+  // maximum(a, 0) with sentinel 0.
+  arithmeticParameters.write(getGPURasterArithmeticParameterValues({operation: 'maximum'}));
+  submitGraph(device, compiled, undefined);
+  expect(Array.from(await readFloat32(conditionalOut, cellCount))).toEqual([0, 1, NaN, NaN]);
+  // The same condition with a raster `b`: a raster cell equal to the sentinel is still nodata.
+  expect(Array.from(await readFloat32(conditionalRasterOut, cellCount))).toEqual([
+    NaN,
+    1,
+    NaN,
+    NaN
+  ]);
+  expect(Array.from(await readFloat32(arithmeticOut, cellCount))).toEqual([0, 7, NaN, NaN]);
+
+  // A true-branch constant equal to the sentinel, and minimum(a, 0).
+  conditionalParameters.write(
+    getGPURasterConditionalParameterValues({
+      comparison: '>',
+      threshold: 10,
+      constantA: 0,
+      constantB: 9
+    })
+  );
+  arithmeticParameters.write(
+    getGPURasterArithmeticParameterValues({operation: 'minimum', constantB: 0})
+  );
+  submitGraph(device, compiled, undefined);
+  expect(Array.from(await readFloat32(conditionalOut, cellCount))).toEqual([9, 0, NaN, NaN]);
+  expect(Array.from(await readFloat32(arithmeticOut, cellCount))).toEqual([-3, 0, NaN, NaN]);
+
+  compiled.destroy();
+  conditionalParameters.destroy();
+  arithmeticParameters.destroy();
+  for (const buffer of [
+    conditionBuffer,
+    arithmeticBuffer,
+    rasterBBuffer,
+    conditionalOut,
+    conditionalRasterOut,
+    arithmeticOut
+  ]) {
     buffer.destroy();
   }
 });

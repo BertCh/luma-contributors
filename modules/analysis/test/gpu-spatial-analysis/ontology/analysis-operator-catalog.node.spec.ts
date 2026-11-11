@@ -77,7 +77,9 @@ it('keeps the original exports unchanged and adds the other entry points beside 
   expect(GPU_SPATIAL_ANALYSIS_CAPABILITIES).toHaveLength(49);
   expect(GPU_SPATIAL_ANALYSIS_AUDIT.operatorCount).toBe(261);
   const packages = new Set(GPU_SPATIAL_ANALYSIS_OPERATORS.map(({package: name}) => name));
+  // GPUParameterBuffer is catalogued here but exported only from analysis-core (STD-09).
   expect([...packages].sort()).toEqual([
+    '@luma-contributors/analysis/analysis-core',
     '@luma-contributors/analysis/gpu-spatial-analysis',
     '@luma-contributors/analysis/gpu-terrain'
   ]);

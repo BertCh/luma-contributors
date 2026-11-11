@@ -9,6 +9,11 @@ import type {
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateViewLength
@@ -52,9 +57,21 @@ export type GPUVecchiaFisherScoringOutput = {
   status: GraphDataView<'uint32'>;
 };
 
+/** Distances are planar Euclidean in the native units of the positions. */
+const PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance' as const
+});
+
 /** Props of {@link GPUVecchiaFisherScoring}. */
 export type GPUVecchiaFisherScoringProps = {
   id?: string;
+  /**
+   * Coordinate space of the positions. Compile-time. Omitted means native planar coordinates with
+   * Euclidean distance (unchanged behavior); only that is accepted, so longitude/latitude throws:
+   * project to a planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
   /** Rows `[value, observationErrorVariance, reserved, validity (0 excludes)]`, mean zero. */
   observations: GraphDataView<'float32x4'>;
@@ -86,12 +103,19 @@ export type GPUVecchiaFisherScoringProps = {
  */
 export class GPUVecchiaFisherScoring implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Resolved coordinate space (native planar when `spatialContext` was omitted). */
+  readonly spatialContext: GPUSpatialContext;
   readonly props: GPUVecchiaFisherScoringProps;
   readonly rowCount: number;
 
   constructor(props: GPUVecchiaFisherScoringProps) {
     this.props = props;
     this.id = props.id ?? 'vecchia-fisher-scoring';
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT
+    );
     const {id} = this;
     const {positions, observations, neighborhoodOffsets, neighborhoods, parameters, output} = props;
     this.rowCount = positions.length;

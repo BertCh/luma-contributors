@@ -725,21 +725,39 @@ export function createClosestApproachStatusNode<Parameters>(
     state: GraphDataView<'uint32'>;
     entryOverflow: GraphDataView<'uint32'>;
     hitOverflow: GraphDataView<'uint32'>;
+    /** Optional: 1 when either overflow flag is 1. */
+    candidateOverflow?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: 'status',
+    variant: props.candidateOverflow ? 'status-candidate' : 'status',
     bindings: [
       {name: 'state', view: props.state, type: 'u32', access: 'read'},
       {name: 'entryOverflow', view: props.entryOverflow, type: 'u32', access: 'read_write'},
-      {name: 'hitOverflow', view: props.hitOverflow, type: 'u32', access: 'read_write'}
+      {name: 'hitOverflow', view: props.hitOverflow, type: 'u32', access: 'read_write'},
+      ...(props.candidateOverflow
+        ? [
+            {
+              name: 'candidateOverflow',
+              view: props.candidateOverflow,
+              type: 'u32',
+              access: 'read_write'
+            } as const
+          ]
+        : [])
     ],
     invocationCount: 1,
     declarations: getShapeConstants(props.shape),
-    body: `entryOverflow[entryOverflowOffset] =
-    select(0u, 1u, state[stateOffset + 1u] > ENTRY_CAPACITY || state[stateOffset + 2u] != 0u);
-  hitOverflow[hitOverflowOffset] = select(0u, 1u, state[stateOffset] > HIT_CAPACITY);`
+    body: `let entryOverflowed = state[stateOffset + 1u] > ENTRY_CAPACITY || state[stateOffset + 2u] != 0u;
+  let hitOverflowed = state[stateOffset] > HIT_CAPACITY;
+  entryOverflow[entryOverflowOffset] = select(0u, 1u, entryOverflowed);
+  hitOverflow[hitOverflowOffset] = select(0u, 1u, hitOverflowed);${
+    props.candidateOverflow
+      ? `
+  candidateOverflow[candidateOverflowOffset] = select(0u, 1u, entryOverflowed || hitOverflowed);`
+      : ''
+  }`
   });
 }

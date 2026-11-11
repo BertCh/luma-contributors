@@ -21,7 +21,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSimilarLocationsParameterLength,
@@ -199,7 +199,7 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
       1,
       GPU_SIMILAR_LOCATIONS_MAXIMUM_COLUMN_COUNT
     );
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length % props.columnCount !== 0) {
       throw new Error(`${id} values length must be a multiple of columnCount`);
     }
@@ -213,24 +213,24 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
     this.resultCapacity = props.resultCapacity ?? Math.min(this.rowCount, 32);
     validateCapacity(id, 'resultCapacity', this.resultCapacity, 1, this.rowCount);
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
     }
-    validatePackedView(props.referenceMask, ['uint32'], `${id} referenceMask`);
+    validateSinglePackedView(props.referenceMask, ['uint32'], `${id} referenceMask`);
     if (props.referenceMask.length !== this.rowCount) {
       throw new Error(`${id} referenceMask length must equal the row count`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     const parameterLength = getGPUSimilarLocationsParameterLength(props.columnCount);
     if (props.parameters.length < parameterLength) {
       throw new Error(`${id} parameters must hold ${parameterLength} float32 values`);
     }
-    validatePackedView(props.output.ranks, ['uint32'], `${id} output.ranks`);
-    validatePackedView(props.output.distances, ['float32'], `${id} output.distances`);
-    validatePackedView(props.output.topIds, ['uint32'], `${id} output.topIds`);
-    validatePackedView(props.output.status.count, ['uint32'], `${id} output.status.count`);
+    validateSinglePackedView(props.output.ranks, ['uint32'], `${id} output.ranks`);
+    validateSinglePackedView(props.output.distances, ['float32'], `${id} output.distances`);
+    validateSinglePackedView(props.output.topIds, ['uint32'], `${id} output.topIds`);
+    validateSinglePackedView(props.output.status.count, ['uint32'], `${id} output.status.count`);
     if (
       props.output.ranks.length < this.rowCount ||
       props.output.distances.length < this.rowCount

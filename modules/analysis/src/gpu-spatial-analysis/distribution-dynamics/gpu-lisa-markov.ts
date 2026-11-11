@@ -13,7 +13,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -142,8 +142,8 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
     this.props = props;
     this.rowCount = validateGPUSpatialWeights(id, props.weights);
     this.gating = props.gating ?? 'none';
-    validatePackedView(props.values, ['float32'], `${id} values`);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters is too short`);
     }

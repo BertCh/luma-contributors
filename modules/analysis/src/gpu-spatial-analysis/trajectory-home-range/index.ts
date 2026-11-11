@@ -34,3 +34,12 @@ export type {
   BrownianMotionVarianceOptions,
   WindowedBrownianMotionVarianceOptions
 } from './brownian-bridge-variance-estimation';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeBrownianBridgeUtilizationOnCPU,
+  CPUBrownianBridgeUtilizationOperation
+} from './cpu-brownian-bridge-utilization-operation';
+export type {CPUBrownianBridgeUtilizationInput} from './cpu-brownian-bridge-utilization-operation';
+export {GPUBrownianBridgeUtilizationOperation} from './gpu-brownian-bridge-utilization-operation';
+export type {BrownianBridgeUtilizationOperationProps} from './gpu-brownian-bridge-utilization-operation';

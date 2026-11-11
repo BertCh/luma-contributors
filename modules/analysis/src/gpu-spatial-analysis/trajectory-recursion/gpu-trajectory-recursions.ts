@@ -24,7 +24,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -69,9 +69,12 @@ export type GPUTrajectoryRecursionsOutput = {
    */
   residenceTimes?: GraphDataView<'float32'>;
   /**
-   * First passage time: the time from the fix until the track first leaves the circle around it
-   * (Fauchald and Tveraa, 2003), in the unit of the timestamps. Same layout as `revisits`. If the
-   * track ends inside the circle the value is the time to the end of the track (censored).
+   * Forward first passage time: the time from the fix, at the circle's centre, until the track
+   * first leaves the circle around it, in the unit of the timestamps. Same layout as `revisits`.
+   * If the track ends inside the circle the value is the time to the end of the track (censored).
+   * This is the forward leg only. The first passage time of Fauchald and Tveraa (2003) and of
+   * `adehabitatLT::fpt` is the time to cross the whole circle, from the last entry before the fix
+   * to the first exit after it, which on a straight track at constant speed is twice this value.
    */
   firstPassageTimes?: GraphDataView<'float32'>;
   /** 1 where `firstPassageTimes` is censored (the track ended before leaving the circle). Same layout. */
@@ -105,9 +108,8 @@ export type GPUTrajectoryRecursionsProps = GPUTrajectoryGeometryFields & {
 
 /**
  * Recursion analysis of trajectories after Bracis, Bildstein and Mueller (Ecography 2018,
- * `recurse::getRecursions`) and first passage time after Fauchald and Tveraa (Ecology 2003): for
- * the circle of radius `r` around each fix, how often the track returns, how long it stays, and how
- * long it takes to leave.
+ * `recurse::getRecursions`), and a forward first passage time: for the circle of radius `r` around
+ * each fix, how often the track returns, how long it stays, and how long it takes to leave.
  *
  * The path between fixes is the straight segment traversed at constant speed, so crossings of the
  * circle are exact (a quadratic per segment) and times are linear interpolations; residence
@@ -117,7 +119,9 @@ export type GPUTrajectoryRecursionsProps = GPUTrajectoryGeometryFields & {
  *   disc starts a visit.
  * - `residenceTimes` sums the time inside the disc over all segments of the track.
  * - `firstPassageTimes` follows the track forward from the focal fix; the exit time is
- *   interpolated on the segment that leaves the disc.
+ *   interpolated on the segment that leaves the disc. The backward leg is not added, so the value
+ *   is not the circle-crossing time that Fauchald and Tveraa (Ecology 2003) and
+ *   `adehabitatLT::fpt` call first passage time (about half of it on a steady track).
  *
  * Only the track of the fix is examined. `recurse` options that are not provided: polygon
  * locations, a minimum time outside to end a visit (`threshold`), and its interval residence time.
@@ -146,9 +150,9 @@ export class GPUTrajectoryRecursions implements GPUCommandNodeProducer {
     const id = props.id ?? 'trajectory-recursions';
     resolveGPUSpatialContext(id, props.spatialContext, GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT);
     const {positions, timestamps, trackOffsets, radii, output} = props;
-    validatePackedView(positions, ['float32x2'], `${id} positions`);
-    validatePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
-    validatePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
     this.rowCount = positions.length;
     validateCapacity(id, 'fix count', this.rowCount);
     validateViewLength(id, 'timestamps', timestamps, this.rowCount);
@@ -158,7 +162,7 @@ export class GPUTrajectoryRecursions implements GPUCommandNodeProducer {
       trackOffsets.length >= 2,
       'trackOffsets must contain at least two rows'
     );
-    validatePackedView(radii, ['float32'], `${id} radii`);
+    validateSinglePackedView(radii, ['float32'], `${id} radii`);
     this.radiusCount = radii.length;
     validateCapacity(
       id,
@@ -189,7 +193,7 @@ export class GPUTrajectoryRecursions implements GPUCommandNodeProducer {
       ['firstPassageCensored', output.firstPassageCensored, 'uint32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} output.${name}`);
+        validateSinglePackedView(view, [format], `${id} output.${name}`);
         validateViewLength(id, `output.${name}`, view, outputRows);
       }
     }

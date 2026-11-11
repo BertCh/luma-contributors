@@ -135,7 +135,7 @@ cases.push({
           values: context.view('float32', ROWS),
           validity: context.view('uint32', ROWS),
           filled: context.view('uint32', ROWS),
-          unresolvedCount: context.view('uint32', 1)
+          status: {invalidCount: context.view('uint32', 1)}
         }
       })
     );

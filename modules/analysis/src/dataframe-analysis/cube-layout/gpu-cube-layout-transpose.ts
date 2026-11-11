@@ -14,7 +14,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -85,8 +85,8 @@ export class GPUCubeLayoutTranspose implements GPUCommandNodeProducer {
     validateCapacity(id, 'periodCount', periodCount, 1, MAXIMUM_ELEMENT_COUNT);
     this.elementCount = cellCount * periodCount;
     validateMaximumCount(id, 'cellCount * periodCount', this.elementCount, MAXIMUM_ELEMENT_COUNT);
-    validatePackedView(values, ['uint32', 'float32'], `${id} values`);
-    validatePackedView(output, [values.format], `${id} output`);
+    validateSinglePackedView(values, ['uint32', 'float32'], `${id} values`);
+    validateSinglePackedView(output, [values.format], `${id} output`);
     validateViewLength(id, 'values', values, this.elementCount);
     validateViewLength(id, 'output', output, this.elementCount);
     validateGraphOutputsDisjointFromInputs(id, [output], [values]);

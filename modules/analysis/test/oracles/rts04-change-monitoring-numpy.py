@@ -4,9 +4,10 @@
 """RTS-04 reference fixtures: binary64 NumPy implementations of irregular-date harmonic regression,
 the simplified COLD monitor, and BFAST Monitor.
 
-pyxccd 1.1.1 (Apache-2.0) was NOT run: it publishes only cp39-cp313 wheels for macOS 15+ and this
-machine runs macOS 14 with Python 3.14/3.15, and it was not built from source; its dependencies
-(rasterio, fiona, scikit-image, pandas, scikit-learn) were not installed. The pyxccd fixture stays pending.
+pyxccd (Apache-2.0) is not run by this generator: it has no wheel for the pinned CPython 3.14. It is
+run by `rts04-cold-pyxccd.py` (pyxccd 1.1.0 `cold_detect` on CPython 3.12.13, NumPy 2.5.4, SciPy 1.18.1),
+whose fixture is `fixtures/rts04-cold-pyxccd.json`. The stability test of `cold_monitor` below takes the
+larger of the two end residuals, which is pyxccd's rule (read in its `cold.c` and confirmed by that fixture).
 
 bfast is GPL and R-only: the BFAST Monitor below is written from the published definition
 (Verbesselt, Zeileis and Herold 2012; Leisch, Hornik and Kuan 2000 for the OLS-MOSUM process and
@@ -16,7 +17,9 @@ The toggles of `cold_monitor` implement the published COLD elements the simplifi
 (Zhu et al. 2020, RSE 238:111116; Zhu and Woodcock 2014). They are written from those papers, are
 not pyxccd, and exist so that each documented omission is shown to change the result on a fixture.
 
-Output: fixtures/rts04-change-monitoring-numpy.json. Run with numpy 2.5.4 and scipy 1.18.1.
+Output: fixtures/rts04-change-monitoring-numpy.json. Run with the pinned set of `requirements.txt`
+(CPython 3.14.8, numpy 2.5.4, scipy 1.16.3; SciPy supplies the chi-squared quantiles only, and
+scipy 1.18.1 gives the same fixture).
 """
 import json
 import math
@@ -192,7 +195,9 @@ def cold_monitor(values, seconds, config, toggles=frozenset(), mask=None):
             first_residual = values[kept[0]] - predict(coefficients, years[kept[0]], period)
             last_residual = values[kept[-1]] - predict(coefficients, years[kept[-1]], period)
             span_years = years[kept[-1]] - years[kept[0]]
-            score = np.sum(((np.abs(coefficients[:, 1]) * span_years + np.abs(first_residual) + np.abs(last_residual)) / floor) ** 2)
+            # The larger of the two end residuals, as pyxccd (`fabs(v_slope) + max(fabs(v_start), fabs(v_end))`).
+            end_residual = np.maximum(np.abs(first_residual), np.abs(last_residual))
+            score = np.sum(((np.abs(coefficients[:, 1]) * span_years + end_residual) / floor) ** 2)
             if score <= config['changeThreshold']:
                 window = (end, positions)
                 break
@@ -589,7 +594,7 @@ def main():
     OUTPUT.write_text(
         json.dumps(
             {
-                'description': 'Binary64 NumPy references for RTS-04. pyxccd was not run (see generator); the pyxccd fixture is pending.',
+                'description': 'Binary64 NumPy references for RTS-04. pyxccd is not run here; its fixture is rts04-cold-pyxccd.json (see rts04-cold-pyxccd.py).',
                 'versions': {'python': platform.python_version(), 'numpy': np.__version__, 'scipy': scipy.__version__},
                 'harmonicRegression': {
                     'timesSeconds': [int(value) for value in harmonic_seconds],

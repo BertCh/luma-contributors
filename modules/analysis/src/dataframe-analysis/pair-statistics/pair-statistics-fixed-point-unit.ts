@@ -105,11 +105,11 @@ export function getPairStatisticsUnitVarianceNodes<Parameters>(
 const MOMENTS: u32 = ${rows}u;`,
       body: `let variance = statistics[statisticsOffset + MOMENTS + 2u] / statistics[statisticsOffset + MOMENTS];
   let spread = (quantiles[quantilesOffset + 1u] - quantiles[quantilesOffset]) / ${PAIR_STATISTICS_INTERQUARTILE_RANGE_PER_SIGMA};
-  let usable = isFiniteFloat(spread) && spread > 0.0;
+  let usable = isFiniteValue(spread) && spread > 0.0;
   let robustVariance = select(variance * ${PAIR_STATISTICS_ZERO_SPREAD_UNIT_FRACTION}, spread * spread, usable);
   let unit = clamp(robustVariance, variance * ${PAIR_STATISTICS_MINIMUM_UNIT_FRACTION}, variance);
   unitVariance[unitVarianceOffset] =
-    select(0.0, unit, isFiniteFloat(variance) && variance > ${PAIR_STATISTICS_MINIMUM_VARIANCE});`
+    select(0.0, unit, isFiniteValue(variance) && variance > ${PAIR_STATISTICS_MINIMUM_VARIANCE});`
     })
   ];
   return {nodes, unitVariance};

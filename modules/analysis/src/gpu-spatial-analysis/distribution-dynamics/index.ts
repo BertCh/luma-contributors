@@ -6,7 +6,7 @@ export {GPURankMarkov} from './gpu-rank-markov';
 export type {GPURankMarkovProps} from './gpu-rank-markov';
 
 export {GPUClassAssignment, GPU_CLASS_ASSIGNMENT_NO_CLASS} from './gpu-class-assignment';
-export type {GPUClassAssignmentProps} from './gpu-class-assignment';
+export type {GPUClassAssignmentProps, GPUClassIntervalClosure} from './gpu-class-assignment';
 export {GPUTransitionMatrix} from './gpu-transition-matrix';
 export type {GPUTransitionMatrixOutput, GPUTransitionMatrixProps} from './gpu-transition-matrix';
 export {
@@ -39,3 +39,24 @@ export {
   GPU_CLASSIFICATION_FIT_TSS
 } from './gpu-classification-fit';
 export type {GPUClassificationFitOutput, GPUClassificationFitProps} from './gpu-classification-fit';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeTransitionDiagnosticsOnCPU,
+  CPUTransitionDiagnosticsOperation
+} from './cpu-transition-diagnostics-operation';
+export type {
+  CPUTransitionDiagnosticsOptions,
+  CPUTransitionDiagnosticsResult
+} from './cpu-transition-diagnostics-operation';
+export {GPUTransitionDiagnosticsOperation} from './gpu-transition-diagnostics-operation';
+export type {TransitionDiagnosticsOperationProps} from './gpu-transition-diagnostics-operation';
+export {
+  CPU_RANK_MARKOV_MAXIMUM_ROW_COUNT,
+  CPU_RANK_MARKOV_MAXIMUM_VALUE_COUNT,
+  computeRankMarkovOnCPU,
+  CPURankMarkovOperation
+} from './cpu-rank-markov-operation';
+export type {CPURankMarkovOptions, CPURankMarkovResult} from './cpu-rank-markov-operation';
+export {GPURankMarkovOperation} from './gpu-rank-markov-operation';
+export type {RankMarkovOperationProps} from './gpu-rank-markov-operation';

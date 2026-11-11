@@ -38,7 +38,8 @@ import {
   validateGraphViewsBelongToGraph,
   validatePowerOfTwo,
   validateCapacity,
-  validatePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
 import {
@@ -107,7 +108,6 @@ import {
   getGPUSpatialJoinCapacityPlan,
   type GPUSpatialJoinCapacityPlan
 } from './spatial-join-capacity-plan';
-import {assert} from '@luma.gl/core';
 import {validateGPUCompactPairPort} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUSpatialPredicateJoin';
@@ -196,8 +196,9 @@ export type GPUSpatialPredicateJoinOutput = {
    * because the candidate total exceeded `candidateCapacity`. Candidates are laid out in left-row
    * order and the slots past the capacity are dropped, so the flagged rows are the row whose
    * candidates cross the capacity (it keeps its first ones) and every later row that had any
-   * candidate (it keeps none); earlier rows are complete. Rows lost to a BVH overflow are not
-   * flagged. See `status.candidateOverflow`.
+   * candidate (it keeps none); earlier rows are complete. A BVH overflow (more right features than
+   * `leafCapacity`) drops right features that any row may match, so it flags every left row. See
+   * `status.candidateOverflow`.
    */
   candidateTruncated?: GraphDataView<'uint32'>;
   /** Compact left rows without a match, ascending. Required for, and only for, `how: 'anti'`. */
@@ -230,9 +231,10 @@ export type GPUSpatialPredicateJoinOutput = {
       /** One-row flag: 1 when the BVH, candidate, or pair capacity overflowed. Required for `'inner'` without `pairs`. */
       overflow?: GraphDataView<'uint32'>;
       /**
-       * Optional one-row count of left rows that lost candidates to `candidateCapacity` (the rows
-       * flagged in `output.candidateTruncated`). Non-zero exactly when `candidateOverflow` is 1.
-       * With `how: 'anti'` these rows are unknown, so they are kept out of `output.unmatched`.
+       * Optional one-row count of left rows that lost candidates to `candidateCapacity` or to a
+       * BVH overflow (the rows flagged in `output.candidateTruncated`; every left row after a BVH
+       * overflow). Non-zero exactly when `candidateOverflow` is 1. With `how: 'anti'` these rows
+       * are unknown, so they are kept out of `output.unmatched`.
        */
       candidateTruncatedCount?: GraphDataView<'uint32'>;
       /** Optional one-row unclamped candidate count, for sizing `candidateCapacity`. */
@@ -376,9 +378,10 @@ export type GPUSpatialPredicateJoinProps = {
    * not available. If the candidate capacity overflows, the left rows whose candidates were dropped
    * (`output.candidateTruncated`) cannot be classified: they are kept out of `output.unmatched`
    * and counted in `status.candidateTruncatedCount`, so the output never reports a row that may
-   * have a match (it can omit true unmatched rows among them). If the BVH or the unmatched
-   * capacity overflows, check `output.unmatched.overflow`: rows lost to the BVH still look
-   * unmatched.
+   * have a match (it can omit true unmatched rows among them). A BVH overflow (more right features
+   * than `leafCapacity`) marks every left row, so the anti join then emits no rows; before
+   * 2026-11-10 it listed rows whose only matches were among the dropped right features. If the
+   * unmatched capacity overflows, check `output.unmatched.overflow`.
    */
   how?: GPUSpatialJoinHow;
   /**
@@ -562,7 +565,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
     this.patternView = isGraphView(views.pattern) ? views.pattern : undefined;
     if (predicate === 'dwithin') {
       if (this.distanceView) {
-        validatePackedView(this.distanceView, ['float32'], `${id} distance`);
+        validateSinglePackedView(this.distanceView, ['float32'], `${id} distance`);
         if (this.distanceView.length < 1) {
           throw new Error(`${id} distance must contain one float32 row`);
         }
@@ -654,7 +657,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       predicate === 'dwithin' && prefersWorkgroups && this.sphereRadius === undefined;
     if (this.patternView) {
       const words = this.patternView;
-      validatePackedView(words, ['uint32'], `${id} pattern`);
+      validateSinglePackedView(words, ['uint32'], `${id} pattern`);
       if (words.length < 2 || words.length % GPU_SPATIAL_RELATE_PATTERN_WORDS !== 0) {
         throw new Error(
           `${id} pattern view must hold a positive multiple of ` +
@@ -745,7 +748,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
           pairs.status.requiredCount
         ]) {
           if (view) {
-            validatePackedView(view, ['uint32'], `${id} output.pairs`);
+            validateSinglePackedView(view, ['uint32'], `${id} output.pairs`);
           }
         }
         if (pairs.leftIds.length < 1) {
@@ -771,7 +774,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         if (!views.pairs) {
           throw new Error(`${id} output.relate needs output.pairs`);
         }
-        validatePackedView(views.relate, ['uint32'], `${id} output.relate`);
+        validateSinglePackedView(views.relate, ['uint32'], `${id} output.relate`);
         if (views.relate.length !== this.pairCapacity) {
           throw new Error(`${id} output.relate needs one row per pair`);
         }
@@ -779,15 +782,19 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
     }
     validateStatusScalars(id, props.output.status ?? {});
     if (views.candidateTruncated) {
-      validatePackedView(views.candidateTruncated, ['uint32'], `${id} output.candidateTruncated`);
+      validateSinglePackedView(
+        views.candidateTruncated,
+        ['uint32'],
+        `${id} output.candidateTruncated`
+      );
       if (views.candidateTruncated.length !== this.leftCount) {
         throw new Error(`${id} output.candidateTruncated needs one row per left feature`);
       }
     }
     if (views.onAttribute) {
       const {left, right} = views.onAttribute;
-      validatePackedView(left, ['uint32'], `${id} onAttribute.left`);
-      validatePackedView(right, ['uint32'], `${id} onAttribute.right`);
+      validateSinglePackedView(left, ['uint32'], `${id} onAttribute.left`);
+      validateSinglePackedView(right, ['uint32'], `${id} onAttribute.right`);
       if (left.length !== this.leftCount || right.length !== this.rightCount) {
         throw new Error(`${id} onAttribute needs one key per feature`);
       }
@@ -1128,7 +1135,8 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         state,
         candidatePairs,
         candidateTruncated,
-        candidateOverflow: views.candidateOverflow
+        candidateOverflow: views.candidateOverflow,
+        bvhOverflow
       })
     );
     if (views.candidateTruncatedCount && candidateTruncated) {
@@ -1314,8 +1322,13 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
             output: robust.pairClassifications
           }).addToGraph(graph)
         ).map(node => {
-          // GPUPairwisePointInPolygon declares compute passes only.
-          assert(node.type === 'compute');
+          // GPUPairwisePointInPolygon declares compute passes only; the dispatch condition below
+          // applies to compute passes.
+          validateRequirement(
+            id,
+            node.type === 'compute',
+            'robust point-in-polygon classification must declare compute passes only'
+          );
           return {...node, condition: robustDispatch.condition};
         })
       );

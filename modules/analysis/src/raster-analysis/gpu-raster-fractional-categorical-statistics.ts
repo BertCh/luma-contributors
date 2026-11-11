@@ -12,12 +12,18 @@ import {
 import {
   getGraphOutputViews,
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {getSortedSegmentSumNodes} from '../analysis-core/kernels/sorted-segment-sums';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
-import {getRasterBandViews} from './raster-band-utils';
+import {
+  getRasterBandViews,
+  validateRasterGridAxisAligned,
+  validateRasterParameters
+} from './raster-band-utils';
+import {validateRasterCellSizeMode, type GPURasterCellSizeMode} from '../analysis-core/raster-grid';
+import {getRasterRowAreaScaleWGSL} from './raster-grid/raster-cell-area-scale';
 import {
   requireRasterLength,
   validateRasterExpansionGraph,
@@ -25,6 +31,12 @@ import {
 } from './raster-expansion-utils';
 import type {GPURasterFractionalCoverageProps} from './gpu-raster-fractional-coverage';
 import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+
+/**
+ * Slot of the affine determinant in the georeference view of `GPURasterFractionalCoverage`
+ * (`[originX, originY, a, b, d, e, determinant, 0]`), the only word this class reads from it.
+ */
+const GEOREFERENCE_DETERMINANT_SLOT = 6;
 
 /** Largest category capacity; dense categories bound scratch space and the per-zone winner scan. */
 const MAXIMUM_CATEGORY_CAPACITY = 65534;
@@ -44,8 +56,29 @@ export type GPURasterFractionalCategoricalStatisticsProps = {
   /** Category IDs are [0, categoryCapacity). Valid IDs outside this range fail the result. */
   categoryCapacity: number;
   coverage: GPURasterFractionalCoverageProps['output'];
+  /**
+   * The per-frame georeference view given to `GPURasterFractionalCoverage` (layout of
+   * `getGPURasterFractionalCoverageParameterValues`). The cell area is read from it on every
+   * encoding as `abs(determinant)`, so the area outputs follow a repacked georeference. When
+   * omitted the cell area is `abs(det(grid.affine))` fixed at compile time: pass it whenever the
+   * coverage `parameters` are rewritten for another cell size.
+   */
+  parameters?: GraphDataView<'float32'>;
+  /**
+   * What the affine's units are, for the area outputs. Default `'uniform'`: planar coordinate
+   * units squared, as before. `'geographic'` (degrees) and `'web-mercator'` (EPSG:3857 meters)
+   * give ground square meters on the WGS84 ellipsoid: each coverage fraction is weighted by the
+   * ground area per world area of its row (row edges from `grid.affine`, evaluated at the row
+   * center), so `coverageSums` then holds weighted coverage and `proportions` are area
+   * proportions. They need an axis-aligned grid. Compile-time mode. The row edges come from
+   * `parameters` (origin y and row step y, slots 1 and 5, with `grid.height` and
+   * `pixelInterpretation` compile-time) on every encoding when it is given, so the ground scale
+   * follows a repacked georeference together with the cell area. Without `parameters` they are
+   * baked from `grid.affine`, like the planar cell area.
+   */
+  cellSizeMode?: GPURasterCellSizeMode;
   output: {
-    /** Zone-major category rows: zone * categoryCapacity + category. Sum of coverage fractions. */
+    /** Zone-major category rows: zone * categoryCapacity + category. Sum of coverage fractions (weighted by row ground area for a non-uniform `cellSizeMode`). */
     coverageSums: GraphDataView<'float32'>;
     /** Coverage sums multiplied by abs(affine determinant), in squared coordinate units. */
     classAreas: GraphDataView<'float32'>;
@@ -75,7 +108,8 @@ export type GPURasterFractionalCategoricalStatisticsProps = {
  * proportions and invalid winners. Overflow, inconsistent tuple counts, malformed active tuples or
  * out-of-range valid categories fail every zone (NaN float outputs). Failed source geometry fails
  * its zone. Float32 area overflow also fails its zone. Missing area covers nodata inside the supplied footprint, not unmapped polygon area.
- * Areas are planar coordinate units, not geodesic areas. Graph reuse rereads every input each run.
+ * Areas are planar coordinate units squared by default, or WGS84 ground square meters with a
+ * `cellSizeMode` of `'geographic'` or `'web-mercator'`. Graph reuse rereads every input each run.
  */
 export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeProducer {
   readonly id: string;
@@ -88,9 +122,14 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
     const cellCount = validateRasterExpansionViews(
       this.id,
       grid,
-      [...getRasterBandViews(input), ...getGraphOutputViews(coverage)],
+      [...getRasterBandViews(input), ...getGraphOutputViews(coverage), props.parameters],
       getGraphOutputViews(output)
     );
+    if (props.parameters) {
+      validateRasterParameters(this.id, props.parameters, GEOREFERENCE_DETERMINANT_SLOT + 1);
+    }
+    validateRasterCellSizeMode(this.id, props.cellSizeMode);
+    validateRasterGridAxisAligned(this.id, grid, props.cellSizeMode);
     // Dense categories bound scratch space and the per-zone winner scan.
     validateCapacity(this.id, 'categoryCapacity', categoryCapacity, 1, MAXIMUM_CATEGORY_CAPACITY);
     validateRequirement(
@@ -140,7 +179,7 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
       output.minority,
       output.validity
     ]) {
-      if (view) validatePackedView(view, ['uint32'], this.id);
+      if (view) validateSinglePackedView(view, ['uint32'], this.id);
     }
     for (const view of [
       coverage.fractions,
@@ -151,7 +190,7 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
       output.validArea,
       output.missingArea
     ]) {
-      validatePackedView(view, ['float32'], this.id);
+      validateSinglePackedView(view, ['float32'], this.id);
     }
     requireRasterLength(input.storage.values, cellCount, this.id, 'input values');
     requireRasterLength(input.validity, cellCount, this.id, 'input.validity');
@@ -184,14 +223,39 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
     validateRasterExpansionGraph(id, graph, [
       ...getRasterBandViews(input),
       ...getGraphOutputViews(coverage),
+      props.parameters,
       ...getGraphOutputViews(output)
     ]);
     const cellCount = grid.width * grid.height;
     const tupleCapacity = coverage.zoneIds.length;
     const groupCount = zoneCount * (categoryCapacity + 1);
-    const cellArea = Math.fround(
-      Math.abs(grid.affine[0] * grid.affine[4] - grid.affine[1] * grid.affine[3])
-    );
+    // Slot 6 of the coverage georeference is the affine determinant; read per frame when supplied.
+    const cellArea = props.parameters
+      ? `abs(georeference[georeferenceOffset + ${GEOREFERENCE_DETERMINANT_SLOT}u])`
+      : String(
+          Math.fround(Math.abs(grid.affine[0] * grid.affine[4] - grid.affine[1] * grid.affine[3]))
+        );
+    const georeferenceBindings = props.parameters
+      ? [
+          {
+            name: 'georeference',
+            view: props.parameters,
+            type: 'f32' as const,
+            access: 'read' as const
+          }
+        ]
+      : [];
+    const cellSizeMode = props.cellSizeMode ?? 'uniform';
+    const areaScaleDeclarations =
+      cellSizeMode === 'uniform'
+        ? undefined
+        : getRasterRowAreaScaleWGSL(
+            grid,
+            cellSizeMode,
+            props.parameters ? 'georeference' : undefined
+          );
+    const areaScaleExpression =
+      cellSizeMode === 'uniform' ? 'fraction' : `fraction * getRowAreaScale(cell / ${grid.width}u)`;
     const categories = createTransientView(graph, `${id}-categories`, 'uint32', cellCount);
     const keys = createTransientView(graph, `${id}-keys`, 'uint32', tupleCapacity);
     const contributions = createTransientView(
@@ -238,7 +302,9 @@ if (!missing && category >= ${categoryCapacity}u) { categories[categoriesOffset 
         id: `${id}-prepare-tuples`,
         operation,
         invocationCount: tupleCapacity,
+        declarations: areaScaleDeclarations,
         bindings: [
+          ...georeferenceBindings,
           {name: 'categories', view: categories, type: 'u32', access: 'read'},
           {name: 'zones', view: coverage.zoneIds, type: 'u32', access: 'read'},
           {name: 'cells', view: coverage.cellIds, type: 'u32', access: 'read'},
@@ -261,7 +327,7 @@ if (fraction == 0.0) { return; }
 let category = categories[categoriesOffset + cell];
 if (category > ${categoryCapacity}u) { atomicOr(&failure[failureOffset], 1u); return; }
 keys[keysOffset + index] = zone * ${categoryCapacity + 1}u + category;
-contributions[contributionsOffset + index] = fraction;`
+contributions[contributionsOffset + index] = ${areaScaleExpression};`
       }),
       ...getSortedSegmentSumNodes(graph, {
         id: `${id}-group`,
@@ -282,7 +348,8 @@ contributions[contributionsOffset + index] = fraction;`
           {name: 'summary', view: summary, type: 'f32', access: 'read_write'},
           {name: 'majority', view: output.majority, type: 'u32', access: 'read_write'},
           {name: 'minority', view: output.minority, type: 'u32', access: 'read_write'},
-          {name: 'validity', view: output.validity, type: 'u32', access: 'read_write'}
+          {name: 'validity', view: output.validity, type: 'u32', access: 'read_write'},
+          ...georeferenceBindings
         ],
         body: `let base = sumsOffset + index * ${categoryCapacity + 1}u;
 var observed = 0.0;
@@ -319,7 +386,8 @@ validity[validityOffset + index] = u32(valid);`
           {name: 'summary', view: summary, type: 'f32', access: 'read'},
           {name: 'coverage', view: output.coverageSums, type: 'f32', access: 'read_write'},
           {name: 'areas', view: output.classAreas, type: 'f32', access: 'read_write'},
-          {name: 'proportions', view: output.proportions, type: 'f32', access: 'read_write'}
+          {name: 'proportions', view: output.proportions, type: 'f32', access: 'read_write'},
+          ...georeferenceBindings
         ],
         body: `let zone = index / ${categoryCapacity}u;
 let category = index % ${categoryCapacity}u;
@@ -339,7 +407,8 @@ proportions[proportionsOffset + index] = select(invalid, support / select(1.0, o
           {name: 'summary', view: summary, type: 'f32', access: 'read'},
           {name: 'covered', view: output.coveredArea, type: 'f32', access: 'read_write'},
           {name: 'observed', view: output.validArea, type: 'f32', access: 'read_write'},
-          {name: 'missing', view: output.missingArea, type: 'f32', access: 'read_write'}
+          {name: 'missing', view: output.missingArea, type: 'f32', access: 'read_write'},
+          ...georeferenceBindings
         ],
         body: `covered[coveredOffset + index] = summary[summaryOffset + index * 4u] * ${cellArea};
 observed[observedOffset + index] = summary[summaryOffset + index * 4u + 1u] * ${cellArea};

@@ -211,6 +211,36 @@ export function validateGPUComputationRecord(record: unknown): GPUComputationVal
                 `${nodePath}.bindings[${index}].resource`
               );
           });
+        // Kernel facts are optional: records described without kernel facts omit all three.
+        if (node['constants'] !== undefined)
+          for (const [name, value] of Object.entries(
+            object(node['constants'], `${nodePath}.constants`)
+          )) {
+            if (typeof value !== 'number' || !Number.isFinite(value))
+              issue(`${nodePath}.constants.${name}`, 'Expected a finite number');
+          }
+        const isCount = (value: unknown, minimum: number) =>
+          Number.isInteger(value) && Number(value) >= minimum;
+        if (
+          node['workgroupSize'] !== undefined &&
+          !(
+            Array.isArray(node['workgroupSize']) &&
+            node['workgroupSize'].length === 3 &&
+            node['workgroupSize'].every(size => isCount(size, 1))
+          )
+        )
+          issue(`${nodePath}.workgroupSize`, 'Expected three positive integers');
+        if (node['dispatch'] !== undefined) {
+          const workgroups = object(node['dispatch'], `${nodePath}.dispatch`)['workgroups'];
+          if (
+            !(
+              Array.isArray(workgroups) &&
+              workgroups.length === 3 &&
+              workgroups.every(count => isCount(count, 0))
+            )
+          )
+            issue(`${nodePath}.dispatch.workgroups`, 'Expected three non-negative integers');
+        }
         for (const [name, ids] of [
           ['source', sourceIds],
           ['formula', formulaIds]

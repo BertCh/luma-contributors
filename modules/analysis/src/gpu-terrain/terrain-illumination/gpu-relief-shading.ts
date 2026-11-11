@@ -26,6 +26,7 @@ import {
   captureGraphCommandNodes,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
@@ -47,9 +48,13 @@ import {
   type GPURasterCellSizeMode,
   type GPURasterRowDirection,
   validateRasterCellSizeMode,
-  validateRasterRowDirection,
   writeRasterGridParameterValues
 } from '../../analysis-core/raster-grid';
+import {
+  getTerrainOneSidedPaddedBandNodes,
+  getTerrainPaddedIndexWGSL,
+  resolveTerrainRowDirection
+} from '../terrain-curvature/terrain-geomorphometry-utils';
 
 /** Maximum number of lights in {@link GPUReliefShadingSettings.lights}. */
 export const GPU_RELIEF_SHADING_MAXIMUM_LIGHT_COUNT = 8;
@@ -312,10 +317,22 @@ export type GPUReliefShadingProps = {
   curvature?: GraphDataView<'float32'>;
   /** Cell size interpretation. Defaults to `'uniform'`. */
   cellSizeMode?: GPURasterCellSizeMode;
-  /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
+  /**
+   * Direction in which the row index increases. Defaults to the direction the grid states: the
+   * sign of the row term `grid.affine[4]` (negative: `'south'`, a north-up raster; positive:
+   * `'north'`). An explicit value that contradicts the grid throws at construction.
+   */
   rowDirection?: GPURasterRowDirection;
-  /** Sobel border treatment forwarded to `GPURasterGradient`. Defaults to `'clamp'`. */
-  borderMode?: GPURasterBorderMode;
+  /**
+   * Border treatment of the Horn 3x3 stencil. Defaults to `'clamp'` (forwarded to
+   * `GPURasterGradient`, like `'reflect'`, `'constant'` and `'nodata'`), which repeats the edge
+   * sample and halves the gradient component across the edge in the border ring. `'one-sided'`
+   * is the border of `GPUTerrainDerivatives` (its default there): the surface is extended by one
+   * cell with the quadratic through the three nearest in-grid samples, so normals are exact on a
+   * plane up to the border. Pass `'one-sided'` here to reproduce that class's default hillshade
+   * in the outer ring of pixels.
+   */
+  borderMode?: 'one-sided' | GPURasterBorderMode;
   /**
    * Topology switch that adds the `'imhof-swing'` hillshade node (default false). Without it the
    * `'imhof-swing'` weighting behaves like `'aspect'`. The node runs every frame but exits at once
@@ -356,6 +373,8 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
   readonly props: GPUReliefShadingProps;
   /** Receptive field in pixels (`GPURasterHaloStage` contract). */
   readonly requiredHalo = 1;
+  /** Row direction the kernels use: the prop, or the direction the grid affine states. */
+  readonly rowDirection: GPURasterRowDirection;
 
   constructor(props: GPUReliefShadingProps) {
     this.id = props.id ?? 'relief-shading';
@@ -399,7 +418,7 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
     }
     validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
-    validateRasterRowDirection(id, props.rowDirection ?? 'south');
+    this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
     validateRasterBuffersDistinct(
       id,
       [output.hillshade, output.relief, output.color, output.outputValidity],
@@ -436,37 +455,59 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
     ]);
     const pixelCount = width * height;
     const borderMode = props.borderMode ?? 'clamp';
+    const isOneSided = borderMode === 'one-sided';
     const needsCompose = Boolean(
       output.relief || output.color || output.outputValidity || output.reliefTexture
     );
-    // The compose kernel reads calibrated elevation for the tint ramp.
-    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, needsCompose);
+    // The compose kernel reads calibrated elevation for the tint ramp, and the one-sided ring is
+    // extrapolated from calibrated values.
+    const source = getRasterBufferBandNodes(
+      graph,
+      id,
+      props.elevation,
+      props.grid,
+      needsCompose || isOneSided
+    );
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
+    const padded = isOneSided
+      ? getTerrainOneSidedPaddedBandNodes(graph, {
+          id,
+          operation: 'GPUReliefShading',
+          width,
+          height,
+          band: source.band
+        })
+      : undefined;
+    nodes.push(...(padded?.nodes ?? []));
+    const gradientWidth = padded?.width ?? width;
+    const gradientHeight = padded?.height ?? height;
+    const gradientIndexWGSL = getTerrainPaddedIndexWGSL(isOneSided);
     const gradients = (['x', 'y'] as const).map(direction => {
       const values = createTransientView(
         graph,
         `${id}-gradient-${direction}-values`,
         'float32',
-        pixelCount
+        gradientWidth * gradientHeight
       );
       const validity = createTransientView(
         graph,
         `${id}-gradient-${direction}-validity`,
         'uint32',
-        pixelCount
+        gradientWidth * gradientHeight
       );
       nodes.push(
         ...captureGraphCommandNodes(graph, () =>
           new GPURasterGradient({
             id: `${id}-gradient-${direction}`,
-            width,
-            height,
-            input: source.band,
+            width: gradientWidth,
+            height: gradientHeight,
+            input: padded?.band ?? source.band,
             output: values,
             outputValidity: validity,
             operator: 'sobel',
             direction,
-            borderMode,
+            // Only the ring of the padded grid meets this border; no original pixel reads it.
+            borderMode: borderMode === 'one-sided' ? 'clamp' : borderMode,
             scale: 1
           }).addToGraph(graph)
         )
@@ -516,14 +557,15 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
         invocationCount: pixelCount,
         declarations: `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
-${getRasterRowNorthSignWGSL(props.rowDirection ?? 'south')}
+${getRasterRowNorthSignWGSL(this.rowDirection)}
 const LIGHT_OFFSET: u32 = ${LIGHT_OFFSET}u;
 const MAX_LIGHT_COUNT: u32 = ${GPU_RELIEF_SHADING_MAXIMUM_LIGHT_COUNT}u;
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
 ${getRasterGroundCellSizeWGSL(cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
         body: `let row = index / WIDTH;
-  let rawX = gradientX[gradientXOffset + index];
-  let rawY = gradientY[gradientYOffset + index];
+  ${gradientIndexWGSL}
+  let rawX = gradientX[gradientXOffset + gradientIndex];
+  let rawY = gradientY[gradientYOffset + gradientIndex];
   let groundCell = getGroundCellSize(row);
   let zFactor = settings[settingsOffset + 2u];
   // Sobel responds 8 to a unit-per-pixel ramp, so Horn's derivative is raw / (8 * cell).
@@ -551,10 +593,10 @@ ${getRasterGroundCellSizeWGSL(cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
     weightSum += weight;
   }
   let shade = select(0.0, weightedSum / weightSum, weightSum > 0.0);
-  let isValid = gradientValidity[gradientValidityOffset + index] != 0u &&
+  let isValid = gradientValidity[gradientValidityOffset + gradientIndex] != 0u &&
     isFiniteValue(rawX) && isFiniteValue(rawY) && groundCell.x > 0.0 && groundCell.y > 0.0 &&
     isFiniteValue(shade);
-  hillshadeValues[hillshadeValuesOffset + index] = select(getNaN(index), shade, isValid);`
+  hillshadeValues[hillshadeValuesOffset + index] = select(getQuietNaN(index), shade, isValid);`
       })
     );
     // A separate node (only with `imhofSwing`) keeps the fixed and aspect hillshade kernel above
@@ -566,7 +608,8 @@ ${getRasterGroundCellSizeWGSL(cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
           width,
           height,
           cellSizeMode,
-          rowDirection: props.rowDirection ?? 'south',
+          rowDirection: this.rowDirection,
+          gradientIndexWGSL,
           gradientX: gradients[0].values,
           gradientY: gradients[1].values,
           gradientValidity: gradients[0].validity,
@@ -664,6 +707,8 @@ function getSwingNode<Parameters>(
     height: number;
     cellSizeMode: GPURasterCellSizeMode;
     rowDirection: GPURasterRowDirection;
+    /** Declares `gradientIndex`, the element of pixel `index` in the gradient rasters. */
+    gradientIndexWGSL: string;
     gradientX: GraphDataView<'float32'>;
     gradientY: GraphDataView<'float32'>;
     gradientValidity: GraphDataView<'uint32'>;
@@ -689,19 +734,24 @@ ${getRasterRowNorthSignWGSL(props.rowDirection)}
 const LIGHT_OFFSET: u32 = ${LIGHT_OFFSET}u;
 const MAX_LIGHT_COUNT: u32 = ${GPU_RELIEF_SHADING_MAXIMUM_LIGHT_COUNT}u;
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
+${GUARDED_ATAN2_WGSL}
 ${getRasterGroundCellSizeWGSL(props.cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
     body: `if (settings[settingsOffset + 6u] != 2.0) {
     return;
   }
   let row = index / WIDTH;
-  let rawX = gradientX[gradientXOffset + index];
-  let rawY = gradientY[gradientYOffset + index];
+  ${props.gradientIndexWGSL}
+  let rawX = gradientX[gradientXOffset + gradientIndex];
+  let rawY = gradientY[gradientYOffset + gradientIndex];
   let groundCell = getGroundCellSize(row);
   let zFactor = settings[settingsOffset + 2u];
   let eastGradient = zFactor * rawX / (8.0 * groundCell.x);
   let northGradient = ROW_NORTH_SIGN * zFactor * rawY / (8.0 * groundCell.y);
   let normal = normalize(vec3<f32>(-eastGradient, -northGradient, 1.0));
-  let aspect = atan2(-eastGradient, -northGradient);
+  // -northGradient is -0.0 on a pure east or west slope with north row order, and both
+  // arguments are zero on a flat cell, where guardedAtan2 returns 0 and the zero swing factor
+  // keeps every light at its base azimuth (FX-17, terrain-surface-05).
+  let aspect = guardedAtan2(-eastGradient, -northGradient);
   let lightCount = min(u32(max(settings[settingsOffset + 5u], 0.0)), MAX_LIGHT_COUNT);
   let swingRadians = settings[settingsOffset + 19u] * DEGREES_TO_RADIANS;
   let swingFactor = smoothstep(0.05, 0.4, length(normal.xy));
@@ -718,10 +768,10 @@ ${getRasterGroundCellSizeWGSL(props.cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
     weightSum += weight;
   }
   let shade = select(0.0, weightedSum / weightSum, weightSum > 0.0);
-  let isValid = gradientValidity[gradientValidityOffset + index] != 0u &&
+  let isValid = gradientValidity[gradientValidityOffset + gradientIndex] != 0u &&
     isFiniteValue(rawX) && isFiniteValue(rawY) && groundCell.x > 0.0 && groundCell.y > 0.0 &&
     isFiniteValue(shade);
-  hillshadeValues[hillshadeValuesOffset + index] = select(getNaN(index), shade, isValid);`
+  hillshadeValues[hillshadeValuesOffset + index] = select(getQuietNaN(index), shade, isValid);`
   });
 }
 
@@ -761,7 +811,7 @@ function getDetailNode<Parameters>(
       ? 'detail += settings[settingsOffset + 9u] * textureShade[textureShadeOffset + index];'
       : ''
   }
-  detailValues[detailValuesOffset + index] = select(getNaN(index), detail, isFiniteValue(detail));`
+  detailValues[detailValuesOffset + index] = select(getQuietNaN(index), detail, isFiniteValue(detail));`
   });
 }
 
@@ -913,7 +963,7 @@ fn getElevationColor(elevation: f32) -> vec3<f32> {
     isValid = isValid && isFiniteValue(shade);
   }
   let relief = clamp(shade * settings[settingsOffset + 10u], 0.0, 1.0);
-  ${props.relief ? 'reliefValues[reliefValuesOffset + index] = select(getNaN(index), relief, isValid);' : ''}
+  ${props.relief ? 'reliefValues[reliefValuesOffset + index] = select(getQuietNaN(index), relief, isValid);' : ''}
   ${
     props.color
       ? `let tintStrength = settings[settingsOffset + 11u];

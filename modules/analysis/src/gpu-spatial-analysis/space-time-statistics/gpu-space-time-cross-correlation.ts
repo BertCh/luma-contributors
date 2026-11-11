@@ -14,7 +14,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/index';
@@ -132,19 +132,19 @@ export class GPUSpaceTimeCrossCorrelation implements GPUCommandNodeProducer {
       ['first', props.first],
       ['second', props.second]
     ] as const) {
-      validatePackedView(view, ['float32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       validateViewLength(id, name, view, cellCount * periodCount);
     }
-    validatePackedView(output.correlations, ['float32'], `${id} correlations`);
+    validateSinglePackedView(output.correlations, ['float32'], `${id} correlations`);
     validateViewLength(id, 'correlations', output.correlations, this.rowCount);
-    validatePackedView(output.pValues, ['float32'], `${id} pValues`);
+    validateSinglePackedView(output.pValues, ['float32'], `${id} pValues`);
     validateViewLength(id, 'pValues', output.pValues, this.rowCount);
     if (output.adjustedPValues) {
-      validatePackedView(output.adjustedPValues, ['float32'], `${id} adjustedPValues`);
+      validateSinglePackedView(output.adjustedPValues, ['float32'], `${id} adjustedPValues`);
       validateViewLength(id, 'adjustedPValues', output.adjustedPValues, this.rowCount);
     }
     if (output.pairCounts) {
-      validatePackedView(output.pairCounts, ['uint32'], `${id} pairCounts`);
+      validateSinglePackedView(output.pairCounts, ['uint32'], `${id} pairCounts`);
       validateViewLength(id, 'pairCounts', output.pairCounts, this.rowCount);
     }
     resolveGPUMultipleTestingMethod(id, props.multipleTesting);

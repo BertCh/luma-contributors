@@ -22,13 +22,14 @@ import {
   createRasterIterationState
 } from '../../raster-analysis/cost-distance/raster-relaxation';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
+import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCapacity,
   validateCompactOutput,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   RASTER_WGSL_HELPERS,
@@ -121,6 +122,11 @@ export type GPUProfilePeaksStatus = {
    * as kept or as absent.
    */
   converged?: GraphDataView<'uint32'>;
+  /**
+   * One-row scalar: 1 when `maximumSuppressionIterations` ran out with undecided candidates (the
+   * complement of `converged`), otherwise 0.
+   */
+  iterationLimitReached?: GraphDataView<'uint32'>;
 };
 
 /** Caller-owned outputs of {@link GPUProfilePeaks}; at least one is required. */
@@ -304,22 +310,23 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
     const {id} = this;
     const {output} = props;
     const converged = output.status?.converged;
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    const iterationLimitReached = output.status?.iterationLimitReached;
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length < 1) {
       throw new Error(`${id} values must contain at least one sample`);
     }
     const sampleCount = props.values.length;
     if (props.validity) {
-      validatePackedView(props.validity, ['uint32'], `${id} validity`);
+      validateSinglePackedView(props.validity, ['uint32'], `${id} validity`);
       if (props.validity.length !== sampleCount) {
         throw new Error(`${id} validity must contain one word per sample`);
       }
     }
-    validatePackedView(props.offsets, ['uint32'], `${id} offsets`);
+    validateSinglePackedView(props.offsets, ['uint32'], `${id} offsets`);
     if (props.offsets.length < 1) {
       throw new Error(`${id} offsets must contain profileCount + 1 rows`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_PROFILE_PEAKS_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must contain at least 1 value`);
     }
@@ -355,7 +362,8 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
       !output.refinedValue &&
       !output.peakMask &&
       !output.peaks &&
-      !converged
+      !converged &&
+      !iterationLimitReached
     ) {
       throw new Error(`${id} requires at least one output`);
     }
@@ -368,7 +376,7 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, [format], `${id} output.${name}`);
+      validateSinglePackedView(view, [format], `${id} output.${name}`);
       if (view.length !== sampleCount) {
         throw new Error(`${id} output.${name} must contain one value per sample`);
       }
@@ -377,9 +385,19 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
       validateCompactOutput(id, output.peaks);
     }
     if (converged) {
-      validatePackedView(converged, ['uint32'], `${id} output.status.converged`);
+      validateSinglePackedView(converged, ['uint32'], `${id} output.status.converged`);
       if (converged.length < 1) {
         throw new Error(`${id} output.status.converged must contain one row`);
+      }
+    }
+    if (iterationLimitReached) {
+      validateSinglePackedView(
+        iterationLimitReached,
+        ['uint32'],
+        `${id} output.status.iterationLimitReached`
+      );
+      if (iterationLimitReached.length < 1) {
+        throw new Error(`${id} output.status.iterationLimitReached must contain one row`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
@@ -390,6 +408,7 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
         output.refinedValue,
         output.peakMask,
         converged,
+        iterationLimitReached,
         output.peaks?.ids,
         output.peaks?.status.count,
         output.peaks?.status.overflow,
@@ -406,6 +425,7 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
     const {id, props, minimumSide, suppressionRadius, wrap, maximumSuppressionIterations} = this;
     const {output} = props;
     const converged = output.status?.converged;
+    const iterationLimitReached = output.status?.iterationLimitReached;
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       props.validity,
@@ -416,6 +436,7 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
       output.refinedValue,
       output.peakMask,
       converged,
+      iterationLimitReached,
       output.peaks?.ids,
       output.peaks?.status.count,
       output.peaks?.status.overflow,
@@ -483,7 +504,7 @@ const WINDOW: u32 = ${props.window}u;
 const MIN_SIDE: u32 = ${minimumSide}u;
 const STATE_INERT: u32 = ${STATE_INERT}u;
 const STATE_UNDECIDED: u32 = ${STATE_UNDECIDED}u;
-${getNanFunction()}
+${GET_NAN_WGSL}
 fn isGap(sample: u32) -> bool {
   ${
     props.validity
@@ -493,9 +514,9 @@ fn isGap(sample: u32) -> bool {
   return !isFiniteValue(sampleValues[sampleValuesOffset + sample]);
 }
 fn writeInert(sample: u32) {
-  candidateProminence[candidateProminenceOffset + sample] = getNan();
+  candidateProminence[candidateProminenceOffset + sample] = getNaN();
   candidateDelta[candidateDeltaOffset + sample] = 0.0;
-  candidateValue[candidateValueOffset + sample] = getNan();
+  candidateValue[candidateValueOffset + sample] = getNaN();
   candidateState[candidateStateOffset + sample] = STATE_INERT;
 }
 struct Side {
@@ -685,6 +706,37 @@ const STATE_SUPPRESSED: u32 = ${STATE_SUPPRESSED}u;`,
       );
     }
 
+    if (iterationLimitReached) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-iteration-limit-reset`,
+          operation: OPERATION,
+          view: iterationLimitReached,
+          type: 'u32',
+          value: '0u',
+          componentCount: 1
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-iteration-limit`,
+          operation: OPERATION,
+          variant: 'iteration-limit',
+          bindings: [
+            {name: 'candidateState', view: candidateState, type: 'u32', access: 'read'},
+            {
+              name: 'limitOut',
+              view: iterationLimitReached,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: sampleCount,
+          body: `if (candidateState[candidateStateOffset + index] == ${STATE_UNDECIDED}u) {
+    atomicStore(&limitOut[limitOutOffset], 1u);
+  }`
+        })
+      );
+    }
+
     // Phase 4: outputs. An undecided candidate (suppression hit maximumSuppressionIterations) writes the unresolved
     // sentinels, never "not a peak"; a converged run has no undecided candidate.
     // The compaction flags are separate from a caller's peakMask because that mask can hold the
@@ -735,19 +787,19 @@ const STATE_SUPPRESSED: u32 = ${STATE_SUPPRESSED}u;`,
           variant: 'outputs',
           bindings,
           invocationCount: sampleCount,
-          declarations: `${getNanFunction()}
+          declarations: `${GET_NAN_WGSL}
 ${getInfinityFunction()}`,
           body: `let state = candidateState[candidateStateOffset + index];
   let kept = state == ${STATE_KEPT}u;
   let unresolved = state == ${STATE_UNDECIDED}u;
   ${
     output.prominence
-      ? `prominenceOut[prominenceOutOffset + index] = select(select(getNan(), candidateProminence[candidateProminenceOffset + index], kept), getInfinity(), unresolved);`
+      ? `prominenceOut[prominenceOutOffset + index] = select(select(getNaN(), candidateProminence[candidateProminenceOffset + index], kept), getInfinity(), unresolved);`
       : ''
   }
   ${
     output.refinedValue
-      ? `refinedValueOut[refinedValueOutOffset + index] = select(select(getNan(), candidateValue[candidateValueOffset + index], kept), getInfinity(), unresolved);`
+      ? `refinedValueOut[refinedValueOutOffset + index] = select(select(getNaN(), candidateValue[candidateValueOffset + index], kept), getInfinity(), unresolved);`
       : ''
   }
   ${
@@ -776,12 +828,12 @@ ${getInfinityFunction()}`,
           ],
           invocationCount: sampleCount,
           declarations: `${common}
-${getNanFunction()}
+${GET_NAN_WGSL}
 ${getInfinityFunction()}`,
           body: `let state = candidateState[candidateStateOffset + index];
   if (state != ${STATE_KEPT}u) {
     refinedIndexOut[refinedIndexOutOffset + index] =
-      select(getNan(), getInfinity(), state == ${STATE_UNDECIDED}u);
+      select(getNaN(), getInfinity(), state == ${STATE_UNDECIDED}u);
     return;
   }
   let range = findProfile(index);
@@ -864,14 +916,6 @@ ${getInfinityFunction()}`,
 function getInfinityFunction(): string {
   return `fn getInfinity() -> f32 {
   var bits = 0x7f800000u;
-  return bitcast<f32>(bits);
-}`;
-}
-
-/** WGSL for the canonical NaN, built from a variable so it is not constant-evaluated. */
-function getNanFunction(): string {
-  return `fn getNan() -> f32 {
-  var bits = 0x7fc00000u;
   return bitcast<f32>(bits);
 }`;
 }

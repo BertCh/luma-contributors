@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNonZeroFiniteNumber} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 
 /** Number of float32 elements in a {@link GPULineIntegralConvolution} parameter view. */
@@ -16,11 +17,21 @@ export const LINE_INTEGRAL_CONVOLUTION_NOISE_PURPOSE =
 
 /** Per-frame settings of {@link GPULineIntegralConvolution}. */
 export type GPULineIntegralConvolutionSettings = {
-  /** Field placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y. */
+  /**
+   * Field placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y. A cell
+   * size that is zero or not finite throws.
+   */
   fieldExtent: readonly [number, number, number, number];
-  /** Output raster placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y. */
+  /**
+   * Output raster placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y.
+   * A cell size that is zero or not finite throws.
+   */
   outputExtent: readonly [number, number, number, number];
-  /** Streamline step in output pixels. Defaults to 0.5. */
+  /**
+   * Streamline step in output pixels. Defaults to 0.5. The step follows the field in world space;
+   * on non-square output cells its world length is the one that spans `stepLength` pixels in that
+   * direction.
+   */
   stepLength?: number;
   /** A streamline stops where the field is slower than this. Defaults to 0. */
   minimumSpeed?: number;
@@ -48,6 +59,18 @@ export function getGPULineIntegralConvolutionParameterValues(
   if (target.length < GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH) {
     throw new Error(
       `Line integral convolution parameter target must hold ${GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH} elements`
+    );
+  }
+  for (const name of ['fieldExtent', 'outputExtent'] as const) {
+    validateNonZeroFiniteNumber(
+      'GPULineIntegralConvolution',
+      `${name} cellWidth`,
+      settings[name][2]
+    );
+    validateNonZeroFiniteNumber(
+      'GPULineIntegralConvolution',
+      `${name} cellHeight`,
+      settings[name][3]
     );
   }
   target.set([

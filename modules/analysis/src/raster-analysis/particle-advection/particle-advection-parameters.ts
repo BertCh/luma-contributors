@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNonZeroFiniteNumber} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 
 /** Number of float32 elements in a {@link GPUParticleAdvection} parameter view. */
@@ -19,7 +20,8 @@ export const PARTICLE_ADVECTION_DROP_PURPOSE = PHILOX_PURPOSES.particleAdvection
 export type GPUParticleAdvectionSettings = {
   /**
    * Field raster placement `[originX, originY, cellWidth, cellHeight]`. Row 0 is the row with the
-   * smallest y; cell `(i, j)` is centred at `origin + (i + 0.5, j + 0.5) * cellSize`.
+   * smallest y; cell `(i, j)` is centred at `origin + (i + 0.5, j + 0.5) * cellSize`. A cell size
+   * that is zero or not finite throws.
    */
   fieldExtent: readonly [number, number, number, number];
   /** Time step of this frame, in the time unit of the field velocities. */
@@ -73,6 +75,8 @@ export function getGPUParticleAdvectionParameterValues(
     );
   }
   const [originX, originY, cellWidth, cellHeight] = settings.fieldExtent;
+  validateNonZeroFiniteNumber('GPUParticleAdvection', 'fieldExtent cellWidth', cellWidth);
+  validateNonZeroFiniteNumber('GPUParticleAdvection', 'fieldExtent cellHeight', cellHeight);
   const spawnBounds = settings.spawnBounds ?? [
     originX,
     originY,

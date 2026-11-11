@@ -53,6 +53,8 @@ export const PHILOX_PURPOSES = {
   dotDensityCandidate: {id: 7, word: 'key'},
   /** `GPUMaxPRegions` seed-row order, counter `(row, start, 0, 0)`. */
   maxPRegionsSeedOrder: {id: 8, word: 'key'},
+  /** `GPUMinimumBounds` Welzl shuffle of hull vertices (`'WELZ'`), counter `(group, slot, 0, 0)`. */
+  minimumBoundsCircleShuffle: {id: 0x57454c5a, word: 'key'},
   /** `GPURipleyEnvelope` CSR simulations (`'RIPF'`), counter `(row, simulation, 0, 0)`. */
   ripleyEnvelopeSimulation: {id: 0x52495046, word: 'key'},
   /** Conditional Gaussian simulation, counter `(replicate, latentIndex, 0, 0)`. */
@@ -82,7 +84,16 @@ export const PHILOX_PURPOSES = {
   /** `GPUSpaceTimeDiggleTest` swap-or-not time permutations (`'DIGG'`). */
   spaceTimeDiggleShuffle: {id: 0x44494747, word: 'counter'},
   /** `GPUNetworkKFunction` simulated events (`'KFUN'`). */
-  networkKFunction: {id: 0x4b46554e, word: 'counter'}
+  networkKFunction: {id: 0x4b46554e, word: 'counter'},
+  /** `GPUNetworkLouvain` Fisher-Yates visit order (`'LOUV'`), counter `(block, 0, 0, 0)`. */
+  networkLouvainVisitOrder: {id: 0x4c4f5556, word: 'key'},
+  /** `GPUSpatialCrossValidation` block order (`'FOLD'`), counter `(block, 0, 0, 0)`. */
+  spatialCrossValidationBlockOrder: {id: 0x464f4c44, word: 'key'},
+  /**
+   * `GPUSpatialKMeans` k-means++ exponential race (`'KMPP'`), counter `(row, round, 0, 0)`; the seed
+   * word of the key is the restart seed (`getGPUSpatialKMeansRestartSeed`).
+   */
+  kMeansPlusPlusSeeding: {id: 0x4b4d5050, word: 'key'}
 } as const satisfies Record<string, {id: number; word: 'key' | 'counter'}>;
 
 /** Name of one registered Philox purpose. @internal */
@@ -98,6 +109,9 @@ const PHILOX_W1 = 0xbb67ae85;
  * WGSL source defining:
  * - `philox4x32(counter: vec4<u32>, key: vec2<u32>) -> vec4<u32>`: ten-round Philox block.
  * - `philoxUnitFloat(word: u32) -> f32`: top 24 bits mapped exactly to `[0, 1)`.
+ * - `philoxOpenUnitFloat(word: u32) -> f32`: top 23 bits plus one half, mapped exactly to
+ *   `[2^-24, 1 - 2^-24]`. Use it for a uniform that feeds `log()` or an inverse CDF: it cannot
+ *   return 0 or 1. CPU mirrors: `getPhiloxUnitFloat`, `getPhiloxOpenUnitFloat`.
  */
 export const PHILOX_WGSL = /* wgsl */ `
 fn philoxMulHiLo(a: u32, b: u32) -> vec2<u32> {
@@ -137,6 +151,13 @@ fn philox4x32(counterIn: vec4<u32>, keyIn: vec2<u32>) -> vec4<u32> {
 
 fn philoxUnitFloat(word: u32) -> f32 {
   return f32(word >> 8u) * (1.0 / 16777216.0);
+}
+
+// Uniform in the open interval (0, 1), for log() and inverse-CDF draws. The top 23 bits plus one
+// half are exact in f32, so the result lies in [2^-24, 1 - 2^-24] and neither end is reachable.
+// (The 24-bit form (f32(word >> 8u) + 0.5) / 16777216.0 rounds to exactly 1.0 for the largest word.)
+fn philoxOpenUnitFloat(word: u32) -> f32 {
+  return (f32(word >> 9u) + 0.5) * (1.0 / 8388608.0);
 }
 `;
 
@@ -187,4 +208,9 @@ export function getPhilox4x32(
 /** CPU mirror of WGSL `philoxUnitFloat`: exact f32 value in `[0, 1)` from the top 24 bits. */
 export function getPhiloxUnitFloat(word: number): number {
   return (word >>> 8) / 16777216;
+}
+
+/** CPU mirror of WGSL `philoxOpenUnitFloat`: exact f32 value in the open interval `(0, 1)`. */
+export function getPhiloxOpenUnitFloat(word: number): number {
+  return ((word >>> 9) + 0.5) / 8388608;
 }

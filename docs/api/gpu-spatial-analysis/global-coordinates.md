@@ -32,7 +32,7 @@ An empty grid list returns no-coverage for every finite input.
 
 Forward horizontal transforms add interpolated shifts. Inverse horizontal transforms solve
 `target = source + shift(source)` with at most `maximumIterations` fixed-point steps and verify the
-final residual. Default tolerance is `1e-5` degrees and the iteration cap is 16. A combined inverse
+final residual. The inverse always takes at least one step before testing the residual (the first residual is the shift itself). Default tolerance is `5e-9` degrees (about 0.56 mm; never less than four f32 spacings of the shift) and the iteration cap is 16. A combined inverse
 samples vertical correction at the recovered source longitude/latitude. Inverse lookup starts at
 the target: if that location is outside every grid, it returns no coverage, even if a shifted source
 might exist. This matches the target-seeded direct PROJ `hgridshift` fixtures, including the case where a forward-shifted edge point cannot be inversely looked up. Priority discontinuities can also choose a different inverse grid; inverse is not promised to recover the original source across such a discontinuity. No extrapolation or identity fallback occurs.

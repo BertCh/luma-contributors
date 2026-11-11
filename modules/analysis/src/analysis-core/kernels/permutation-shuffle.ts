@@ -74,10 +74,9 @@ export function getSwapOrNotPermutationIndex(
 ): number {
   let position = index;
   for (let round = 0; round < rounds.keys.length; round++) {
-    let partner = rounds.keys[round] + count - position;
-    if (partner >= count) {
-      partner -= count;
-    }
+    // (key - position) mod count without a sum that can pass 2^32 (see the WGSL twin).
+    const key = rounds.keys[round];
+    const partner = key >= position ? key - position : key + (count - position);
     const canonical = Math.max(position, partner);
     if (hashUint32((canonical ^ rounds.salts[round]) >>> 0) >>> 31) {
       position = partner;
@@ -142,10 +141,10 @@ fn getSwapOrNotPermutationIndex(index: u32, count: u32) -> u32 {
   var position = index;
   let roundCount = getSwapOrNotRoundCount(count);
   for (var round = 0u; round < roundCount; round++) {
-    var partner = swapOrNotKeys[round] + count - position;
-    if (partner >= count) {
-      partner = partner - count;
-    }
+    // (key - position) mod count. Both operands are below count, so neither branch can wrap in
+    // u32; the sum key + count - position does for a count above 2^31.
+    let key = swapOrNotKeys[round];
+    let partner = select(key + (count - position), key - position, key >= position);
     let canonical = max(position, partner);
     if ((hashUint32(canonical ^ swapOrNotSalts[round]) >> 31u) != 0u) {
       position = partner;

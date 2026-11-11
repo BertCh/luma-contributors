@@ -36,14 +36,14 @@ it('RS03/04/06/07/08/10/11 construct native graph kernels within eight storage b
       source: {width: 4, height: 4, origin: [0, 0], spacing: [1, 1]},
       destination: {width: 2, height: 2, origin: [0.25, 0.25], spacing: [2, 2]},
       values,
-      validity,
+      mask: validity,
       normalization: 'extensive',
       output: {values: view('float32'), coveredArea: view('float32'), status: view('uint32')}
     }),
     new GPURasterTexture({
       grid: makeGPURasterMetadata({width: 4, height: 4}),
       values,
-      validity,
+      mask: validity,
       levels: 32,
       range: [0, 1],
       radius: 8,
@@ -59,7 +59,7 @@ it('RS03/04/06/07/08/10/11 construct native graph kernels within eight storage b
           cellCount: 4,
           sliceCount: 16,
           values,
-          validity,
+          mask: validity,
           operation,
           output: {
             values: view('float32'),
@@ -81,8 +81,8 @@ it('RS03/04/06/07/08/10/11 construct native graph kernels within eight storage b
       reference: values,
       moving: view('float32'),
       mode: 'masked-linear',
-      referenceValidity: validity,
-      movingValidity: view('uint32'),
+      referenceMask: validity,
+      movingMask: view('uint32'),
       maximumShift: [2, 1],
       output: {
         shift: view('float32x2'),
@@ -104,7 +104,7 @@ it('RS03/04/06/07/08/10/11 construct native graph kernels within eight storage b
         adjacency: view('uint32'),
         weights: view('float32'),
         mapping: view('uint32'),
-        status: view('uint32')
+        status: {iterationLimitReached: view('uint32')}
       }
     }),
     new GPURasterRegionGraph({
@@ -118,7 +118,7 @@ it('RS03/04/06/07/08/10/11 construct native graph kernels within eight storage b
         adjacency: view('uint32'),
         weights: view('float32'),
         mapping: view('uint32'),
-        status: view('uint32')
+        status: {iterationLimitReached: view('uint32')}
       }
     }),
     ...(['unconstrained', 'nonnegative', 'simplex'] as const).map(
@@ -129,7 +129,7 @@ it('RS03/04/06/07/08/10/11 construct native graph kernels within eight storage b
           bandCount: 4,
           endmemberCount: 3,
           values,
-          validity,
+          mask: validity,
           endmembers: view('float32'),
           constraint,
           output: {
@@ -144,7 +144,7 @@ it('RS03/04/06/07/08/10/11 construct native graph kernels within eight storage b
       cellCount: 4,
       sliceCount: 16,
       values,
-      validity,
+      mask: validity,
       period: 6,
       minimumSegmentLength: 4,
       output: {
@@ -188,7 +188,7 @@ it('remote-sensing rejects unsupported topology, insufficient capacities, aliase
   const texture = {
     grid: makeGPURasterMetadata({width: 4, height: 4}),
     values,
-    validity,
+    mask: validity,
     levels: 2,
     range: [0, 1] as const,
     radius: 1,
@@ -200,7 +200,7 @@ it('remote-sensing rejects unsupported topology, insufficient capacities, aliase
     cellCount: 4,
     sliceCount: 16,
     values,
-    validity,
+    mask: validity,
     operation: 'savitzky-golay' as const,
     output: {
       values: view('float32'),
@@ -214,7 +214,7 @@ it('remote-sensing rejects unsupported topology, insufficient capacities, aliase
     bandCount: 4,
     endmemberCount: 3,
     values,
-    validity,
+    mask: validity,
     endmembers: view('float32'),
     output: {
       abundances: view('float32'),
@@ -240,14 +240,14 @@ it('remote-sensing rejects unsupported topology, insufficient capacities, aliase
       adjacency: view('uint32'),
       weights: view('float32'),
       mapping: view('uint32'),
-      status: view('uint32')
+      status: {iterationLimitReached: view('uint32')}
     }
   };
   const seasonal = {
     cellCount: 4,
     sliceCount: 16,
     values,
-    validity,
+    mask: validity,
     period: 6,
     minimumSegmentLength: 4,
     output: {
@@ -262,7 +262,7 @@ it('remote-sensing rejects unsupported topology, insufficient capacities, aliase
     source: {width: 4, height: 4, origin: [0, 0] as const, spacing: [1, 1] as const},
     destination: {width: 2, height: 2, origin: [0, 0] as const, spacing: [2, 2] as const},
     values,
-    validity,
+    mask: validity,
     normalization: 'covered-area' as const,
     output: {values: view('float32'), coveredArea: view('float32'), status: view('uint32')}
   };
@@ -420,7 +420,7 @@ it('RS08 tile assembly rejects overlap and incomplete core partitions', () => {
       adjacency: view('uint32', 4),
       weights: view('float32', 4),
       mapping: view('uint32', 2),
-      status: view('uint32', 1)
+      status: {iterationLimitReached: view('uint32', 1)}
     }
   };
   const tile = {
@@ -482,4 +482,52 @@ it('RS11 extended contracts reject missing diagnostics and excessive solver work
   } finally {
     device.destroy();
   }
+});
+
+it('STD-04 and STD-07 name the region graph status port and the input masks', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  let serial = 0;
+  const view = <Format extends 'float32' | 'uint32'>(format: Format, length: number) =>
+    createTransientView(graph, `std-${serial++}`, format, length);
+  const regionGraph = {
+    id: 'region-graph',
+    grid: makeGPURasterMetadata({width: 2, height: 2}),
+    values: view('float32', 4),
+    labels: view('uint32', 4),
+    regionCount: 2,
+    mergeThreshold: 1,
+    maximumIterations: 2,
+    output: {
+      adjacency: view('uint32', 4),
+      weights: view('float32', 4),
+      mapping: view('uint32', 2),
+      status: {iterationLimitReached: view('uint32', 1)}
+    }
+  };
+  expect(() => new GPURasterRegionGraph(regionGraph)).not.toThrow();
+  expect(
+    () =>
+      new GPURasterRegionGraph({
+        ...regionGraph,
+        output: {
+          ...regionGraph.output,
+          status: {iterationLimitReached: view('float32', 1) as never}
+        }
+      })
+  ).toThrow(/^region-graph iterationLimitReached must contain one uint32 row/);
+  expect(
+    () =>
+      new GPURasterTexture({
+        id: 'texture',
+        grid: makeGPURasterMetadata({width: 2, height: 2}),
+        values: view('float32', 4),
+        mask: view('uint32', 3),
+        levels: 2,
+        range: [0, 1],
+        radius: 1,
+        offset: [1, 0],
+        features: view('float32', 4 * 7),
+        pairCount: view('uint32', 4)
+      })
+  ).toThrow(/^texture values and mask must hold/);
 });

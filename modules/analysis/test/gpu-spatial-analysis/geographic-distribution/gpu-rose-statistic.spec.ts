@@ -192,3 +192,61 @@ it('GPURoseStatistic keeps Rayleigh z independent of descriptive weight units an
     }
   }
 });
+
+it('GPURoseStatistic reads a segment whose x difference is negative zero as pointing along y', async () => {
+  // FX-17 (the atan2 audit): on the test GPU `atan2(y, -0.0)` returns `-sign(y) * pi / 2`, and
+  // this kernel takes the angle of a coordinate difference. A due-north segment from x = +0 to
+  // x = -0 has the IEEE difference (-0.0) - (+0.0) = -0.0, the one way a difference can be a
+  // negative zero. Measured 2026-11-10 with the builtin: the kernel binned it north on this GPU
+  // (the sign of the zero did not reach `atan2`), so this spec did not fail before. The kernel
+  // now calls `guardedAtan2` (contract section 11), which makes the result hold on a GPU where
+  // the sign does reach it; this spec keeps the expected bins.
+  // Expected by hand: two due-north segments and one due-south segment, in four bins of a
+  // quarter turn from +x.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const starts = Float32Array.from([0, 0, 5, 2, 0, 0]);
+  const ends = Float32Array.from([-0, 1, 5, 3, -0, -1]);
+  const graph = new GPUCommandGraph(device, {id: 'rose-negative-zero'});
+  const startsBuffer = createInputBuffer(device, starts);
+  const endsBuffer = createInputBuffer(device, ends);
+  const summaryBuffer = createOutputBuffer(device, GPU_ROSE_STATISTIC_SUMMARY.stride);
+  const binsBuffer = createOutputBuffer(device, 4);
+  graph.add(
+    new GPURoseStatistic({
+      starts: importGraphBuffer(graph, 'starts', startsBuffer, 'float32x2', 3),
+      ends: importGraphBuffer(graph, 'ends', endsBuffer, 'float32x2', 3),
+      circular: {
+        mode: 'directional',
+        angleUnit: 'radians',
+        origin: 'positive-x-counter-clockwise',
+        binCount: 4
+      },
+      output: {
+        summary: importGraphBuffer(
+          graph,
+          'summary',
+          summaryBuffer,
+          'float32',
+          GPU_ROSE_STATISTIC_SUMMARY.stride
+        ),
+        bins: importGraphBuffer(graph, 'bins', binsBuffer, 'float32', 4)
+      }
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const summary = await readFloat32(summaryBuffer, GPU_ROSE_STATISTIC_SUMMARY.stride);
+  const bins = await readFloat32(binsBuffer, 4);
+  compiled.destroy();
+  startsBuffer.destroy();
+  endsBuffer.destroy();
+  summaryBuffer.destroy();
+  binsBuffer.destroy();
+  expect(summary[GPU_ROSE_STATISTIC_SUMMARY.count]).toBe(3);
+  // Bin 1 is [pi / 2, pi): north. Bin 3 is [3 pi / 2, 2 pi): south.
+  expect(bins).toEqual([0, 2, 0, 1]);
+  // Resultant of two unit vectors north and one south: length 1 / 3, mean direction north.
+  expect(summary[GPU_ROSE_STATISTIC_SUMMARY.resultantLength]).toBeCloseTo(1 / 3, 5);
+  expect(summary[GPU_ROSE_STATISTIC_SUMMARY.meanAngle]).toBeCloseTo(Math.PI / 2, 5);
+});

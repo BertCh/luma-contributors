@@ -13,7 +13,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUGeometryMeasures} from '../geometry-measures/gpu-geometry-measures';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
@@ -237,7 +237,7 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
     if (props.featureTransforms && this.origins.length > 0) {
       throw new Error(`${id} origins apply only to parameters, not featureTransforms`);
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
@@ -245,7 +245,7 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
     for (const name of ['ringOffsets', 'featureOffsets', 'polygonOffsets'] as const) {
       const view = layout[name];
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length < 2) {
           throw new Error(`${id} ${name} must contain at least two rows`);
         }
@@ -263,7 +263,7 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
       throw new Error(`${id} per-feature transforms and origins require offsets`);
     }
     if (props.parameters) {
-      validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
       if (props.parameters.length < GPU_AFFINE_TRANSFORM_PARAMETER_LENGTH) {
         throw new Error(
           `${id} parameters must hold ${GPU_AFFINE_TRANSFORM_PARAMETER_LENGTH} float32 values`
@@ -271,12 +271,12 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
       }
     }
     if (props.featureTransforms) {
-      validatePackedView(props.featureTransforms, ['float32'], `${id} featureTransforms`);
+      validateSinglePackedView(props.featureTransforms, ['float32'], `${id} featureTransforms`);
       if (props.featureTransforms.length !== 6 * this.featureCount) {
         throw new Error(`${id} featureTransforms must hold 6 rows per feature`);
       }
     }
-    validatePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
     if (props.output.positions.length !== props.positions.length) {
       throw new Error(`${id} output.positions length must equal positions length`);
     }

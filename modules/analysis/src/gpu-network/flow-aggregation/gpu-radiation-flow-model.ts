@@ -19,7 +19,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -62,8 +62,10 @@ export type GPURadiationFlowModelProps = {
    */
   populations: GraphDataView<'float32'>;
   /**
-   * Total number of trips leaving each zone, `T_i`. Per-frame contents. The `zoneOutWeights` or the
-   * float-converted `zoneOutCounts` of `GPUFlowAggregation` are the usual source.
+   * Total number of trips leaving each zone, `T_i`, not counting trips that stay inside it.
+   * Per-frame contents. The `zoneOutWeights` or the float-converted `zoneOutCounts` of a
+   * `GPUFlowAggregation` built with `excludeSelfFlows: true` are the usual source; without that
+   * option the zone totals include self flows and `T_i` is too large.
    */
   outflows: GraphDataView<'float32'>;
   /** Compile-time. Defaults to `'none'`. */
@@ -116,13 +118,13 @@ export class GPURadiationFlowModel implements GPUCommandNodeProducer {
       props.spatialContext,
       GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     this.zoneCount = props.positions.length;
     validateCapacity(id, 'zoneCount', this.zoneCount, 2);
     validateMaximumCount(id, 'zoneCount', this.zoneCount, GPU_RADIATION_FLOW_MODEL_MAXIMUM_ZONES);
-    validatePackedView(props.populations, ['float32'], `${id} populations`);
+    validateSinglePackedView(props.populations, ['float32'], `${id} populations`);
     validateViewLength(id, 'populations', props.populations, this.zoneCount);
-    validatePackedView(props.outflows, ['float32'], `${id} outflows`);
+    validateSinglePackedView(props.outflows, ['float32'], `${id} outflows`);
     validateViewLength(id, 'outflows', props.outflows, this.zoneCount);
     const normalization = props.normalization ?? 'none';
     validateRequirement(
@@ -130,7 +132,7 @@ export class GPURadiationFlowModel implements GPUCommandNodeProducer {
       normalization === 'none' || normalization === 'finite-size',
       "normalization must be 'none' or 'finite-size'"
     );
-    validatePackedView(props.output.flows, ['float32'], `${id} output.flows`);
+    validateSinglePackedView(props.output.flows, ['float32'], `${id} output.flows`);
     validateViewLength(id, 'output.flows', props.output.flows, this.zoneCount * this.zoneCount);
     validateGraphOutputsDisjointFromInputs(
       id,

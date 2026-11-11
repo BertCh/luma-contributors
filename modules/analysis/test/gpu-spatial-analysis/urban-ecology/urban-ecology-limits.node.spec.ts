@@ -128,8 +128,8 @@ it('urban morphology recipes name the limit they reject', () => {
           runs: {
             positions: view('float32x2', 2),
             offsets: view('uint32', 2),
-            leftLineIds: view('uint32', 1),
-            rightLineIds: view('uint32', 1),
+            leftSourceIds: view('uint32', 1),
+            rightSourceIds: view('uint32', 1),
             forward: view('uint32', 1)
           },
           status: {count: view('uint32', 1)}

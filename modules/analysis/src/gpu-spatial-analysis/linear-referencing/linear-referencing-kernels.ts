@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -27,7 +28,10 @@ export const GPU_LINE_LOCATE_STATUS = {
   ok: 0,
   /** The measure was outside `[0, length]` and was clamped to the nearest end. */
   clamped: 1,
-  /** The line index is out of range or the line is empty; outputs are NaN. */
+  /**
+   * The line index is out of range, the line is empty, or the measure (after the per-frame scale
+   * and offset) is NaN; outputs are NaN and the segment index is `0xffffffff`.
+   */
   invalid: 2
 } as const;
 
@@ -178,7 +182,8 @@ ${POSITION_WGSL}`,
  * (pointing left of the direction of travel), and `kind` is 0 for rows that start no segment, 1 for
  * arcs and 2 for zero-length segments. The tangent comes from the degree-difference bearing, so
  * meter-scale arcs stay well conditioned. Also zeroes the status words (the arc BVH packing node
- * then publishes its leaf overflow; there is no candidate list, so `candidateCount` stays 0).
+ * then publishes its leaf overflow; there is no candidate list, so `requiredCandidateCount` stays
+ * 0).
  *
  * @internal
  */
@@ -190,20 +195,20 @@ export function createSphericalSegmentTableNode<Parameters>(
     positions: GraphDataView<'float32x2'>;
     lineOffsets: GraphDataView<'uint32'>;
     table: GraphDataView<'float32'>;
-    overflow: GraphDataView<'uint32'>;
-    candidateCount?: GraphDataView<'uint32'>;
+    candidateOverflow: GraphDataView<'uint32'>;
+    requiredCandidateCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
     {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
     {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
     {name: 'table', view: props.table, type: 'f32', access: 'read_write'},
-    {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'}
+    {name: 'candidateOverflow', view: props.candidateOverflow, type: 'u32', access: 'read_write'}
   ];
-  if (props.candidateCount) {
+  if (props.requiredCandidateCount) {
     bindings.push({
-      name: 'candidateCount',
-      view: props.candidateCount,
+      name: 'requiredCandidateCount',
+      view: props.requiredCandidateCount,
       type: 'u32',
       access: 'read_write'
     });
@@ -220,8 +225,8 @@ ${GEODESIC_WGSL}
 ${FIND_LINE_WGSL}
 ${POSITION_WGSL}`,
     body: /* wgsl */ `if (index == 0u) {
-    overflow[overflowOffset] = 0u;
-    ${props.candidateCount ? 'candidateCount[candidateCountOffset] = 0u;' : ''}
+    candidateOverflow[candidateOverflowOffset] = 0u;
+    ${props.requiredCandidateCount ? 'requiredCandidateCount[requiredCandidateCountOffset] = 0u;' : ''}
   }
   let base = tableOffset + index * TABLE_STRIDE;
   for (var word = 0u; word < TABLE_STRIDE; word++) {
@@ -317,6 +322,7 @@ const BOX_PADDING: f32 = 1.0e-4;
 const FLOAT32_MAXIMUM: f32 = 3.402823e38;
 const PI: f32 = 3.14159265358979;
 const DEGREES_PER_RADIAN: f32 = 57.2957795130823;
+${GUARDED_ATAN2_WGSL}
 ${POSITION_WGSL}`,
     body: /* wgsl */ `let base = tableOffset + index * TABLE_STRIDE;
   let kind = u32(table[base + 11u]);
@@ -336,7 +342,8 @@ ${POSITION_WGSL}`,
       let tangentZ = table[base + 5u];
       let arcAngle = table[base + 9u];
       let reach = asin(min(sqrt(upZ * upZ + tangentZ * tangentZ), 1.0)) * DEGREES_PER_RADIAN;
-      let peak = atan2(tangentZ, upZ);
+      // upZ is -0.0 for an arc that starts at latitude -0.0: the peak is still a quarter turn ahead.
+      let peak = guardedAtan2(tangentZ, upZ);
       let trough = select(peak + PI, peak - PI, peak > 0.0);
       if (peak >= 0.0 && peak <= arcAngle) {
         maximum.y = max(maximum.y, reach);
@@ -365,7 +372,8 @@ ${POSITION_WGSL}`,
 /**
  * Packs the arc BVH into one table of {@link SPHERICAL_NODE_WORDS} words per node (box bits and the
  * leaf's segment row, `0xffffffff` for internal nodes), so the projection kernel binds one buffer,
- * and publishes the BVH leaf overflow (`leafCapacity` below the row count) to `overflow`. @internal
+ * and publishes the BVH leaf overflow (`leafCapacity` below the row count) to `candidateOverflow`.
+ * @internal
  */
 export function createSphericalNodeDataNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -381,7 +389,7 @@ export function createSphericalNodeDataNode<Parameters>(
     internalNodeCount: number;
     nodeCount: number;
     nodeData: GraphDataView<'uint32'>;
-    overflow: GraphDataView<'uint32'>;
+    candidateOverflow: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
@@ -394,13 +402,13 @@ export function createSphericalNodeDataNode<Parameters>(
       {name: 'leafIds', view: props.leafIds, type: 'u32', access: 'read'},
       {name: 'bvhOverflow', view: props.bvhOverflow, type: 'u32', access: 'read'},
       {name: 'nodeData', view: props.nodeData, type: 'u32', access: 'read_write'},
-      {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'}
+      {name: 'candidateOverflow', view: props.candidateOverflow, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.nodeCount,
     declarations: `const INTERNAL_NODE_COUNT: u32 = ${props.internalNodeCount}u;
 const NODE_WORDS: u32 = ${SPHERICAL_NODE_WORDS}u;`,
     body: `if (index == 0u) {
-    overflow[overflowOffset] = select(0u, 1u, bvhOverflow[bvhOverflowOffset] != 0u);
+    candidateOverflow[candidateOverflowOffset] = select(0u, 1u, bvhOverflow[bvhOverflowOffset] != 0u);
   }
   let base = nodeDataOffset + index * NODE_WORDS;
   nodeData[base] = bitcast<u32>(nodeMinima[nodeMinimaOffset + index * 2u]);
@@ -466,6 +474,7 @@ const SPHERE_RADIUS: f32 = ${getWGSLFloatLiteral(props.sphereRadius)};
 const INTERNAL_NODE_COUNT: u32 = ${props.internalNodeCount}u;
 const NODE_WORDS: u32 = ${SPHERICAL_NODE_WORDS}u;
 const STACK_SIZE: u32 = ${2 * props.levelCount}u;
+${GUARDED_ATAN2_WGSL}
 // Relative and absolute (radians, about 0.6 m) slack on the pruning bound, so f32 rounding in the
 // box bound and in the arc evaluation never drops the best or a tied arc.
 const BOUND_SLACK: f32 = 1.000001;
@@ -519,7 +528,7 @@ fn evaluateSegment(row: u32, point: vec2<f32>, pointVector: vec3<f32>) -> Segmen
     // Angle of the point's projection on the great circle, measured from the segment start.
     var projected = 0.0;
     if (planeLength > 0.0) {
-      projected = atan2(tangentDot, startDot);
+      projected = guardedAtan2(tangentDot, startDot);
     }
     if (projected >= 0.0 && projected <= arcAngle) {
       angle = atan2(abs(normalDot), planeLength);
@@ -720,7 +729,7 @@ export function createPackedScatterNodes<Parameters>(
         variant: 'scatter',
         bindings,
         invocationCount: props.rowCount,
-        declarations: `const STRIDE: u32 = ${props.stride}u;`,
+        declarations: `const STRIDE: u32 = ${props.stride}u;\n${GUARDED_ATAN2_WGSL}`,
         body: `let base = resultsOffset + index * STRIDE;
   ${group.map(column => column.statement).join('\n  ')}`
       })
@@ -849,7 +858,7 @@ const STATUS_OK: u32 = ${GPU_LINE_LOCATE_STATUS.ok}u;
 const STATUS_CLAMPED: u32 = ${GPU_LINE_LOCATE_STATUS.clamped}u;
 const STATUS_INVALID: u32 = ${GPU_LINE_LOCATE_STATUS.invalid}u;
 const SPHERE_RADIUS: f32 = ${getWGSLFloatLiteral(props.sphereRadius ?? 1)};
-${spherical ? GEODESIC_WGSL : ''}
+${spherical ? `${GEODESIC_WGSL}\n${GUARDED_ATAN2_WGSL}` : ''}
 ${POSITION_WGSL}
 
 fn getMeasure(row: u32) -> f32 {
@@ -877,6 +886,17 @@ fn getMeasure(row: u32) -> f32 {
   ${props.parameters ? 'measure = measure * parameters[parametersOffset] + parameters[parametersOffset + 1u];' : ''}
   if (IS_FRACTION) {
     measure = measure * total;
+  }
+  // A NaN measure passes both range tests below and would stay 'ok'. The bit test cannot be
+  // folded away by a compiler that assumes no NaN. Infinite measures clamp to the line ends.
+  if ((bitcast<u32>(measure) & 0x7fffffffu) > 0x7f800000u) {
+    results[base] = NAN_BITS;
+    results[base + 1u] = NAN_BITS;
+    results[base + 2u] = 0xffffffffu;
+    results[base + 3u] = NAN_BITS;
+    results[base + 4u] = NAN_BITS;
+    results[base + 5u] = STATUS_INVALID;
+    return;
   }
   var status = STATUS_OK;
   if (measure < 0.0) {
@@ -940,7 +960,7 @@ fn getMeasure(row: u32) -> f32 {
       }
       let locatedNorth = cross(locatedUp, locatedEast);
       tangent = vec2<f32>(dot(locatedTangent, locatedEast), dot(locatedTangent, locatedNorth));
-      let bearing = atan2(tangent.x, tangent.y) * GEODESIC_RADIANS_TO_DEGREES;
+      let bearing = guardedAtan2(tangent.x, tangent.y) * GEODESIC_RADIANS_TO_DEGREES;
       ${
         props.eventOffsets
           ? `if (eventOffsets[eventOffsetsOffset + index] != 0.0) {

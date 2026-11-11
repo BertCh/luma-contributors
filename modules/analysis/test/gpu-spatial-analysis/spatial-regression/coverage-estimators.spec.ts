@@ -608,8 +608,11 @@ for (const scenario of [
     coefficients: [0.3, 0.8] as [number, number],
     tolerance: 2e-2
   },
-  // A strong slope makes the first full Fisher step overshoot |eta| > 12 without separation.
-  {name: 'early overshoot', rows: 400, coefficients: [0.2, 3.5] as [number, number], tolerance: 0.3}
+  // A strong slope whose maximum likelihood estimate keeps every |eta| below 12 (the float64
+  // maximum has max |eta| = 9.96). The former scene used a slope of 3.5, whose maximum has
+  // max |eta| = 12.06 on a correctly classified row: it is checked against statsmodels in
+  // math-review-probit-bound.spec.ts, where the fit now returns that maximum (regression-01).
+  {name: 'strong slope', rows: 400, coefficients: [0.2, 3.0] as [number, number], tolerance: 2e-2}
 ])
   it(`probit fit is stable and not misreported as separated: ${scenario.name}`, async () => {
     const sample = createProbitSample(scenario.rows, scenario.coefficients, 12345);

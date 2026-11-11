@@ -16,7 +16,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpatialContext, GPUSpatialEllipsoid} from '../../analysis-core/contracts/index';
 import {RHUMB_WGSL} from './rhumb-wgsl';
@@ -112,7 +112,7 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
       ['bearings', props.bearings, 'float32'],
       ['distances', props.distances, 'float32']
     ] as const) {
-      validatePackedView(view, [format], `${id} ${name}`);
+      validateSinglePackedView(view, [format], `${id} ${name}`);
     }
     const rowCount = props.origins.length;
     if (rowCount < 1 || props.bearings.length !== rowCount || props.distances.length !== rowCount) {

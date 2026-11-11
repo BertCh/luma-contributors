@@ -11,9 +11,14 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {getCholeskyWGSL} from './spatial-regression-solve';
+import {
+  GET_NAN_WGSL,
+  IS_FINITE_BITS_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
+import {getCholeskyWGSL, getPivotLimitedCholeskyWGSL} from './spatial-regression-solve';
 import type {GPUSeeminglyUnrelatedRegression} from './gpu-seemingly-unrelated-regression';
+import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
 
 /** Bounded row-tile statistics followed by the existing small scaled FGLS solves. */
 export function getOrdinarySURNodes<Parameters>(
@@ -96,15 +101,13 @@ const PRECISION_START: u32 = ${precisionStart}u;
 const ERROR_SCALE_START: u32 = ${errorScaleStart}u;
 const PARTIAL_START: u32 = ${partialStart}u;
 const PARTIAL_STRIDE: u32 = ${partialStride}u;
+// Fixed pairwise sum over the tiles (a float compensation is folded away by the shader compiler).
 fn sumPartials(slot: u32) -> f32 {
-  var total = 0.0;
-  var correction = 0.0;
-  for (var tile = 0u; tile < ${tileCount}u; tile++) {
-    let value = scratch[scratchOffset + PARTIAL_START + tile * PARTIAL_STRIDE + slot] - correction;
-    let updated = total + value;
-    correction = (updated - total) - value;
-    total = updated;
-  }
+  ${getPairwiseSumWGSL({
+    count: `${tileCount}u`,
+    name: 'total',
+    term: 'scratch[scratchOffset + PARTIAL_START + totalItem * PARTIAL_STRIDE + slot]'
+  })}
   return total;
 }`;
   const inputDeclarations = `${constants}
@@ -136,7 +139,7 @@ fn residual(row: u32, equation: u32) -> f32 {
   return value;`
   }
 }`;
-  const solveDeclarations = `${constants}\n${[...new Set([columns, equations, size])].map(matrixSize => getCholeskyWGSL(matrixSize)).join('\n')}`;
+  const solveDeclarations = `${constants}\n${IS_FINITE_VALUE_WGSL}\n${[...new Set([columns, equations, size])].map(matrixSize => `${getCholeskyWGSL(matrixSize)}\n${getPivotLimitedCholeskyWGSL(matrixSize)}`).join('\n')}`;
   const makeNode = (
     variant: string,
     invocationCount: number,
@@ -253,7 +256,7 @@ for (var slot = 0u; slot < ${columns * columns}u; slot++) { normal[slot] = sumPa
 for (var slot = 0u; slot < ${columns}u; slot++) { right[slot] = sumPartials(start + ${columns * columns}u + slot); }
 for(var column=0u;column<${columns}u;column++){let diagonal=normal[column*${columns + 1}u];if(!(diagonal>0.0)){status[statusOffset]=2u;return;}scales[column]=inverseSqrt(diagonal);right[column]*=scales[column];}
 for(var first=0u;first<${columns}u;first++){for(var second=0u;second<${columns}u;second++){normal[first*${columns}u+second]*=scales[first]*scales[second];}}
-if(!choleskyFactor_${columns}(&normal)){status[statusOffset]=2u;return;}choleskySolve_${columns}(&normal,&right);for(var column=0u;column<${columns}u;column++){scratch[scratchOffset+INITIAL_START+equation*${columns}u+column]=right[column]*scales[column];}}
+if(!choleskyFactorLimited_${columns}(&normal)){status[statusOffset]=2u;return;}choleskySolve_${columns}(&normal,&right);for(var column=0u;column<${columns}u;column++){scratch[scratchOffset+INITIAL_START+equation*${columns}u+column]=right[column]*scales[column];}}
 
 `
     ),
@@ -291,7 +294,7 @@ for (var equation = 0u; equation < ${equations}u; equation++) { errorScale = max
 if (!(errorScale > 0.0) || !isFiniteBits(errorScale)) { status[statusOffset] = 3u; return; }
 scratch[scratchOffset + ERROR_SCALE_START] = errorScale;
 for (var slot = 0u; slot < ${equations * equations}u; slot++) { sigma[slot] /= errorScale; }
-if(!choleskyFactor_${equations}(&sigma)){status[statusOffset]=3u;return;}
+if(!choleskyFactorLimited_${equations}(&sigma)){status[statusOffset]=3u;return;}
 
 for(var column=0u;column<${equations}u;column++){var unit:array<f32,${equations}>;unit[column]=1.0;choleskySolve_${equations}(&sigma,&unit);for(var row=0u;row<${equations}u;row++){scratch[scratchOffset+PRECISION_START+row*${equations}u+column]=unit[row];}}
 
@@ -341,7 +344,7 @@ for (var first = 0u; first < ${size}u; first++) {
 }
 var scales:array<f32,${size}>;for(var column=0u;column<${size}u;column++){let diagonal=normal[column*${size + 1}u];if(!(diagonal>0.0)){status[statusOffset]=2u;return;}scales[column]=inverseSqrt(diagonal);right[column]*=scales[column];}
 for(var first=0u;first<${size}u;first++){for(var second=0u;second<${size}u;second++){normal[first*${size}u+second]*=scales[first]*scales[second];}}
-if(!choleskyFactor_${size}(&normal)){status[statusOffset]=2u;return;}choleskySolve_${size}(&normal,&right);
+if(!choleskyFactorLimited_${size}(&normal)){status[statusOffset]=2u;return;}choleskySolve_${size}(&normal,&right);
 for(var equation=0u;equation<${equations}u;equation++){var intercept=scratch[scratchOffset+RESPONSES_START+equation]+right[equation*${width}u]*scales[equation*${width}u];for(var column=0u;column<${columns}u;column++){let slot=equation*${width}u+column+1u;let coefficient=right[slot]*scales[slot];coefficients[coefficientsOffset+slot]=coefficient;intercept-=scratch[scratchOffset+MEANS_START+equation*${columns}u+column]*coefficient;}coefficients[coefficientsOffset+equation*${width}u]=intercept;}
 for(var targetColumn=0u;targetColumn<${size}u;targetColumn++){var transform:array<f32,${size}>;transform[targetColumn]=1.0;if(targetColumn%${width}u==0u){for(var column=0u;column<${columns}u;column++){transform[targetColumn+column+1u]=-scratch[scratchOffset+MEANS_START+(targetColumn/${width}u)*${columns}u+column];}}for(var column=0u;column<${size}u;column++){transform[column]*=scales[column];}choleskySolve_${size}(&normal,&transform);for(var column=0u;column<${size}u;column++){transform[column]*=scales[column];}
 for(var destination=0u;destination<${size}u;destination++){var value=transform[destination];if(destination%${width}u==0u){for(var column=0u;column<${columns}u;column++){value-=scratch[scratchOffset+MEANS_START+(destination/${width}u)*${columns}u+column]*transform[destination+column+1u];}}covariance[covarianceOffset+destination*${size}u+targetColumn]=value*scratch[scratchOffset+ERROR_SCALE_START];}}

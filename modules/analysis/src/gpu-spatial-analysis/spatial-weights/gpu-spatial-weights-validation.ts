@@ -14,7 +14,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {describeGPUSpatialWeights, type GPUSpatialWeights} from './spatial-weights';
@@ -122,12 +122,12 @@ export class GPUSpatialWeightsValidation<
     this.id = id;
     this.props = props;
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
-    validatePackedView(props.output.status.invalidCount, ['uint32'], `${id} invalidCount`);
+    validateSinglePackedView(props.output.status.invalidCount, ['uint32'], `${id} invalidCount`);
     if (props.output.status.invalidCount.length < 1) {
       throw new Error(`${id} invalidCount must hold one uint32`);
     }
     if (props.output.flags) {
-      validatePackedView(props.output.flags, ['uint32'], `${id} flags`);
+      validateSinglePackedView(props.output.flags, ['uint32'], `${id} flags`);
       if (props.output.flags.length !== rows) {
         throw new Error(`${id} flags length must equal the weights row count`);
       }

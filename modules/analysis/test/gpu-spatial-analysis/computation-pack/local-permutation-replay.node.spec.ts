@@ -109,7 +109,9 @@ describe('GPULocalPermutationReplay', () => {
         replayInfo: createTransientView(graph, 'replay-info', 'float32', 3)
       }
     });
-    expect(() => replay.getCommandNodes(graph)).toThrow();
+    expect(() => replay.getCommandNodes(graph)).toThrow(
+      /^golden-replay replay requires its test to have been lowered first/
+    );
     graph.device.destroy();
   });
 

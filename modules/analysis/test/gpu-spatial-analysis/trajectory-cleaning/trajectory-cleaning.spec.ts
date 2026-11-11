@@ -314,37 +314,41 @@ describe('GPUTrajectoryOutlierFlags', () => {
     expect(flagged).not.toContain(26);
   });
 
-  it('does not catch two consecutive displaced fixes, and flags acceleration spikes', async () => {
+  // Hand-built tracks at one fix per time unit, moving 10 units per step along x. Every expected
+  // flag below is read off the track by its definition (which fix is displaced), not computed.
+  const SPEED = GPU_TRAJECTORY_OUTLIER_FLAGS.speed;
+  const ACCELERATION = GPU_TRAJECTORY_OUTLIER_FLAGS.acceleration;
+  const getSteadyTrack = (rowCount: number, displace: (row: number) => [number, number]) =>
+    Array.from({length: rowCount}, (_, row) => {
+      const [offsetX, offsetY] = displace(row);
+      return [row * 10 + offsetX, offsetY];
+    });
+  const OUTLIER_TRACKS = {
+    // Row 5 alone is 500 units off the line.
+    singleDisplaced: getSteadyTrack(11, row => (row === 5 ? [0, 500] : [0, 0])),
+    // Rows 5 and 6 jump together, so the step between them is slow.
+    consecutiveDisplaced: getSteadyTrack(12, row => (row === 5 || row === 6 ? [1000, 0] : [0, 0])),
+    // Every row from 5 on is shifted: one fast step, no displaced fix.
+    sustainedJump: getSteadyTrack(11, row => (row >= 5 ? [0, 500] : [0, 0])),
+    // The first and the last row are displaced.
+    displacedEnds: getSteadyTrack(8, row => (row === 0 || row === 7 ? [0, 500] : [0, 0])),
+    // The second and the second-to-last row are displaced.
+    displacedNextToEnds: getSteadyTrack(8, row => (row === 1 || row === 6 ? [0, 500] : [0, 0]))
+  };
+
+  async function runOutlierTracks(
+    name: string,
+    tracks: number[][][],
+    settings: {maximumSpeed: number; maximumAcceleration: number}
+  ): Promise<number[][]> {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
-    const harness = new GraphHarness(device, 'outliers-burst');
-    // Steady 10 units per step; rows 5 and 6 jump together, so the step between them is slow.
-    const rowCount = 12;
-    const rows: number[][] = [];
-    for (let index = 0; index < rowCount; index++) {
-      rows.push([index === 5 || index === 6 ? index * 10 + 1000 : index * 10, 0]);
+    const harness = new GraphHarness(device, name);
+    const allRows = tracks.flat();
+    const offsets = [0];
+    for (const track of tracks) {
+      offsets.push(offsets[offsets.length - 1] + track.length);
     }
-    // Compute the expected flags by the point-centred definition on a separate track with no burst
-    // for the acceleration rule: an acceleration spike at row 12 of a smooth ramp.
-    const rampRows: number[][] = [];
-    let x = 0;
-    const speeds = [10, 10, 10, 10, 200, 10, 10, 10, 10, 10];
-    rampRows.push([0, 0]);
-    for (const speed of speeds) {
-      x += speed;
-      rampRows.push([x, 0]);
-    }
-    const expectedRampFlags = new Uint32Array(rampRows.length);
-    const rampSpeeds = (row: number) => Math.abs(rampRows[row][0] - rampRows[row - 1][0]);
-    const accelerationIn = (row: number) =>
-      row >= 2 ? Math.abs(rampSpeeds(row) - rampSpeeds(row - 1)) > 50 : false;
-    for (let row = 1; row + 1 < rampRows.length; row++) {
-      if (accelerationIn(row) && accelerationIn(row + 1)) {
-        expectedRampFlags[row] = GPU_TRAJECTORY_OUTLIER_FLAGS.acceleration;
-      }
-    }
-    const allRows = [...rows, ...rampRows];
-    const offsets = [0, rowCount, rowCount + rampRows.length];
     const {positions, timestamps, trackOffsets} = importTrajectory(harness, {
       positions: allRows,
       times: Float32Array.from({length: allRows.length}, (_, index) => index),
@@ -357,8 +361,8 @@ describe('GPUTrajectoryOutlierFlags', () => {
         timestamps,
         trackOffsets,
         parameters: harness.input(
-          'outlier-burst-parameters',
-          getGPUTrajectoryOutlierFlagsParameterValues({maximumSpeed: 100, maximumAcceleration: 50}),
+          `${name}-parameters`,
+          getGPUTrajectoryOutlierFlagsParameterValues(settings),
           'float32',
           4
         ),
@@ -366,14 +370,46 @@ describe('GPUTrajectoryOutlierFlags', () => {
       })
     );
     const values = await harness.run(async () => readUint32(flags.buffer, allRows.length));
-    // Single-pass limitation documented on the class.
-    expect(values[5] & GPU_TRAJECTORY_OUTLIER_FLAGS.speed).toBe(0);
-    expect(values[6] & GPU_TRAJECTORY_OUTLIER_FLAGS.speed).toBe(0);
-    const rampFlags = values
-      .slice(rowCount)
-      .map(value => value & GPU_TRAJECTORY_OUTLIER_FLAGS.acceleration);
-    expect(rampFlags).toEqual(Array.from(expectedRampFlags));
-    expect(rampFlags.some(value => value !== 0)).toBe(true);
+    return tracks.map((_, track) => Array.from(values.slice(offsets[track], offsets[track + 1])));
+  }
+
+  it('sets the acceleration bit on a displaced fix with the speed test off (trajectories-lines-01)', async () => {
+    const [single, consecutive, jump, ends, nextToEnds] = await runOutlierTracks(
+      'outliers-acceleration',
+      [
+        OUTLIER_TRACKS.singleDisplaced,
+        OUTLIER_TRACKS.consecutiveDisplaced,
+        OUTLIER_TRACKS.sustainedJump,
+        OUTLIER_TRACKS.displacedEnds,
+        OUTLIER_TRACKS.displacedNextToEnds
+      ],
+      {maximumSpeed: 0, maximumAcceleration: 50}
+    );
+    expect(single).toEqual([0, 0, 0, 0, 0, ACCELERATION, 0, 0, 0, 0, 0]);
+    // Single-pass limitation documented on the class: a burst of two is not caught, and the first
+    // good row after it (row 7) is not flagged either.
+    expect(consecutive).toEqual(new Array(12).fill(0));
+    // The first good row after a sustained jump is not a displaced fix.
+    expect(jump).toEqual(new Array(11).fill(0));
+    expect(ends).toEqual([ACCELERATION, 0, 0, 0, 0, 0, 0, ACCELERATION]);
+    expect(nextToEnds).toEqual([0, ACCELERATION, 0, 0, 0, 0, ACCELERATION, 0]);
+  });
+
+  it('agrees with the speed bit on a displaced fix, a burst and a sustained jump', async () => {
+    const [single, consecutive, jump, ends] = await runOutlierTracks(
+      'outliers-both',
+      [
+        OUTLIER_TRACKS.singleDisplaced,
+        OUTLIER_TRACKS.consecutiveDisplaced,
+        OUTLIER_TRACKS.sustainedJump,
+        OUTLIER_TRACKS.displacedEnds
+      ],
+      {maximumSpeed: 100, maximumAcceleration: 50}
+    );
+    expect(single).toEqual([0, 0, 0, 0, 0, SPEED | ACCELERATION, 0, 0, 0, 0, 0]);
+    expect(consecutive).toEqual(new Array(12).fill(0));
+    expect(jump).toEqual(new Array(11).fill(0));
+    expect(ends).toEqual([SPEED | ACCELERATION, 0, 0, 0, 0, 0, 0, SPEED | ACCELERATION]);
   });
 });
 

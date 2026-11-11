@@ -38,7 +38,10 @@ export type GPULonLatPolygonStatusPort = {
 
 /** Input validity diagnostics. */
 export type GPUInvalidStatusPort = {
-  /** Number of input rows rejected by validation. */
+  /**
+   * Number of input rows rejected by validation or, for `GPURasterFillNoData`, the number of
+   * cells of the result that are still invalid after the fill.
+   */
   invalidCount?: GPUStatusScalar;
 };
 
@@ -70,6 +73,34 @@ export type GPUBoundedResultStatusPort = GPUCardinalityPort &
   GPUInvalidStatusPort &
   GPUIterationStatusPort &
   GPUApproximationStatusPort;
+
+/**
+ * Vertex sub-count of generated geometry (contributor contract rule 8). `count` and
+ * `requiredCount` of generated geometry count features; the vertex totals have these names.
+ */
+export type GPUVertexCountStatusPort = {
+  /** Number of vertices written, clamped to the vertex capacity. */
+  vertexCount?: GPUStatusScalar;
+  /** Unclamped number of vertices the result needs. */
+  requiredVertexCount?: GPUStatusScalar;
+};
+
+/** Ring sub-count of generated polygon geometry (contributor contract rule 8). */
+export type GPURingCountStatusPort = {
+  /** Number of rings written, clamped to the ring capacity. */
+  ringCount?: GPUStatusScalar;
+  /** Unclamped number of rings the result needs. */
+  requiredRingCount?: GPUStatusScalar;
+};
+
+/**
+ * Status of generated geometry (contributor contract rule 8): `count` and `requiredCount` count
+ * output features, `overflow` is one when any final capacity (features, rings or vertices) dropped
+ * rows, and the sub-levels have their own named counts.
+ */
+export type GPUGeneratedGeometryStatusPort = GPUBoundedResultStatusPort &
+  GPUVertexCountStatusPort &
+  GPURingCountStatusPort;
 
 /** Status attributed to one named recipe stage. */
 export type GPURecipeStageStatusPort = {

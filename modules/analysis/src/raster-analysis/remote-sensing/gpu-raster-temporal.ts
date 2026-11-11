@@ -35,7 +35,7 @@ export type GPURasterTemporalProps = {
   /** Cell-major regular-time samples; nonfinite samples are missing. */
   values: GraphDataView<'float32'>;
   /** Per observation QA: zero rejects that acquisition for that cell. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   operation: 'mean' | 'minimum' | 'maximum' | 'median' | 'savitzky-golay';
   /** SG only: odd 3–15 complete window, clipped or shifted at domain edges. */
   windowLength?: number;
@@ -108,8 +108,8 @@ export class GPURasterTemporal implements GPUCommandNodeProducer {
     const outputCount = smoothing ? inputCount : props.cellCount;
     validateRequirement(
       this.id,
-      props.values.length >= inputCount && (!props.validity || props.validity.length >= inputCount),
-      'values and validity must hold cellCount times sliceCount entries'
+      props.values.length >= inputCount && (!props.mask || props.mask.length >= inputCount),
+      'values and mask must hold cellCount times sliceCount entries'
     );
     validateRequirement(
       this.id,
@@ -118,7 +118,7 @@ export class GPURasterTemporal implements GPUCommandNodeProducer {
     );
     validateRasterViews(
       this.id,
-      [props.values, ...(props.validity ? [props.validity] : [])],
+      [props.values, ...(props.mask ? [props.mask] : [])],
       Object.values(props.output)
     );
   }
@@ -130,7 +130,7 @@ export class GPURasterTemporal implements GPUCommandNodeProducer {
     validateRasterGraph(
       id,
       graph,
-      [props.values, ...(props.validity ? [props.validity] : [])],
+      [props.values, ...(props.mask ? [props.mask] : [])],
       Object.values(props.output)
     );
     if (props.dateAxis) validateGPURasterDateAxisGraph(id, graph, props.dateAxis);
@@ -145,7 +145,7 @@ export class GPURasterTemporal implements GPUCommandNodeProducer {
         workgroupSize: 64,
         bindings: [
           rasterBinding('values', props.values),
-          ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+          ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
           ...(useDates ? [getGPURasterDateAxisBinding(props.dateAxis!)] : []),
           ...Object.entries(props.output).map(([name, view]) =>
             rasterBinding(`output${name}`, view, true)
@@ -169,7 +169,7 @@ ${
 for (var position = 0u; position < ${window}u; position++) {
   let slice = first + i32(position); if (slice < 0 || slice >= ${props.sliceCount}) { continue; }
   let source = cell * ${props.sliceCount}u + u32(slice); let value = values[valuesOffset + source];
-  if (!finite(value) ${props.validity ? '|| validity[validityOffset + source] == 0u' : ''}) { continue; }
+  if (!finite(value) ${props.mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
   let coordinate = ${useDates ? 'rasterYearsBetween(u32(slice), u32(center)) / axisScale' : `f32(slice - center) / ${window}.0`}; var power = 1.0;
   for (var column = 0u; column < ${order + 1}u; column++) { design[column * ${window}u + position] = power; power *= coordinate; }
   response[position] = value; count++;
@@ -181,7 +181,7 @@ outputvalues[outputvaluesOffset + index] = value; outputstatus[outputstatusOffse
           : `var observations: array<f32, ${props.sliceCount}>; var dates: array<u32, ${props.sliceCount}>; var count = 0u; var total = 0.0;
 for (var slice = 0u; slice < ${props.sliceCount}u; slice++) {
   let source = index * ${props.sliceCount}u + slice; let value = values[valuesOffset + source];
-  if (!finite(value) ${props.validity ? '|| validity[validityOffset + source] == 0u' : ''}) { continue; }
+  if (!finite(value) ${props.mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
   var position = count;
   loop { if (position == 0u) { break; } if (observations[position - 1u] <= value) { break; } observations[position] = observations[position - 1u]; dates[position] = dates[position - 1u]; position--; }
   observations[position] = value; dates[position] = slice; count++; total = total * (1.0 - 1.0 / f32(count)) + value / f32(count);

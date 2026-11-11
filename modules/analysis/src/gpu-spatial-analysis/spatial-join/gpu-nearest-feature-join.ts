@@ -40,7 +40,7 @@ import {
   validatePowerOfTwo,
   validateCapacity,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createSpatialJoinClearNode,
@@ -52,6 +52,7 @@ import {
   getSpatialJoinAssignNodes,
   getSpatialJoinCollectNodes,
   getDefaultQuerySort,
+  getLeafOverflowStatusNodes,
   getSpatialJoinProbeNodes,
   validateDisjointOutputs,
   validateMatchingChunks
@@ -142,14 +143,19 @@ export type GPUNearestFeatureJoinOutput = {
   /** Optional compact stable IDs of points with a feature within the radius. */
   matches?: GPUCompactOutput;
   /**
-   * Nearest-feature mode: optional per-query-row flag (one `uint32` per point, in row order across
-   * chunks), 1 when that point lost candidates because the candidate total exceeded
-   * `candidateCapacity`. Candidates are laid out in point-row order and the slots past the
-   * capacity are dropped, so the flagged points are the point whose candidates cross the capacity
-   * (it keeps its first ones) and every later point that had a candidate (it keeps none); earlier
-   * points are complete. A flagged point may report a farther feature than the true nearest, or
-   * none. Rows lost to a BVH overflow are not flagged. Not available in neighbors mode, whose
-   * traversal has no candidate stage.
+   * Optional per-query-row flag (one `uint32` per query, in row order across point chunks), 1 when
+   * that query's search may be incomplete. A flagged query may report a farther feature than the
+   * true nearest, or none (in neighbors mode, wrong or missing neighbors).
+   *
+   * - Planar nearest-feature mode: 1 when that point lost candidates because the candidate total
+   *   exceeded `candidateCapacity`. Candidates are laid out in point-row order and the slots past
+   *   the capacity are dropped, so the flagged points are the point whose candidates cross the
+   *   capacity (it keeps its first ones) and every later point that had a candidate (it keeps
+   *   none); earlier points are complete.
+   * - Every mode (planar and great-circle nearest-feature, neighbors): a BVH overflow (more
+   *   features than `leafCapacity`) drops features that may be the nearest of any query, so it
+   *   flags every query. Neighbors mode and the great-circle search have no candidate table, so
+   *   this is their only cause.
    */
   candidateTruncated?: GraphDataView<'uint32'>;
   /**
@@ -161,8 +167,9 @@ export type GPUNearestFeatureJoinOutput = {
     GPUCandidateStatusPort & {
       /**
        * One-row flag: 1 when BVH leaf, candidate, `matches` or (neighbors mode) tie capacity
-       * overflowed. Its meaning is unchanged; `candidateOverflow` isolates the candidate capacity
-       * (nearest-feature mode only).
+       * overflowed. Its meaning is unchanged; `candidateOverflow` (every mode) isolates the
+       * intermediate capacities: the BVH leaf capacity and, in planar nearest-feature mode, the
+       * candidate capacity.
        */
       overflow: GraphDataView<'uint32'>;
       /** Optional one-row unclamped candidate count. */
@@ -479,13 +486,13 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
       getNextPowerOfTwo(Math.max(this.featureCount, 1));
     validatePowerOfTwo(id, 'leafCapacity', this.leafCapacity);
     if (views.radius) {
-      validatePackedView(views.radius, ['float32'], `${id} radius`);
+      validateSinglePackedView(views.radius, ['float32'], `${id} radius`);
       if (views.radius.length !== 1) {
         throw new Error(`${id} radius needs one float32 row`);
       }
     }
     for (const view of getNearestGeometryViews(views.features)) {
-      validatePackedView(
+      validateSinglePackedView(
         view,
         view.format === 'uint32' ? ['uint32'] : ['float32x2'],
         `${id} features`
@@ -501,21 +508,13 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
       ['output.featureCounts', views.featureCounts]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length !== this.featureCount) {
           throw new Error(`${id} ${name} needs one row per feature`);
         }
       }
     }
     validateStatusScalars(id, props.output.status);
-    // The neighbors traversal and the great-circle search have no candidate stage, so these
-    // would never be written.
-    validateRequirement(
-      id,
-      (this.mode === 'nearest-feature' && this.sphereRadius === undefined) ||
-        (!views.candidateTruncated && !views.candidateOverflow),
-      'output.candidateTruncated and output.status.candidateOverflow need nearest-feature mode with a planar or native metric'
-    );
     if (this.mode === 'neighbors') {
       this.neighborCapacity = views.neighborCapacity ?? this.k;
       this.candidateCapacity = 0;
@@ -524,6 +523,18 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
       this.neighborCapacity = 1;
       this.candidateCapacity = this.sphereRadius === undefined ? (views.candidateCapacity ?? 0) : 0;
       this.queryCount = this.validateNearestFeature();
+    }
+    if (views.candidateTruncated) {
+      validateSinglePackedView(
+        views.candidateTruncated,
+        ['uint32'],
+        `${id} output.candidateTruncated`
+      );
+      validateRequirement(
+        id,
+        views.candidateTruncated.length === this.queryCount,
+        'output.candidateTruncated needs one row per query'
+      );
     }
     this.querySort =
       views.querySort ??
@@ -539,15 +550,15 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
       throw new Error(`${id} queryIds requires exclusive`);
     }
     if (views.queryIds) {
-      validatePackedView(views.queryIds, ['uint32'], `${id} queryIds`);
+      validateSinglePackedView(views.queryIds, ['uint32'], `${id} queryIds`);
       if (views.queryIds.length !== queryCount) {
         throw new Error(`${id} queryIds needs one row per query`);
       }
     }
     if (views.onAttribute) {
       const {left, right} = views.onAttribute;
-      validatePackedView(left, ['uint32'], `${id} onAttribute.left`);
-      validatePackedView(right, ['uint32'], `${id} onAttribute.right`);
+      validateSinglePackedView(left, ['uint32'], `${id} onAttribute.left`);
+      validateSinglePackedView(right, ['uint32'], `${id} onAttribute.right`);
       if (left.length !== queryCount || right.length !== featureCount) {
         throw new Error(`${id} onAttribute needs one key per query and feature`);
       }
@@ -571,12 +582,12 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
     let queryCount: number;
     if (views.points) {
       for (const chunk of getGraphViewChunks(views.points)) {
-        validatePackedView(chunk, ['float32x2'], `${id} queries.positions`);
+        validateSinglePackedView(chunk, ['float32x2'], `${id} queries.positions`);
       }
       queryCount = views.points.length;
     } else {
       for (const view of getNearestGeometryViews(views.queries!)) {
-        validatePackedView(
+        validateSinglePackedView(
           view,
           view.format === 'uint32' ? ['uint32'] : ['float32x2'],
           `${id} queries`
@@ -597,7 +608,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
         throw new Error(`${id} neighborIds needs neighborCounts`);
       }
       if (view) {
-        validatePackedView(
+        validateSinglePackedView(
           view,
           name === 'neighborDistances'
             ? ['float32']
@@ -637,19 +648,19 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
       throw new Error(`${id} needs radius`);
     }
     for (const chunk of getGraphViewChunks(views.points)) {
-      validatePackedView(chunk, ['float32x2'], `${id} queries.positions`);
+      validateSinglePackedView(chunk, ['float32x2'], `${id} queries.positions`);
     }
     for (const [name, view] of [
       ['output.nearestFeatureIds', views.nearestFeatureIds],
       ['queries.sourceIds', views.sourceIds]
     ] as const) {
       for (const chunk of view ? getGraphViewChunks(view) : []) {
-        validatePackedView(chunk, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(chunk, ['uint32'], `${id} ${name}`);
       }
       validateMatchingChunks(id, name, views.points, view);
     }
     for (const chunk of views.nearestDistances ? getGraphViewChunks(views.nearestDistances) : []) {
-      validatePackedView(chunk, ['float32'], `${id} output.nearestDistances`);
+      validateSinglePackedView(chunk, ['float32'], `${id} output.nearestDistances`);
     }
     validateMatchingChunks(id, 'output.nearestDistances', views.points, views.nearestDistances);
     if (views.matches) {
@@ -657,14 +668,6 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
     }
     if (this.sphereRadius === undefined) {
       validateCapacity(id, 'candidateCapacity', this.candidateCapacity);
-    }
-    if (views.candidateTruncated) {
-      validatePackedView(views.candidateTruncated, ['uint32'], `${id} output.candidateTruncated`);
-      validateRequirement(
-        id,
-        views.candidateTruncated.length === views.points.length,
-        'output.candidateTruncated needs one row per query point'
-      );
     }
     return views.points.length;
   }
@@ -735,38 +738,47 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
       }
     }
     if (this.mode === 'neighbors') {
+      const neighbors = getNearestNeighborNodes<Parameters>(graph, {
+        id: this.id,
+        operation: OPERATION,
+        queries: views.points
+          ? {kind: 'points', points: views.points}
+          : {kind: 'geometry', geometry: views.queries!},
+        queryCount: this.queryCount,
+        features: views.features,
+        featureCount: this.featureCount,
+        k: this.k,
+        capacity: this.neighborCapacity,
+        ties: this.ties,
+        leafCapacity: this.leafCapacity,
+        spatialSort: this.spatialSort,
+        spatialSortCurve: views.spatialSortCurve,
+        prepared: views.prepared,
+        maxDistance: views.radius,
+        featureIds: views.featureIds,
+        neighborIds: views.neighborIds!,
+        neighborCounts: views.neighborCounts!,
+        neighborDistances: views.neighborDistances,
+        neighborFootPoints: views.neighborFootPoints,
+        neighborSegmentIndices: views.neighborSegmentIndices,
+        neighborQueryPoints: views.neighborQueryPoints,
+        exclusive: views.exclusive,
+        queryIds: views.queryIds,
+        onAttribute: views.onAttribute,
+        overflow: views.overflow,
+        sphereRadius: this.sphereRadius,
+        querySort: this.querySort
+      });
       nodes.push(
-        ...getNearestNeighborNodes<Parameters>(graph, {
+        ...neighbors.nodes,
+        ...getLeafOverflowStatusNodes<Parameters>(graph, {
           id: this.id,
           operation: OPERATION,
-          queries: views.points
-            ? {kind: 'points', points: views.points}
-            : {kind: 'geometry', geometry: views.queries!},
-          queryCount: this.queryCount,
-          features: views.features,
-          featureCount: this.featureCount,
-          k: this.k,
-          capacity: this.neighborCapacity,
-          ties: this.ties,
-          leafCapacity: this.leafCapacity,
-          spatialSort: this.spatialSort,
-          spatialSortCurve: views.spatialSortCurve,
-          prepared: views.prepared,
-          maxDistance: views.radius,
-          featureIds: views.featureIds,
-          neighborIds: views.neighborIds!,
-          neighborCounts: views.neighborCounts!,
-          neighborDistances: views.neighborDistances,
-          neighborFootPoints: views.neighborFootPoints,
-          neighborSegmentIndices: views.neighborSegmentIndices,
-          neighborQueryPoints: views.neighborQueryPoints,
-          exclusive: views.exclusive,
-          queryIds: views.queryIds,
-          onAttribute: views.onAttribute,
-          overflow: views.overflow,
-          sphereRadius: this.sphereRadius,
-          querySort: this.querySort
-        }).nodes
+          rowCount: this.queryCount,
+          bvhOverflow: neighbors.bvh.overflow,
+          candidateTruncated: views.candidateTruncated,
+          candidateOverflow: views.candidateOverflow
+        })
       );
     } else {
       nodes.push(
@@ -806,7 +818,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
         featureCounts: views.featureCounts
       })
     );
-    const {nodes: traversalNodes} = getNearestNeighborNodes<Parameters>(graph, {
+    const {nodes: traversalNodes, bvh: traversalBVH} = getNearestNeighborNodes<Parameters>(graph, {
       id,
       operation: OPERATION,
       queries: {kind: 'points', points},
@@ -833,6 +845,16 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
       querySort: this.querySort
     });
     nodes.push(...traversalNodes);
+    nodes.push(
+      ...getLeafOverflowStatusNodes<Parameters>(graph, {
+        id,
+        operation: OPERATION,
+        rowCount: queryCount,
+        bvhOverflow: traversalBVH.overflow,
+        candidateTruncated: views.candidateTruncated,
+        candidateOverflow: views.candidateOverflow
+      })
+    );
 
     const distanceChunks = views.nearestDistances ? getGraphViewChunks(views.nearestDistances) : [];
     let chunkFirstRow = 0;
@@ -1002,7 +1024,8 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
         radius,
         querySort: this.querySort,
         candidateTruncated: views.candidateTruncated,
-        candidateOverflow: views.candidateOverflow
+        candidateOverflow: views.candidateOverflow,
+        bvhOverflow: bvh.overflow
       })
     );
     const candidateDispatch = createWGSLActiveCountDispatch(graph, {

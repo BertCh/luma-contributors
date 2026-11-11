@@ -155,6 +155,8 @@ export function addLandscapeMetricsRecipe<Parameters>(
     1,
     output?.landscapeCohesion
   );
+  // Exact (cell count, like-adjacent side count) per patch, for the class sums.
+  const patchCounts = createTransientView(graph, `${id}-patch-counts`, 'uint32x2', patchCount);
   const declarations = `
 fn getPatch(column: i32, row: i32) -> u32 {
   if(column<0 || row<0 || column>=${width} || row>=${height}){return 0xffffffffu;}
@@ -179,22 +181,28 @@ fn writeOutput(row:u32,value:vec4<f32>){output[outputOffset+row*4u+0u]=value[0u]
       bindings: [
         {name: 'patches', view: patches, type: 'u32', access: 'read'},
         {name: 'classes', view: props.patchClasses, type: 'u32', access: 'read'},
-        {name: 'output', view: patchMetrics, type: 'f32', access: 'read_write'}
+        {name: 'output', view: patchMetrics, type: 'f32', access: 'read_write'},
+        {name: 'patchCounts', view: patchCounts, type: 'u32', access: 'read_write'}
       ],
-      body: `var cells=0.0;var perimeter=0.0;var likeSides=0.0;
+      // Cells and sides are counted in u32 and converted once: a float32 counter stops at 2^24.
+      // sideCounts holds the perimeter sides between columns (.x, each cellSize[1] long) and
+      // between rows (.y, each cellSize[0] long).
+      body: `var cells=0u;var sideCounts=vec2<u32>(0u);var likeSides=0u;
 for(var cell=0u;cell<${cellCount}u;cell++){
  if(patches[patchesOffset+cell]!=index){continue;}
- cells+=1.0;let column=i32(cell%${width}u);let row=i32(cell/${width}u);
+ cells+=1u;let column=i32(cell%${width}u);let row=i32(cell/${width}u);
  let neighbors=array<u32,4>(getPatch(column - 1,row),getPatch(column+1,row),getPatch(column,row - 1),getPatch(column,row+1));
  for(var direction=0u;direction<4u;direction++){
   let exterior=(direction==0u&&column==0)||(direction==1u&&column==${width - 1})||(direction==2u&&row==0)||(direction==3u&&row==${height - 1});
   let background=getClass(neighbors[direction])>=${classCount}u;
   let countContact=select(select(true,${props.countBackground !== false},background),${props.countBoundary !== false},exterior);
-  if(neighbors[direction]!=index&&countContact){perimeter+=select(f32(${cellSize[0]}),f32(${cellSize[1]}),direction<2u);}
-  likeSides+=f32(getClass(neighbors[direction])==getClass(index));
+  if(neighbors[direction]!=index&&countContact){sideCounts[select(1u,0u,direction<2u)]+=1u;}
+  likeSides+=u32(getClass(neighbors[direction])==getClass(index));
  }
 }
-writeOutput(index,vec4<f32>(cells*${cellSize[0] * cellSize[1]},perimeter,cells,likeSides));`
+let perimeter=f32(sideCounts.x)*f32(${cellSize[1]})+f32(sideCounts.y)*f32(${cellSize[0]});
+writeOutput(index,vec4<f32>(f32(cells)*${cellSize[0] * cellSize[1]},perimeter,f32(cells),f32(likeSides)));
+patchCounts[patchCountsOffset+2u*index]=cells;patchCounts[patchCountsOffset+2u*index+1u]=likeSides;`
     })
   );
   graph.add(
@@ -228,22 +236,30 @@ fn writeOutput(row:u32,value:vec4<f32>){output[outputOffset+row*4u+0u]=value[0u]
 `,
       bindings: [
         {name: 'patches', view: patchMetrics, type: 'f32', access: 'read'},
+        {name: 'patchCounts', view: patchCounts, type: 'u32', access: 'read'},
         {name: 'classes', view: props.patchClasses, type: 'u32', access: 'read'},
         {name: 'output', view: classMetrics, type: 'f32', access: 'read_write'},
         {name: 'aggregation', view: aggregation, type: 'f32', access: 'read_write'}
       ],
-      body: `var area=0.0;var perimeter=0.0;var squaredArea=0.0;var weightedPerimeter=0.0;var cells=0.0;var likeSides=0.0;var totalCells=0.0;
+      // Cell and like-side counts are exact u32 sums. The largest square inside the class is an
+      // exact integer square root: float32 sqrt is only the first guess once cells pass 2^24.
+      body: `var area=0.0;var perimeter=0.0;var squaredArea=0.0;var weightedPerimeter=0.0;var cells=0u;var likeSides=0u;var totalCells=0u;
 for(var patchIndex=0u;patchIndex<${patchCount}u;patchIndex++){
  let values=readPatches(patchIndex);if(classes[classesOffset+patchIndex]>=${classCount}u||classes[classesOffset+patchIndex]==${props.backgroundClass ?? 0xffffffff}u){continue;}
- totalCells+=values.z;
- if(classes[classesOffset+patchIndex]==index){area+=values.x;perimeter+=values.y;squaredArea+=values.x*values.x;weightedPerimeter+=values.y*sqrt(values.z);cells+=values.z;likeSides+=values.w;}
+ let patchCells=patchCounts[patchCountsOffset+2u*patchIndex];
+ totalCells+=patchCells;
+ if(classes[classesOffset+patchIndex]==index){area+=values.x;perimeter+=values.y;squaredArea+=values.x*values.x;weightedPerimeter+=values.y*sqrt(values.z);cells+=patchCells;likeSides+=patchCounts[patchCountsOffset+2u*patchIndex+1u];}
 }
 let missing=bitcast<f32>(0x7fc00000u | (index & 0u));var cohesion=missing;var mesh=missing;
-if(totalCells>0.0){mesh=squaredArea/(totalCells*${cellSize[0] * cellSize[1]});}
-if(weightedPerimeter>0.0&&totalCells>1.0){cohesion=100.0*(1.0-perimeter/weightedPerimeter)/(1.0-inverseSqrt(totalCells));}
-let side=floor(sqrt(cells));let remainder=cells-side*side;
-let maximum=2.0*cells - 2.0*side-select(0.0,select(2.0,1.0,remainder<=side),remainder>0.0);
-var aggregate=missing;if(maximum>0.0){aggregate=100.0*likeSides/(2.0*maximum);}
+if(totalCells>0u){mesh=squaredArea/(f32(totalCells)*${cellSize[0] * cellSize[1]});}
+if(weightedPerimeter>0.0&&totalCells>1u){cohesion=100.0*(1.0-perimeter/weightedPerimeter)/(1.0-inverseSqrt(f32(totalCells)));}
+var side=min(u32(sqrt(f32(cells))),65535u);
+while(side*side>cells){side-=1u;}
+while(side<65535u&&(side+1u)*(side+1u)<=cells){side+=1u;}
+let remainder=cells-side*side;
+var shortfall=0u;if(remainder>0u){shortfall=select(2u,1u,remainder<=side);}
+let maximum=2.0*f32(cells-side)-f32(shortfall);
+var aggregate=missing;if(maximum>0.0){aggregate=100.0*f32(likeSides)/(2.0*maximum);}
 writeOutput(index,vec4<f32>(area,perimeter,mesh,cohesion));aggregation[aggregationOffset+index]=aggregate;`
     })
   );

@@ -43,3 +43,17 @@ export {
   GPU_SPACE_TIME_SUMMARY_LENGTH
 } from './space-time-parameters';
 export type {GPUSpaceTimeSettings, GPUSpaceTimeRelativeTimes} from './space-time-parameters';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  CPU_MANTEL_TEST_MAXIMUM_PERMUTATIONS,
+  computeMantelTestOnCPU,
+  CPUMantelTestOperation
+} from './cpu-mantel-test-operation';
+export type {
+  CPUMantelTestInput,
+  CPUMantelTestOptions,
+  CPUMantelTestResult
+} from './cpu-mantel-test-operation';
+export {GPUMantelTestOperation} from './gpu-mantel-test-operation';
+export type {MantelTestOperationProps} from './gpu-mantel-test-operation';

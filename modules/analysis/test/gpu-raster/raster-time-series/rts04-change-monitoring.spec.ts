@@ -120,7 +120,7 @@ function createColdMonitor(
     sliceCount,
     bandCount: config.bandCount,
     values: harness.floats(values),
-    validity: entry.mask
+    mask: entry.mask
       ? harness.integers(Array.from({length: cellCount}, () => entry.mask as number[]).flat())
       : undefined,
     parameters: harness.floats(

@@ -276,7 +276,12 @@ export type GPUSpatialAnalysisStatusKind =
   | 'invalidCount'
   | 'converged'
   | 'iterationLimitReached'
-  | 'approximation';
+  | 'approximation'
+  | 'vertexCount'
+  | 'requiredVertexCount'
+  | 'ringCount'
+  | 'requiredRingCount'
+  | 'nodedSegmentRequiredCount';
 
 /** The nine public entry points whose contributors the operator catalog covers. */
 export type GPUAnalysisPackage =

@@ -35,7 +35,9 @@ for (const fixture of CURVATURE_CASES) {
     const grid = makeGPURasterMetadata({
       width: fixture.width,
       height: fixture.height,
-      cellSize: fixture.cellSize
+      cellSize: fixture.cellSize,
+      // The contributor takes north from the grid, so the grid states the fixture's row order.
+      rowDirection: fixture.rowDirection
     });
     const graph = new GPUCommandGraph(device, {id: `parity-wp5-${fixture.name}`});
     const elevation = createInputBuffer(device, Float32Array.from(fixture.elevation));

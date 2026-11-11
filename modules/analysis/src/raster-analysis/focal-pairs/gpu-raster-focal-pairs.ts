@@ -21,7 +21,7 @@ import {
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -171,7 +171,7 @@ export class GPURasterFocalPairs implements GPUCommandNodeProducer {
     );
     for (const [name, view] of Object.entries(props.output)) {
       if (!view) continue;
-      validatePackedView(
+      validateSinglePackedView(
         view,
         [name === 'pairedCount' || name === 'status' ? 'uint32' : 'float32'],
         this.id

@@ -55,6 +55,7 @@ import {
   GPU_RELIEF_SHADING_PARAMETER_LENGTH,
   GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH,
   GPU_TERRAIN_HORIZON_MAXIMUM_DIRECTION_COUNT,
+  getGPUTerrainPeakProminenceMaximumCellCount,
   getGPUTerrainPeakSnapMaximumCandidateCount,
   getGPUTerrainSpikeRepairMaximumCellCount,
   getGPUTerrainSummedAreaMaximumCellCount,
@@ -91,6 +92,16 @@ const HORIZON_LIMIT = makeGPURasterMetadata({width: 512, height: 1024});
 const SUMMED_AREA_LIMIT = makeGPURasterMetadata({width: 3315, height: 3374});
 
 type Grid = typeof SMALL;
+
+/**
+ * `grid` with its row term stating `rowDirection`. The terrain contributors that take a
+ * `rowDirection` read north from the grid affine and reject a prop that contradicts it.
+ */
+function withRowDirection(grid: Grid, rowDirection: 'south' | 'north'): Grid {
+  const [columnX, rowX, originX, columnY, rowY, originY] = grid.affine;
+  const rowStep = rowDirection === 'north' ? Math.abs(rowY) : -Math.abs(rowY);
+  return {...grid, affine: [columnX, rowX, originX, columnY, rowStep, originY]};
+}
 
 const cellCount = (grid: Grid) => grid.width * grid.height;
 
@@ -227,7 +238,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
           const count = cellCount(grid);
           graph.add(
             new GPUGeomorphons({
-              grid,
+              grid: withRowDirection(grid, 'north'),
               elevation: elevationBand(context, grid),
               parameters: view('float32', 8),
               searchRadius: grid === LARGE ? 1000 : 64,
@@ -421,7 +432,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
             const rays = observers * (azimuthCount - 10);
             graph.add(
               new GPUPointHorizonProfile({
-                grid: SMALL,
+                grid: withRowDirection(SMALL, 'north'),
                 elevation: elevationBand(context, SMALL),
                 observers: view('float32x4', observers),
                 parameters: view('float32', 16),
@@ -494,7 +505,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
           const targets = 500;
           graph.add(
             new GPUPointHorizonVisibility({
-              grid: SMALL,
+              grid: withRowDirection(SMALL, 'north'),
               elevation: elevationBand(context, SMALL),
               observers: view('float32x4', 4),
               targets: view('float32x4', targets),
@@ -714,7 +725,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
           const count = cellCount(grid);
           graph.add(
             new GPUTerrainDerivatives({
-              grid,
+              grid: withRowDirection(grid, modeIndex % 2 === 0 ? 'south' : 'north'),
               elevation: elevationBand(context, grid),
               parameters: view('float32', 8),
               cellSizeMode: CELL_SIZE_MODES[modeIndex % 3],
@@ -964,7 +975,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
             ) as Record<GPUTerrainCurvatureKind, ReturnType<typeof view<'float32'>>>;
             graph.add(
               new GPUTerrainCurvature({
-                grid,
+                grid: withRowDirection(grid, methodIndex === 1 ? 'north' : 'south'),
                 elevation: elevationBand(context, grid),
                 parameters: view('float32', 12),
                 method,
@@ -1281,7 +1292,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
             const directionCount = maximal ? GPU_TERRAIN_HORIZON_MAXIMUM_DIRECTION_COUNT : 16;
             graph.add(
               new GPUTerrainHorizon({
-                grid,
+                grid: withRowDirection(grid, 'north'),
                 elevation: elevationBand(context, grid),
                 parameters: view('float32', GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH),
                 directionCount,
@@ -1361,7 +1372,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
           const count = cellCount(grid);
           graph.add(
             new GPUTerrainCastShadow({
-              grid,
+              grid: withRowDirection(grid, cellSizeMode === 'uniform' ? 'south' : 'north'),
               elevation: elevationBand(context, grid),
               parameters: view('float32', 16),
               maximumRadius: grid === SMALL ? 40 : 8192,
@@ -1521,7 +1532,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
             const count = cellCount(grid);
             graph.add(
               new GPUReliefShading({
-                grid,
+                grid: withRowDirection(grid, modeIndex % 2 === 0 ? 'south' : 'north'),
                 elevation: elevationBand(context, grid),
                 parameters: view('float32', GPU_RELIEF_SHADING_PARAMETER_LENGTH),
                 skyViewFactor: view('float32', count),
@@ -1638,7 +1649,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
             const count = cellCount(grid);
             graph.add(
               new GPUTerrainVectorRuggedness({
-                grid,
+                grid: withRowDirection(grid, cellSizeMode === 'uniform' ? 'south' : 'north'),
                 elevation: elevationBand(context, grid),
                 parameters: view('float32', 8),
                 maximumRadius: grid === LARGE ? 1000 : 10,
@@ -1789,6 +1800,25 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
             values: view('float32', count),
             outputValidity: view('uint32', count)
           }
+        })
+      );
+    }
+  },
+  {
+    exportName: 'GPUTerrainPeakProminence',
+    name: 'grid above the maximum cell count',
+    build: context => {
+      const {graph, view} = context;
+      const grid = makeGPURasterMetadata({
+        width: getGPUTerrainPeakProminenceMaximumCellCount(context.device) + 1,
+        height: 1
+      });
+      const count = cellCount(grid);
+      graph.add(
+        new GPUTerrainPeakProminence({
+          grid,
+          elevation: elevationBand(context, grid),
+          output: {prominence: view('float32', count)}
         })
       );
     }

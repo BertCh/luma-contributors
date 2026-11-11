@@ -63,6 +63,22 @@ describe('GPUGeographicalDetector', () => {
     expect(withExtras[layout.observationCount]).toBe(6);
   });
 
+  // Standards note of the spatial-statistics review: one NaN value used to reach the sums of the
+  // partition evaluation and made q, F and lambda NaN. A row with a non-finite value is now left
+  // out like an unlabelled row.
+  it('leaves rows with a non-finite value out of every statistic', async () => {
+    // Strata {1, 2, 3} and {10, 11, 12} as in the hand computation: q = 1 - 4 / 125.5 = 0.968127,
+    // F = (4 / 1) * q / (1 - q) = 121.5. The NaN and Infinity rows are labelled and must not count.
+    const words = await runDetector([1, 2, NaN, 3, 10, 11, Infinity, 12], [0, 0, 0, 0, 1, 1, 1, 1]);
+    expect(words[layout.q]).toBeCloseTo(0.968127, 5);
+    expect(words[layout.fStatistic]).toBeCloseTo(121.5, 2);
+    expect(words[layout.totalSumOfSquares]).toBeCloseTo(125.5, 3);
+    expect(words[layout.strataCount]).toBe(2);
+    expect(words[layout.observationCount]).toBe(6);
+    expect(words[layout.denominatorDegreesOfFreedom]).toBe(4);
+    expect(Number.isFinite(words[layout.nonCentrality])).toBe(true);
+  });
+
   it('reports undefined statistics for a constant response and for a single stratum', async () => {
     const constant = await runDetector([4, 4, 4, 4], [0, 0, 1, 1]);
     expect(constant[layout.q]).toBeNaN();

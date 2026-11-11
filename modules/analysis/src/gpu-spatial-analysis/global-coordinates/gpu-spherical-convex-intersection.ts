@@ -12,7 +12,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateCapacity,
   validateRequirement,
   validateGraphViewsBelongToGraph,
@@ -22,6 +22,7 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY,
   GPU_SPHERICAL_CONVEX_MAXIMUM_VERTICES,
@@ -88,12 +89,12 @@ export class GPUSphericalConvexIntersection implements GPUCommandNodeProducer {
       GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
     );
     for (const positions of [props.firstPositions, props.secondPositions, props.output.positions])
-      validatePackedView(positions, ['float32x3'], this.id);
+      validateSinglePackedView(positions, ['float32x3'], this.id);
     for (const offsets of [props.firstOffsets, props.secondOffsets, props.output.status])
-      validatePackedView(offsets, ['uint32'], this.id);
-    validatePackedView(props.output.counts, ['uint32x2'], this.id);
+      validateSinglePackedView(offsets, ['uint32'], this.id);
+    validateSinglePackedView(props.output.counts, ['uint32x2'], this.id);
     if (props.output.measures) {
-      validatePackedView(props.output.measures, ['float32x4'], this.id);
+      validateSinglePackedView(props.output.measures, ['float32x4'], this.id);
       validateRequirement(
         this.id,
         props.output.measures.length === props.firstOffsets.length - 1,
@@ -171,6 +172,7 @@ export class GPUSphericalConvexIntersection implements GPUCommandNodeProducer {
             : [])
         ],
         declarations: `const SPHERICAL_TOLERANCE: f32 = ${props.tolerance ?? 1e-6};
+${GUARDED_ATAN2_WGSL}
 fn spherePosition(second: bool, row: u32) -> vec3f {
   if (second) { let offset = secondPositionsOffset + row * 3u; return vec3f(secondPositions[offset], secondPositions[offset + 1u], secondPositions[offset + 2u]); }
   let offset = firstPositionsOffset + row * 3u; return vec3f(firstPositions[offset], firstPositions[offset + 1u], firstPositions[offset + 2u]);
@@ -256,10 +258,10 @@ if (count > 2u && length(center) > SPHERICAL_TOLERANCE) {
   let tangent = normalize(candidates[0] - center * dot(center, candidates[0]));
   let bitangent = cross(center, tangent);
   for (var vertex = 1u; vertex < min(count, ${GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY}u); vertex++) {
-    let point = candidates[vertex]; let angle = atan2(dot(point, bitangent), dot(point, tangent)); var insertion = vertex;
+    let point = candidates[vertex]; let angle = guardedAtan2(dot(point, bitangent), dot(point, tangent)); var insertion = vertex;
     while (insertion > 0u) {
       let previous = candidates[insertion - 1u];
-      if (atan2(dot(previous, bitangent), dot(previous, tangent)) <= angle) { break; }
+      if (guardedAtan2(dot(previous, bitangent), dot(previous, tangent)) <= angle) { break; }
       candidates[insertion] = previous; insertion -= 1u;
     }
     candidates[insertion] = point;

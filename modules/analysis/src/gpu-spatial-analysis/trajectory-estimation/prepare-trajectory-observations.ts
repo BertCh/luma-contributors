@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {splitTimeWords} from '../../dataframe-analysis/time-window-filter/time-words';
 import {
   createLocalFrameBasis,
@@ -10,6 +9,9 @@ import {
   fixedToLocal,
   spheroidToCartesian
 } from '@math.gl/core';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+const OPERATION = 'prepareGPUTrajectoryObservations';
 
 const WGS84_SPHEROID = {
   semiMajorAxis: 6378137,
@@ -35,31 +37,45 @@ export type GPUTrajectoryObservationPreparation = {
  * Callers wanting a map projection can instead upload their already projected coordinates.
  */
 export function prepareGPUTrajectoryObservations(props: GPUTrajectoryObservationPreparation) {
-  assert(
+  validateRequirement(
+    OPERATION,
     props.longitudeLatitude.length % 2 === 0 &&
-      props.timestamps.length === props.longitudeLatitude.length / 2
+      props.timestamps.length === props.longitudeLatitude.length / 2,
+    'longitudeLatitude must hold two values per timestamp'
   );
-  assert(props.unitsPerSecond > 0n && Number.isFinite(Number(props.unitsPerSecond)));
+  validateRequirement(
+    OPERATION,
+    props.unitsPerSecond > 0n && Number.isFinite(Number(props.unitsPerSecond)),
+    'unitsPerSecond must be a positive finite integer'
+  );
   const [longitude, latitude] = props.origin;
-  assert(
-    Number.isFinite(longitude) &&
-      longitude >= -180 &&
-      longitude <= 180 &&
-      Number.isFinite(latitude) &&
-      latitude >= -90 &&
-      latitude <= 90
+  // The origin feeds float64 host math, so it is compared as a double; the named-limit helper
+  // rounds to float32 and would accept 180.000001.
+  validateRequirement(
+    OPERATION,
+    Number.isFinite(longitude) && longitude >= -180 && longitude <= 180,
+    'origin longitude must be a finite number in [-180, 180]'
+  );
+  validateRequirement(
+    OPERATION,
+    Number.isFinite(latitude) && latitude >= -90 && latitude <= 90,
+    'origin latitude must be a finite number in [-90, 90]'
   );
   const radians = Math.PI / 180;
   const anchor = {x: 0, y: 0, z: 0};
   const location = {x: 0, y: 0, z: 0};
   const local = {x: 0, y: 0, z: 0};
   const basis = createLocalFrameBasis();
-  assert(
-    spheroidToCartesian(
-      {x: longitude * radians, y: latitude * radians, z: 0},
-      WGS84_SPHEROID,
-      anchor
-    ) && eastNorthUpBasis(longitude * radians, latitude * radians, basis)
+  validateRequirement(
+    OPERATION,
+    Boolean(
+      spheroidToCartesian(
+        {x: longitude * radians, y: latitude * radians, z: 0},
+        WGS84_SPHEROID,
+        anchor
+      ) && eastNorthUpBasis(longitude * radians, latitude * radians, basis)
+    ),
+    'origin must project onto the WGS84 spheroid'
   );
   const positions = new Float32Array(props.longitudeLatitude.length);
   const times = new Float32Array(props.timestamps.length);
@@ -68,8 +84,16 @@ export function prepareGPUTrajectoryObservations(props: GPUTrajectoryObservation
     const inputLongitude = props.longitudeLatitude[row * 2];
     const inputLatitude = props.longitudeLatitude[row * 2 + 1];
     // Nonfinite observations remain missing measurements for the filter.
-    assert(!Number.isFinite(inputLongitude) || (inputLongitude >= -180 && inputLongitude <= 180));
-    assert(!Number.isFinite(inputLatitude) || (inputLatitude >= -90 && inputLatitude <= 90));
+    validateRequirement(
+      OPERATION,
+      !Number.isFinite(inputLongitude) || (inputLongitude >= -180 && inputLongitude <= 180),
+      `longitudeLatitude longitude at row ${row} must be within [-180, 180] degrees`
+    );
+    validateRequirement(
+      OPERATION,
+      !Number.isFinite(inputLatitude) || (inputLatitude >= -90 && inputLatitude <= 90),
+      `longitudeLatitude latitude at row ${row} must be within [-90, 90] degrees`
+    );
     location.x = inputLongitude * radians;
     location.y = inputLatitude * radians;
     location.z = 0;
@@ -89,7 +113,11 @@ export function prepareGPUTrajectoryObservations(props: GPUTrajectoryObservation
     times[row] =
       Number(delta / props.unitsPerSecond) +
       Number(delta % props.unitsPerSecond) / Number(props.unitsPerSecond);
-    assert(Number.isFinite(times[row]));
+    validateRequirement(
+      OPERATION,
+      Number.isFinite(times[row]),
+      `timestamps at row ${row} minus epoch must convert to a finite number of seconds`
+    );
     // Word rows keep every timestamp exact; `times` is only precise within weeks of the epoch.
     const words = splitTimeWords(props.timestamps[row]);
     timeWords[row * 2] = words.low;

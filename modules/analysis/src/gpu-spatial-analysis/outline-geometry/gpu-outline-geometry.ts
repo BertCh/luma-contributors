@@ -23,7 +23,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -230,7 +230,7 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
       throw new Error(`${id} geometryType must be 'points', 'lines' or 'polygons'`);
     }
     validateCapacity(id, 'joinSegments', this.joinSegments, 3);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
@@ -239,22 +239,22 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
       if (!this.boundaryOffsets) {
         throw new Error(`${id} ${offsetsName} is required`);
       }
-      validatePackedView(this.boundaryOffsets, ['uint32'], `${id} ${offsetsName}`);
+      validateSinglePackedView(this.boundaryOffsets, ['uint32'], `${id} ${offsetsName}`);
       if (this.boundaryOffsets.length < 2) {
         throw new Error(`${id} ${offsetsName} needs two rows`);
       }
       if (props.geometryType === 'polygons') {
-        validatePackedView(props.featureOffsets, ['uint32'], `${id} featureOffsets`);
-        validatePackedView(props.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
+        validateSinglePackedView(props.featureOffsets, ['uint32'], `${id} featureOffsets`);
+        validateSinglePackedView(props.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH} float32 values`
       );
     }
-    validatePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
     const expectedLength = props.positions.length * this.verticesPerInput;
     if (props.output.positions.length !== expectedLength) {
       throw new Error(`${id} output.positions must hold ${expectedLength} rows`);

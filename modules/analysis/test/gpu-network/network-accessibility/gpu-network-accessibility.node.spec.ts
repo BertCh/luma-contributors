@@ -365,3 +365,17 @@ it('GPUNetworkSnapping validates topology, capacities, and output lengths', () =
       )
   ).toThrow(/position count/);
 });
+
+it('GPUNetworkSnapping refuses unindexed work above its limit and validates maximumUnindexedWork', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  // 6 points times 5 edges is 30 tests: a limit of 29 refuses, 30 accepts.
+  expect(
+    () => new GPUNetworkSnapping(createSnappingProps(graph, {maximumUnindexedWork: 29}))
+  ).toThrow(/^snap positions times topology edges without candidateCapacity must be at most 29$/);
+  expect(
+    () => new GPUNetworkSnapping(createSnappingProps(graph, {maximumUnindexedWork: 30}))
+  ).not.toThrow();
+  expect(
+    () => new GPUNetworkSnapping(createSnappingProps(graph, {maximumUnindexedWork: 0}))
+  ).toThrow(/^snap maximumUnindexedWork must be an integer in \[1, /);
+});

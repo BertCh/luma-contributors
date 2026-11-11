@@ -98,7 +98,7 @@ for (const sample of fixture.cases) {
           values: values.view,
           validity: validity.view,
           filled: filled.view,
-          unresolvedCount: unresolvedCount.view
+          status: {invalidCount: unresolvedCount.view}
         }
       })
     );
@@ -156,7 +156,7 @@ it('four-quadrant fill excludes non-finite, masked and raw nodata donors before 
         values: values.view,
         validity: validity.view,
         filled: filled.view,
-        unresolvedCount: unresolvedCount.view
+        status: {invalidCount: unresolvedCount.view}
       }
     })
   );
@@ -194,7 +194,7 @@ for (const method of ['nearest', 'inverse-distance', 'gdal-four-quadrant'] as co
           values: values.view,
           validity: validity.view,
           filled: filled.view,
-          unresolvedCount: unresolvedCount.view
+          status: {invalidCount: unresolvedCount.view}
         }
       })
     );

@@ -30,8 +30,9 @@ it('review D-19: orientation guards atan2(0, 0) and keeps the kernel parseable',
     .find(text => text.includes('orientation[orientationOffset'));
   expect(source).toBeDefined();
   expect(() => new WgslReflect(source!)).not.toThrow();
+  // The second argument is a difference: guardedAtan2 treats a zero of either sign as +0.0.
   expect(source).toContain(
-    'select(0.0, 0.5 * atan2(2.0 * xy, xx - yy), (xy != 0.0) || (xx != yy))'
+    'select(0.0, 0.5 * guardedAtan2(2.0 * xy, xx - yy), (xy != 0.0) || (xx != yy))'
   );
 });
 

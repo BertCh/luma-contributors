@@ -42,3 +42,12 @@ export type {
   GPUKernelFlowSmoothingProps,
   GPUKernelFlowSmoothingSettings
 } from './gpu-kernel-flow-smoothing';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeRadiationFlowModelOnCPU,
+  CPURadiationFlowModelOperation
+} from './cpu-radiation-flow-model-operation';
+export type {CPURadiationFlowModelInput} from './cpu-radiation-flow-model-operation';
+export {GPURadiationFlowModelOperation} from './gpu-radiation-flow-model-operation';
+export type {RadiationFlowModelOperationProps} from './gpu-radiation-flow-model-operation';

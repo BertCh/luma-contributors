@@ -5,7 +5,9 @@ populations and distances, and a kernel smoother for observed flows. Both are re
 grows with the cube of the zone count, and construction rejects more than 1024 zones.
 
 Both take zone centroids, planar or great-circle (`spatialContext`). Their inputs match what
-`GPUFlowAggregation` writes: `zoneOutWeights` is the `outflows` of the radiation model, and the
+`GPUFlowAggregation` writes: `zoneOutWeights` is the `outflows` of the radiation model when the
+aggregation runs with `excludeSelfFlows: true` (`T_i` is the trips that leave zone `i`; without the
+option the zone totals also count trips that stay inside it), and the
 smoother reads `flowOriginZoneIds`, `flowDestinationZoneIds`, `flowWeights` and `status.count` (as `validPairCount`)
 directly.
 
@@ -20,7 +22,7 @@ integers, unlike scikit-mobility's `Radiation.generate`.
 
 | Prop | Meaning |
 | --- | --- |
-| `positions`, `populations`, `outflows` | One row per zone. `outflows` is `T_i`, the trips leaving each zone |
+| `positions`, `populations`, `outflows` | One row per zone. `outflows` is `T_i`, the trips leaving each zone, not counting trips that stay inside it |
 | `normalization` | `'none'` (default), or `'finite-size'`, which divides by `1 - m_i / M` so every row sums to `T_i` |
 | `output.flows` | `zoneCount^2` rows |
 
@@ -36,7 +38,9 @@ against the closed-form row sum `T_i (1 - m_i / M)`. scikit-mobility was not run
 
 ## `GPUKernelFlowSmoothing`
 
-Smoothing of OD flows in the manner of Guo and Zhu (IEEE TVCG 2014). The definition used:
+Smoothing of OD flows: each flow is re-estimated as the kernel-weighted mean of the flows between
+neighbouring origins and neighbouring destinations. Smoothing over neighbourhoods of both ends is the idea
+of Guo and Zhu (IEEE TVCG 2014); this contributor does not reproduce their estimator. The definition used:
 
 1. The neighbourhood of zone `i` is every zone within the smallest distance `h_i` at which the
    `locationWeights` of the zones within `h_i` (zone `i` included) sum to at least
@@ -46,11 +50,18 @@ Smoothing of OD flows in the manner of Guo and Zhu (IEEE TVCG 2014). The definit
 3. `S_ij = sum_a sum_b K_ia K_jb M_ab / (sum_a K_ia * sum_b K_jb)`. Pairs without a flow count as
    zero.
 
-The neighbourhood size, the kernel and the bandwidth ratio are this library's reading of the
-method as summarized in the project's review notes. The paper was not available to check them and
-no packaged implementation exists, so the tests use a binary64 reference written from the three
-points above plus closed-form limits (a zero-size neighbourhood returns the input; a very wide
-kernel returns the mean). Flow selection, which removes duplicate smoothed flows, is not provided.
+This is a normalised kernel mean, so it does not conserve the total flow. Each row of weights is
+divided by its own sum; the columns are not. A zone that is a neighbour of many zones spreads its flows
+into all of them and the total grows, and a zone that is nobody's neighbour loses part of its flows. With
+zones at x = 0, 1 and 10, unit weights, `neighborhoodSize` 2 and `bandwidthRatio` 0.5, one flow of 100
+inside the middle zone sums to 125.3 after smoothing and one flow of 100 inside the far zone sums to 77.6.
+Rescale the output when totals must match the input.
+
+The neighbourhood size, the kernel and the bandwidth ratio are this library's own choices; the paper
+was not available to check them and no packaged implementation exists. The tests use a binary64
+reference written from the three points above, the three-zone case worked by hand, and closed-form
+limits (a zero-size neighbourhood returns the input; a very wide kernel returns the mean). Flow
+selection, which removes duplicate smoothed flows, is not provided.
 
 | Prop | Meaning |
 | --- | --- |

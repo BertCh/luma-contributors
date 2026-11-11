@@ -82,9 +82,11 @@ export type GPULineIntegralConvolutionProps = {
  *
  * The first node fills a `width x height` white-noise raster with
  * `philox((column, row, 0, 0), (seed, 1)).x`. The second traces, from each pixel centre, `L` RK2
- * midpoint steps forward and `L` backward along the normalised field (one step is `stepLength`
- * output pixels), stopping at the field or output edge, at NaN data, or where the speed is zero or
- * below `minimumSpeed`. The value is the weighted mean of the noise at the visited pixels with a
+ * midpoint steps forward and `L` backward along the normalised field, stopping at the field or
+ * output edge, at NaN data, or where the speed is zero or below `minimumSpeed`. One step is the
+ * unit world direction `d` times the scalar `stepLength / |(d.x / cellWidth, d.y / cellHeight)|`:
+ * it is tangent to the field in world space and `stepLength` output pixels long, also when the
+ * output cells are not square. The value is the weighted mean of the noise at the visited pixels with a
  * Hann window `0.5 * (1 + cos(pi * s / (L + 1)))` over the signed step `s`. When `period > 0` the
  * window is multiplied by the ripple `0.5 * (1 + cos(2 * pi * (s / period - phase)))`; advancing
  * `phase` each frame makes the texture flow along the field without recomputing anything else
@@ -94,6 +96,12 @@ export type GPULineIntegralConvolutionProps = {
  * Determinism: no atomics and counter-based noise, so encodings are bitwise reproducible on one
  * adapter. Across adapters, `cos` and `normalize` rounding can move a sample into a neighbouring
  * pixel near a pixel edge.
+ *
+ * Row direction: the field raster and the output raster place row 0 at the smallest y (`originY` of its extent) and
+ * rows advance toward larger y; `v` is the velocity toward larger y. No grid affine is read and
+ * nothing is checked at construction. A north-up field (row 0 at the top, the usual raster order)
+ * must have its row order reversed by the caller before upload, or the flow is mirrored north to
+ * south. Following a grid affine is deferred (roadmap 12.4).
  */
 export class GPULineIntegralConvolution implements GPUCommandNodeProducer {
   /** Prefix for graph node and transient IDs. */
@@ -269,12 +277,18 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
     return vec3<f32>(0.0);
   }
   return vec3<f32>(directionSign * sample.xy / speed, 1.0);
+}
+// World displacement of one step along the unit world direction: one positive scalar times the
+// direction, chosen so the step is stepLength output pixels long. Scaling each axis by its own
+// cell size instead would bend the trace away from the field on non-square cells.
+fn getStepVector(direction: vec2<f32>, cell: vec2<f32>, stepLength: f32) -> vec2<f32> {
+  return direction * (stepLength / length(direction / cell));
 }`,
         body: /* wgsl */ `
   let fieldExtent = vec4<f32>(readParameter(0u), readParameter(1u), readParameter(2u), readParameter(3u));
   let origin = vec2<f32>(readParameter(4u), readParameter(5u));
   let cell = vec2<f32>(readParameter(6u), readParameter(7u));
-  let stepVector = readParameter(8u) * cell;
+  let stepLength = readParameter(8u);
   let minimumSpeed = readParameter(9u);
   let phase = readParameter(10u);
   let period = readParameter(11u);
@@ -299,11 +313,11 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
       if (first.z == 0.0) {
         break;
       }
-      let middle = getDirection(position + 0.5 * stepVector * first.xy, fieldExtent, directionSign, minimumSpeed);
+      let middle = getDirection(position + 0.5 * getStepVector(first.xy, cell, stepLength), fieldExtent, directionSign, minimumSpeed);
       if (middle.z == 0.0) {
         break;
       }
-      position = position + stepVector * middle.xy;
+      position = position + getStepVector(middle.xy, cell, stepLength);
       let pixel = floor((position - origin) / cell);
       if (pixel.x < 0.0 || pixel.y < 0.0 || pixel.x >= f32(WIDTH) || pixel.y >= f32(HEIGHT)) {
         break;

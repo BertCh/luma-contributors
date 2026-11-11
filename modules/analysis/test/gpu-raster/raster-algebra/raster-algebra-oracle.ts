@@ -333,7 +333,10 @@ export function conditionalOnCPU(
     const aValue = inputs.a ? inputs.a[cell] : constantA;
     const bValue = inputs.b ? inputs.b[cell] : constantB;
     const chosen = condition ? aValue : bValue;
-    values[cell] = conditionDefined && !isNoData(chosen, inputs.noDataValue) ? chosen : NaN;
+    // The sentinel marks raster cells only; a per-frame constant equal to it is a value.
+    const chosenIsRaster = condition ? inputs.a !== undefined : inputs.b !== undefined;
+    const chosenMissing = isNoData(chosen, chosenIsRaster ? inputs.noDataValue : undefined);
+    values[cell] = conditionDefined && !chosenMissing ? chosen : NaN;
     mask[cell] = conditionDefined && condition ? 1 : 0;
   }
   return {values, mask};
@@ -372,7 +375,9 @@ export function arithmeticOnCPU(
     const aRaw = a[cell];
     const bRaw = b ? b[cell] : constantB;
     const isUnary = operation >= 16;
-    const isDefined = !isNoData(aRaw, noDataValue) && (isUnary || !isNoData(bRaw, noDataValue));
+    // The sentinel marks raster cells only; a constant second operand equal to it is a value.
+    const bMissing = isNoData(bRaw, b ? noDataValue : undefined);
+    const isDefined = !isNoData(aRaw, noDataValue) && (isUnary || !bMissing);
     const x = f(f(aRaw * scaleA) + offsetA);
     const y = f(f(bRaw * scaleB) + offsetB);
     let value: number;

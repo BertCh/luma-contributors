@@ -32,7 +32,7 @@ function medoid(
       sliceCount,
       bandCount,
       values: view('float32', CELLS * sliceCount * bandCount),
-      validity: withValidity ? view('uint32', CELLS * sliceCount) : undefined,
+      mask: withValidity ? view('uint32', CELLS * sliceCount) : undefined,
       output: {
         composite: view('float32', CELLS * bandCount),
         sliceIndex: view('uint32', CELLS),
@@ -56,7 +56,7 @@ function geometricMedian(
       bandCount,
       iterationCount,
       values: view('float32', CELLS * sliceCount * bandCount),
-      validity: withOptional ? view('uint32', CELLS * sliceCount) : undefined,
+      mask: withOptional ? view('uint32', CELLS * sliceCount) : undefined,
       parameters: view('float32', 1),
       output: {
         composite: view('float32', CELLS * bandCount),
@@ -79,7 +79,7 @@ function bestAvailablePixel(
       sliceCount,
       bandCount,
       values: bandCount > 0 ? view('float32', CELLS * sliceCount * bandCount) : undefined,
-      validity: withOptional ? view('uint32', CELLS * sliceCount) : undefined,
+      mask: withOptional ? view('uint32', CELLS * sliceCount) : undefined,
       cloudDistance: withOptional ? view('float32', CELLS * sliceCount) : undefined,
       sliceAttributes: view('float32', 2 * sliceCount),
       parameters: view('float32', 9),

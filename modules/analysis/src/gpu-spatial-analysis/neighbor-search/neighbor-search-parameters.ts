@@ -18,6 +18,16 @@ export const GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH = 12;
  */
 export const GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH = 15;
 
+/**
+ * Default `distanceFloor` of every inverse-distance weight in the library
+ * (`GPUNeighborSearch` and `GPUNearestFeatureWeights`), in the length unit of the distances:
+ * `w = max(d, distanceFloor)^-power`, so two coincident points (`d = 0`) weigh
+ * `distanceFloor^-power`, `1e6` at the default power 1. libpysal divides by zero there.
+ *
+ * @internal
+ */
+export const GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR = 1e-6;
+
 /** Declarative layout of the packed neighbor-search view. */
 export const GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
   id: 'neighbor-search',
@@ -43,7 +53,7 @@ export const GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA = defineGPUSpatialParameterSch
       name: 'distanceFloor',
       format: 'float32',
       wordOffset: 7,
-      defaultValue: 0,
+      defaultValue: GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR,
       minimum: 0,
       units: 'position-units',
       dynamic: true
@@ -100,9 +110,11 @@ export type GPUNeighborSearchSettings = {
    */
   spatialContext?: GPUSpatialContext;
   /**
-   * `[minX, minY, maxX, maxY]` extent of the search lattice. Targets and queries outside it (or
-   * with non-finite coordinates) are excluded: they become isolates and never a neighbor, so it
-   * must cover every point of interest (count the dropped rows with `invalidCount`). For a
+   * `[minX, minY, maxX, maxY]` extent of the search lattice. Targets and self-join rows outside
+   * it (or with non-finite coordinates) are excluded: they become isolates and never a neighbor,
+   * so it must cover every target of interest (count the dropped rows with `invalidCount`). The
+   * planar queries of a cross join are not clipped by it: a query outside the bounds still finds
+   * its exact neighbors. For a
    * great-circle search these are degrees `[minLongitude, minLatitude, maxLongitude,
    * maxLatitude]` with a longitude span of at most 360 (`[-180, -90, 180, 90]` for the world).
    */
@@ -119,8 +131,13 @@ export type GPUNeighborSearchSettings = {
   /** Inverse-distance exponent. Defaults to 1. */
   power?: number;
   /**
-   * Inverse distance uses `max(d, distanceFloor)`. Defaults to 0, in which case coincident points
-   * (`d = 0`) get weight 0 because their weight is not finite.
+   * Inverse distance uses `max(d, distanceFloor)`, in the length unit of the distances. Defaults
+   * to `1e-6`, the default of `GPUNearestFeatureWeights` too, so coincident points (`d = 0`) get
+   * the finite weight `distanceFloor^-power` (`1e6` at power 1). An explicit 0 removes the floor:
+   * coincident points then get weight 0, because their weight is not finite, and a zero-weight
+   * slot is not a neighbor. Under the default, a coincident neighbor outweighs every ordinary
+   * neighbor by many orders of magnitude and takes nearly all of a row-standardized row; pass a
+   * floor on the scale of the data when positions repeat (see the class documentation).
    */
   distanceFloor?: number;
   /** Kernel profile for `weightKind: 'kernel'`. Defaults to `'triangular'`. */
@@ -203,7 +220,7 @@ export function getGPUNeighborSearchParameterValues(
   values[4] = settings.radius ?? Infinity;
   values[5] = GPU_NEIGHBOR_SEARCH_WEIGHT_KIND[weightKind];
   values[6] = settings.power ?? 1;
-  values[7] = settings.distanceFloor ?? 0;
+  values[7] = settings.distanceFloor ?? GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR;
   values[8] = GPU_NEIGHBOR_SEARCH_KERNEL[kernel];
   values[9] = settings.rowStandardize ? 1 : 0;
   return values;

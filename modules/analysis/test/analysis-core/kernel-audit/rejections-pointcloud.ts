@@ -104,6 +104,28 @@ export const POINTCLOUD_REJECTIONS: readonly KernelAuditRejection[] = [
   },
   {
     exportName: 'GPUPointCloudHeight',
+    name: 'inverse-distance power one above 8',
+    kind: 'dispatch',
+    limit: 8,
+    rejects: /^Error: gpu-pointcloud-height interpolation\.power must be in \(0, 8\]$/
+  },
+  {
+    exportName: 'GPUPointCloudChange',
+    name: 'indexed cylinder visiting 102 cells per axis',
+    kind: 'dispatch',
+    limit: 1048576,
+    rejects:
+      /^Error: gpu-pointcloud-change each core would visit 1061208 grid cells, above the 1048576 limit; enlarge the grid cellSize$/
+  },
+  {
+    exportName: 'GPUPointCloudNeighborhoods',
+    name: 'grid of more than 4294967294 cells',
+    kind: 'dispatch',
+    limit: 4294967294,
+    rejects: /^Error: gpu-pointcloud-neighborhoods grid cell count must be at most 4294967294$/
+  },
+  {
+    exportName: 'GPUPointCloudHeight',
     name: 'inverse-distance reach one above 64 cells',
     kind: 'dispatch',
     limit: 64,

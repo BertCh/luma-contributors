@@ -15,11 +15,7 @@ import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wg
 import {getPackedPredictionAccessors} from '../../analysis-core/kernels/gpu-prediction-utils';
 import type {GPUVariogramModelFit} from './gpu-variogram-model-fit';
 import {COOPERATIVE_VARIOGRAM_FIT_WGSL} from './variogram-model-fit-cooperative';
-import {
-  MATERN_3_2_RANGE_FACTOR,
-  MATERN_5_2_RANGE_FACTOR,
-  type VariogramModelType
-} from './variogram-model';
+import {VARIOGRAM_MODEL_SHAPE_WGSL, type VariogramModelType} from './variogram-model';
 
 const MODEL_CODES: Record<VariogramModelType, number> = {
   spherical: 0,
@@ -28,6 +24,11 @@ const MODEL_CODES: Record<VariogramModelType, number> = {
   'matern-3/2': 3,
   'matern-5/2': 4
 };
+
+/** Spacing of float32 values relative to their magnitude, `2^-23`. */
+const FLOAT32_RELATIVE_RESOLUTION = 2 ** -23;
+/** WGSL literal of the square root of the largest float32, `sqrt(3.4028235e38)`. */
+const FLOAT32_MAXIMUM_SQUARE_ROOT_WGSL = '1.8446743e19';
 
 /** Parallel range ladder and cooperative bin reductions; refinement steps and rounds remain ordered. */
 export function getParallelVariogramModelFitNodes<Parameters>(
@@ -70,14 +71,10 @@ fn writeFit(offset: u32, value: vec4f) {
 var<private> model: u32;
 var<private> previous: vec4<f32>;
 var<private> reweight: bool;
-fn shape(scaled: f32) -> f32 {
-  if (model == 0u) { return select(1.5 * scaled - 0.5 * scaled * scaled * scaled, 1.0, scaled >= 1.0); }
-  if (model == 1u) { return 1.0 - exp(-3.0 * scaled); }
-  if (model == 2u) { return 1.0 - exp(-3.0 * scaled * scaled); }
-  if (model == 3u) { let argument = ${getWGSLFloatLiteral(MATERN_3_2_RANGE_FACTOR)} * scaled; return 1.0 - (1.0 + argument) * exp(-argument); }
-  let argument = ${getWGSLFloatLiteral(MATERN_5_2_RANGE_FACTOR)} * scaled;
-  return 1.0 - (1.0 + argument + argument * argument / 3.0) * exp(-argument);
-}
+${VARIOGRAM_MODEL_SHAPE_WGSL}
+// The shared float32 shapes: they keep their digits for bins at a small fraction of a candidate
+// range, where the direct 1 - exp(-x) forms cancel (interpolation-density-08).
+fn shape(scaled: f32) -> f32 { return getVariogramModelShape(model, scaled); }
 fn usable(bin: u32) -> bool { return pairCounts[pairCountsOffset + bin] > 0u && isFiniteValue(distances[distancesOffset + bin]) && distances[distancesOffset + bin] > 0.0 && isFiniteValue(semivariances[semivariancesOffset + bin]); }
 fn weight(bin: u32) -> f32 {
   var value = ${props.weighting === 'none' ? '1.0' : 'f32(pairCounts[pairCountsOffset + bin])'};
@@ -90,10 +87,17 @@ fn residual(nugget: f32, sill: f32, range: f32) -> f32 {
   return value;
 }
 fn fitLinear(range: f32) -> vec4<f32> {
+  // Cressie weights are N / max(fitted^2, 1e-20) and reach 1e20 for semivariances near 1e-8, so
+  // the normal-equation products weightSum * squareSum would leave f32 and the joint nugget and
+  // sill fit would be skipped. Every weight is divided by the total first, as the cooperative
+  // refinement does; the residual below keeps the caller's unnormalised weights.
+  var totalWeight = 0.0;
+  for (var bin = 0u; bin < BIN_COUNT; bin++) { if (usable(bin)) { totalWeight += weight(bin); } }
+  let weightScale = select(1.0, 1.0 / totalWeight, totalWeight > 0.0 && totalWeight < 3.0e38);
   var weightSum = 0.0; var shapeSum = 0.0; var squareSum = 0.0; var valueSum = 0.0; var crossSum = 0.0;
   for (var bin = 0u; bin < BIN_COUNT; bin++) {
     if (!usable(bin)) { continue; }
-    let binWeight = weight(bin); let binShape = shape(distances[distancesOffset + bin] / range); let value = semivariances[semivariancesOffset + bin];
+    let binWeight = weight(bin) * weightScale; let binShape = shape(distances[distancesOffset + bin] / range); let value = semivariances[semivariancesOffset + bin];
     weightSum += binWeight; shapeSum += binWeight * binShape; squareSum += binWeight * binShape * binShape; valueSum += binWeight * value; crossSum += binWeight * binShape * value;
   }
   let nuggetOnly = max(valueSum / weightSum, 0.0);
@@ -123,14 +127,27 @@ fn fitLinear(range: f32) -> vec4<f32> {
 var minimumLag = 3.402823e38;
 var maximumLag = 0.0;
 var binCount = 0u;
+var largestValue = 0.0;
+var baseWeight = 0.0;
+reweight = false;
 for (var bin = 0u; bin < BIN_COUNT; bin++) {
   if (usable(bin)) {
     minimumLag = min(minimumLag, distances[distancesOffset + bin]);
     maximumLag = max(maximumLag, distances[distancesOffset + bin]);
+    largestValue = max(largestValue, abs(semivariances[semivariancesOffset + bin]));
+    baseWeight += weight(bin);
     binCount++;
   }
 }
 let valid = binCount >= 2u && maximumLag > minimumLag;
+// The objective is a weighted sum of squared residuals in the caller's weights. A residual
+// cannot be smaller than the float32 resolution of the largest semivariance (2^-23 of it), so
+// when that resolution, squared and summed with the weights, is not finite, the objective of
+// even an exact fit is a matter of rounding (0 or infinity) and candidates cannot be ranked.
+// Such a frame is a numerical failure for every model. The test is written without the
+// product so that it does not rely on overflow: resolution >= sqrt(FLT_MAX / weight).
+let resolution = largestValue * ${getWGSLFloatLiteral(FLOAT32_RELATIVE_RESOLUTION)};
+let isRepresentable = !(resolution >= ${FLOAT32_MAXIMUM_SQUARE_ROOT_WGSL} / sqrt(max(baseWeight, 1.0)));
 writeFit(0u, vec4f(0.0, 0.0, f32(binCount), 0.0));
 if (valid) {
   let lowest = log(minimumLag / 10.0);
@@ -141,7 +158,7 @@ if (valid) {
 for (var modelIndex = 0u; modelIndex < ${models.length}u; modelIndex++) {
   write_parameters(modelIndex, vec4f(getNaN()));
   write_diagnostics(modelIndex, vec4f(getNaN()));
-  statuses[statusesOffset + modelIndex] = select(1u, 0u, valid);
+  statuses[statusesOffset + modelIndex] = select(1u, select(2u, 0u, isRepresentable), valid);
   writeFit(${previousStart}u + modelIndex * 4u, vec4f(0.0, 0.0, 1.0, 3.402823e38));
 }`
     })

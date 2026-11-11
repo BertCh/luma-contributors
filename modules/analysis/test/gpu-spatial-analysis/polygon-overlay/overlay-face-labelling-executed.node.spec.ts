@@ -290,10 +290,15 @@ function runOverlayOnCPU(
       positions: createTransientView(graph, 'out-positions', 'float32x2', CAPACITY.vertices),
       featureOffsets: column(CAPACITY.rings + 1),
       polygonOffsets: column(CAPACITY.rings + 1),
-      ringOffsets: column(CAPACITY.rings + 1),
-      sourceIds: column(CAPACITY.rings)
+      ringOffsets: column(CAPACITY.rings + 1)
     },
-    status: {...status(), nodedSegmentRequiredCount: scalar()},
+    status: {
+      count: scalar(),
+      overflow: scalar(),
+      candidateOverflow: scalar(),
+      requiredRingCount: scalar(),
+      nodedSegmentRequiredCount: scalar()
+    },
     boundary: {
       endpoints: createTransientView(graph, 'out-boundary', 'float32x4', CAPACITY.boundary),
       operandIds: column(CAPACITY.boundary),
@@ -321,7 +326,7 @@ function runOverlayOnCPU(
       if (publishCapacity && node.id.endsWith('-assemble-ring-count')) {
         // Ring/vertex counts are now complete. The cooperative ring-stats kernel cannot run in
         // the interpreter; it does not feed these counts. Execute the actual publication path.
-        for (const suffix of ['-assemble-publish', '-source-ids', '-publish']) {
+        for (const suffix of ['-assemble-publish', '-publish', '-ring-status-01']) {
           const publish = nodes.find(candidate => candidate.id === `polygon-overlay${suffix}`)!;
           executeCommandNodesOnCPU([publish], memory);
         }
@@ -367,7 +372,7 @@ function runOverlayOnCPU(
     overflow: memory.readUint32(output.status.overflow)[0],
     candidateOverflow: memory.readUint32(output.status.candidateOverflow)[0],
     boundaryRequired: memory.readUint32(output.boundary.status.requiredCount)[0],
-    ringRequired: memory.readUint32(output.status.requiredCount)[0],
+    ringRequired: memory.readUint32(output.status.requiredRingCount)[0],
     boundaryOverflow: memory.readUint32(output.boundary.status.overflow)[0],
     nodedRequired: memory.readUint32(output.status.nodedSegmentRequiredCount)[0],
     writtenRingCount: publishCapacity
@@ -647,7 +652,8 @@ describe('GPUPolygonOverlay face labelling executed on the CPU', () => {
       boundaryCount: limited.edges.length,
       boundaryRequiredCount: limited.boundaryRequired,
       boundaryOverflow: limited.boundaryOverflow,
-      nodedSegmentRequiredCount: limited.nodedRequired
+      nodedSegmentRequiredCount: limited.nodedRequired,
+      ringCount: -1
     });
     expect(planned).toEqual({...capacity, rings: 3, vertices: 15, boundary: 12, nodedSegments: 12});
     const complete = runOverlayOnCPU(fixture, planned, true);
@@ -670,7 +676,8 @@ describe('GPUPolygonOverlay face labelling executed on the CPU', () => {
         boundaryCount: 4,
         boundaryRequiredCount: 4,
         boundaryOverflow: 1,
-        nodedSegmentRequiredCount: 12
+        nodedSegmentRequiredCount: 12,
+        ringCount: -1
       })
     ).toThrow(/Incomplete overlay plan/);
   }, 600_000);

@@ -4,6 +4,7 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
+import {getBinarySearchWGSL} from './binary-search-wgsl';
 
 /**
  * Creates one node that writes CSR segment offsets from keys that are already sorted ascending.
@@ -47,17 +48,8 @@ export function createSortedSegmentOffsetsNode<Parameters>(
       {name: 'segmentOffsets', view: segmentOffsets, type: 'u32', access: 'read_write'}
     ],
     invocationCount: segmentCount + 1,
-    body: `var low = 0u;
-  var high = ${sortedKeys.length}u;
-  while (low < high) {
-    let middle = (low + high) >> 1u;
-    if (sortedKeys[sortedKeysOffset + middle] < index) {
-      low = middle + 1u;
-    } else {
-      high = middle;
-    }
-  }
-  segmentOffsets[segmentOffsetsOffset + index] = low;`
+    declarations: getBinarySearchWGSL('sortedKeys'),
+    body: `segmentOffsets[segmentOffsetsOffset + index] = lowerBoundSortedKeys(0u, ${sortedKeys.length}u, index);`
   });
 }
 

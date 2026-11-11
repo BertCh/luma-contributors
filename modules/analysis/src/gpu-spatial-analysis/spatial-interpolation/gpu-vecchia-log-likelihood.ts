@@ -9,6 +9,11 @@ import type {
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
   validateCapacity,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -27,9 +32,21 @@ const MAXIMUM_NEIGHBOR_COUNT = 32;
 /** Outputs of {@link GPUVecchiaLogLikelihood}, all caller-owned. */
 export type GPUVecchiaLogLikelihoodOutput = GPUVecchiaLikelihoodOutput;
 
+/** Distances are planar Euclidean in the native units of the positions. */
+const PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance' as const
+});
+
 /** Props of {@link GPUVecchiaLogLikelihood}. Counts and which views exist are compile-time. */
 export type GPUVecchiaLogLikelihoodProps = {
   id?: string;
+  /**
+   * Coordinate space of the positions. Compile-time. Omitted means native planar coordinates with
+   * Euclidean distance (unchanged behavior); only that is accepted, so longitude/latitude throws:
+   * project to a planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   /** One packed row per site, in any row order the conditioning sets refer to. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -60,7 +77,9 @@ export type GPUVecchiaLogLikelihoodProps = {
  * Each conditioning-set solve is the `simple` mode of `GPULocalKriging` over the caller's ordered
  * CSR neighbourhoods, whose per-frame `parameters` make this a likelihood evaluation with no
  * recompile. A site's term reads `d_i` from `values.y` and adds the observation error variance of
- * that site. Sites with an empty conditioning set use the marginal variance `sill + nugget`.
+ * that site. Sites with an empty conditioning set, and sites whose conditioning rows are all
+ * unusable (validity 0, or a non-finite value, error variance or position), use the marginal
+ * variance `sill + nugget`, as `GPUVecchiaFisherScoring` does; `conditionalStatus` is 0 for them.
  *
  * Failure semantics (float32 experiment, dev-docs/research/spatiotemporal-review-2026-11-09): a site
  * whose solve reports failure (status not 0), or whose variance is nonpositive, counts in `status[0]`,
@@ -76,6 +95,8 @@ export type GPUVecchiaLogLikelihoodProps = {
  */
 export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Resolved coordinate space (native planar when `spatialContext` was omitted). */
+  readonly spatialContext: GPUSpatialContext;
   readonly props: GPUVecchiaLogLikelihoodProps;
   readonly rowCount: number;
   private readonly kriging: GPULocalKriging;
@@ -83,6 +104,11 @@ export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
   constructor(props: GPUVecchiaLogLikelihoodProps) {
     this.props = props;
     this.id = props.id ?? 'vecchia-log-likelihood';
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT
+    );
     const {id} = this;
     const {positions, observations, parameters, neighborhoods, neighborhoodOffsets, output} = props;
     this.rowCount = positions.length;
@@ -110,6 +136,7 @@ export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
     );
     this.kriging = new GPULocalKriging({
       id: `${id}-solve`,
+      spatialContext: this.spatialContext,
       positions,
       observations,
       supports: positions,
@@ -118,6 +145,8 @@ export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
       neighborCount: props.neighborCount,
       neighborhoods,
       neighborhoodOffsets,
+      // A site whose conditioning rows are all unusable is marginal, as in GPUVecchiaFisherScoring.
+      emptyNeighborhood: 'prior',
       output: {values: output.conditionals, status: output.conditionalStatus}
     });
   }

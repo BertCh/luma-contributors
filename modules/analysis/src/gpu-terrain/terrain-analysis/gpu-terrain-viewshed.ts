@@ -28,7 +28,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPURasterExtremaPyramidLayout,
@@ -348,7 +348,7 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
       throw new Error(`${id} requires at least one output`);
     }
     if (output.visibility) {
-      validatePackedView(output.visibility, ['uint32'], `${id} output.visibility`);
+      validateSinglePackedView(output.visibility, ['uint32'], `${id} output.visibility`);
       if (output.visibility.length !== pixelCount) {
         throw new Error(`${id} output.visibility must contain one value per pixel`);
       }

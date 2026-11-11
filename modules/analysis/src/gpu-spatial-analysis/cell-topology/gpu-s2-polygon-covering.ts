@@ -28,7 +28,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateCapacity,
   validateCommandNodeBudget,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
@@ -155,13 +155,13 @@ export class GPUS2PolygonCovering implements GPUCommandNodeProducer {
     );
     if (props.hemisphereCenter)
       assertUnitVector(props.hemisphereCenter, this.id, 'hemisphereCenter');
-    validatePackedView(props.positions, ['float32x3'], this.id);
-    validatePackedView(props.ringOffsets, ['uint32'], this.id);
-    validatePackedView(props.output.cells, ['uint32x2'], this.id);
-    validatePackedView(props.output.counts, ['uint32x2'], this.id);
-    validatePackedView(props.output.status, ['uint32'], this.id);
+    validateSinglePackedView(props.positions, ['float32x3'], this.id);
+    validateSinglePackedView(props.ringOffsets, ['uint32'], this.id);
+    validateSinglePackedView(props.output.cells, ['uint32x2'], this.id);
+    validateSinglePackedView(props.output.counts, ['uint32x2'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32'], this.id);
     if (props.output.visitedCount) {
-      validatePackedView(props.output.visitedCount, ['uint32'], this.id);
+      validateSinglePackedView(props.output.visitedCount, ['uint32'], this.id);
       validateRequirement(
         this.id,
         props.output.visitedCount.length === 1,
@@ -237,7 +237,7 @@ fn coverContains(point:vec3f)->vec2u {
   var inside=false;var boundary=false;
   for(var ring=0u;ring<${props.ringOffsets.length - 1}u;ring++) {
     let begin=offsets[offsetsOffset+ring];let end=offsets[offsetsOffset+ring+1u];var winding=0.0;
-    for(var edge=begin;edge<end;edge++) {let first=coverPosition(edge);let second=coverPosition(select(edge+1u,begin,edge+1u==end));boundary=boundary||coverOnArc(first,second,point);let numerator=dot(point,cross(first,second));let denominator=dot(first,second)-dot(point,first)*dot(point,second);if(abs(numerator)+abs(denominator)>1e-12){winding+=atan2(numerator,denominator);}}
+    for(var edge=begin;edge<end;edge++) {let first=coverPosition(edge);let second=coverPosition(select(edge+1u,begin,edge+1u==end));boundary=boundary||coverOnArc(first,second,point);let numerator=dot(point,cross(first,second));let denominator=dot(first,second)-dot(point,first)*dot(point,second);if(abs(numerator)+abs(denominator)>1e-12){winding+=s2AnalysisAtan2(numerator,denominator);}}
     if(ring==0u){inside=winding>3.14159265;}else{inside=inside&&winding<=3.14159265;}
   }
   return vec2u(select(0u,1u,${props.complement ? '!inside' : 'inside'}),select(0u,1u,boundary));

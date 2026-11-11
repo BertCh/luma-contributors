@@ -170,8 +170,9 @@ export type GPUSolarIrradianceSettings = {
    */
   angularRadiusDegrees?: number;
   /**
-   * Diffuse horizontal irradiance in W/m^2 added while the sun is up, scaled by the sky-view
-   * factor when one is bound. Defaults to 0.
+   * Diffuse horizontal irradiance of an open site in W/m^2, added while the sun is up and scaled
+   * by `GPUSolarIrradianceProps.skyViewFactor` when one is bound (the irradiance sky-view factor,
+   * not the solid-angle one). Defaults to 0.
    */
   diffuseIrradiance?: number;
 };
@@ -265,7 +266,15 @@ export type GPUSolarIrradianceProps = {
   slope?: GraphDataView<'float32'>;
   /** Optional aspect in degrees clockwise from north, -1 when flat. Required with `slope`. */
   aspect?: GraphDataView<'float32'>;
-  /** Optional sky-view factor scaling the diffuse term of `insolation`. */
+  /**
+   * Optional factor in `[0, 1]` multiplying the diffuse term of `insolation`: the fraction of the
+   * open-site diffuse horizontal irradiance the pixel receives. For an isotropic sky that is the
+   * cosine-weighted factor `mean(cos^2(max(h, 0)))` (Dozier and Frew 1990), which
+   * `GPUTerrainHorizon` writes to `output.irradianceSkyViewFactor`. Do not bind that
+   * contributor's `output.skyViewFactor` here: it is the solid-angle factor
+   * `1 - mean(sin(max(h, 0)))` of Zaksek et al. (2011), made for relief visualization, and it
+   * understates diffuse energy (a uniform 30 degree horizon: 0.50 against the correct 0.75).
+   */
   skyViewFactor?: GraphDataView<'float32'>;
   /** Caller-owned outputs. */
   output: GPUSolarIrradianceOutput;
@@ -288,6 +297,18 @@ export type GPUSolarIrradianceProps = {
  * `sin(altitude)`), else `sin(altitude)` for a horizontal surface; the diffuse term uses
  * `svf = 1` without a sky-view factor. Durations are hours and irradiances W/m^2, so `insolation` is in
  * Wh/m^2. Pixels with a NaN horizon, slope, aspect, or sky-view factor receive NaN and validity 0.
+ *
+ * Diffuse term. `diffuse` is the diffuse horizontal irradiance of an open site and `svf` is
+ * whatever raster is bound as `skyViewFactor`; the kernel only multiplies. For an isotropic sky
+ * the physically right factor is the irradiance sky-view factor `mean(cos^2(max(h, 0)))`
+ * (`GPUTerrainHorizon` `output.irradianceSkyViewFactor`), not the solid-angle sky-view factor
+ * `1 - mean(sin(max(h, 0)))` (`output.skyViewFactor`), which is 33% low under a uniform 30 degree
+ * horizon. The diffuse term is that of a horizontal receiver: slope and aspect enter the direct
+ * term only. No `(1 + cos(slope)) / 2` tilt factor is applied, because a horizon measured on the
+ * same terrain already contains the receiver's own slope (on an infinite plane of slope `s` the
+ * irradiance sky-view factor is exactly `(1 + cos(s)) / 2`); the slope-azimuth term of Dozier and
+ * Frew and radiation reflected by terrain are not modelled. For a tilted panel on open ground
+ * bind a raster of `(1 + cos(tilt)) / 2`.
  *
  * One invocation per pixel loops over its chunk of table rows, so a day at 5 minute steps is 288
  * iterations with two horizon reads each; `samplesPerNode` splits long tables across nodes.
@@ -541,12 +562,12 @@ ${visibilityDeclarations}`,
   }
   ${
     hoursTarget
-      ? `hoursValues[hoursValuesOffset + index] = select(getNaN(index), ${first ? 'hours' : 'hoursValues[hoursValuesOffset + index] + hours'}, isValid);`
+      ? `hoursValues[hoursValuesOffset + index] = select(getQuietNaN(index), ${first ? 'hours' : 'hoursValues[hoursValuesOffset + index] + hours'}, isValid);`
       : ''
   }
   ${
     insolationTarget
-      ? `insolationValues[insolationValuesOffset + index] = select(getNaN(index), ${first ? 'energy' : 'insolationValues[insolationValuesOffset + index] + energy'}, isValid);`
+      ? `insolationValues[insolationValuesOffset + index] = select(getQuietNaN(index), ${first ? 'energy' : 'insolationValues[insolationValuesOffset + index] + energy'}, isValid);`
       : ''
   }`
           })

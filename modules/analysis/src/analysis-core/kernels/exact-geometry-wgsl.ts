@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ADDITION_ROUNDING_ERROR_WGSL} from './addition-rounding-error-wgsl';
+
 /**
  * Exact point-in-ring and segment-crossing helpers in WGSL, shared by every kernel that decides a
  * topological classification (overlay membership, ring hole assignment, cell cover containment,
@@ -29,7 +31,11 @@
  * label a boundary piece without rounding a probe point off the boundary. Its side against an
  * edge comes from the exact signs of both segment endpoints: a segment collinear with the edge
  * takes the side from the two directions, and only a segment that crosses the edge's line (a
- * noding miss) falls back to the rounded midpoint.
+ * noding miss) falls back to the rounded midpoint. The probe's height is the exact midpoint of the
+ * two endpoint heights, never the rounded `point.y`: an edge one f32 step tall has a midpoint that
+ * rounds onto an endpoint, and a ray at that height would run past the end of the edge instead of
+ * beside it (`exactCompareToMidpoint`; exact for finite coordinates of magnitude between
+ * `2^-103` and `1e38`, or zero).
  *
  * One call site rule: `orientSign` is a large function (a 256-bit integer fallback), and shader
  * compilers inline it at every call. Everything here funnels through `exactOrientSigns`, which
@@ -47,6 +53,7 @@
  * @internal
  */
 export const EXACT_GEOMETRY_WGSL = /* wgsl */ `
+${ADDITION_ROUNDING_ERROR_WGSL.replace('getAdditionRoundingError', 'exactAdditionRoundingError')}
 const EXACT_FLAG_BOUNDARY: u32 = 1u;
 const EXACT_FLAG_UNCERTAIN: u32 = 2u;
 const EXACT_PROBE_POINT: i32 = 0;
@@ -120,12 +127,38 @@ fn isExactPointProbe(probe: ExactProbe) -> bool {
   return probe.side == EXACT_PROBE_POINT || all(probe.start == probe.end);
 }
 
+// Exact sign of value - (first + second) / 2. The f32 midpoint is not used: when the two heights
+// are adjacent f32 values it rounds onto one of them. Outside [low, high] the answer is a plain
+// comparison. Inside, 2 * value is compared with the f32 sum low + high, which is right whenever
+// they differ because rounding is monotonic; when they are equal the sign is that of the sum's
+// rounding error, read off the integer significands (a float two-sum is folded away by shader
+// compilers that reassociate). Operands above 1e38 are halved first so nothing overflows.
+fn exactCompareToMidpoint(value: f32, first: f32, second: f32) -> i32 {
+  let low = min(first, second);
+  let high = max(first, second);
+  if (value <= low) { return select(-1, 0, value == high); }
+  if (value >= high) { return 1; }
+  let isLarge = max(abs(low), abs(high)) > 1.0e38;
+  let lowTerm = select(low, 0.5 * low, isLarge);
+  let highTerm = select(high, 0.5 * high, isLarge);
+  let scaledValue = select(2.0 * value, value, isLarge);
+  let sum = lowTerm + highTerm;
+  if (scaledValue != sum) { return exactCompareSign(scaledValue, sum); }
+  // scaledValue == fl(lowTerm + highTerm): the sign of scaledValue - (lowTerm + highTerm) is minus the sign
+  // of the rounding error (lowTerm + highTerm) - sum. A sum equal to one operand lost the other.
+  var error = exactAdditionRoundingError(lowTerm, highTerm, sum);
+  if (sum == highTerm) { error = lowTerm; }
+  if (sum == lowTerm) { error = highTerm; }
+  return -exactCompareSign(error, 0.0);
+}
+
 // Whether vertex v is above the probe's horizontal line (the ray's straddle test).
 fn exactProbeAbove(probe: ExactProbe, v: vec2f) -> bool {
-  if (v.y != probe.point.y) { return v.y > probe.point.y; }
-  if (isExactPointProbe(probe)) { return true; }
-  // The side probe sits at y + delta * side * dx - e (delta >> e > 0): v is above when that
-  // offset is negative or zero.
+  if (isExactPointProbe(probe)) { return v.y >= probe.point.y; }
+  // The side probe sits at y + delta * side * dx - e (delta >> e > 0), y the exact midpoint of
+  // the segment's two heights: at that height v is above when the offset is negative or zero.
+  let order = exactCompareToMidpoint(v.y, probe.start.y, probe.end.y);
+  if (order != 0) { return order > 0; }
   return probe.side * exactCompareSign(probe.end.x, probe.start.x) <= 0;
 }
 

@@ -9,65 +9,87 @@ import {makeSpatialFixture, readFloats, readIntegers} from '../spatial-test-util
 import {requireTestDevice} from '../utils/require-test-device';
 import oracle from './fixtures/smrf.json';
 
+// The oracle fixtures list the ground surface with row 0 at the minimum y. `'north'` keeps that order;
+// `'south'` and the default (south) hold the same cells with the rows reversed. Classes are per point
+// and do not depend on the direction.
+const ROW_DIRECTIONS = [
+  {label: 'north', rowDirection: 'north' as const, mirrored: false},
+  {label: 'south', rowDirection: 'south' as const, mirrored: true},
+  {label: 'default (south)', rowDirection: undefined, mirrored: true}
+];
+
 for (const scenario of oracle.fixtures) {
-  it(`SMRF ${scenario.name} matches independent morphology/inpainting and classification`, async () => {
-    const device = await getWebGPUTestDevice();
-    requireTestDevice(device);
-    const fixture = makeSpatialFixture(device);
-    try {
-      const positions = fixture.view('float32x3', new Float32Array(scenario.positions));
-      const classifications = fixture.view('uint32', new Uint32Array(scenario.classifications));
-      const selection = fixture.view('uint32', new Uint32Array(scenario.selection));
-      const groundSurface = fixture.view(
-        'float32',
-        new Float32Array(scenario.width * scenario.height)
-      );
-      const groundMask = fixture.view('uint32', new Uint32Array(scenario.classifications.length));
-      const outputClassifications = fixture.view(
-        'uint32',
-        new Uint32Array(scenario.classifications.length)
-      );
-      const status = fixture.view('uint32', new Uint32Array(scenario.classifications.length));
-      fixture.graph.add(
-        new GPUPointCloudSMRF({
-          positions: positions.view,
-          classifications: classifications.view,
-          selection: selection.view,
-          grid: {origin: [0, 0], cellSize: 1, width: scenario.width, height: scenario.height},
-          slope: scenario.slope,
-          scalar: scenario.scalar,
-          threshold: scenario.threshold,
-          window: scenario.window,
-          cut: scenario.cut,
-          groundSurface: groundSurface.view,
-          groundMask: groundMask.view,
-          outputClassifications: outputClassifications.view,
-          status: status.view
-        })
-      );
-      await fixture.run();
-      const actual = await readIntegers(outputClassifications.buffer);
-      expect(actual).toEqual(scenario.expectedClasses);
-      if ('pdalClasses' in scenario) expect(actual).toEqual(scenario.pdalClasses);
-      expect(await readIntegers(groundMask.buffer)).toEqual(
-        scenario.expectedClasses.map(value => Number(value === 2))
-      );
-      const surface = await readFloats(groundSurface.buffer);
-      scenario.groundSurface.forEach((value, index) =>
-        expect(surface[index]).toBeCloseTo(value, 4)
-      );
-      expect((await readIntegers(status.buffer)).at(-1)).toBe(4);
-      selection.buffer.write(new Uint32Array(scenario.selection.length));
-      await fixture.run();
-      expect(await readIntegers(outputClassifications.buffer)).toEqual(scenario.classifications);
-      expect(await readIntegers(status.buffer)).toEqual(Array(scenario.selection.length).fill(4));
-      expect(await readFloats(groundSurface.buffer)).toEqual(
-        Array(scenario.width * scenario.height).fill(0)
-      );
-    } finally {
-      fixture.destroy();
-    }
-  });
+  for (const {label, rowDirection, mirrored} of ROW_DIRECTIONS) {
+    it(`SMRF ${scenario.name} matches independent morphology/inpainting and classification, rows ${label}`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const fixture = makeSpatialFixture(device);
+      try {
+        const positions = fixture.view('float32x3', new Float32Array(scenario.positions));
+        const classifications = fixture.view('uint32', new Uint32Array(scenario.classifications));
+        const selection = fixture.view('uint32', new Uint32Array(scenario.selection));
+        const groundSurface = fixture.view(
+          'float32',
+          new Float32Array(scenario.width * scenario.height)
+        );
+        const groundMask = fixture.view('uint32', new Uint32Array(scenario.classifications.length));
+        const outputClassifications = fixture.view(
+          'uint32',
+          new Uint32Array(scenario.classifications.length)
+        );
+        const status = fixture.view('uint32', new Uint32Array(scenario.classifications.length));
+        fixture.graph.add(
+          new GPUPointCloudSMRF({
+            positions: positions.view,
+            classifications: classifications.view,
+            selection: selection.view,
+            grid: {
+              origin: [0, 0],
+              cellSize: 1,
+              width: scenario.width,
+              height: scenario.height,
+              ...(rowDirection ? {rowDirection} : {})
+            },
+            slope: scenario.slope,
+            scalar: scenario.scalar,
+            threshold: scenario.threshold,
+            window: scenario.window,
+            cut: scenario.cut,
+            groundSurface: groundSurface.view,
+            groundMask: groundMask.view,
+            outputClassifications: outputClassifications.view,
+            status: status.view
+          })
+        );
+        await fixture.run();
+        const actual = await readIntegers(outputClassifications.buffer);
+        expect(actual).toEqual(scenario.expectedClasses);
+        if ('pdalClasses' in scenario) expect(actual).toEqual(scenario.pdalClasses);
+        expect(await readIntegers(groundMask.buffer)).toEqual(
+          scenario.expectedClasses.map(value => Number(value === 2))
+        );
+        const surface = await readFloats(groundSurface.buffer);
+        scenario.groundSurface.forEach((value, index) => {
+          const column = index % scenario.width;
+          const row = Math.floor(index / scenario.width);
+          const actualIndex = mirrored
+            ? (scenario.height - 1 - row) * scenario.width + column
+            : index;
+          expect(surface[actualIndex]).toBeCloseTo(value, 4);
+        });
+        expect((await readIntegers(status.buffer)).at(-1)).toBe(4);
+        selection.buffer.write(new Uint32Array(scenario.selection.length));
+        await fixture.run();
+        expect(await readIntegers(outputClassifications.buffer)).toEqual(scenario.classifications);
+        expect(await readIntegers(status.buffer)).toEqual(Array(scenario.selection.length).fill(4));
+        expect(await readFloats(groundSurface.buffer)).toEqual(
+          Array(scenario.width * scenario.height).fill(0)
+        );
+      } finally {
+        fixture.destroy();
+      }
+    });
+  }
 }
 
 it('SMRF preserves original classifications with onlyGround and reports missing terrain', async () => {

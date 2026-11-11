@@ -17,6 +17,7 @@ import {
   snapOracle
 } from '../network-accessibility/network-accessibility-oracle';
 import {createGreatCircleNetworkMetric} from '../network-metric-oracle';
+import {getDriveTimeOracle} from './drive-time-oracle';
 import {
   quadbinCellToTile,
   quadbinPointToCell
@@ -48,7 +49,9 @@ it('addDriveTimeCatchmentRecipe bands demand by drive time to the nearest facili
     demandValues[row] = 1 + Math.floor(random() * 9);
   }
 
-  // CPU oracle: exhaustive snapping, multi-source Dijkstra, demand time over both edge ends.
+  // CPU oracle: exhaustive snapping, then Dijkstra over the network with every snapped point
+  // inserted as a node on its road (`getDriveTimeOracle`). The node costs are also checked
+  // against the plain multi-source Dijkstra from the two ends of each facility edge.
   const snapOptions = {edgeCosts: csr.weights};
   const facilitySnaps = snapOracle(facilities, positions, csr.sources, csr.neighbors, snapOptions);
   const seeds = facilitySnaps.flatMap(snap => [
@@ -57,16 +60,22 @@ it('addDriveTimeCatchmentRecipe bands demand by drive time to the nearest facili
   ]);
   const nodeCosts = dijkstra(csr, NODE_COUNT, seeds);
   const demandSnaps = snapOracle(demand, positions, csr.sources, csr.neighbors, snapOptions);
-  const times = demandSnaps.map(snap =>
-    snap.edge === NONE
-      ? Infinity
-      : Math.min(
+  const {demandTimes: times} = getDriveTimeOracle(csr, NODE_COUNT, facilitySnaps, demandSnaps);
+  // The fixture discriminates: some demand shares a road with a facility, where driving out to
+  // an end node and back (the minimum over the two edge ends) is longer than the way along it.
+  expect(
+    demandSnaps.filter(
+      (snap, row) =>
+        snap.edge !== NONE &&
+        Math.min(
           nodeCosts[csr.sources[snap.edge]] + snap.sourceCost,
           nodeCosts[csr.neighbors[snap.edge]] + snap.targetCost
-        )
-  );
+        ) >
+          times[row] + 1e-3
+    ).length
+  ).toBeGreaterThan(0);
   const bandOf = (time: number) => {
-    const band = BAND_BREAKS.findIndex(limit => time < limit);
+    const band = BAND_BREAKS.findIndex(limit => time <= limit);
     return band < 0 ? GPU_DRIVE_TIME_CATCHMENT_NO_BAND : band;
   };
 
@@ -442,14 +451,17 @@ it('addDriveTimeCatchmentRecipe snaps lon/lat great-circle and reports snapping 
     ])
   );
   const demandSnaps = snapOracle(demand, positions, csr.sources, csr.neighbors, snapOptions);
-  const times = demandSnaps.map(snap =>
-    snap.edge === NONE
-      ? Infinity
-      : Math.min(
-          nodeCosts[csr.sources[snap.edge]] + snap.sourceCost,
-          nodeCosts[csr.neighbors[snap.edge]] + snap.targetCost
-        )
+  const {demandTimes: times, nodeCosts: insertedNodeCosts} = getDriveTimeOracle(
+    csr,
+    NODE_COUNT,
+    facilitySnaps,
+    demandSnaps
   );
+  // Two routes to the node costs agree: seeds at the two ends of each facility edge, and the
+  // facilities inserted as nodes on their roads.
+  for (let node = 0; node < NODE_COUNT; node++) {
+    expect(insertedNodeCosts[node]).toBeCloseTo(nodeCosts[node], 3);
+  }
   // The fixture discriminates: raw-degree snapping picks other edges for some demand.
   const degreeSnaps = snapOracle(demand, positions, csr.sources, csr.neighbors, {
     edgeCosts: csr.weights

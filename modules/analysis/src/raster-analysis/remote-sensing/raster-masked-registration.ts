@@ -12,7 +12,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -76,23 +76,20 @@ export function validateMaskedRegistrationProps(
     Number.isFinite(ambiguity) && ambiguity >= 0 && ambiguity < 1,
     'ambiguityTolerance must be a finite number in [0, 1)'
   );
-  const inputs = [
-    props.reference,
-    props.moving,
-    props.referenceValidity,
-    props.movingValidity
-  ].filter(view => view !== undefined);
+  const inputs = [props.reference, props.moving, props.referenceMask, props.movingMask].filter(
+    view => view !== undefined
+  );
   const outputs = Object.values(props.output).filter(view => view !== undefined);
   for (const view of inputs) {
-    validatePackedView(view, [view.format], id);
+    validateSinglePackedView(view, [view.format], id);
     validateRequirement(
       id,
       view.length >= props.grid.width * props.grid.height,
-      'reference, moving and validity views must hold at least grid.width times grid.height values'
+      'reference, moving, referenceMask and movingMask views must hold at least grid.width times grid.height values'
     );
   }
   for (const view of outputs) {
-    validatePackedView(view, [view.format], id);
+    validateSinglePackedView(view, [view.format], id);
     validateRequirement(id, view.length >= 1, 'output views must not be empty');
   }
   validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
@@ -113,8 +110,8 @@ export function getMaskedRegistrationNodes<Parameters>(
   validateGraphViewsBelongToGraph(id, graph, [
     props.reference,
     props.moving,
-    props.referenceValidity,
-    props.movingValidity,
+    props.referenceMask,
+    props.movingMask,
     ...Object.values(props.output)
   ]);
   const width = props.grid.width;
@@ -181,15 +178,13 @@ export function getMaskedRegistrationNodes<Parameters>(
   );
   const nodes: GPUCommandNode<Parameters>[] = [];
   const maskBindings = [
-    ...(props.referenceValidity
-      ? [rasterBinding('referenceValidity', props.referenceValidity)]
-      : []),
-    ...(props.movingValidity ? [rasterBinding('movingValidity', props.movingValidity)] : [])
+    ...(props.referenceMask ? [rasterBinding('referenceValidity', props.referenceMask)] : []),
+    ...(props.movingMask ? [rasterBinding('movingValidity', props.movingMask)] : [])
   ];
   const referenceValid = (source: string) =>
-    `finite(referenceValues[referenceValuesOffset + ${source}])${props.referenceValidity ? ` && referenceValidity[referenceValidityOffset + ${source}] != 0u` : ''}`;
+    `finite(referenceValues[referenceValuesOffset + ${source}])${props.referenceMask ? ` && referenceValidity[referenceValidityOffset + ${source}] != 0u` : ''}`;
   const movingValid = (source: string) =>
-    `finite(movingValues[movingValuesOffset + ${source}])${props.movingValidity ? ` && movingValidity[movingValidityOffset + ${source}] != 0u` : ''}`;
+    `finite(movingValues[movingValuesOffset + ${source}])${props.movingMask ? ` && movingValidity[movingValidityOffset + ${source}] != 0u` : ''}`;
   nodes.push(
     createWGSLKernelNode(graph, {
       id: `${id}-masked-statistics`,
@@ -408,10 +403,8 @@ function getMaskedRefinementNodes<Parameters>(
       bindings: [
         rasterBinding('reference', props.reference),
         rasterBinding('moving', props.moving),
-        ...(props.referenceValidity
-          ? [rasterBinding('referenceValidity', props.referenceValidity)]
-          : []),
-        ...(props.movingValidity ? [rasterBinding('movingValidity', props.movingValidity)] : []),
+        ...(props.referenceMask ? [rasterBinding('referenceValidity', props.referenceMask)] : []),
+        ...(props.movingMask ? [rasterBinding('movingValidity', props.movingMask)] : []),
         rasterBinding('coarse', coarse),
         rasterBinding('statistics', statistics),
         rasterBinding('refined', refined, true),
@@ -424,7 +417,7 @@ if (any(abs(shift) > vec2<f32>(${maximumShift[0]}.0, ${maximumShift[1]}.0))) { r
 var support = 0u; var referenceMean = 0.0; var movingMean = 0.0; var covariance = 0.0; var referenceVariance = 0.0; var movingVariance = 0.0;
 for (var cell = 0u; cell < ${count}u; cell++) {
   let referenceValue = reference[referenceOffset + cell] - statistics[statisticsOffset];
-  if (!finite(referenceValue) ${props.referenceValidity ? '|| referenceValidity[referenceValidityOffset + cell] == 0u' : ''}) { continue; }
+  if (!finite(referenceValue) ${props.referenceMask ? '|| referenceValidity[referenceValidityOffset + cell] == 0u' : ''}) { continue; }
   let coordinate = vec2<f32>(f32(cell % ${width}u), f32(cell / ${width}u)) - shift;
   if (any(coordinate < vec2<f32>(0.0)) || any(coordinate > vec2<f32>(${width - 1}.0, ${height - 1}.0))) { continue; }
   let lower = vec2<i32>(floor(coordinate)); let fraction = fract(coordinate); var movingValue = 0.0; var valid = true;
@@ -435,7 +428,7 @@ for (var cell = 0u; cell < ${count}u; cell++) {
     let position = lower + offset;
     if (any(position < vec2<i32>(0)) || any(position >= vec2<i32>(${width}, ${height}))) { valid = false; break; }
     let source = u32(position.y) * ${width}u + u32(position.x); let value = moving[movingOffset + source];
-    if (!finite(value) ${props.movingValidity ? '|| movingValidity[movingValidityOffset + source] == 0u' : ''}) { valid = false; break; }
+    if (!finite(value) ${props.movingMask ? '|| movingValidity[movingValidityOffset + source] == 0u' : ''}) { valid = false; break; }
     movingValue += weight * (value - statistics[statisticsOffset + 1u]);
   }
   if (!valid) { continue; }

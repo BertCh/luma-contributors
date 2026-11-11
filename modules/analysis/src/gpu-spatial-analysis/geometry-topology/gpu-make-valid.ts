@@ -22,7 +22,7 @@ import type {
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
@@ -85,6 +85,11 @@ export type GPUMakeValidProps = {
  * features. {@link GPUPolygonize} alone keeps every bounded face (shapely `polygonize`
  * semantics); the parity filter is specific to this operator.
  *
+ * Rings close implicitly (the repository convention): the edge from a ring's last vertex back to
+ * its first is always part of the boundary, and a ring that repeats its first vertex is read the
+ * same way. `output.nodedSegments.sourceEdgeIds` are rows of `polygons.positions` (the edge's
+ * start vertex; the closing edge reports the ring's last row).
+ *
  * Parity is evaluated exactly against the noded segments of the feature. For each face the
  * operator looks at the first edge of the face's shell (counter-clockwise, face on its left) and
  * counts crossings of a ray cast from an infinitesimal point inside the face next to that edge.
@@ -124,7 +129,11 @@ export class GPUMakeValid implements GPUCommandNodeProducer {
     }
     const {polygons: faces} = props.output;
     const ringCapacity = faces.ringOffsets.length - 1;
-    validatePackedView(faces.positions, ['float32x2'], `${this.id} output.polygons.positions`);
+    validateSinglePackedView(
+      faces.positions,
+      ['float32x2'],
+      `${this.id} output.polygons.positions`
+    );
     for (const [name, view] of [
       ['ringOffsets', faces.ringOffsets],
       ['polygonOffsets', faces.polygonOffsets],
@@ -211,12 +220,86 @@ const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;`,
       ...Object.values(output.nodedSegments.status),
       ...Object.values(output.status)
     ]);
+    // Noding consumes open line paths, while polygon rings close implicitly: one repeated first
+    // vertex per ring makes the closing edge part of the arrangement (as GPUPolygonOverlay does).
+    // A ring that already repeats its first vertex gains a zero-length edge, which noding drops.
+    const vertexCount = polygons.positions.length;
+    const closedVertexCount = vertexCount + ringCount;
     validateLineNodingBounds(
       id,
       graph.device,
-      props.polygons.positions.length,
+      closedVertexCount,
       props.polygons.ringOffsets.length - 1,
       props.intersectionCapacity
+    );
+    const closedPositions = createTransientView(
+      graph,
+      `${id}-ring-closure-positions`,
+      'float32x2',
+      closedVertexCount
+    );
+    const closedOffsets = createTransientView(
+      graph,
+      `${id}-ring-closure-offsets`,
+      'uint32',
+      ringCount + 1
+    );
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-ring-closure-offsets`,
+        operation: OPERATION,
+        variant: 'ring-closure-offsets',
+        bindings: [
+          {name: 'ringOffsets', view: polygons.ringOffsets, type: 'u32', access: 'read'},
+          {name: 'closedOffsets', view: closedOffsets, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: ringCount + 1,
+        body: 'closedOffsets[closedOffsetsOffset + index] = ringOffsets[ringOffsetsOffset + index] + index;'
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-ring-closure-positions`,
+        operation: OPERATION,
+        variant: 'ring-closure-positions',
+        bindings: [
+          {name: 'positions', view: polygons.positions, type: 'f32', access: 'read'},
+          {name: 'ringOffsets', view: polygons.ringOffsets, type: 'u32', access: 'read'},
+          {name: 'closedPositions', view: closedPositions, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: closedVertexCount,
+        declarations: `const RING_COUNT: u32 = ${ringCount}u;
+const VERTEX_COUNT: u32 = ${vertexCount}u;`,
+        // Ring r owns closed rows [ringOffsets[r] + r, ringOffsets[r + 1] + r + 1): its vertices,
+        // then its first vertex again. An empty ring's one row, and rows after an empty last ring,
+        // own no vertex: they get the first stored vertex (the origin when there is none), never
+        // `positions[ringOffsets[last]]`, which no ring owns and which holds whatever the buffer
+        // held (the noder reads every row of a line, including a one-row line). Rows before
+        // `ringOffsets[0]` resolve to ring 0 and repeat its first vertex, never `positions[index]`,
+        // which no ring owns either.
+        body: `var ring = 0u;
+  var high = RING_COUNT;
+  while (ring + 1u < high) {
+    let middle = (ring + high) / 2u;
+    if (ringOffsets[ringOffsetsOffset + middle] + middle <= index) { ring = middle; } else { high = middle; }
+  }
+  let ringStart = ringOffsets[ringOffsetsOffset + ring];
+  let ringEnd = ringOffsets[ringOffsetsOffset + ring + 1u];
+  var point = vec2f(0.0);
+  var source = ringStart;
+  var hasSource = ringEnd > ringStart;
+  if (hasSource) {
+    source = index - ring;
+    if (index < ringStart || source >= ringEnd) { source = ringStart; }
+  } else {
+    source = ringOffsets[ringOffsetsOffset];
+    hasSource = ringOffsets[ringOffsetsOffset + RING_COUNT] > source;
+  }
+  if (hasSource) {
+    source = min(source, VERTEX_COUNT - 1u);
+    point = vec2f(positions[positionsOffset + 2u * source], positions[positionsOffset + 2u * source + 1u]);
+  }
+  closedPositions[closedPositionsOffset + 2u * index] = point.x;
+  closedPositions[closedPositionsOffset + 2u * index + 1u] = point.y;`
+      })
     );
 
     // GPUPolygonize emits every bounded face into transient storage; the parity filter below
@@ -249,8 +332,8 @@ const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;`,
       spatialContext: this.spatialContext,
       lines: {
         kind: 'lines',
-        positions: polygons.positions,
-        lineOffsets: polygons.ringOffsets,
+        positions: closedPositions,
+        lineOffsets: closedOffsets,
         sourceIds: ringSourceIds
       },
       groupIds: ringSourceIds,
@@ -262,6 +345,36 @@ const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;`,
       leafCapacity: props.leafCapacity
     };
     nodes.push(...new GPUPolygonize(polygonizeProps).getCommandNodes(graph));
+    // Noding numbered edges by rows of the closed copy. Report rows of polygons.positions instead:
+    // ring r's rows were shifted by r, so its closing edge gets the row of its last vertex.
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-source-edge-rows`,
+        operation: OPERATION,
+        variant: 'source-edge-rows',
+        bindings: [
+          {name: 'count', view: output.nodedSegments.status.count, type: 'u32', access: 'read'},
+          {
+            name: 'sourceRingIds',
+            view: output.nodedSegments.sourceRingIds,
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'sourceEdgeIds',
+            view: output.nodedSegments.sourceEdgeIds,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: output.nodedSegments.endpoints.length,
+        body: `let edge = sourceEdgeIds[sourceEdgeIdsOffset + index];
+  let ring = sourceRingIds[sourceRingIdsOffset + index];
+  if (index < count[countOffset] && edge != ${GPU_TOPOLOGY_NONE}u && ring != ${GPU_TOPOLOGY_NONE}u) {
+    sourceEdgeIds[sourceEdgeIdsOffset + index] = edge - ring;
+  }`
+      })
+    );
 
     const none = `${GPU_TOPOLOGY_NONE}u`;
     const u32 = (name: string, length: number) =>

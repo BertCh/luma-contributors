@@ -29,8 +29,10 @@ import {
 import {
   createTerrainFlowPointerNodes,
   getTerrainFlowTracingWGSL,
+  validateTerrainFlowDirectionEncoding,
   validateTerrainTracingCellView,
-  validateTerrainTracingStatus
+  validateTerrainTracingStatus,
+  type GPUTerrainFlowDirectionEncoding
 } from './terrain-flow-tracing';
 import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {GPU_TERRAIN_FLOW_STREAM_UNRESOLVED} from './gpu-terrain-flow';
@@ -52,6 +54,8 @@ export const GPU_TERRAIN_DRAINAGE_UNRESOLVED = 0xfffffffe;
 export type GPUTerrainHeightAboveDrainageStatus = {
   /** One row set to 1 when pointer jumping reached its fixpoint. Presence is compile-time. */
   converged?: GraphDataView<'uint32'>;
+  /** One row set to 1 when `maximumIterations` ran out before pointer jumping converged. Presence is compile-time. */
+  iterationLimitReached?: GraphDataView<'uint32'>;
   /** One row: gated pointer-jumping rounds executed. Presence is compile-time. */
   iterationCount?: GraphDataView<'uint32'>;
 };
@@ -104,10 +108,16 @@ export type GPUTerrainHeightAboveDrainageProps = {
    * north-west, 64 north, 128 north-east; 0 terminal; `0xffffffff` invalid;
    * `GPU_TERRAIN_FLOW_UNRESOLVED` (0xfffffffe) unknown, which makes cells whose path meets it
    * before a stream cell unresolved. Any other code, and any code pointing outside the grid, is
-   * treated as terminal. Typically `GPUTerrainFlow.flowDirections`; grids from TauDEM or Whitebox
-   * work too. Per-frame.
+   * treated as terminal. Typically `GPUTerrainFlow.flowDirections`. A grid in another numbering (a
+   * default WhiteboxTools pointer, a TauDEM D8 grid) needs `directionEncoding`. Per-frame.
    */
   flowDirections: GraphDataView<'uint32'>;
+  /**
+   * Numbering of `flowDirections`: `'esri'` (default), `'whitebox'` (the WhiteboxTools default
+   * pointer) or `'taudem'`, see {@link GPUTerrainFlowDirectionEncoding}. Zero and the two
+   * sentinels mean the same in each. Compile-time.
+   */
+  directionEncoding?: GPUTerrainFlowDirectionEncoding;
   /**
    * Stream mask, one word per cell, non-zero for stream cells. Typically `GPUTerrainFlow.streams`,
    * whose `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` word (accumulation round limit hit) marks a cell of
@@ -140,7 +150,10 @@ export type GPUTerrainHeightAboveDrainageProps = {
  * and the affected cells at `GPU_TERRAIN_DRAINAGE_UNRESOLVED`.
  *
  * Compose it with {@link GPUTerrainFlow}: pass its `filledElevation` (or the raw DEM),
- * `flowDirections` and `streams`. It is a separate contributor so grids from other tools can be used.
+ * `flowDirections` and `streams`. It is a separate contributor so grids from other tools can be
+ * used: name their numbering with `directionEncoding` (the default is ESRI). In every numbering
+ * the codes are raster offsets ("south" is `row + 1`), not compass bearings: the row sign of the
+ * grid affine is not read, see {@link GPUTerrainFlowDirectionEncoding}.
  */
 export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -155,6 +168,7 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
     const {output} = props;
     const cellCount = validateRasterGrid(id, props.grid);
     validateRasterIterations(id, 'maximumIterations', props.maximumIterations ?? 32);
+    validateTerrainFlowDirectionEncoding(id, props.directionEncoding);
     if (!output.heightAboveDrainage && !output.drainageCells) {
       throw new Error(`${id} requires at least one output`);
     }
@@ -189,6 +203,7 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
       output.heightAboveDrainage,
       output.drainageCells,
       output.status?.converged,
+      output.status?.iterationLimitReached,
       output.status?.iterationCount
     ];
     validateGraphOutputsDisjointFromInputs(id, outputs, [
@@ -213,6 +228,7 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
       output.heightAboveDrainage,
       output.drainageCells,
       output.status?.converged,
+      output.status?.iterationLimitReached,
       output.status?.iterationCount
     ]);
     const cellCount = width * height;
@@ -235,9 +251,11 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
         height,
         maxIterations: props.maximumIterations ?? 32,
         flowDirections: props.flowDirections,
+        directionEncoding: props.directionEncoding,
         pointer,
         stops: {kind: 'streams', streams: props.streams},
         converged: output.status?.converged,
+        iterationLimitReached: output.status?.iterationLimitReached,
         iterationCount: output.status?.iterationCount
       })
     );

@@ -107,6 +107,56 @@ export function getVariogramModelShape(model: VariogramModelType, scaledDistance
 }
 
 /**
+ * WGSL mirror of {@link getVariogramModelShape} in float32, the one semivariogram-form definition
+ * of the model shapes for GPU kernels (`GPUKriging`, `GPUVariogramModelFit`):
+ * `getVariogramModelShape(modelCode: u32, scaled: f32) -> f32` with model codes 0 spherical,
+ * 1 exponential, 2 Gaussian, 3 Matern 3/2, and anything else Matern 5/2.
+ *
+ * The shape is `1 - correlation`. For a lag that is a small fraction of the range the
+ * correlation is within a few float32 steps of 1 and the difference cancels (at `3 * scaled =
+ * 3e-8` the direct `1 - exp(-x)` is 0 or 6e-8; the Gaussian shape at 1e-4 of the range comes out
+ * twice too large). Below an argument of 0.1 every exponential family therefore switches to its
+ * alternating series, whose first omitted term is below 1e-7 of the result. The covariance-form
+ * counterpart (correlation, not shape) is `getPredictionCovarianceWGSL` in
+ * `gpu-spatial-analysis/spatial-interpolation/prediction-covariance.ts`; it needs the series only
+ * for the Matern products and must not be derived from this one, because `1 - shape` would lose
+ * the small correlations of long lags.
+ *
+ * @internal
+ */
+export const VARIOGRAM_MODEL_SHAPE_WGSL = /* wgsl */ `
+// 1 - exp(-argument) for argument >= 0, by the series
+// argument - argument^2/2 + argument^3/6 - argument^4/24 + argument^5/120 below 0.1.
+fn getVariogramExponentialShape(argument: f32) -> f32 {
+  if (argument < 0.1) {
+    return argument * (1.0 - argument * (0.5 - argument * ((1.0 / 6.0) - argument * ((1.0 / 24.0) - argument * (1.0 / 120.0)))));
+  }
+  return 1.0 - exp(-argument);
+}
+fn getVariogramModelShape(modelCode: u32, scaled: f32) -> f32 {
+  if (modelCode == 0u) {
+    return select(1.5 * scaled - 0.5 * scaled * scaled * scaled, 1.0, scaled >= 1.0);
+  }
+  if (modelCode == 1u) { return getVariogramExponentialShape(3.0 * scaled); }
+  if (modelCode == 2u) { return getVariogramExponentialShape(3.0 * scaled * scaled); }
+  if (modelCode == 3u) {
+    // 1 - (1 + a) exp(-a) = a^2/2 - a^3/3 + a^4/8 - a^5/30 + a^6/144 - ...
+    let argument = ${MATERN_3_2_RANGE_FACTOR} * scaled;
+    if (argument < 0.1) {
+      return argument * argument * (0.5 - argument * ((1.0 / 3.0) - argument * (0.125 - argument * ((1.0 / 30.0) - argument * (1.0 / 144.0)))));
+    }
+    return 1.0 - (1.0 + argument) * exp(-argument);
+  }
+  // 1 - (1 + a + a^2/3) exp(-a) = a^2/6 - a^4/24 + a^5/45 - a^6/144 + ...
+  let argument = ${MATERN_5_2_RANGE_FACTOR} * scaled;
+  if (argument < 0.1) {
+    return argument * argument * ((1.0 / 6.0) - argument * argument * ((1.0 / 24.0) - argument * ((1.0 / 45.0) - argument * (1.0 / 144.0))));
+  }
+  return 1.0 - (1.0 + argument + argument * argument / 3.0) * exp(-argument);
+}
+`;
+
+/**
  * Evaluates a fitted variogram model at lag `distance` (`0` at the origin).
  *
  * @param model Fitted model.

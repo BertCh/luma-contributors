@@ -19,7 +19,7 @@ import {
   getStorageBindingElementLimit,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
@@ -202,7 +202,7 @@ export class GPUTerrainTopographicPosition implements GPUCommandNodeProducer {
       ['maximumDeviation', output.maximumDeviation, pixelCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== length) {
           throw new Error(`${id} output.${name} must contain ${length} values`);
         }
@@ -213,7 +213,7 @@ export class GPUTerrainTopographicPosition implements GPUCommandNodeProducer {
       ['outputValidity', output.outputValidity]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== pixelCount) {
           throw new Error(`${id} output.${name} must contain one value per pixel`);
         }

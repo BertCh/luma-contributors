@@ -52,7 +52,7 @@ it('RTS-05 medoid matches the nanmedoid definition, including NaN, QA, ties and 
       sliceCount,
       bandCount,
       values: harness.floats(cells.flatMap(cell => toFloat(cell.values))),
-      validity: harness.integers(cells.flatMap(cell => cell.validity)),
+      mask: harness.integers(cells.flatMap(cell => cell.validity)),
       output: {
         composite: harness.output('composite', 'float32', cells.length * bandCount),
         sliceIndex: harness.output('sliceIndex', 'uint32', cells.length),
@@ -88,7 +88,7 @@ function runGeometricMedian(
       bandCount,
       iterationCount,
       values: harness.floats(cells.flatMap(cell => toFloat(cell.values))),
-      validity: harness.integers(cells.flatMap(cell => cell.validity)),
+      mask: harness.integers(cells.flatMap(cell => cell.validity)),
       parameters: harness.floats(
         getGPURasterGeometricMedianCompositeParameterValues({distanceEpsilon})
       ),
@@ -161,7 +161,7 @@ it('RTS-05 best-available-pixel matches the Griffiths score definition', async (
       sliceCount,
       bandCount,
       values: harness.floats(cells.flatMap(cell => toFloat(cell.values))),
-      validity: harness.integers(cells.flatMap(cell => cell.validity)),
+      mask: harness.integers(cells.flatMap(cell => cell.validity)),
       cloudDistance: harness.floats(cloud),
       sliceAttributes: harness.floats(
         dayOfYear.flatMap((day, slice) => [Number(day), Number(year[slice])])

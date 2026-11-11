@@ -322,11 +322,21 @@ it('GPUTerrainDerivatives schedules gradients and the shade kernel', () => {
   const contributor = create();
   expect(contributor.requiredHalo).toBe(1);
   expect(contributor.id).toBe('terrain-derivatives');
+  // The default one-sided border canonicalizes the elevation and pads it by one cell before the
+  // two official Sobel passes; the named 'clamp' border keeps the three-node pipeline.
   expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
+    'terrain-derivatives-elevation',
+    'terrain-derivatives-one-sided-padding',
     'terrain-derivatives-gradient-x',
     'terrain-derivatives-gradient-y',
     'terrain-derivatives-shade'
   ]);
+  expect(
+    create({id: 'clamped', borderMode: 'clamp'})
+      .getCommandNodes(graph)
+      .map(node => node.id)
+  ).toEqual(['clamped-gradient-x', 'clamped-gradient-y', 'clamped-shade']);
+  expect(() => create({borderMode: 'wrap' as never})).toThrow(/borderMode must be one-sided/);
   expect(
     create({id: 'hill'})
       .getCommandNodes(graph)

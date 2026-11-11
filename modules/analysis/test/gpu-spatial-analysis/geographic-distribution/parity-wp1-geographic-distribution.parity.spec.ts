@@ -18,7 +18,7 @@ import {requireTestDevice} from '../../utils/require-test-device';
 
 const VERTEX_COUNT = 16;
 for (const reduction of ['chunked', 'sorted'] as const) {
-  for (const ellipseConvention of ['standard', 'arcgis'] as const) {
+  for (const ellipseConvention of ['standard', 'root-two'] as const) {
     for (const fixtureName of ['all', 'weighted', 'small'] as const) {
       it(`GPUGeographicDistribution pointpats parity ${fixtureName} ${reduction} ${ellipseConvention}`, async () => {
         const device = await getWebGPUTestDevice();
@@ -32,9 +32,9 @@ for (const reduction of ['chunked', 'sorted'] as const) {
         const harness = createRound4Harness(device);
         try {
           const groupCount = testCase.groupCount;
-          const standardDeviations = ellipseConvention === 'arcgis' ? 2 : 1;
+          const standardDeviations = ellipseConvention === 'root-two' ? 2 : 1;
           const ellipseScale =
-            standardDeviations * (ellipseConvention === 'arcgis' ? Math.SQRT2 : 1);
+            standardDeviations * (ellipseConvention === 'root-two' ? Math.SQRT2 : 1);
           harness.graph.add(
             new GPUGeographicDistribution({
               positions: harness.input('positions', testCase.positions, 'float32x2'),

@@ -52,7 +52,7 @@ export type GPURasterEmbeddingCovarianceProps = {
   dimensions: number;
   vectors: GraphDataView<'float32'>;
   /** Per-pixel QA; zero excludes the pixel. A pixel with any non-finite component is excluded too. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Pixel ranges, in `[1, 256]`; defaults to `min(256, pixelCount)`. */
   rangeCount?: number;
   output: GPURasterEmbeddingCovarianceOutput;
@@ -96,7 +96,7 @@ export class GPURasterEmbeddingCovariance implements GPUCommandNodeProducer {
       props.vectors,
       pixelCount,
       dimensions,
-      props.validity
+      props.mask
     );
     validateRequirement(
       id,
@@ -109,8 +109,8 @@ export class GPURasterEmbeddingCovariance implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {vectors, validity} = this.props;
-    return [vectors, ...(validity ? [validity] : [])];
+    const {vectors, mask} = this.props;
+    return [vectors, ...(mask ? [mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -132,7 +132,7 @@ export class GPURasterEmbeddingCovariance implements GPUCommandNodeProducer {
       pixelCount,
       dimensions,
       vectors: props.vectors,
-      validity: props.validity
+      mask: props.mask
     });
     const partialSums = createTransientView(
       graph,

@@ -40,6 +40,7 @@ import {
   type GPURecipeOverrides,
   type GPURecipeResult
 } from './recipe-utils';
+import {IS_NAN_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /** Specification search outcome: no spatial dependence detected, OLS is adequate. */
 export const GPU_SPATIAL_REGRESSION_SPECIFICATION_OLS = 0;
@@ -156,14 +157,14 @@ class SpatialRegressionSpecificationSearch implements GPUCommandNodeProducer<nev
           {name: 'decisionOut', view: props.decision, type: 'u32', access: 'read_write'}
         ],
         invocationCount: 1,
-        declarations: `fn isNaNValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }`,
+        declarations: IS_NAN_VALUE_WGSL,
         body: `let ALPHA = searchParameters[searchParametersOffset + ${SIGNIFICANCE_LEVEL_WORD}u];
   ${row('lag', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_LAG)}
   ${row('error', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_ERROR)}
   ${row('robustLag', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_LAG)}
   ${row('robustError', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_ERROR)}
   var decision = ${GPU_SPATIAL_REGRESSION_SPECIFICATION_UNDETERMINED}u;
-  if (diagnosticsStatus[diagnosticsStatusOffset] == 0u && !isNaNValue(lagP) && !isNaNValue(errorP)) {
+  if (diagnosticsStatus[diagnosticsStatusOffset] == 0u && !isNanValue(lagP) && !isNanValue(errorP)) {
     let lagSignificant = lagP <= ALPHA;
     let errorSignificant = errorP <= ALPHA;
     if (!lagSignificant && !errorSignificant) {
@@ -172,7 +173,7 @@ class SpatialRegressionSpecificationSearch implements GPUCommandNodeProducer<nev
       decision = ${GPU_SPATIAL_REGRESSION_SPECIFICATION_SPATIAL_LAG}u;
     } else if (!lagSignificant && errorSignificant) {
       decision = ${GPU_SPATIAL_REGRESSION_SPECIFICATION_SPATIAL_ERROR}u;
-    } else if (!isNaNValue(robustLagP) && !isNaNValue(robustErrorP)) {
+    } else if (!isNanValue(robustLagP) && !isNanValue(robustErrorP)) {
       let robustLagSignificant = robustLagP <= ALPHA;
       let robustErrorSignificant = robustErrorP <= ALPHA;
       if (robustLagSignificant && robustErrorSignificant) {
@@ -362,6 +363,10 @@ export type GPUSpatialRegressionRecipeResult = GPURecipeResult & {
  * (`restandardizeRows` rescales the remaining weights), and `diagnostics.summary` reports the
  * excluded row count. The recipe stops at the decision and does not estimate the lag or error
  * model; follow the decision with `GPUSpatialTwoStageLeastSquares` or `GPUSpatialErrorGM`.
+ *
+ * Status: stages `ordinary-least-squares` and `spatial-diagnostics` publish the contributor's
+ * `code` word under `invalidCount`. It is 0 on success and otherwise the contributor's failure
+ * code, not a number of rows: test it against 0, do not sum it.
  */
 export function addSpatialRegressionRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,

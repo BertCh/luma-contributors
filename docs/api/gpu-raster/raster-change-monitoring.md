@@ -4,7 +4,7 @@ Contributors for irregular-date seasonal-trend regression and for change detecti
 series: `GPURasterHarmonicRegression`, a simplified COLD monitor (CCDC family), and BFAST Monitor. Import
 from `@luma-contributors/analysis/raster-analysis`. All are `GPUCommandNodeProducer` classes, take a
 [`GPURasterIrregularDateAxis`](./raster-time-series.md#irregular-date-axis) as `dateAxis`, are cell-major,
-and take `validity` per observation with zero rejecting a sample; non-finite values are missing. Years are
+and take `mask` per observation with zero rejecting a sample; non-finite values are missing. Years are
 centred fractional years of 365.2425 days, so a fit's slope is per year and its intercept is at the midpoint
 of the axis.
 
@@ -38,8 +38,11 @@ per observation date, on several bands:
 1. Initialization: from a start position, a window of `minimumObservations` (12) valid observations spanning
    at least `minimumSpanYears` (1). A gap of `maximumInitializationGapYears` (1) or more shifts the window
    by one observation. Each candidate is fitted with 4 coefficients and accepted when
-   `sum over bands ((|slope| * span + |first residual| + |last residual|) / max(RMSE, minimumRMSE))^2 <=
-   changeThreshold`, otherwise the window shifts.
+   `sum over bands ((|slope| * span + max(|first residual|, |last residual|)) / max(RMSE, minimumRMSE))^2 <=
+   changeThreshold`, otherwise the window shifts. The test is pyxccd's; how the window moves after a rejection
+   is not (see the table). (Until 2026-11-11 this monitor added
+   the two end residuals instead of taking the larger. That rejected windows pyxccd accepts, so segments
+   started 1 to 9 observations later on the pyxccd fixture.)
 2. Monitoring: each following observation is scored as `sum over bands (residual / max(RMSE, minimumRMSE))^2`.
    A change is confirmed when `consecutiveCount` (6) observations all exceed `changeThreshold` and the mean
    cosine between consecutive residual vectors is at least `minimumMeanCosine` (`cos 45deg`). The break is the
@@ -49,29 +52,81 @@ per observation date, on several bands:
    capped by `maximumCoefficientCount`.
 
 Choose `changeThreshold` and `outlierThreshold` from the chi-squared distribution with `bandCount` degrees of
-freedom; COLD uses probabilities 0.99 and `1 - 1e-6`.
+freedom. pyxccd 1.1.0 uses probabilities 0.99 and `1 - 1e-5` (its `T_MAX_CG` is 30.8562, that quantile for five
+bands).
 
-### What "simplified" omits against pyxccd
+### How "simplified" differs from pyxccd
 
-pyxccd's `cold_detect` (Apache-2.0) is the reference implementation of COLD. This monitor omits the following,
-each stated so a result can be read correctly:
+pyxccd's `cold_detect` (Apache-2.0) is the reference implementation of COLD. This monitor differs as follows,
+each stated so a result can be read correctly. "pyxccd" in the last column is the comparison below; "NumPy" is
+the binary64 reference of this monitor with one COLD element switched on, written from the papers.
 
-| Omitted | Here | Effect | Tested on a fixture |
+| pyxccd | Here | Effect | Measured against |
 | --- | --- | --- | --- |
-| LASSO (lambda 20) | Ordinary least squares | Coefficients are not shrunk | Yes |
-| Tmask robust pre-screening | Not applied; caller QA only | A cloud in the first window shifts the start of the segment | Yes |
-| Per-observation model update | Refit when the included count grows by 1.33 | A drifting series can flag a change slightly earlier or later | Yes |
-| Temporally adjusted RMSE | One whole-segment RMSE per band | Seasonal noise changes which observations exceed the threshold | Yes |
-| Variogram minimum RMSE | Caller-supplied `minimumRMSE` per band | The floor is not derived from the data | By `minimumRMSE` only |
-| Backward lookback during initialization | Not applied | The start of the segment is not searched backward | No |
-| Snow, water and insufficient-clear procedures and QA classes | `validity` only | No class-specific handling | No |
-| Change probability below a confirmed break, partial tail breaks | Not reported; the tail after the last testable observation joins the last segment | No gradual-change probability | No |
+| LASSO, `lam=20` by default | Ordinary least squares, which is pyxccd at `lam=0` | Coefficients are not shrunk. pyxccd's default RMSE is 10 to 13 units above this monitor's on the one-break series (noise 40) | pyxccd, NumPy |
+| Tmask robust pre-screening of the window and the next `conse` observations | Not applied; caller QA only | An unflagged cloud stays in the fit: RMSE 274 against pyxccd's 39.5 on the fixture, same break date. It can also shift the start of the segment | pyxccd, NumPy |
+| Refit at every observation up to 24 included, then whenever the count has grown by more than 3% | Refit when the included count has grown by a factor of 1.33 | The model at a break is older. For a break near the change threshold this decides whether it is confirmed at all: pyxccd's model absorbs a small step within a few observations, this monitor's keeps scoring against the old level, so it confirms breaks pyxccd does not, often late (31 of 80 series differ; see "Break size" below). For larger breaks only the change magnitudes differ (by up to 20 units on breaks of up to 900). A drifting series can flag a change earlier or later | pyxccd, NumPy |
+| Temporally adjusted RMSE after 24 observations: the residuals nearest in day of year | One whole-segment RMSE per band | Seasonal noise changes which observations exceed the threshold | NumPy |
+| Variogram minimum RMSE: the median absolute difference of successive clear observations | Caller-supplied `minimumRMSE` per band | The floor is not derived from the data. Supplying pyxccd's value reproduces its break dates for breaks well above the threshold only (see "Break size" below) | pyxccd |
+| Backward lookback from the accepted window to the previous break | Not applied | A segment can start later: slice 2 against pyxccd's 0 on the fixture | pyxccd |
+| After a rejected initialization window, both ends move by one observation: the window keeps its observation count and only grows. `conse` further observations must follow the window | The shortest window of `minimumObservations` and `minimumSpanYears` is rebuilt from the next start. A window may reach the last observation | On irregular dates the two test different windows. With pyxccd's advance in the binary64 reference, 3 of the 160 series of the break-size study change, all on the dense-and-sparse revisit: two starts move by 1 and 2 slices, and one small break is dated 11 slices later. Together with the lookback, starts differ from pyxccd's in 20 of the 129 series whose break dates agree | NumPy (patched in scratch, not committed); pyxccd for the 20 of 129 |
+| Scores five of its seven bands (green, red, NIR, SWIR1, SWIR2); fits all seven | Scores and fits every band given | Pass the bands to score, and thresholds for that band count | pyxccd |
+| Snow and insufficient-clear procedures; cfmask classes (clear and water kept) | `mask` only | No class-specific handling | pyxccd (QA as `mask`) |
+| Change probability and a partial break in the last `conse` observations, which are left out of the last fit | Not reported; the tail after the last testable observation joins the last segment and its fit | No gradual-change probability. Coefficients of the last segment differ (up to 20 units on the fixture) | pyxccd |
+| Mean included angle of consecutive residual vectors (below 45 degrees) | Mean cosine of those vectors, at least `minimumMeanCosine` (`cos 45deg`) | The two differ when the angles are uneven: 30, 30, 30, 30 and 100 degrees have a mean angle of 44 degrees (COLD confirms) and a mean cosine of 0.658 (this monitor does not) | No |
+| Years of 365.25 days; coefficients on ordinal days, intercept at day 0, slope per day times 10000 | Years of 365.2425 days; intercept at the midpoint of the date axis, slope per year | `period`, `minimumSpanYears` and `maximumInitializationGapYears` of `365.25 / 365.2425` reproduce pyxccd's year | pyxccd |
 
-The fixture records a binary64 reference for this exact definition, plus a toggled run for the four tested
-omissions, so the spec fails if the monitor quietly starts behaving like the full algorithm. **pyxccd was not
-run** (version 1.1.1 publishes macOS wheels only for CPython 3.9 to 3.13 on macOS 15 and later, which this machine does not match, and it was not built from source), so
-the toggles are written from the COLD and CCDC papers rather than taken from pyxccd, and the pyxccd fixture
-remains pending.
+A gradual change is where the differences add up: on a 30-observation ramp pyxccd confirms the break 7 slices
+after the ramp starts (10 with LASSO), this monitor 5, and the next segment starts 5 to 10 slices later than
+pyxccd's.
+
+### Comparison with pyxccd 1.1.0
+
+`test/oracles/rts04-cold-pyxccd.py` runs `cold_detect` (with `lam=20` and `lam=0`) on eight synthetic seven-band
+series of 140 to 160 irregular dates with known breaks, 0 to 10000 scaling and noise 40, and
+`test/gpu-raster/raster-time-series/rts04-cold-pyxccd.spec.ts` runs this monitor on the five scored bands with
+pyxccd's thresholds, its variogram floor as `minimumRMSE` and its year. On the seven series with abrupt breaks
+(one or two disturbances, a small one, flagged clouds, an unflagged cloud, four confirming observations, none):
+
+- Break dates are equal to pyxccd's with and without LASSO, and to the known dates. Eight series do not show
+  how far this holds; "Break size" below does. The small one is a series where the two happen to agree.
+- Segment starts and ends are equal to those of pyxccd's default run, except one start (lookback, above).
+- A segment that pyxccd last refitted on the observations this monitor fits has its coefficients to 0.07 and
+  its RMSE to 0.02 (`lam=0`). Where pyxccd's last refit is a few observations old the gaps are 2.7 and 0.35.
+- Change magnitudes are within 20 of pyxccd's at `lam=0`.
+
+**Break size.** Whether the two confirm the same break depends on how far the break stands above `changeThreshold`. The same
+generator draws 160 series of 150 dates with one break at a random slice: the full disturbance of the series
+above, a half and a quarter of it, on an 8 to 24 day revisit and on alternating dense and sparse revisits. The
+"score" column is the change score the break alone would give, `sum over bands (shift / max(RMSE, minimumRMSE))^2`,
+over the threshold (15.09). Counts are from the test GPU.
+
+| Break | Score over threshold | Shift per band, in residual scales (in noise) | Series | Break dates equal to pyxccd, `lam=0` | `lam=20` | pyxccd confirms exactly the true break | This monitor does |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Full | 15 to 24 | 5.8 to 9.8 (6 to 22) | 40 | 40 | 40 | 40 | 40 |
+| Half | 4 to 6 | 2.9 to 4.9 (3 to 11) | 40 | 40 | 40 | 40 | 40 |
+| Quarter | 1.05 to 1.45 | 1.5 to 2.4 (1.6 to 5.6) | 80 | 49 | 30 | 16 | 26 |
+
+- At 4 times the threshold and above, every break date is pyxccd's and the true one. Starts differ in 14 of
+  those 80 series (lookback and window advance).
+- Near the threshold there is no parity, and neither implementation finds the break reliably. Of the 31
+  series that differ, in 23 pyxccd confirms nothing and this monitor confirms a break, often some observations
+  after the true one; in 8 both confirm, at different slices; in none does only pyxccd confirm. A reviewer's
+  independent draw of the same kind gave 35 of 80, with one series where only pyxccd confirmed.
+- Between 1.45 and 4 times the threshold nothing was measured.
+- Why: mostly the refit schedule. With pyxccd's schedule in the binary64 reference (patched in scratch, not
+  committed and not in the kernel) the break dates are equal in 64 of the 80 quarter-size series instead of 49;
+  adding the temporally adjusted RMSE of the reference gives 65. The remaining differences were not attributed.
+- What matching the schedule would take. In the same patched reference, pyxccd's schedule costs a median of 56
+  to 73 fits of all bands for one of these series (at most 81), against 12 to 14 (at most 17) now. The default `maximumFitCount` is 96 and the per-cell work budget allows 163 fits
+  at 160 slices, 5 bands and 8 coefficients (117 at 7 bands), so a series with two breaks would stop with status
+  8. It needs a fit that is updated per observation instead of redone (the normal equations of each band
+  accumulated, and one 8 by 8 solve per observation), or a larger work budget. Neither is done: the schedule
+  stays a documented difference.
+
+`test/oracles/rts04-change-monitoring-numpy.py` records a binary64 reference for the monitor's own definition,
+plus a toggled run for four COLD elements written from the papers, so the spec fails if the monitor quietly
+starts behaving like the full algorithm.
 
 Outputs per segment: `[start, end, break, coefficientCount]` as slices, `8` coefficient columns per band, RMSE and
 median change magnitude (NaN when the segment ended without a break), and a three-word `cellSummary`
@@ -79,7 +134,8 @@ median change magnitude (NaN when the segment ended without a break), and a thre
 reached (partial result published), 16 more segments needed than `maximumSegmentCount`.
 
 float32 limits: fits are the shared QR per band, so coefficients agree with the binary64 reference to about `2e-3` and
-RMSE to `1e-3` on bands of magnitude 0.2 to 0.6. Per-thread working memory is checked at construction: 8 coefficients
+RMSE to `1e-3` on bands of magnitude 0.2 to 0.6, and with pyxccd (itself float32) to 0.07 and 0.02 on bands of 600 to
+3200. Per-thread working memory is checked at construction: 8 coefficients
 allow about 167 slices at 5 bands; 4 coefficients allow 256 slices.
 
 {/* parameters: GPURasterCOLDMonitor generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
@@ -94,7 +150,7 @@ Settings of `getGPURasterCOLDMonitorParameterValues`:
 |---|---|---|
 | `period` (optional) | `number` | Base period of the harmonics in fractional years; 1 for an annual cycle. |
 | `changeThreshold` | `number` | Chi-squared quantile of the band count that flags one observation as anomalous (COLD: probability 0.99). |
-| `outlierThreshold` | `number` | Larger chi-squared quantile above which one observation is skipped as an outlier (COLD: `1 - 1e-6`). |
+| `outlierThreshold` | `number` | Larger chi-squared quantile above which one observation is skipped as an outlier (pyxccd 1.1.0: `1 - 1e-5`). |
 | `minimumMeanCosine` (optional) | `number` | Smallest mean cosine between consecutive normalized residual vectors of the peek window; defaults to `cos(45 deg)`. |
 | `minimumSpanYears` (optional) | `number` | Smallest span of an initialization window in fractional years; defaults to 1. |
 | `maximumInitializationGapYears` (optional) | `number` | A gap of at least this many years in an initialization window shifts it; defaults to 1. |

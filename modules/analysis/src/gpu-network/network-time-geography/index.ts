@@ -13,3 +13,12 @@ export {
   GPU_NETWORK_TRAVEL_TIME_PERCENTILES_MAXIMUM_PERCENTILE_COUNT
 } from './gpu-network-travel-time-percentiles';
 export type {GPUNetworkTravelTimePercentilesProps} from './gpu-network-travel-time-percentiles';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeNetworkTravelTimePercentilesOnCPU,
+  CPUNetworkTravelTimePercentilesOperation
+} from './cpu-network-travel-time-percentiles-operation';
+export type {CPUNetworkTravelTimePercentilesInput} from './cpu-network-travel-time-percentiles-operation';
+export {GPUNetworkTravelTimePercentilesOperation} from './gpu-network-travel-time-percentiles-operation';
+export type {NetworkTravelTimePercentilesOperationProps} from './gpu-network-travel-time-percentiles-operation';

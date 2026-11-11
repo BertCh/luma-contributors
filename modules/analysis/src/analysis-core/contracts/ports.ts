@@ -9,6 +9,7 @@ import type {
   GPUBoundedResultStatusPort,
   GPUCandidateStatusPort,
   GPUCardinalityPort,
+  GPUGeneratedGeometryStatusPort,
   GPUOverflowStatusPort
 } from './status';
 import {validateGPUStatusPort} from './status';
@@ -82,9 +83,12 @@ export type GPUFeatureGeometryPort =
  *
  * Contributors that take a whole geometry (for example each side of a spatial join) type it with
  * this. Any port whose `positions` is a single `GraphDataView` is assignable, so a generated
- * geometry output feeds the next contributor directly. `sourceIds`, when a contributor writes
- * feature IDs, replace the feature rows in its output; contributors that write no feature IDs do not
- * read them.
+ * geometry output feeds the next contributor directly. Most geometry contributors ignore an input
+ * `sourceIds`; the exceptions read it for one stated purpose: `GPUPolygonOverlay` accepts and
+ * validates an operand `sourceIds` (the boundary provenance is `sourceFeatureIds`), and
+ * `GPUNearestFeatureJoin` reports `features.sourceIds[row]` as the feature ID. The `sourceIds` of
+ * generated geometry hold input feature rows (contributor contract rule 8), and a caller with its
+ * own feature IDs looks them up by that row.
  */
 export type GPUPackedGeometryPort<Port extends GPUFeatureGeometryPort = GPUFeatureGeometryPort> =
   Port extends GPUTrajectoryGeometryPort<infer TimestampFormat>
@@ -172,13 +176,17 @@ export type GPUClassifiedValuesPort = {
   classCount: GraphDataView<'uint32'>;
 };
 
-/** Generated geometry plus source provenance and bounded-result status. */
+/**
+ * Generated geometry plus source provenance and bounded-result status (contributor contract rule
+ * 8). `sourceIds` holds, per output feature, the input feature row it came from (`0xffffffff` past
+ * `status.count`); `status.count` and `status.requiredCount` count features.
+ */
 export type GPUGeneratedGeometryPort<
   Geometry extends GPUFeatureGeometryPort = GPUFeatureGeometryPort
 > = {
   geometry: Geometry;
   sourceIds: GPUUint32Rows;
-  status: GPUBoundedResultStatusPort;
+  status: GPUGeneratedGeometryStatusPort;
 };
 
 function validateFormat(

@@ -6,11 +6,22 @@
 export * from './graph-support/index';
 export {createWGSLKernelNode} from './kernels/wgsl-kernel-nodes';
 export type {WGSLKernelBinding, WGSLKernelProps} from './kernels/wgsl-kernel-nodes';
+// Kernel facts for computation records (opt-in per graph; see computation-record).
+export {
+  getWGSLKernelNodeRecord,
+  isRecordingWGSLKernelNodes,
+  recordWGSLKernelNodes
+} from './kernels/wgsl-kernel-nodes';
+export type {
+  WGSLKernelNodeRecord,
+  WGSLKernelTextureBinding,
+  WGSLKernelTextureSampleType
+} from './kernels/wgsl-kernel-nodes';
 export {getGraphViewChunks} from './kernels/gpu-contributor-utils';
 
 // The contributor contract (dev-docs/contributor-contract.md): contracts, construction-time
-// validators and kernel helpers a contributor needs. Domain entry points re-export parts of this
-// for existing consumers; new code imports it from here.
+// validators and kernel helpers a contributor needs. This is the only entry point that exports
+// them; domain entry points export contributors.
 export * from './contracts/index';
 export type {GPUParameterBufferProps, GPUParameterFormat} from './kernels/gpu-contributor-utils';
 export {
@@ -37,3 +48,6 @@ export {
   getWGSLFloatLiteral,
   getWGSLKernelBinding
 } from './kernels/wgsl-kernel-nodes';
+
+// Contributors as GPUGraph operations and helpers for CPU twins (contract section 14).
+export * from './operations/index';

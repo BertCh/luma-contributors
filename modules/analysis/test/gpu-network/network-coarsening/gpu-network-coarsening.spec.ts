@@ -41,6 +41,7 @@ type FixtureOptions = {
   positions?: Float32Array;
   vertexValues?: Float32Array;
   weighted?: boolean;
+  fixedPointScale?: number;
 };
 
 type Result = {
@@ -106,6 +107,7 @@ class Fixture {
       labels: input('labels', 'uint32', options.labels) as never,
       nodeValues: vertexValues && (input('values', 'float32', vertexValues) as never),
       groupCapacity,
+      fixedPointScale: options.fixedPointScale,
       output: {
         groupNodeCount: output('group-counts', 'uint32', groupCapacity, 1) as never,
         groupIntraEdgeCount: output('intra-count', 'uint32', groupCapacity, 1) as never,
@@ -167,6 +169,7 @@ class Fixture {
       positions: options.positions,
       vertexValues: options.vertexValues,
       unweighted: !options.weighted,
+      fixedPointScale: options.fixedPointScale,
       edgeCapacity: options.edgeCapacity
     });
   }
@@ -406,3 +409,124 @@ for (const directed of [false, true]) {
     fixture.destroy();
   });
 }
+
+/**
+ * Two groups of 1,000 nodes with small terms everywhere: 1,000 edges of weight 1e-4 between the
+ * groups, a ring of 1,000 edges of weight 1e-5 inside group 0, node values of 1e-3 and 2.5e-6,
+ * and coordinates of a few 1e-4. One more node has a label above the group capacity, huge
+ * coordinates and a huge value, and the edge to it has the largest float32 as its weight: it is
+ * dropped, so none of that may enter a sum or set its unit.
+ */
+function createSmallTermsFixture(device: Device, fixedPointScale?: number): Fixture {
+  const groupSize = 1000;
+  const nodeCount = 2 * groupSize + 1;
+  const edges: [number, number, number][] = [];
+  for (let node = 0; node < groupSize; node++) {
+    edges.push([node, groupSize + node, 1e-4], [node, (node + 1) % groupSize, 1e-5]);
+  }
+  edges.push([0, 2 * groupSize, 3.4028234e38]);
+  const positions = new Float32Array(2 * nodeCount);
+  const vertexValues = new Float32Array(nodeCount);
+  const labels = new Uint32Array(nodeCount);
+  for (let node = 0; node < 2 * groupSize; node++) {
+    const group = node < groupSize ? 0 : 1;
+    labels[node] = group;
+    positions[2 * node] = (node % groupSize) * 1e-6;
+    positions[2 * node + 1] = group === 0 ? -3e-7 : 2e-4;
+    vertexValues[node] = group === 0 ? 1e-3 : 2.5e-6;
+  }
+  labels[2 * groupSize] = 1000;
+  positions.set([1e20, -1e20], 4 * groupSize);
+  vertexValues[2 * groupSize] = 1e30;
+  return new Fixture(device, {
+    nodeCount,
+    csr: buildCoarseningCSR(nodeCount, edges),
+    labels,
+    groupCapacity: 2,
+    edgeCapacity: 4,
+    directed: true,
+    positions,
+    vertexValues,
+    weighted: true,
+    fixedPointScale
+  });
+}
+
+function expectRelative(actual: number, expected: number, relative = 1e-5): void {
+  expect(Math.abs(actual - expected)).toBeLessThanOrEqual(relative * Math.abs(expected));
+}
+
+it('GPUNetworkCoarsening sums small weights, values and coordinates without rounding them away', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createSmallTermsFixture(device);
+  const result = await fixture.run();
+  // By hand: 1,000 * 1e-4 between the groups and 1,000 * 1e-5 inside group 0. A unit of 1/65536
+  // gave 1,000 * 7/65536 = 0.1068 and 1,000 * 1/65536 = 0.0153.
+  expect(result.count).toBe(1);
+  expect(result.edgeCounts[0]).toBe(1000);
+  expectRelative(result.edgeWeights[0], 0.1);
+  expect(result.groupIntraEdgeCount).toEqual([1000, 0]);
+  expectRelative(result.groupIntraWeight[0], 0.01);
+  expect(result.groupIntraWeight[1]).toBe(0);
+  // 1,000 * 1e-3 and 1,000 * 2.5e-6.
+  expectRelative(result.groupValueSum[0], 1);
+  expectRelative(result.groupValueSum[1], 0.0025);
+  // Mean of 0, 1e-6, ..., 999e-6 is 499.5e-6; y is one value per group.
+  expectRelative(result.groupCentroid[0], 499.5e-6);
+  expectRelative(result.groupCentroid[1], -3e-7);
+  expectRelative(result.groupCentroid[2], 499.5e-6);
+  expectRelative(result.groupCentroid[3], 2e-4);
+  // The node above the group capacity and its edge are reported, not summed.
+  const summary = decodeGPUNetworkCoarseningSummary(result.summary);
+  expect(summary.overflowedNodeCount).toBe(1);
+  expect(summary.droppedEdgeCount).toBe(1);
+  expectMatches(result, fixture);
+  fixture.destroy();
+});
+
+it('GPUNetworkCoarsening keeps the fixed rounding step when fixedPointScale is given', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createSmallTermsFixture(device, 65536);
+  const result = await fixture.run();
+  // Each addend is rounded to 1/65536: 1e-4 is 6.55 steps and rounds to 7, 1e-5 is 0.66 steps
+  // and rounds to 1, 1e-3 is 65.5 steps and rounds to 66.
+  expect(result.edgeWeights[0]).toBe(Math.fround(7000 / 65536));
+  expect(result.groupIntraWeight[0]).toBe(Math.fround(1000 / 65536));
+  expect(result.groupValueSum[0]).toBe(Math.fround(66000 / 65536));
+  expectMatches(result, fixture);
+  fixture.destroy();
+});
+
+it('GPUNetworkCoarsening saturates a term too large for a fixed fixedPointScale', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // With a unit of 1/65536 a term saturates at 4e18 units (the float32 nearest 4e18), about
+  // 6.1e13. 1.5e14 is 9.8e18 units, past 2^63: it must add the saturated value, not wrap into a
+  // negative sum. The largest float32 (the impassable weight some topologies carry) saturates
+  // too, and a negative term saturates with its sign.
+  const edges: [number, number, number][] = [
+    [0, 2, 1.5e14],
+    [0, 1, 3.4028234e38],
+    [2, 3, -2e14]
+  ];
+  const fixture = new Fixture(device, {
+    nodeCount: 4,
+    csr: buildCoarseningCSR(4, edges),
+    labels: Uint32Array.from([0, 0, 1, 1]),
+    groupCapacity: 2,
+    edgeCapacity: 4,
+    directed: true,
+    weighted: true,
+    fixedPointScale: 65536
+  });
+  const result = await fixture.run();
+  const saturated = Math.fround(Math.fround(4.0e18) / 65536);
+  expect(saturated).toBeGreaterThan(6.1e13);
+  expect(result.count).toBe(1);
+  expect(result.edgeWeights[0]).toBe(saturated);
+  expect(result.groupIntraWeight).toEqual([saturated, -saturated]);
+  expectMatches(result, fixture);
+  fixture.destroy();
+});

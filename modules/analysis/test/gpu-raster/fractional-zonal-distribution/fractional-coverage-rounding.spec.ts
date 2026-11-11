@@ -3,7 +3,10 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {GPURasterFractionalCoverage} from '../../../src/raster-analysis/gpu-raster-fractional-coverage';
+import {
+  GPURasterFractionalCoverage,
+  getGPURasterFractionalCoverageParameterValues
+} from '../../../src/raster-analysis/gpu-raster-fractional-coverage';
 import {createParityGraph} from '../../oracles/parity-wp2-geodesic-harness';
 import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
@@ -30,6 +33,12 @@ it('fractional coverage preserves subcell areas far from the raster origin', asy
     left,
     bottom
   ]);
+  const grid = {
+    width,
+    height: width,
+    affine: [1, 0, 0, 0, 1, 0] as const,
+    pixelInterpretation: 'area' as const
+  };
   const output = {
     zoneIds: rig.output('zone-ids', capacity, 'uint32'),
     cellIds: rig.output('cell-ids', capacity, 'uint32'),
@@ -41,13 +50,18 @@ it('fractional coverage preserves subcell areas far from the raster origin', asy
   };
   rig.graph.add(
     new GPURasterFractionalCoverage({
-      grid: {width, height: width, affine: [1, 0, 0, 0, 1, 0], pixelInterpretation: 'area'},
+      grid,
       zones: {
         positions: rig.input('positions', positions, 'float32x2').view,
         featureOffsets: rig.input('feature-offsets', [0, 1, 2], 'uint32').view,
         polygonOffsets: rig.input('polygon-offsets', [0, 1, 2], 'uint32').view,
         ringOffsets: rig.input('ring-offsets', [0, 4, 8], 'uint32').view
       },
+      parameters: rig.input(
+        'parameters',
+        Array.from(getGPURasterFractionalCoverageParameterValues(grid)),
+        'float32'
+      ).view,
       output: {
         zoneIds: output.zoneIds.view,
         cellIds: output.cellIds.view,

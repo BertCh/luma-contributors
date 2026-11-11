@@ -51,7 +51,7 @@ async function texture(
     new GPURasterTexture({
       grid: makeGPURasterMetadata({width, height}),
       values: harness.input(values),
-      validity: harness.mask(validity),
+      mask: harness.mask(validity),
       levels: fixture.texture.levels,
       range: [0, fixture.texture.levels],
       radius: fixture.texture.radius,
@@ -151,7 +151,7 @@ it('RS11 selected harmonic level-break model matches pinned NumPy least squares 
       period: source.period,
       minimumSegmentLength: source.minimumSegmentLength,
       values: harness.input(source.cases.flatMap(entry => entry.values)),
-      validity: harness.mask(source.cases.flatMap(entry => entry.validity)),
+      mask: harness.mask(source.cases.flatMap(entry => entry.validity)),
       output: {
         coefficients: harness.output('coefficients', 'float32', source.cases.length * 5),
         components: harness.output(
@@ -198,7 +198,7 @@ it('RS08 explicit tiled local-label reconciliation preserves scikit-image hierar
         adjacency: harness.output('adjacency', 'uint32', 25),
         weights: harness.output('weights', 'float32', 25),
         mapping: harness.output('mapping', 'uint32', 5),
-        status: harness.output('status', 'uint32', 1)
+        status: {iterationLimitReached: harness.output('status', 'uint32', 1)}
       }
     };
     if (tiled) {
@@ -340,7 +340,7 @@ for (const size of [128, 256, 512]) {
         source: {width: size, height: size, origin: [0, 0], spacing: [1, 1]},
         destination: {width: size / 2, height: size / 2, origin: [0, 0], spacing: [2, 2]},
         values: view(sourceBuffer, 'float32', count),
-        validity: view(validityBuffer, 'uint32', count),
+        mask: view(validityBuffer, 'uint32', count),
         normalization: 'extensive',
         preparedWeights: {
           indices: view(indices, 'uint32', destinationCount * stride),
@@ -463,7 +463,7 @@ it('RS08 64-region adjacency and bounded propagation scale to 16384 source cells
         adjacency: harness.output('adjacency', 'uint32', 4096),
         weights: harness.output('weights', 'float32', 4096),
         mapping: harness.output('mapping', 'uint32', 64),
-        status: harness.output('status', 'uint32', 1)
+        status: {iterationLimitReached: harness.output('status', 'uint32', 1)}
       }
     })
   );

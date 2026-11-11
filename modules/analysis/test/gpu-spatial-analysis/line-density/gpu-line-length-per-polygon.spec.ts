@@ -76,6 +76,8 @@ function createFixture(
     units?: 'meters' | 'kilometers';
     pairCapacity?: number;
     maximumCrossingCount?: number;
+    /** Wire `output.status.candidateOverflow` to an output named `candidateOverflow`. */
+    candidateOverflow?: boolean;
   } = {}
 ) {
   const flat = flattenLines(lines);
@@ -96,7 +98,10 @@ function createFixture(
       lengths: {format: 'float32', length: features.length},
       weightedLengths: {format: 'float32', length: features.length},
       segmentCounts: {format: 'uint32', length: features.length},
-      overflow: {format: 'uint32', length: 1}
+      overflow: {format: 'uint32', length: 1},
+      ...(options.candidateOverflow
+        ? {candidateOverflow: {format: 'uint32' as const, length: 1}}
+        : {})
     },
     create: ({inputs, outputs}) =>
       new GPULineLengthPerPolygon({
@@ -120,7 +125,10 @@ function createFixture(
           weightedLengths: options.weights ? (outputs['weightedLengths'] as never) : undefined,
           segmentCounts: outputs['segmentCounts'] as never,
           status: {
-            overflow: outputs['overflow'] as never
+            overflow: outputs['overflow'] as never,
+            candidateOverflow: options.candidateOverflow
+              ? (outputs['candidateOverflow'] as never)
+              : undefined
           }
         }
       })
@@ -259,12 +267,22 @@ it('GPULineLengthPerPolygon flags crossing and candidate overflow', async () => 
       [13, 5]
     ]
   ];
-  const tight = createFixture(device, lines, features, {maximumCrossingCount: 2});
-  expect((await tight.run())['overflow'][0]).toBe(1);
+  const tight = createFixture(device, lines, features, {
+    maximumCrossingCount: 2,
+    candidateOverflow: true
+  });
+  const tightResult = await tight.run();
+  expect(tightResult['overflow'][0]).toBe(1);
+  // The crossing bound is not a candidate stage.
+  expect(tightResult['candidateOverflow'][0]).toBe(0);
   tight.destroy();
-  const roomy = createFixture(device, lines, features, {maximumCrossingCount: 32});
+  const roomy = createFixture(device, lines, features, {
+    maximumCrossingCount: 32,
+    candidateOverflow: true
+  });
   const result = await roomy.run();
   expect(result['overflow'][0]).toBe(0);
+  expect(result['candidateOverflow'][0]).toBe(0);
   const expected = computeLineLengthPerPolygon(lines, undefined, features);
   expectClose(result['lengths'][0], expected.lengths[0], 1e-5, 1e-5);
   expect(result['lengths'][0]).toBeGreaterThan(1);
@@ -279,9 +297,11 @@ it('GPULineLengthPerPolygon flags crossing and candidate overflow', async () => 
       ]
     ],
     features,
-    {pairCapacity: 1}
+    {pairCapacity: 1, candidateOverflow: true}
   );
-  expect((await small.run())['overflow'][0]).toBe(1);
+  const smallResult = await small.run();
+  expect(smallResult['overflow'][0]).toBe(1);
+  expect(smallResult['candidateOverflow'][0]).toBe(1);
   small.destroy();
 });
 

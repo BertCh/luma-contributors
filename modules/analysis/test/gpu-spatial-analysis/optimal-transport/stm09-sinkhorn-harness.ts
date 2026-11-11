@@ -48,12 +48,18 @@ export async function runSinkhornGPU(
   device: Device,
   problem: Pick<
     SinkhornGridProblem,
-    'width' | 'height' | 'cellWidth' | 'cellHeight' | 'source' | 'target' | 'epsilon'
-  >,
+    'width' | 'height' | 'cellWidth' | 'cellHeight' | 'epsilon'
+  > & {
+    /** Masses as a plain array, or a `Float32Array` that is uploaded as it is (no copy). */
+    source: readonly number[] | Float32Array;
+    target: readonly number[] | Float32Array;
+  },
   options: SinkhornGPUOptions = {}
 ): Promise<SinkhornGPUResult> {
   const graph = new GPUCommandGraph(device, {id: 'sinkhorn-divergence'});
   const buffers: Buffer[] = [];
+  const getMasses = (masses: readonly number[] | Float32Array): Float32Array =>
+    masses instanceof Float32Array ? masses : Float32Array.from(masses);
   const input = (values: Float32Array) => {
     const buffer = createInputBuffer(device, values);
     buffers.push(buffer);
@@ -88,18 +94,8 @@ export async function runSinkhornGPU(
   graph.add(
     new GPUSinkhornDivergence({
       grid: makeGPURasterMetadata({width: problem.width, height: problem.height}),
-      source: importGraphBuffer(
-        graph,
-        'source',
-        input(Float32Array.from(problem.source)),
-        'float32'
-      ),
-      target: importGraphBuffer(
-        graph,
-        'target',
-        input(Float32Array.from(problem.target)),
-        'float32'
-      ),
+      source: importGraphBuffer(graph, 'source', input(getMasses(problem.source)), 'float32'),
+      target: importGraphBuffer(graph, 'target', input(getMasses(problem.target)), 'float32'),
       parameters: importGraphBuffer(graph, 'parameters', input(parameters), 'float32'),
       maximumIterations: options.maximumIterations,
       blurRadius: options.blurRadius,

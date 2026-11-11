@@ -37,7 +37,9 @@ import {
 import {
   GPU_SPACE_TIME_K_WEIGHT_CAP,
   SPACE_TIME_K_EDGE_WEIGHT_WGSL,
-  SPACE_TIME_K_WEIGHT_SCALE
+  SPACE_TIME_K_SPLANCS_TIE_WGSL,
+  SPACE_TIME_K_WEIGHT_SCALE,
+  type SpaceTimeKTieRule
 } from './space-time-k-function-wgsl';
 
 /** Edge correction of the space-time K family. See {@link GPUSpaceTimeKFunction}. */
@@ -170,6 +172,12 @@ export type SpaceTimeKConfig = {
   distanceClassCount: number;
   timeClassCount: number;
   edgeCorrection: GPUSpaceTimeKEdgeCorrection;
+  /**
+   * Rule for a lag that exactly reaches a time limit and for a pair at exactly the largest
+   * distance or lag. Defaults to `'stpp'`, the rule of `GPUSpaceTimeKFunction`;
+   * `GPUSpaceTimeDiggleTest` passes `'splancs'`.
+   */
+  tieRule?: SpaceTimeKTieRule;
   pairCorrelationKernel?: GPUSpaceTimePairCorrelationKernel;
   /** Cumulative `K(u_a, v_b)`, `a * timeClassCount + b`. */
   k: GraphDataView<'float32'>;
@@ -240,6 +248,23 @@ export function createSpaceTimeKNodes<Parameters>(
   const hasTemporal = Boolean(config.temporalK);
   const hasPairCorrelation = Boolean(config.pairCorrelation);
   const hasLocal = Boolean(config.local);
+  const splancsTies = config.tieRule === 'splancs';
+  // Class of a pair and whether it is counted. The stpp rule is the scaled form of `GPURipley`
+  // with the last class closed; the splancs rule drops a pair at the largest distance or lag and
+  // decides the breaks with products (`getSpaceTimeSplancsClass`).
+  const pairClassWGSL = splancsTies
+    ? `let splancsDistanceClass = getSpaceTimeSplancsClass(pairDistance, maximumDistance, DISTANCE_CLASS_COUNT);
+            let splancsLagClass = getSpaceTimeSplancsClass(timeLag, maximumTimeLag, TIME_CLASS_COUNT);
+            let distanceClass = min(splancsDistanceClass, DISTANCE_CLASS_COUNT - 1u);
+            let lagClass = min(splancsLagClass, TIME_CLASS_COUNT - 1u);
+            let inDistance = splancsDistanceClass < DISTANCE_CLASS_COUNT;
+            let inLag = splancsLagClass < TIME_CLASS_COUNT;`
+    : `let scaledDistance = pairDistance / maximumDistance * f32(DISTANCE_CLASS_COUNT);
+            let scaledLag = timeLag / maximumTimeLag * f32(TIME_CLASS_COUNT);
+            let distanceClass = min(u32(max(ceil(scaledDistance) - 1.0, 0.0)), DISTANCE_CLASS_COUNT - 1u);
+            let lagClass = min(u32(max(ceil(scaledLag) - 1.0, 0.0)), TIME_CLASS_COUNT - 1u);
+            let inDistance = scaledDistance <= f32(DISTANCE_CLASS_COUNT);
+            let inLag = scaledLag <= f32(TIME_CLASS_COUNT);`;
   const nodes: GPUCommandNode<Parameters>[] = [];
 
   // Row filter: finite time inside the observation interval, finite positive intensity, mask.
@@ -265,10 +290,10 @@ export function createSpaceTimeKNodes<Parameters>(
       body: `let timeStart = parameters[parametersOffset + 7u];
   let timeEnd = parameters[parametersOffset + 8u];
   let time = times[timesOffset + index];
-  var keep = isFiniteFloat(timeStart) && isFiniteFloat(timeEnd) && timeStart < timeEnd &&
-    isFiniteFloat(time) && time >= timeStart && time <= timeEnd;
+  var keep = isFiniteValue(timeStart) && isFiniteValue(timeEnd) && timeStart < timeEnd &&
+    isFiniteValue(time) && time >= timeStart && time <= timeEnd;
   ${config.mask ? 'keep = keep && mask[maskOffset + index] != 0u;' : ''}
-  ${config.intensities ? 'let intensity = intensities[intensitiesOffset + index];\n  keep = keep && isFiniteFloat(intensity) && intensity > 0.0;' : ''}
+  ${config.intensities ? 'let intensity = intensities[intensitiesOffset + index];\n  keep = keep && isFiniteValue(intensity) && intensity > 0.0;' : ''}
   effectiveMask[effectiveMaskOffset + index] = select(0u, 1u, keep);`
     })
   );
@@ -362,7 +387,7 @@ fn get${axis}PairKernel(offset: f32, bandwidth: f32) -> f32 {
         : [])
     ] satisfies WGSLKernelBinding[],
     declarations: `${constants}
-${SPACE_TIME_K_EDGE_WEIGHT_WGSL}
+${SPACE_TIME_K_EDGE_WEIGHT_WGSL}${splancsTies ? SPACE_TIME_K_SPLANCS_TIE_WGSL : ''}
 const HAS_MARGINAL: bool = ${hasMarginal};
 const HAS_PAIR_CORRELATION: bool = ${hasPairCorrelation};
 const HAS_LOCAL: bool = ${hasLocal};
@@ -376,8 +401,8 @@ ${getKernelWGSL('Temporal')}`,
     let maximumTimeLag = readParameter(6u);
     let spatialBandwidth = readParameter(9u);
     let temporalBandwidth = readParameter(10u);
-    let focusUsable = isFiniteFloat(maximumDistance) && maximumDistance > 0.0 &&
-      isFiniteFloat(maximumTimeLag) && maximumTimeLag > 0.0;
+    let focusUsable = isFiniteValue(maximumDistance) && maximumDistance > 0.0 &&
+      isFiniteValue(maximumTimeLag) && maximumTimeLag > 0.0;
     let left = x - lattice.minimumX;
     let bottom = y - lattice.minimumY;
     let right = lattice.maximumX - x;
@@ -387,14 +412,9 @@ ${getKernelWGSL('Temporal')}`,
             let otherBase = rowTableOffset + neighbor * 4u;
             let timeLag = abs(rowTable[otherBase] - focusTime);
             let spatialWeight = select(1.0, getSpaceTimeSpatialWeight(left, bottom, right, top, pairDistance), EDGE_ISOTROPIC);
-            let temporalWeight = select(1.0, getSpaceTimeTemporalWeight(timeLag, focusRadius), EDGE_ISOTROPIC);
+            let temporalWeight = select(1.0, ${splancsTies ? 'getSpaceTimeSplancsTemporalWeight' : 'getSpaceTimeTemporalWeight'}(timeLag, focusRadius), EDGE_ISOTROPIC);
             let pairIntensity = focusInverse * rowTable[otherBase + 1u];
-            let scaledDistance = pairDistance / maximumDistance * f32(DISTANCE_CLASS_COUNT);
-            let scaledLag = timeLag / maximumTimeLag * f32(TIME_CLASS_COUNT);
-            let distanceClass = min(u32(max(ceil(scaledDistance) - 1.0, 0.0)), DISTANCE_CLASS_COUNT - 1u);
-            let lagClass = min(u32(max(ceil(scaledLag) - 1.0, 0.0)), TIME_CLASS_COUNT - 1u);
-            let inDistance = scaledDistance <= f32(DISTANCE_CLASS_COUNT);
-            let inLag = scaledLag <= f32(TIME_CLASS_COUNT);
+            ${pairClassWGSL}
             if (HAS_MARGINAL && inDistance) {
               let marginalSlot = BINS + distanceClass;
               accumulate(marginalSlot, 0u, 1u);
@@ -507,7 +527,8 @@ const CELL_COUNT: u32 = ${cellCount}u;`,
         accumulators: temporalAccumulators,
         timeClassCount: V,
         cellCount,
-        edgeCorrection: config.edgeCorrection
+        edgeCorrection: config.edgeCorrection,
+        tieRule: config.tieRule
       })
     );
   }
@@ -546,8 +567,8 @@ const CELL_COUNT: u32 = ${cellCount}u;`,
   let area = (parameters[parametersOffset + 2u] - parameters[parametersOffset]) *
     (parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u]);
   let duration = parameters[parametersOffset + 8u] - parameters[parametersOffset + 7u];
-  let defined = includedCount >= 2.0 && isFiniteFloat(area) && area > 0.0 &&
-    isFiniteFloat(duration) && duration > 0.0 &&
+  let defined = includedCount >= 2.0 && isFiniteValue(area) && area > 0.0 &&
+    isFiniteValue(duration) && duration > 0.0 &&
     parameters[parametersOffset + 5u] > 0.0 && parameters[parametersOffset + 6u] > 0.0;
   let pairNormalizer = select(includedCount * (includedCount - 1.0), includedCount * includedCount, INHOMOGENEOUS);`;
   nodes.push(
@@ -679,6 +700,10 @@ ${readAccumulatorsWGSL}`,
  * lag by binary search on the sorted keys, with the class test of the pair pass (`lag / v * count
  * <= b + 1`), so the two paths agree on every boundary. The isotropic weight is 2 for partners
  * beyond the event's edge radius and 1 inside, which gives `2 N(v) - N(min(v, radius))`.
+ *
+ * With `tieRule: 'splancs'` a partner at exactly `maximumTimeLag` is not counted and the weight is
+ * 2 from `lag == radius` on, so the weight-1 partners are those with `lag < radius` (none when
+ * the radius is 0, an event on a time limit).
  */
 function createTemporalMarginalNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -692,14 +717,16 @@ function createTemporalMarginalNode<Parameters>(
     timeClassCount: number;
     cellCount: number;
     edgeCorrection: GPUSpaceTimeKEdgeCorrection;
+    tieRule?: SpaceTimeKTieRule;
   }
 ): GPUCommandNode<Parameters> {
   const workgroupSize = 64;
   const V = props.timeClassCount;
+  const splancsTies = props.tieRule === 'splancs';
   return createWGSLKernelNode<Parameters>(graph, {
     id: `${props.id}-temporal-marginal`,
     operation: props.operation,
-    variant: `temporal-marginal-${props.edgeCorrection}`,
+    variant: `temporal-marginal-${props.edgeCorrection}${splancsTies ? '-splancs' : ''}`,
     bindings: [
       {name: 'sortedKeys', view: props.sortedKeys, type: 'u32', access: 'read'},
       {name: 'cellOffsets', view: props.cellOffsets, type: 'u32', access: 'read'},
@@ -717,12 +744,25 @@ const EDGE_ISOTROPIC: bool = ${props.edgeCorrection === 'isotropic'};
 var<workgroup> localCounts: array<atomic<u32>, ${V}>;
 
 fn isInside(lag: f32, limit: f32, radius: f32, useRadius: bool, maximumTimeLag: f32) -> bool {
-  return lag / maximumTimeLag * f32(TIME_CLASS_COUNT) <= limit && (!useRadius || lag <= radius);
+  return ${
+    splancsTies
+      ? // The product test of getSpaceTimeSplancsClass: class <= b when lag * count <= maximum * (b + 1).
+        'lag * f32(TIME_CLASS_COUNT) <= maximumTimeLag * limit && lag < maximumTimeLag && (!useRadius || lag < radius)'
+      : 'lag / maximumTimeLag * f32(TIME_CLASS_COUNT) <= limit && (!useRadius || lag <= radius)'
+  };
 }
 
 // Number of sorted partners j != i inside the lag, for the event at the given time whose first
 // equal key is at index first.
-fn countPartners(time: f32, first: u32, count: u32, limit: f32, radius: f32, useRadius: bool, maximumTimeLag: f32) -> u32 {
+fn countPartners(time: f32, first: u32, count: u32, limit: f32, radius: f32, useRadius: bool, maximumTimeLag: f32) -> u32 {${
+      splancsTies
+        ? `
+  // No lag is below a radius of zero, not even the event's own lag 0, which the count relies on.
+  if (useRadius && !(radius > 0.0)) {
+    return 0u;
+  }`
+        : ''
+    }
   // Partners at or after the event: the first index failing the test.
   var low = first;
   var high = count;

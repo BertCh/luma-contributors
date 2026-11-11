@@ -78,3 +78,22 @@ it('GPUSegmentIntersection saturates its pair total before the write and finaliz
   expect(carry).toBe(total + 1);
   expect(ids.indexOf('segment-intersection-write')).toBeGreaterThan(carry);
 });
+
+it('saturated scan total rejects a rowCount past its views and a totalRow past the total view', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'scan-total-limits'});
+  const props = {
+    id: 'pairs',
+    operation: 'ScanTotalTest',
+    counts: createTransientView(graph, 'counts', 'uint32', 10),
+    offsets: createTransientView(graph, 'offsets', 'uint32', 10),
+    rowCount: 10,
+    total: createTransientView(graph, 'state', 'uint32', 4),
+    totalRow: 3
+  };
+  expect(() => createSaturatedScanTotalNodes(graph, {...props, rowCount: 11})).toThrow(
+    /^pairs rowCount must be at most 10/
+  );
+  expect(() => createSaturatedScanTotalNodes(graph, {...props, totalRow: 4})).toThrow(
+    /^pairs totalRow must be at most 3/
+  );
+});

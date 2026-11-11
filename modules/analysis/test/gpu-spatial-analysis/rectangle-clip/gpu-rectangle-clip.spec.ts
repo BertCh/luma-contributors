@@ -70,7 +70,8 @@ function createFixture(
       count: {format: 'uint32', length: 1},
       overflow: {format: 'uint32', length: 1},
       requiredCount: {format: 'uint32', length: 1},
-      lineCount: {format: 'uint32', length: 1},
+      vertexCount: {format: 'uint32', length: 1},
+      requiredVertexCount: {format: 'uint32', length: 1},
       ...(geometryType === 'lines'
         ? {sourceLineIndices: {format: 'uint32' as const, length: lineCapacity}}
         : {})
@@ -95,7 +96,8 @@ function createFixture(
             count: outputs['count'] as never,
             overflow: outputs['overflow'] as never,
             requiredCount: outputs['requiredCount'] as never,
-            lineCount: outputs['lineCount'] as never
+            vertexCount: outputs['vertexCount'] as never,
+            requiredVertexCount: outputs['requiredVertexCount'] as never
           },
           sourceLineIndices: outputs['sourceLineIndices'] as never
         }
@@ -168,17 +170,18 @@ it('GPURectangleClip clips lines like the f64 oracle and matches Shapely clip_by
       const result = await fixture.run(getGPURectangleClipParameterValues(rect));
       const expected = clipLines(round([...lines]), rect);
       expect(result['overflow'][0]).toBe(0);
-      expect(result['lineCount'][0]).toBe(expected.lines.length);
-      expect(result['count'][0]).toBe(expected.lines.flat().length);
-      expect(result['requiredCount'][0]).toBe(expected.lines.flat().length);
-      expect(result['count'][0]).toBeGreaterThan(0);
-      expectLinesClose(readLines(result, result['lineCount'][0]), expected.lines, 1e-4);
+      expect(result['count'][0]).toBe(expected.lines.length);
+      expect(result['requiredCount'][0]).toBe(expected.lines.length);
+      expect(result['vertexCount'][0]).toBe(expected.lines.flat().length);
+      expect(result['requiredVertexCount'][0]).toBe(expected.lines.flat().length);
+      expect(result['vertexCount'][0]).toBeGreaterThan(0);
+      expectLinesClose(readLines(result, result['count'][0]), expected.lines, 1e-4);
       expect(result['sourceLineIndices'].slice(0, expected.lines.length)).toEqual(
         expected.sourceLineIndices
       );
-      expect(result['lineOffsets'][result['lineCount'][0]]).toBe(result['count'][0]);
+      expect(result['lineOffsets'][result['count'][0]]).toBe(result['vertexCount'][0]);
       if (label === 'fixed' && rect.maxX === 10) {
-        const length = readLines(result, result['lineCount'][0]).reduce(
+        const length = readLines(result, result['count'][0]).reduce(
           (sum, line) =>
             sum +
             line
@@ -210,8 +213,14 @@ it('GPURectangleClip reports overflow when line or vertex capacity is exceeded',
     getGPURectangleClipParameterValues({minX: 0, minY: 0, maxX: 40, maxY: 10})
   );
   expect(result['overflow'][0]).toBe(1);
-  expect(result['count'][0]).toBeLessThanOrEqual(16);
-  expect(result['requiredCount'][0]).toBeGreaterThan(16);
+  expect(result['vertexCount'][0]).toBeLessThanOrEqual(16);
+  expect(result['requiredVertexCount'][0]).toBeGreaterThan(16);
+  // Every vertex of the zigzag is outside the rectangle, so each of its 39 segments is its own piece.
+  const pieceCount = clipLines(round([zigzag]), {minX: 0, minY: 0, maxX: 40, maxY: 10}).lines
+    .length;
+  expect(pieceCount).toBe(39);
+  expect(result['count'][0]).toBe(4);
+  expect(result['requiredCount'][0]).toBe(pieceCount);
   expect(result['lineOffsets'][4]).toBeLessThanOrEqual(16);
   fixture.destroy();
 });
@@ -261,7 +270,9 @@ it('GPURectangleClip clips polygon rings like f64 Sutherland-Hodgman and matches
   const rect = {minX: 0, minY: 0, maxX: 10, maxY: 10};
   const result = await fixture.run(getGPURectangleClipParameterValues(rect));
   expect(result['overflow'][0]).toBe(0);
-  expect(result['lineCount'][0]).toBe(rings.length);
+  // Polygons count rings: every input ring is kept, the one outside the rectangle as an empty ring.
+  expect(result['count'][0]).toBe(rings.length);
+  expect(result['requiredCount'][0]).toBe(rings.length);
   const actual = readLines(result, rings.length);
   const expected = round(rings).map(ring => clipRing(ring, rect));
   expectLinesClose(actual, expected, 1e-4);
@@ -277,13 +288,13 @@ it('GPURectangleClip clips polygon rings like f64 Sutherland-Hodgman and matches
     clipRing(ring, {minX: 6, minY: 6, maxX: 12, maxY: 30})
   );
   expectLinesClose(readLines(moved, rings.length), movedExpected, 1e-4);
-  expect(moved['count'][0]).toBe(movedExpected.flat().length);
+  expect(moved['vertexCount'][0]).toBe(movedExpected.flat().length);
   expect(fixture.getCompileCount()).toBe(0);
   fixture.destroy();
   const small = createFixture(device, rings, 'polygons', 6, rings.length);
   const clipped = await small.run(getGPURectangleClipParameterValues(rect));
   expect(clipped['overflow'][0]).toBe(1);
-  expect(clipped['count'][0]).toBeLessThanOrEqual(6);
+  expect(clipped['vertexCount'][0]).toBeLessThanOrEqual(6);
   small.destroy();
 });
 
@@ -309,7 +320,59 @@ it('GPURectangleClip clips longitude-latitude degrees like planar coordinates', 
   const expected = clipLines(round(lines), rect);
   expect(expected.lines.length).toBe(1);
   expect(result['overflow'][0]).toBe(0);
-  expect(result['lineCount'][0]).toBe(expected.lines.length);
-  expectLinesClose(readLines(result, result['lineCount'][0]), expected.lines, 1e-5);
+  expect(result['count'][0]).toBe(expected.lines.length);
+  expectLinesClose(readLines(result, result['count'][0]), expected.lines, 1e-5);
+  fixture.destroy();
+});
+
+it('GPURectangleClip gives both polygons of a shared edge the same clip point (review 07)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Math correctness review 2026-11-10, polygon-topology-07. Each edge below is shared by two
+  // triangles that traverse it in opposite directions. The first is the report's edge, which
+  // gave y = 4.1434054 from one end and 4.1434059 from the other at x = 10; the others are
+  // random edges across the clip lines x = 10 and y = 5.
+  const random = createRandom(31);
+  const sharedEdges: [Point, Point][] = [
+    [
+      [0.204, 0.165],
+      [15.43, 6.349]
+    ]
+  ];
+  for (let index = 0; index < 200; index++) {
+    sharedEdges.push([
+      [random() * 9, random() * 4],
+      [11 + random() * 9, 6 + random() * 4]
+    ]);
+  }
+  const rings: Point[][] = [];
+  for (const [start, end] of sharedEdges) {
+    // One triangle on each side of the edge, far apexes inside the rectangle.
+    rings.push([start, end, [1, 4.5]], [end, start, [9, 0.5]]);
+  }
+  const rect = {minX: -1, minY: -1, maxX: 10, maxY: 5};
+  const fixture = createFixture(device, rings, 'polygons', 4096, rings.length);
+  const result = await fixture.run(getGPURectangleClipParameterValues(rect));
+  expect(result['overflow'][0]).toBe(0);
+  const clipped = readLines(result, rings.length);
+  let comparedPoints = 0;
+  sharedEdges.forEach(([start, end], edge) => {
+    const [startX, startY, endX, endY] = [...start, ...end].map(Math.fround);
+    // The edge leaves the rectangle through x = 10 or through y = 5, whichever comes first.
+    const atRight = startY + ((rect.maxX - startX) / (endX - startX)) * (endY - startY);
+    const atTop = startX + ((rect.maxY - startY) / (endY - startY)) * (endX - startX);
+    const onBoundary = (point: Point) =>
+      atRight <= rect.maxY
+        ? point[0] === rect.maxX && Math.abs(point[1] - atRight) < 1e-5
+        : point[1] === rect.maxY && Math.abs(point[0] - atTop) < 1e-5;
+    const first = clipped[2 * edge].filter(onBoundary);
+    const second = clipped[2 * edge + 1].filter(onBoundary);
+    expect(first.length, `edge ${edge} first ring`).toBe(1);
+    expect(second.length, `edge ${edge} second ring`).toBe(1);
+    // Bit for bit: a coverage clipped this way still matches vertex for vertex.
+    expect(second[0], `edge ${edge}`).toEqual(first[0]);
+    comparedPoints++;
+  });
+  expect(comparedPoints).toBe(sharedEdges.length);
   fixture.destroy();
 });

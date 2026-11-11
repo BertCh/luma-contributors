@@ -337,7 +337,7 @@ fn renderLayer(foreground: f32, background: f32, base: u32) -> f32 {
 }`,
         body: `var allFinite = true;
   ${statements.join('\n  ')}
-  blend[blendOffset + index] = select(getNaN(index), background, allFinite);`
+  blend[blendOffset + index] = select(getQuietNaN(index), background, allFinite);`
       })
     ];
     if (output.color || output.outputValidity) {

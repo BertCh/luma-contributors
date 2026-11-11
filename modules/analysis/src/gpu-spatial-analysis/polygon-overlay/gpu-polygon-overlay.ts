@@ -23,14 +23,15 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPUBoundedResultStatusPort,
   GPUPackedGeometryPort,
-  GPUPolygonGeometryPort
+  GPUPolygonGeometryPort,
+  GPURingCountStatusPort
 } from '../../analysis-core/contracts/index';
-import {GPU_TOPOLOGY_NONE} from '../geometry-topology/index';
 import {
   GPUSnapRoundedNoding,
   getGPUSnapRoundedNodingMaximumVertexCount,
@@ -126,22 +127,40 @@ export type GPUPolygonOverlayBoundaryPort = {
   };
 };
 
-/** Canonical, capacity-bounded polygon result of {@link GPUPolygonOverlay}. */
+/**
+ * Canonical, capacity-bounded polygon result of {@link GPUPolygonOverlay}.
+ *
+ * Features are polygons (one shell and its holes each); `status.count` counts them. The result is a
+ * Boolean combination of operand unions, so one output polygon can lie over several input features
+ * of each operand: it has no single source row, and `geometry` has no `sourceIds` (contributor
+ * contract rule 8). Provenance is per boundary edge (`boundary.operandIds`,
+ * `boundary.sourceFeatureIds`); to find the input features under an output polygon, join a point
+ * inside it (for example from `GPULabelPoint`) to each operand with `GPUPointInPolygonJoin`.
+ *
+ * **Breaking (2026-11-10):** `geometry.sourceIds` (it held the output row index) is removed, and
+ * `status.requiredCount`, which held the unclamped ring count, is removed: the unclamped feature
+ * count is not known when rings were dropped, so there is no feature requirement distinct from
+ * `count`. Size the ring capacity from `status.requiredRingCount`.
+ */
 export type GPUPolygonOverlayOutput = {
-  geometry: GPUPackedGeometryPort<GPUPolygonGeometryPort> & {
-    sourceIds: GraphDataView<'uint32'>;
-  };
-  status: GPUBoundedResultStatusPort & {
-    requiredCount: GraphDataView<'uint32'>;
-    candidateOverflow: GraphDataView<'uint32'>;
-    /**
-     * Optional one-row count of segment pairs the intersection predicates could not certify.
-     * They set `overflow` whether or not this view is given.
-     */
-    uncertainCount?: GraphDataView<'uint32'>;
-    /** Optional unclamped noded-piece requirement; exact when candidateOverflow is zero. */
-    nodedSegmentRequiredCount?: GraphDataView<'uint32'>;
-  };
+  geometry: Omit<GPUPackedGeometryPort<GPUPolygonGeometryPort>, 'sourceIds'>;
+  status: Omit<GPUBoundedResultStatusPort, 'requiredCount'> &
+    GPURingCountStatusPort & {
+      /**
+       * Optional one-row unclamped number of rings (shells plus holes) the assembly needed, which
+       * sizes every view of `geometry` (they share one ring capacity). `ringCount` (optional) is the
+       * number of rings written, at most the ring capacity.
+       */
+      requiredRingCount?: GraphDataView<'uint32'>;
+      candidateOverflow: GraphDataView<'uint32'>;
+      /**
+       * Optional one-row count of segment pairs the intersection predicates could not certify.
+       * They set `overflow` whether or not this view is given.
+       */
+      uncertainCount?: GraphDataView<'uint32'>;
+      /** Optional unclamped noded-piece requirement; exact when candidateOverflow is zero. */
+      nodedSegmentRequiredCount?: GraphDataView<'uint32'>;
+    };
   boundary: GPUPolygonOverlayBoundaryPort;
 };
 
@@ -178,11 +197,16 @@ export type GPUPolygonOverlayProps = {
   capacity: GPUPolygonOverlayCapacity;
   /**
    * Snap grid of the overlay. Every vertex and every crossing is rounded to a lattice of step
-   * `cell`, the smallest power of two that is at least `vertexTolerance` and at least 2^-22 of the
-   * input extent (the larger of the x and y extents of the finite vertices), anchored at a multiple
-   * of `cell` (a power-of-two `vertexTolerance` therefore reproduces shapely `grid_size`
-   * exactly). The result lies on that lattice: its vertices are lattice points, and edges closer
-   * than one cell collapse or merge. Finite and positive.
+   * `cell`, the smallest power of two that is at least `vertexTolerance`, at least 2^-22 of the
+   * input extent (the larger of the x and y extents of the finite vertices) and at least 2^-24 of
+   * the largest coordinate magnitude (one `float32` step there), anchored at a multiple of `cell`
+   * (a power-of-two `vertexTolerance` therefore reproduces shapely `grid_size` exactly whenever
+   * `float32` can store that grid at the coordinates of the data). The result lies on that
+   * lattice: its vertices are lattice points, every lattice point is a `float32` value, and edges
+   * closer than one cell collapse or merge. For data farther from zero than about four times its
+   * extent the last bound decides: at a projected northing of 4,000,000 the step is 0.25 to 0.5
+   * whatever the tolerance, so use coordinates relative to a local origin for a finer result.
+   * Finite and positive.
    */
   vertexTolerance: number;
   output: GPUPolygonOverlayOutput;
@@ -194,7 +218,7 @@ function validatePolygons(id: string, name: string, polygons: PackedPolygons): v
   if (polygons.kind !== 'polygons') {
     throw new Error(`${id} ${name}.kind must be polygons`);
   }
-  validatePackedView(polygons.positions, ['float32x2'], `${id} ${name}.positions`);
+  validateSinglePackedView(polygons.positions, ['float32x2'], `${id} ${name}.positions`);
   for (const [field, view] of [
     ['featureOffsets', polygons.featureOffsets],
     ['polygonOffsets', polygons.polygonOffsets],
@@ -254,8 +278,9 @@ function validateStatus(id: string, name: string, status: GPUPolygonOverlayOutpu
  * For valid pointwise lattice-rounded operands, the result equals GEOS OverlayNG with `grid_size`
  * applied to those operands (shapely on `set_precision` inputs).
  *
- * `output.status.requiredCount` is the unclamped number of rings (shells plus holes) the assembly
- * needed, so callers can size the ring capacity of `output.geometry`;
+ * The optional `output.status.requiredRingCount` is the unclamped number of rings (shells plus
+ * holes) the assembly needed, so callers can size the ring capacity of `output.geometry`; the
+ * optional `ringCount` is the number of rings written;
  * `output.boundary.status.requiredCount` is the unclamped selected-edge count. Optional
  * `output.status.nodedSegmentRequiredCount` reports the noder's unclamped piece requirement.
  * When boundary overflow is zero, positions need at most selected edges plus required rings
@@ -306,17 +331,20 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
       validateCapacity(id, `capacity.${name}`, value);
     }
     validatePolygons(id, 'output.geometry', output.geometry);
-    validatePackedUint32View(output.geometry.sourceIds, `${id} output.geometry.sourceIds`);
+    validateRequirement(
+      id,
+      (output.geometry as {sourceIds?: unknown}).sourceIds === undefined,
+      'output.geometry.sourceIds is not written: an overlay polygon has no single source row'
+    );
     const ringCapacity = output.geometry.ringOffsets.length - 1;
     if (
       output.geometry.polygonOffsets.length !== ringCapacity + 1 ||
-      output.geometry.featureOffsets.length !== ringCapacity + 1 ||
-      output.geometry.sourceIds.length !== ringCapacity
+      output.geometry.featureOffsets.length !== ringCapacity + 1
     ) {
-      throw new Error(`${id} output polygon offsets and source IDs must share one ring capacity`);
+      throw new Error(`${id} output polygon offsets must share one ring capacity`);
     }
     const boundary = output.boundary;
-    validatePackedView(boundary.endpoints, ['float32x4'], `${id} output.boundary.endpoints`);
+    validateSinglePackedView(boundary.endpoints, ['float32x4'], `${id} output.boundary.endpoints`);
     for (const [name, view] of [
       ['operandIds', boundary.operandIds],
       ['sourceFeatureIds', boundary.sourceFeatureIds]
@@ -350,7 +378,6 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
       output.geometry.featureOffsets,
       output.geometry.polygonOffsets,
       output.geometry.ringOffsets,
-      output.geometry.sourceIds,
       output.boundary.endpoints,
       output.boundary.operandIds,
       output.boundary.sourceFeatureIds,
@@ -437,8 +464,37 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
         {name: 'positions', view: combinedPositions, type: 'f32', access: 'read_write'}
       ],
       invocationCount: combinedVertexCount,
+      // Rows no ring owns (the closing slot of an empty ring, rows past the last ring) are
+      // padding. The noder measures its lattice frame over every row and flags every non-finite
+      // row, so padding must hold a stored vertex: never `positions[ringOffsets[last]]`, which no
+      // ring owns and which holds whatever the buffer held before (a reused transient, an unwritten
+      // fixed-capacity result row).
       declarations: `const LEFT_RING_COUNT: u32 = ${leftRingCount}u;
-const RING_COUNT: u32 = ${combinedRingCount}u;`,
+const RIGHT_RING_COUNT: u32 = ${rightRingCount}u;
+const RING_COUNT: u32 = ${combinedRingCount}u;
+fn getLeftVertex(row: u32) -> vec2f {
+  return vec2f(leftPositions[leftPositionsOffset + row * 2u], leftPositions[leftPositionsOffset + row * 2u + 1u]);
+}
+${
+  right
+    ? `fn getRightVertex(row: u32) -> vec2f {
+  return vec2f(rightPositions[rightPositionsOffset + row * 2u], rightPositions[rightPositionsOffset + row * 2u + 1u]);
+}`
+    : ''
+}
+// The first stored vertex of the left operand, else of the right operand, else the origin (both
+// operands are empty and the noder sees no segment).
+fn getPaddingVertex() -> vec2f {
+  let leftBegin = leftRingOffsets[leftRingOffsetsOffset];
+  if (leftRingOffsets[leftRingOffsetsOffset + LEFT_RING_COUNT] > leftBegin) { return getLeftVertex(leftBegin); }
+  ${
+    right
+      ? `let rightBegin = rightRingOffsets[rightRingOffsetsOffset];
+  if (rightRingOffsets[rightRingOffsetsOffset + RIGHT_RING_COUNT] > rightBegin) { return getRightVertex(rightBegin); }`
+      : ''
+  }
+  return vec2f(0.0);
+}`,
       body: `var combinedRing = 0u;
   var high = RING_COUNT;
   while (combinedRing + 1u < high) {
@@ -447,29 +503,30 @@ const RING_COUNT: u32 = ${combinedRingCount}u;`,
   }
   let fromLeft = combinedRing < LEFT_RING_COUNT;
   let ring = select(combinedRing - LEFT_RING_COUNT, combinedRing, fromLeft);
-  let destinationBegin = combinedOffsets[combinedOffsetsOffset + combinedRing];
-  let outputBase = positionsOffset + index * 2u;
+  let local = index - combinedOffsets[combinedOffsetsOffset + combinedRing];
+  var point = vec2f(0.0);
+  var sourceBegin = 0u;
+  var sourceEnd = 0u;
   if (fromLeft) {
-    let sourceBegin = leftRingOffsets[leftRingOffsetsOffset + ring];
-    let sourceEnd = leftRingOffsets[leftRingOffsetsOffset + ring + 1u];
-    let local = index - destinationBegin;
-    let sourceRow = select(sourceBegin + local, sourceBegin, local >= sourceEnd - sourceBegin);
-    let input = leftPositionsOffset + sourceRow * 2u;
-    positions[outputBase] = leftPositions[input];
-    positions[outputBase + 1u] = leftPositions[input + 1u];
+    sourceBegin = leftRingOffsets[leftRingOffsetsOffset + ring];
+    sourceEnd = leftRingOffsets[leftRingOffsetsOffset + ring + 1u];
   }${
     right
       ? ` else {
-    let sourceBegin = rightRingOffsets[rightRingOffsetsOffset + ring];
-    let sourceEnd = rightRingOffsets[rightRingOffsetsOffset + ring + 1u];
-    let local = index - destinationBegin;
-    let sourceRow = select(sourceBegin + local, sourceBegin, local >= sourceEnd - sourceBegin);
-    let input = rightPositionsOffset + sourceRow * 2u;
-    positions[outputBase] = rightPositions[input];
-    positions[outputBase + 1u] = rightPositions[input + 1u];
+    sourceBegin = rightRingOffsets[rightRingOffsetsOffset + ring];
+    sourceEnd = rightRingOffsets[rightRingOffsetsOffset + ring + 1u];
   }`
       : ''
-  }`
+  }
+  if (sourceEnd > sourceBegin) {
+    // Ring vertices, then the ring's first vertex for the closing slot and any row after it.
+    let sourceRow = select(sourceBegin + local, sourceBegin, local >= sourceEnd - sourceBegin);
+    ${right ? 'if (fromLeft) { point = getLeftVertex(sourceRow); } else { point = getRightVertex(sourceRow); }' : 'point = getLeftVertex(sourceRow);'}
+  } else {
+    point = getPaddingVertex();
+  }
+  positions[positionsOffset + index * 2u] = point.x;
+  positions[positionsOffset + index * 2u + 1u] = point.y;`
     });
 
     const rightTopologyBindings = right
@@ -1213,6 +1270,27 @@ const NODED_CAPACITY: u32 = ${capacity}u;`
     const ringCount = transient('ring-count', 'uint32', 1);
     const ringRequiredCount = transient('ring-required-count', 'uint32', 1);
     const ringOverflow = transient('ring-overflow', 'uint32', 1);
+    // Optional ring-level status (rule 8 names), copied from the assembly's ring scalars.
+    const ringStatusOutputs = [
+      ['ringCount', 'ringCountInput', output.status.ringCount, ringCount],
+      [
+        'requiredRingCount',
+        'ringRequiredCountInput',
+        output.status.requiredRingCount,
+        ringRequiredCount
+      ]
+    ] as const;
+    const ringStatusBindings = ringStatusOutputs.flatMap(([name, inputName, view, source]) =>
+      view ? [read(inputName, source), write(name, view)] : []
+    );
+    const ringStatusBody = ringStatusOutputs
+      .flatMap(([name, inputName, view]) =>
+        view ? [`${name}[${name}Offset] = ${inputName}[${inputName}Offset];`] : []
+      )
+      .join('\n  ');
+    const ringStatusVariant = ringStatusOutputs.some(([, , view]) => view)
+      ? `-${ringStatusOutputs.map(([, , view]) => (view ? 1 : 0)).join('')}`
+      : '';
     nodes.push(
       ...new GPUSegmentRingAssembly({
         id: `${id}-assemble`,
@@ -1252,24 +1330,6 @@ const NODED_CAPACITY: u32 = ${capacity}u;`
         `const RING_CAPACITY: u32 = ${ringCapacity}u;`
       ),
       kernel(
-        'source-ids',
-        [
-          read('featureOffsets', output.geometry.featureOffsets),
-          write('sourceIds', output.geometry.sourceIds),
-          read('ringRequiredCount', ringRequiredCount),
-          write('requiredCount', output.status.requiredCount)
-        ],
-        Math.max(1, output.geometry.sourceIds.length),
-        `if (index == 0u) { requiredCount[requiredCountOffset] = ringRequiredCount[ringRequiredCountOffset]; }
-  let featureCount = featureOffsets[featureOffsetsOffset + RING_CAPACITY];
-  if (index < SOURCE_CAPACITY) {
-    sourceIds[sourceIdsOffset + index] = select(NONE, index, index < featureCount);
-  }`,
-        `const RING_CAPACITY: u32 = ${ringCapacity}u;
-const SOURCE_CAPACITY: u32 = ${output.geometry.sourceIds.length}u;
-const NONE: u32 = ${GPU_TOPOLOGY_NONE}u;`
-      ),
-      kernel(
         'publish',
         [
           read('featureOffsets', output.geometry.featureOffsets),
@@ -1289,6 +1349,10 @@ const NONE: u32 = ${GPU_TOPOLOGY_NONE}u;`
         `const RING_CAPACITY: u32 = ${ringCapacity}u;`
       )
     );
+    // A separate node, so the publish kernel stays within the storage-binding limit.
+    if (ringStatusBindings.length > 0) {
+      nodes.push(kernel(`ring-status${ringStatusVariant}`, ringStatusBindings, 1, ringStatusBody));
+    }
     return nodes;
   }
 

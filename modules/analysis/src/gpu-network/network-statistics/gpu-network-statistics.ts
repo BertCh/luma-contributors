@@ -15,7 +15,7 @@ import {createLoadBalancedSegmentSumNodes} from '../../analysis-core/kernels/loa
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -239,6 +239,13 @@ const MAXIMUM_PRIVATE_HISTOGRAM_WORDS = 1024;
  * bins each. Undirected: in = out = total = live row length, with a self-loop adding 2 (networkx).
  * Directed: total = in + out. Degree statistics cover live nodes only.
  *
+ * Self-loop rule: an undirected self-loop, stored as one slot, adds 2 to the degree of its node.
+ * This is the volume rule of modularity (networkx `degree`, luma.gl `GPUGraphAlgorithmsModularity`),
+ * and the degree words here feed that formula. The `degree` column of `GPUNetworkAnalyticsColumns`
+ * counts the stored slot once instead (the rule of luma.gl `GPUGraphAlgorithmsDegree`), so the two
+ * differ by the self-loop count of a node. Directed, both count a self-loop slot once in each of
+ * the in-degree and the out-degree.
+ *
  * Degrees are not computed with `GPUGraphAlgorithmsDegree`: that algorithm subtracts CSR offsets, which
  * counts every stored slot, while statistics need the live degree after per-node and per-slot
  * masks (a masked CSR would need new offsets from a prefix sum), and the directed in-degree is a
@@ -304,7 +311,7 @@ export class GPUNetworkStatistics implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length !== length) {
         throw new Error(
           `${id} ${name} must contain one row per ${name === 'edgeMask' ? 'neighbor slot' : 'node'}`
@@ -312,12 +319,12 @@ export class GPUNetworkStatistics implements GPUCommandNodeProducer {
       }
     }
     if (props.parameters) {
-      validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
       if (props.parameters.length < GPU_NETWORK_STATISTICS_PARAMETER_LENGTH) {
         throw new Error(`${id} parameters must contain at least two uint32 rows`);
       }
     }
-    validatePackedView(props.output, ['uint32'], `${id} output`);
+    validateSinglePackedView(props.output, ['uint32'], `${id} output`);
     if (props.output.length !== getGPUNetworkStatisticsLength(this.degreeBinCount)) {
       throw new Error(
         `${id} output must contain exactly ${getGPUNetworkStatisticsLength(this.degreeBinCount)} rows`

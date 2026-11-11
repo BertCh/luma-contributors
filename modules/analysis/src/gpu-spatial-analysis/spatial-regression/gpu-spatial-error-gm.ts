@@ -18,7 +18,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSpatialWeightsOrChunksViews,
@@ -68,6 +68,8 @@ import {
   GET_NAN_WGSL,
   IS_FINITE_VALUE_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
+import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 
 const OPERATION = 'GPUSpatialErrorGM';
 const TILE_WORKGROUP_SIZE = 64;
@@ -101,7 +103,11 @@ export type GPUSpatialErrorGMOutput = {
   table: GraphDataView<'float32'>;
   /** At least 13 float32 values; see the `GPU_SPATIAL_ERROR_GM_SUMMARY_*` slots. */
   summary: GraphDataView<'float32'>;
-  /** Optional per-row residuals `u = y - X b` (spreg `u`); NaN for a failed fit. */
+  /**
+   * Optional per-row residuals `u = y - X b` (spreg `u`); NaN for a failed fit. Formed in the
+   * centered model as `(y - ybar) - a0 - (x - xbar) b`, so they keep their float32 accuracy when
+   * the response mean is far above them.
+   */
   residuals?: GraphDataView<'float32'>;
 };
 
@@ -175,7 +181,14 @@ export type GPUSpatialErrorGMProps = {
  *    (the filtered constant `1 - lambda * sum_j w_ij` is a column, as spreg `get_spFilter`). Columns
  *    and response are centered before filtering, which keeps float32 normal equations well
  *    conditioned (exactly equivalent by shift equivariance); intercept and its variance are mapped
- *    back to the uncentered model.
+ *    back to the uncentered model. Every difference of a value and its mean is fixed with
+ *    `getRoundedDifference`: the shader compiler of the test GPU otherwise regroups the filtered
+ *    residual `(y - ybar) - lambda W (y - ybar) - f b` around the mean, which rounded each one to
+ *    a float32 step of the response (`sigma2` 6% high for residuals of 0.002 around 10,000). The
+ *    reported residuals `u = y - X b` are formed in the same centered model. The first-stage
+ *    residuals come from `GPUOrdinaryLeastSquares`, which carries the part of the response mean
+ *    that float32 cannot hold; before it did, the common offset of those residuals read as
+ *    spatial dependence (`lambda` 0.19 against 0.06 on the same data).
  *
  * `estimator: 'kelejian-prucha'` is spreg `GM_Error`: the moments are `G [lambda, lambda^2,
  * sigma2]' = g` with `G = [[2 u'Wu, -(Wu)'Wu, 1], [2 (Wu)'WWu, -(WWu)'WWu, tr(W'W) / n],
@@ -205,7 +218,7 @@ export type GPUSpatialErrorGMProps = {
  * correlation condition number, largest variance inflation factor, and a precision warning above
  * `GPU_REGRESSION_PRECISION_CONDITION_LIMIT`); a warning never changes `status`.
  *
- * All accumulations use the fixed-order tile and Kahan-merge scheme of `GPUOrdinaryLeastSquares`,
+ * All accumulations use the fixed-order tile and pairwise-merge scheme of `GPUOrdinaryLeastSquares`,
  * so results are deterministic; nothing is read back. Up to 15 predictors (the OLS limit, the
  * 16-wide Cholesky); no kernel binds more than 8 storage buffers. Not included: `GM_Error_Het`
  * and the Kelejian-Prucha weighted estimator.
@@ -247,30 +260,30 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
       // The homoskedastic estimator needs the Gram traces of W, which need W' (no chunked transpose).
       throw new Error(`${id} homoskedastic estimator needs whole weights`);
     }
-    validatePackedView(props.predictors, ['float32'], `${id} predictors`);
-    validatePackedView(props.response, ['float32'], `${id} response`);
+    validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
+    validateSinglePackedView(props.response, ['float32'], `${id} response`);
     if (props.response.length !== rows) {
       throw new Error(`${id} response length must equal the weights row count`);
     }
     if (props.predictors.length !== rows * predictorCount) {
       throw new Error(`${id} predictors length must equal the weights row count * predictorCount`);
     }
-    validatePackedView(output.table, ['float32'], `${id} output.table`);
+    validateSinglePackedView(output.table, ['float32'], `${id} output.table`);
     if (output.table.length < (predictorCount + 2) * GPU_SPATIAL_ERROR_GM_TABLE_STRIDE) {
       throw new Error(`${id} output.table must hold (predictorCount + 2) * 4 float32 values`);
     }
-    validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
     if (output.summary.length < GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH) {
       throw new Error(
         `${id} output.summary must hold ${GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH} float32 values`
       );
     }
-    validatePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
+    validateSinglePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
     if (output.status.code.length < 1) {
       throw new Error(`${id} output.status.code must hold one uint32 row`);
     }
     if (output.residuals) {
-      validatePackedView(output.residuals, ['float32'], `${id} output.residuals`);
+      validateSinglePackedView(output.residuals, ['float32'], `${id} output.residuals`);
       if (output.residuals.length < rows) {
         throw new Error(`${id} output.residuals must hold one row per input row`);
       }
@@ -317,9 +330,10 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
     const meanCount = k + 1;
     // Workspace slots: means (k), response mean, lambda, objective, intercept, betas (q), then the
     // bound, the final lambda and objective, the approximation flag, the final moment matrix
-    // (A0 A1 B0 B1), the trace terms (tr11 tr12 tr22 diag), and the final power sums.
+    // (A0 A1 B0 B1), the trace terms (tr11 tr12 tr22 diag), the final power sums, and a zero
+    // written at run time by the means merge (the runtime zero of getRoundedDifference).
     const boundSlot = k + 4 + q;
-    const workspaceLength = boundSlot + 15;
+    const workspaceLength = boundSlot + 16;
     const transient = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);
     const olsResiduals = transient('ols-residuals', rowCount);
@@ -366,15 +380,13 @@ const W_OBJECTIVE_FINAL: u32 = ${boundSlot + 2}u;
 const W_APPROXIMATION: u32 = ${boundSlot + 3}u;
 const W_MOMENT_MATRIX: u32 = ${boundSlot + 4}u;
 const W_TRACE_TERMS: u32 = ${boundSlot + 8}u;
-const W_POWER_SUMS: u32 = ${boundSlot + 12}u;`;
-    const mergeLoop = (stride: number) => `var sum = 0.0;
-  var compensation = 0.0;
-  for (var tile = 0u; tile < TILE_COUNT; tile++) {
-    let term = partial[partialOffset + tile * ${stride}u + index] - compensation;
-    let next = sum + term;
-    compensation = (next - sum) - term;
-    sum = next;
-  }`;
+const W_POWER_SUMS: u32 = ${boundSlot + 12}u;
+const W_RUNTIME_ZERO: u32 = ${boundSlot + 15}u;`;
+    const mergeLoop = (stride: number) =>
+      getPairwiseSumWGSL({
+        count: 'TILE_COUNT',
+        term: `partial[partialOffset + sumItem * ${stride}u + index]`
+      });
     const f32 = (name: string, view: GraphDataView, access: 'read' | 'read_write') =>
       ({name, view, type: 'f32', access}) as WGSLKernelBinding;
     const getWeightBindings = (chunkWeights: GPUSpatialWeights): WGSLKernelBinding[] => [
@@ -566,7 +578,11 @@ ${getCholeskyWGSL(q)}`;
         meanCount,
         constants,
         `${mergeLoop(meanCount)}
-  workspace[workspaceOffset + index] = sum / f32(ROWS);`
+  workspace[workspaceOffset + index] = sum / f32(ROWS);
+  if (index == 0u) {
+    // A zero the compiler cannot see: the runtime zero of getRoundedDifference.
+    workspace[workspaceOffset + W_RUNTIME_ZERO] = 0.0;
+  }`
       ),
       // ||W||_inf, the largest absolute row sum, bounds lambda by 0.99 / ||W||_inf.
       ...tileKernel(
@@ -691,6 +707,7 @@ ${getSolveWGSL(q, 'filteredMoments', 'solveFiltered', false)}`,
         ],
         filteredDeclarations,
         `let lambda = workspace[workspaceOffset + W_LAMBDA];
+  let runtimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
   let firstRow = index * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROWS);
   var sums: array<f32, ${RESIDUAL_SUM_COUNT}>;
@@ -699,15 +716,19 @@ ${getSolveWGSL(q, 'filteredMoments', 'solveFiltered', false)}`,
     var ys = 0.0;
     getFilteredRow(row, lambda, &f, &ys);
     var filtered = ys;
-    var predicted = workspace[workspaceOffset + W_INTERCEPT];
     for (var column = 0u; column < Q; column++) {
       filtered -= f[column] * workspace[workspaceOffset + W_BETA + column];
     }
+    // u = y - X b in the centered form (y - ybar) - a0 - (x - xbar) b, with a0 the intercept of
+    // the centered model: y - (intercept + x b) would round every residual to a float32 step of
+    // the response. Each difference from a mean is fixed with getRoundedDifference, because the
+    // shader compiler of the test GPU otherwise regroups the chain around the mean.
+    let centeredResponse = getRoundedDifference(response[responseOffset + row], workspace[workspaceOffset + W_YBAR], runtimeZero);
+    var residual = centeredResponse - workspace[workspaceOffset + W_BETA];
     for (var column = 0u; column < K; column++) {
-      predicted += design[designOffset + row * K + column] * workspace[workspaceOffset + W_BETA + 1u + column];
+      residual -= getRoundedDifference(design[designOffset + row * K + column], workspace[workspaceOffset + column], runtimeZero)
+        * workspace[workspaceOffset + W_BETA + 1u + column];
     }
-    let residual = response[responseOffset + row] - predicted;
-    let centeredResponse = response[responseOffset + row] - workspace[workspaceOffset + W_YBAR];
     residualsOut[residualsOutOffset + row] = residual;
     sums[0] += filtered * filtered;
     sums[1] += residual;
@@ -860,8 +881,13 @@ ${getFinishWGSL(k, homoskedastic)}`,
  */
 function getFilteredRowWGSL(): string {
   return /* wgsl */ `
+${ROUNDED_DIFFERENCE_WGSL}
+// Every difference of a value and its mean goes through getRoundedDifference: the shader
+// compiler of the test GPU otherwise regroups (y - mean) - lambda * lag - f * b as
+// y - (mean + ...), which rounds the filtered residual to a float32 step of the response.
 fn getFilteredRow(row: u32, lambda: f32, f: ptr<function, array<f32, Q>>, ys: ptr<function, f32>) {
   let responseMean = workspace[workspaceOffset + W_YBAR];
+  let runtimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
   var rowSum = 0.0;
   var lagResponse = 0.0;
   var lagged: array<f32, K>;
@@ -872,17 +898,17 @@ fn getFilteredRow(row: u32, lambda: f32, f: ptr<function, array<f32, Q>>, ys: pt
     }
     let weight = weights[weightsOffset + slot];
     rowSum += weight;
-    lagResponse += weight * (response[responseOffset + neighbor] - responseMean);
+    lagResponse += weight * getRoundedDifference(response[responseOffset + neighbor], responseMean, runtimeZero);
     for (var column = 0u; column < K; column++) {
-      lagged[column] += weight * (design[designOffset + neighbor * K + column] - workspace[workspaceOffset + column]);
+      lagged[column] += weight * getRoundedDifference(design[designOffset + neighbor * K + column], workspace[workspaceOffset + column], runtimeZero);
     }
   }
   (*f)[0] = 1.0 - lambda * rowSum;
   for (var column = 0u; column < K; column++) {
-    let centered = design[designOffset + row * K + column] - workspace[workspaceOffset + column];
+    let centered = getRoundedDifference(design[designOffset + row * K + column], workspace[workspaceOffset + column], runtimeZero);
     (*f)[1u + column] = centered - lambda * lagged[column];
   }
-  *ys = (response[responseOffset + row] - responseMean) - lambda * lagResponse;
+  *ys = getRoundedDifference(response[responseOffset + row], responseMean, runtimeZero) - lambda * lagResponse;
 }
 `;
 }

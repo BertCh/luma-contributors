@@ -34,3 +34,9 @@ export {
   GPU_INEQUALITY_PARAMETER_LENGTH
 } from './inequality-parameters';
 export type {GPUInequalitySettings} from './inequality-parameters';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {computeInequalityOnCPU, CPUInequalityOperation} from './cpu-inequality-operation';
+export type {CPUInequalityInput, CPUInequalityResult} from './cpu-inequality-operation';
+export {GPUInequalityOperation} from './gpu-inequality-operation';
+export type {InequalityOperationProps} from './gpu-inequality-operation';

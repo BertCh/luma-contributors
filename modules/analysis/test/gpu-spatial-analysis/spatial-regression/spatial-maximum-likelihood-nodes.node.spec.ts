@@ -16,6 +16,7 @@ import {
 import {createSeriesProbeNodes} from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-maximum-likelihood-nodes';
 import {
   createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
   getGPUCommandNodePipelineKeys
 } from '../../utils/gpu-contributor-test-utils';
 
@@ -86,10 +87,18 @@ it('GPUSpatialLagMaximumLikelihood validates its inputs and declares its nodes',
   expect(lag.maximumPower).toBe(4);
   const names = lag.getCommandNodes(graph).map(node => node.id.replace('lag-', ''));
   expect(names.filter(name => !name.startsWith('ols-') && !name.startsWith('traces-'))).toEqual([
-    'lagged-response-tiles',
+    // The means come first: the lag of the response is formed about its mean.
     'means-tiles',
     'means-merge',
+    // W (y - ybar) with the exact row sums, the row sum it is formed about, and the lag column.
+    'lagged-response-tiles',
+    'row-sum-merge',
+    'lagged-response-shift',
     'moments-tiles',
+    // rho0 and the residual sum of squares at rho0 summed per row: the search does not
+    // difference e0'e0 - 2 rho e0'e1 + rho^2 e1'e1.
+    'moments-merge',
+    'direct-moments-tiles',
     'rho-search',
     'solve-coefficients',
     'residuals',
@@ -97,6 +106,9 @@ it('GPUSpatialLagMaximumLikelihood validates its inputs and declares its nodes',
     'inverse-series-2',
     'inverse-series-3',
     'weighted-prediction',
+    // The mean of W A X b, about which the rho column of the information matrix is centered.
+    'weighted-mean-tiles',
+    'weighted-mean-merge',
     'final-moments-tiles',
     'final-merge',
     'tr3-batch-information',
@@ -111,6 +123,29 @@ it('GPUSpatialLagMaximumLikelihood validates its inputs and declares its nodes',
   expect(names.filter(name => name.startsWith('ols-response-')).length).toBeGreaterThan(0);
   expect(names.filter(name => name.startsWith('ols-lagged-')).length).toBeGreaterThan(0);
   expect(names.some(name => name.startsWith('traces-'))).toBe(true);
+});
+
+it('GPUSpatialLagMaximumLikelihood checks its first-order condition with ratios and keeps rho in workspace slot 2', () => {
+  const {graph, createProps} = createFixtures();
+  const kernels = getGPUCommandNodeKernelSources(
+    new GPUSpatialLagMaximumLikelihood({
+      ...createProps(),
+      id: 'lag',
+      maximumPower: 4
+    }).getCommandNodes(graph)
+  );
+  const search = kernels.find(kernel => kernel.id === 'lag-rho-search')!;
+  const finish = kernels.find(kernel => kernel.id === 'lag-finish')!;
+  // math-review-lag-conditioning.spec.ts displaces the searched rho through this slot.
+  expect(search.source).toContain('const W_PARAMETER: u32 = 2u;');
+  // The check forms u'e1 / u'u and e1'e1 / u'u before anything is multiplied: the squares of
+  // two sums overflowed float32 for a response of 1e10 (frc2-regression-02).
+  expect(finish.source).toContain('let laggedRatio =');
+  expect(finish.source).not.toContain('residualSquares * residualSquares');
+  expect(finish.source).not.toContain('score * score');
+  // A constant sum of squares (e1'e1 = 0) and a zero minimum outside the interval are searched.
+  expect(search.source).toContain('laggedSquares >= 0.0');
+  expect(search.source).toContain('minimizerOutside');
 });
 
 it('GPUSpatialLagMaximumLikelihood accepts its predictor cap and no kernel exceeds 8 bindings', () => {
@@ -189,6 +224,9 @@ it('GPUSpatialErrorMaximumLikelihood validates its inputs and declares its nodes
     'weights-norm-tiles',
     'means-tiles',
     'means-merge',
+    'ols-tiles',
+    'ols-merge',
+    'ols-solve',
     'gram-tiles-0',
     'gram-tiles-1',
     'gram-tiles-2',

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
+import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {LON_LAT_RING_WGSL} from '../../analysis-core/lon-lat-ring-wgsl';
 import type {GPUStatusScalar} from '../../analysis-core/contracts/index';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
@@ -12,6 +12,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPULineCoordinateSystem} from './line-segmentize-types';
 import {BALANCED_SEARCH_WORKGROUP_SIZE, getBalancedSearchSource} from './balanced-search';
 
@@ -71,6 +72,10 @@ fn getSegmentLength(a: vec2<f32>, b: vec2<f32>) -> f32 {
 `;
 }
 
+// The exact rounding error of an f32 addition lives in analysis-core (shared by every compensated
+// serial sum); it is re-exported here under its original name for the line family's importers.
+export {ADDITION_ROUNDING_ERROR_WGSL};
+
 /** Properties for {@link createLinePrefixNode}. @internal */
 export type LinePrefixNodeProps = {
   /** Preserve degree-plane pole edges and use spherical angular extents for polygon preparation. */
@@ -102,8 +107,9 @@ const PREFIX_LANES = 64;
  *
  * Block hybrid: workgroup `w` owns lines `[PREFIX_LANES * w, PREFIX_LANES * w + PREFIX_LANES)`.
  * Phase 1: every lane walks its own line serially when it has at most `PREFIX_LANES` rows, with a
- * Neumaier-compensated f32 sum in row order (deterministic, and bit-identical to the former
- * one-thread-per-line kernel); longer lines are queued. Phase 2: the workgroup visits the queued
+ * Neumaier-compensated f32 sum in row order (deterministic); longer lines are queued. The
+ * correction term comes from {@link ADDITION_ROUNDING_ERROR_WGSL}, because the float form of it
+ * is removed by shader compilers that reassociate. Phase 2: the workgroup visits the queued
  * lines of its block in ascending order and scans each cooperatively in tiles of `PREFIX_LANES`
  * segments: each tile is a Hillis-Steele inclusive scan in workgroup memory, and the running total
  * carries between tiles in compensated form. That cuts the dependent chain of a line of `n` rows
@@ -119,7 +125,11 @@ export function createLinePrefixNode<Parameters>(
   props: LinePrefixNodeProps
 ): GPUCommandNode<Parameters> {
   // Select one prefix representation; integer turns never accumulate unwrapped float32 positions.
-  assert(!(props.rowTurns && props.rowShifts));
+  validateRequirement(
+    props.id,
+    !(props.rowTurns && props.rowShifts),
+    'line prefix takes rowTurns or rowShifts, not both'
+  );
   const shiftView = props.rowTurns ?? props.rowShifts;
   const shiftType = props.rowTurns ? 'i32' : 'f32';
   const shiftZero = props.rowTurns ? '0i' : '0.0';
@@ -177,6 +187,7 @@ var<workgroup> prefixCarry: array<f32, 3>;
 var<workgroup> tileLengths: array<f32, ${PREFIX_LANES}>;
 var<workgroup> tileShifts: array<${shiftType}, ${PREFIX_LANES}>;
 ${props.rowTurns ? 'var<workgroup> turnCarry: array<i32, 1>;' : ''}
+${ADDITION_ROUNDING_ERROR_WGSL}
 ${getLineGeometrySource(props.coordinateSystem, props.radius)}
 ${props.polygonEdges ? LON_LAT_RING_WGSL : ''}`,
     body: /* wgsl */ `let lane = localInvocationIndex;
@@ -200,11 +211,7 @@ ${props.polygonEdges ? LON_LAT_RING_WGSL : ''}`,
             rowMeasures
               ? `let segmentLength = getSegmentLength(previous, current);
           let nextSum = sum + segmentLength;
-          if (abs(sum) >= abs(segmentLength)) {
-            compensation = compensation + ((sum - nextSum) + segmentLength);
-          } else {
-            compensation = compensation + ((segmentLength - nextSum) + sum);
-          }
+          compensation = compensation + getAdditionRoundingError(sum, segmentLength, nextSum);
           sum = nextSum;
           rowMeasures[rowMeasuresOffset + row] = sum + compensation;`
               : ''
@@ -280,11 +287,7 @@ ${props.polygonEdges ? LON_LAT_RING_WGSL : ''}`,
           let total = tileLengths[PREFIX_LANES - 1u];
           let sum = prefixCarry[0];
           let nextSum = sum + total;
-          if (abs(sum) >= abs(total)) {
-            prefixCarry[1] += (sum - nextSum) + total;
-          } else {
-            prefixCarry[1] += (total - nextSum) + sum;
-          }
+          prefixCarry[1] += getAdditionRoundingError(sum, total, nextSum);
           prefixCarry[0] = nextSum;
           ${shiftCarry} += tileShifts[PREFIX_LANES - 1u];
         }
@@ -355,10 +358,12 @@ export function createSegmentizeCountNode<Parameters>(
 ): GPUCommandNode<Parameters> {
   const parameterIndex = props.parameterIndex ?? 0;
   // The parameter index belongs to the caller's packed layout.
-  assert(
+  validateRequirement(
+    props.id,
     Number.isInteger(parameterIndex) &&
       parameterIndex >= 0 &&
-      parameterIndex < props.parameters.length
+      parameterIndex < props.parameters.length,
+    `parameterIndex must be an integer in [0, ${props.parameters.length - 1}]`
   );
   const greatCircle =
     (props.interpolation ??
@@ -493,8 +498,16 @@ export function createSegmentizeEmitNode<Parameters>(
   props: SegmentizeEmitNodeProps
 ): GPUCommandNode<Parameters> {
   // Closed edge lookup needs the owning line; turn output has one element per position.
-  assert(!props.closedLines || props.lineOffsets);
-  assert(!props.outputTurns || props.outputTurns.length >= props.outputPositions.length);
+  validateRequirement(
+    props.id,
+    !props.closedLines || props.lineOffsets !== undefined,
+    'closedLines needs lineOffsets'
+  );
+  validateRequirement(
+    props.id,
+    !props.outputTurns || props.outputTurns.length >= props.outputPositions.length,
+    `outputTurns must have at least ${props.outputPositions.length} rows (one per output position)`
+  );
   const interpolation =
     props.interpolation ?? (props.coordinateSystem === 'spherical' ? 'great-circle' : 'planar');
   const spherical = interpolation === 'great-circle';
@@ -893,15 +906,16 @@ export type LineOffsetsPublishNodeProps = {
   starts: GraphDataView<'uint32'>;
   outputLineOffsets: GraphDataView<'uint32'>;
   capacity: number;
-  count: GraphDataView<'uint32'>;
   overflow: GraphDataView<'uint32'>;
-  requiredCount?: GraphDataView<'uint32'>;
-  lineCountOutput?: GraphDataView<'uint32'>;
+  /** Optional clamped vertex count, `min(total, capacity)`. */
+  vertexCount?: GraphDataView<'uint32'>;
+  /** Optional unclamped vertex total. */
+  requiredVertexCount?: GraphDataView<'uint32'>;
 };
 
 /**
- * Writes clamped output line offsets from the scanned row starts, plus the clamped vertex count,
- * the overflow flag, and the optional unclamped total and line count. Every word is rewritten.
+ * Writes clamped output line offsets from the scanned row starts, the overflow flag, and the
+ * optional clamped and unclamped vertex counts. Every word is rewritten.
  *
  * @internal
  */
@@ -927,7 +941,6 @@ export function createLineOffsetsPublishNode<Parameters>(
       type: 'u32',
       access: 'read_write'
     },
-    {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {
       name: 'overflowOut',
       view: props.overflow,
@@ -935,18 +948,18 @@ export function createLineOffsetsPublishNode<Parameters>(
       access: 'read_write'
     }
   );
-  if (props.requiredCount) {
+  if (props.vertexCount) {
     bindings.push({
-      name: 'totalOut',
-      view: props.requiredCount,
+      name: 'vertexCountOut',
+      view: props.vertexCount,
       type: 'u32',
       access: 'read_write'
     });
   }
-  if (props.lineCountOutput) {
+  if (props.requiredVertexCount) {
     bindings.push({
-      name: 'lineCountOut',
-      view: props.lineCountOutput,
+      name: 'totalOut',
+      view: props.requiredVertexCount,
       type: 'u32',
       access: 'read_write'
     });
@@ -961,8 +974,7 @@ export function createLineOffsetsPublishNode<Parameters>(
     bindings,
     invocationCount: props.lineCount + 1,
     declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;
-const CAPACITY: u32 = ${props.capacity}u;
-const LINE_COUNT: u32 = ${props.lineCount}u;`,
+const CAPACITY: u32 = ${props.capacity}u;`,
     body: /* wgsl */ `let total = starts[startsOffset + ROW_COUNT - 1u] + counts[countsOffset + ROW_COUNT - 1u];
   let row = ${lineRow};
   var start = total;
@@ -971,10 +983,9 @@ const LINE_COUNT: u32 = ${props.lineCount}u;`,
   }
   outputLineOffsets[outputLineOffsetsOffset + index] = min(start, CAPACITY);
   if (index == 0u) {
-    countOut[countOutOffset] = min(total, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
-    ${props.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
-    ${props.lineCountOutput ? 'lineCountOut[lineCountOutOffset] = LINE_COUNT;' : ''}
+    ${props.vertexCount ? 'vertexCountOut[vertexCountOutOffset] = min(total, CAPACITY);' : ''}
+    ${props.requiredVertexCount ? 'totalOut[totalOutOffset] = total;' : ''}
   }`
   });
 }

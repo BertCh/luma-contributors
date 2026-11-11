@@ -15,7 +15,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -201,6 +201,12 @@ function getSecondFieldSamplingWGSL(bindingName: string, width: number, height: 
  *
  * Reference: the definitions of Lagrangian diagnostics in lcs-parcels (MIT) and the OceanParcels
  * Lagrangian_diags tutorial; tests use a binary64 CPU reference and linear flows with a closed form.
+ *
+ * Row direction: every field raster places row 0 at the smallest y (`originY` of its extent) and
+ * rows advance toward larger y; `v` is the velocity toward larger y. No grid affine is read and
+ * nothing is checked at construction. A north-up field (row 0 at the top, the usual raster order)
+ * must have its row order reversed by the caller before upload, or the flow is mirrored north to
+ * south. Following a grid affine is deferred (roadmap 12.4).
  */
 export class GPULagrangianFlowMap implements GPUCommandNodeProducer {
   /** Prefix for graph node IDs. */
@@ -217,12 +223,12 @@ export class GPULagrangianFlowMap implements GPUCommandNodeProducer {
     validateCapacity(id, 'fieldHeight', fieldHeight, 1, 65535);
     validateCapacity(id, 'stepCount', stepCount);
     validateMaximumCount(id, 'stepCount', stepCount, GPU_LAGRANGIAN_FLOW_MAP_MAXIMUM_STEP_COUNT);
-    validatePackedView(props.seeds, ['float32x2'], `${id} seeds`);
-    validatePackedView(props.velocitiesStart, ['float32x2'], `${id} velocitiesStart`);
-    validatePackedView(props.velocitiesEnd, ['float32x2'], `${id} velocitiesEnd`);
+    validateSinglePackedView(props.seeds, ['float32x2'], `${id} seeds`);
+    validateSinglePackedView(props.velocitiesStart, ['float32x2'], `${id} velocitiesStart`);
+    validateSinglePackedView(props.velocitiesEnd, ['float32x2'], `${id} velocitiesEnd`);
     validateViewLength(id, 'velocitiesStart', props.velocitiesStart, fieldWidth * fieldHeight);
     validateViewLength(id, 'velocitiesEnd', props.velocitiesEnd, fieldWidth * fieldHeight);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       props.parameters.length >= GPU_LAGRANGIAN_FLOW_MAP_PARAMETER_LENGTH,
@@ -230,10 +236,10 @@ export class GPULagrangianFlowMap implements GPUCommandNodeProducer {
     );
     this.seedCount = props.seeds.length;
     validateCapacity(id, 'seeds', this.seedCount);
-    validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
     validateViewLength(id, 'output.positions', output.positions, this.seedCount);
     if (props.regions) {
-      validatePackedView(props.regions, ['uint32'], `${id} regions`);
+      validateSinglePackedView(props.regions, ['uint32'], `${id} regions`);
       validateViewLength(id, 'regions', props.regions, fieldWidth * fieldHeight);
     }
     validateRequirement(
@@ -242,11 +248,11 @@ export class GPULagrangianFlowMap implements GPUCommandNodeProducer {
       'output.regionClasses and output.residenceTimes require regions'
     );
     if (output.regionClasses) {
-      validatePackedView(output.regionClasses, ['uint32'], `${id} output.regionClasses`);
+      validateSinglePackedView(output.regionClasses, ['uint32'], `${id} output.regionClasses`);
       validateViewLength(id, 'output.regionClasses', output.regionClasses, 2 * this.seedCount);
     }
     if (output.residenceTimes) {
-      validatePackedView(output.residenceTimes, ['float32'], `${id} output.residenceTimes`);
+      validateSinglePackedView(output.residenceTimes, ['float32'], `${id} output.residenceTimes`);
       validateViewLength(id, 'output.residenceTimes', output.residenceTimes, this.seedCount);
     }
     validateGraphOutputsDisjointFromInputs(

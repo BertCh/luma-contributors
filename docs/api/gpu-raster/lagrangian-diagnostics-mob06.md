@@ -22,6 +22,13 @@ bilinear sampler of `GPUParticleAdvection`.
 
 There is no respawn, no randomness and no atomic; a run is bitwise reproducible.
 
+Row direction: the field slices place row 0 at the smallest y of `fieldExtent` and `v` is the
+velocity toward larger y. No grid affine is read and nothing is checked at construction, so a
+north-up field (row 0 at the top) must have its row order reversed before upload. Following a grid
+affine is deferred (roadmap 12.4). The seed grid that `GPUFiniteTimeLyapunovExponent` reads needs
+no reordering: output row `r` belongs to seed row `r`, and the exponent is the same whether seed
+rows advance toward larger or smaller y.
+
 | Prop | Meaning |
 | --- | --- |
 | `seeds` | `float32x2` start positions |

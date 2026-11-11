@@ -68,7 +68,9 @@ for (const fixture of nodingFixtures) {
     const nodes = fixture.nodePositions.length / 2;
     expect(fixture.pieceOffsets).toHaveLength(pieces + 1);
     expect(fixture.offsets).toHaveLength(nodes + 1);
-    expect(fixture.offsets[nodes]).toBe(2 * pieces);
+    // Two CSR entries per piece, one for a piece whose two ends are one node (a loop).
+    const loops = fixture.fromNodes.filter((node, edge) => node === fixture.toNodes[edge]).length;
+    expect(fixture.offsets[nodes]).toBe(2 * pieces - loops);
     const sourceTotals = fixture.sourceLengths.map(() => 0);
     const sourceBounds = fixture.sourceLengths.map(() => 0);
     for (let edge = 0; edge < pieces; edge++) {
@@ -105,7 +107,9 @@ for (const fixture of nodingFixtures) {
         expect(fixture.weights[entry]).toBe(fixture.lengths[edge]);
       }
     }
-    expect(occurrences).toEqual(new Array(pieces).fill(2));
+    expect(occurrences).toEqual(
+      fixture.fromNodes.map((node, edge) => (node === fixture.toNodes[edge] ? 1 : 2))
+    );
     for (const [source, length] of sourceTotals.entries())
       expect(Math.abs(length - fixture.sourceLengths[source])).toBeLessThanOrEqual(
         sourceBounds[source]

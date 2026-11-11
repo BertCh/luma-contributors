@@ -109,9 +109,18 @@ export function measureBuildingStructures<Parameters>(
     );
     const status = (name: string) => ({
       count: view(`${prefix}-${name}-count`, 'uint32', 1),
-      requiredCount: view(`${prefix}-${name}-required`, 'uint32', 1),
       overflow: view(`${prefix}-${name}-overflow`, 'uint32', 1),
       candidateOverflow: view(`${prefix}-${name}-candidate-overflow`, 'uint32', 1)
+    });
+    // The overlay geometry has no feature requirement (contract rule 8): its unclamped ring count
+    // sizes `capacity.rings`. The boundary requirement is `requiredCount`.
+    const geometryStatus = (name: string) => ({
+      ...status(name),
+      requiredRingCount: view(`${prefix}-${name}-required`, 'uint32', 1)
+    });
+    const boundaryStatus = (name: string) => ({
+      ...status(name),
+      requiredCount: view(`${prefix}-${name}-required`, 'uint32', 1)
     });
     const overlay: GPUPolygonOverlayOutput = {
       geometry: {
@@ -119,10 +128,9 @@ export function measureBuildingStructures<Parameters>(
         positions: view(`${prefix}-positions`, 'float32x2', props.capacity.vertices),
         featureOffsets: view(`${prefix}-features`, 'uint32', props.capacity.rings + 1),
         polygonOffsets: view(`${prefix}-polygons`, 'uint32', props.capacity.rings + 1),
-        ringOffsets: view(`${prefix}-rings`, 'uint32', props.capacity.rings + 1),
-        sourceIds: view(`${prefix}-sources`, 'uint32', props.capacity.rings)
+        ringOffsets: view(`${prefix}-rings`, 'uint32', props.capacity.rings + 1)
       },
-      status: status('geometry'),
+      status: geometryStatus('geometry'),
       boundary: {
         endpoints: view(`${prefix}-boundary`, 'float32x4', props.capacity.nodedSegments),
         operandIds: view(`${prefix}-operands`, 'uint32', props.capacity.nodedSegments),
@@ -131,7 +139,7 @@ export function measureBuildingStructures<Parameters>(
           'uint32',
           props.capacity.nodedSegments
         ),
-        status: status('boundary')
+        status: boundaryStatus('boundary')
       }
     };
     graph.add(

@@ -101,6 +101,16 @@ it('makes no cut when the tree reports non-finite attributes', async () => {
   expect(result.cutEdges).toEqual([GPU_SKATER_NO_CUT, GPU_SKATER_NO_CUT, GPU_SKATER_NO_CUT]);
 });
 
+it('does not let a non-finite gain win a cut when no tree status is connected', async () => {
+  // One tree holds the NaN row, so every candidate gain is NaN and none is a candidate: a NaN
+  // key would otherwise outrank every finite gain and be applied.
+  const withNaN = [...FINITE];
+  withNaN[4] = NaN;
+  const result = await runPipeline(withNaN, false);
+  expect(result.regionCount).toBe(1);
+  expect(result.cutEdges).toEqual([GPU_SKATER_NO_CUT, GPU_SKATER_NO_CUT, GPU_SKATER_NO_CUT]);
+});
+
 it('still cuts finite attributes down to the target region count', async () => {
   const result = await runPipeline(FINITE, true);
   expect(result.invalidCount).toBe(0);

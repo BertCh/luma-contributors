@@ -17,7 +17,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -53,8 +53,8 @@ export class GPUOffsetCurveComponents implements GPUCommandNodeProducer {
     this.id = props.id ?? 'offset-curve-components';
     this.props = props;
     for (const geometry of [props.original, props.raw]) {
-      validatePackedView(geometry.positions, ['float32x2'], this.id);
-      validatePackedView(geometry.lineOffsets, ['uint32'], this.id);
+      validateSinglePackedView(geometry.positions, ['float32x2'], this.id);
+      validateSinglePackedView(geometry.lineOffsets, ['uint32'], this.id);
     }
     validateCapacity(this.id, 'segmentCapacity', props.segmentCapacity, 1);
     validateCapacity(this.id, 'intersectionCapacity', props.intersectionCapacity, 1);
@@ -65,10 +65,10 @@ export class GPUOffsetCurveComponents implements GPUCommandNodeProducer {
       !(Number.isFinite(props.tolerance) && props.tolerance >= 0)
     )
       throw new Error('Invalid offset component contract');
-    validatePackedView(props.output.positions, ['float32x2'], this.id);
-    validatePackedView(props.output.components, ['uint32x4'], this.id);
-    validatePackedView(props.output.sourceEdges, ['uint32'], this.id);
-    validatePackedView(props.output.status, ['uint32x4'], this.id);
+    validateSinglePackedView(props.output.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.output.components, ['uint32x4'], this.id);
+    validateSinglePackedView(props.output.sourceEdges, ['uint32'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32x4'], this.id);
     if (
       props.output.sourceEdges.length !== props.output.positions.length ||
       props.output.status.length !== 2

@@ -48,11 +48,11 @@ different kernel:
 ```ts
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
-  GPUParameterBuffer,
   GPUTerrainDerivatives,
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'terrain'});

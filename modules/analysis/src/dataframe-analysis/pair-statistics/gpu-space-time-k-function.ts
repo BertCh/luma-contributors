@@ -15,7 +15,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -162,6 +162,14 @@ export type GPUSpaceTimeKFunctionProps = {
  *
  * Classes are left-open, right-closed: a pair with scaled distance `d / u_max * U` in `(a, a + 1]`
  * is class `a` (distance 0 is class 0), the same convention as `GPURipley`, and likewise for lags.
+ *
+ * Exact ties follow stpp 2.0-8 (`src/stikfunction.f`, read from the CRAN source): a pair is
+ * counted when `tij <= t` and `hij <= s`, the largest distance and lag included, and the
+ * temporal weight is 1 when `t_i - t_ij >= start` and `t_i + t_ij <= end` (the time window is
+ * closed, so a lag that exactly reaches a limit keeps weight 1). splancs `stkhat` decides both
+ * the other way (weight 2 at such a lag; a pair at the largest distance or lag dropped), and
+ * {@link GPUSpaceTimeDiggleTest} follows splancs, so on times recorded as whole days its `K`,
+ * `K_s`, `K_t` and `D` can differ from the outputs of this class.
  * Pair counts and the temporal marginal are exact integers; weighted sums are accumulated as
  * fixed-point integers (2^-16 units) in the shared deterministic pair histogram, so results are
  * reproducible. LISTA sums add in float32 in the fixed neighbor order. The pair search is the
@@ -241,7 +249,7 @@ export class GPUSpaceTimeKFunction implements GPUCommandNodeProducer {
       ['intensities', props.intensities]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         validateRequirement(id, view.length === rows, `${name} length must equal positions length`);
       }
     }
@@ -270,7 +278,7 @@ export class GPUSpaceTimeKFunction implements GPUCommandNodeProducer {
     const outputViews: GraphDataView[] = [];
     for (const [name, view] of Object.entries(output)) {
       if (view) {
-        validatePackedView(
+        validateSinglePackedView(
           view,
           [name === 'pairCounts' || name === 'status' ? 'uint32' : 'float32'],
           `${id} output.${name}`

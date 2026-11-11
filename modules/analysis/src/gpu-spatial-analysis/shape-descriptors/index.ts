@@ -16,3 +16,12 @@ export type {
   GPUShapeDescriptorsSettings,
   GPUShapeDescriptorsProps
 } from './gpu-shape-descriptors';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeShapeDescriptorsOnCPU,
+  CPUShapeDescriptorsOperation
+} from './cpu-shape-descriptors-operation';
+export type {CPUShapeDescriptorsResult} from './cpu-shape-descriptors-operation';
+export {GPUShapeDescriptorsOperation} from './gpu-shape-descriptors-operation';
+export type {ShapeDescriptorsOperationProps} from './gpu-shape-descriptors-operation';

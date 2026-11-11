@@ -21,6 +21,12 @@ import {
   type CoverageValidityScene
 } from './coverage-topology-scenes';
 import {requireTestDevice} from '../../utils/require-test-device';
+import gapFixtureJSON from '../../oracles/fixtures/coverage-validity-gaps.json';
+
+/** GEOS results of `test/oracles/coverage-validity-gaps.py` (Shapely 2.2.0, GEOS 3.14.1). */
+const GAP_FIXTURE = gapFixtureJSON as unknown as {
+  scenes: (CoverageValidityScene & {family: string})[];
+};
 
 type TestDevice = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 
@@ -149,6 +155,53 @@ it('GPUCoverageValidity matches Shapely coverage_invalid_edges on every scene', 
   }
   expect(mismatches).toEqual([]);
   expect(checkedSegments).toBeGreaterThan(100);
+});
+
+it('GPUCoverageValidity matches GEOS on gaps between staggered segments', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const mismatches: string[] = [];
+  const caseCounts = new Map<string, number>();
+  let checkedSegments = 0;
+  for (const scene of GAP_FIXTURE.scenes) {
+    const runs = await runValidity(
+      device,
+      scene,
+      scene.cases.map(testCase => testCase.gapWidth)
+    );
+    scene.cases.forEach((testCase, caseIndex) => {
+      const run = runs[caseIndex];
+      const expected = new Set(
+        testCase.invalid.map(
+          ([polygon, x0, y0, x1, y1]) => `${polygon},${normalizeSegment(x0, y0, x1, y1)}`
+        )
+      );
+      checkedSegments += expected.size;
+      caseCounts.set(scene.family, (caseCounts.get(scene.family) ?? 0) + 1);
+      const missing = [...expected].filter(segment => !run.flagged.has(segment));
+      const extra = [...run.flagged].filter(segment => !expected.has(segment));
+      if (missing.length || extra.length || run.isValid !== (testCase.isValid ? 1 : 0)) {
+        mismatches.push(
+          `${scene.name} gap ${testCase.gapWidth}: missing ${JSON.stringify(missing)} extra ${JSON.stringify(extra)}`
+        );
+      }
+    });
+  }
+  expect(mismatches).toEqual([]);
+  expect(Object.fromEntries(caseCounts)).toEqual({
+    curated: 22,
+    'disjoint-pair': 120,
+    'jittered-triangulation': 40,
+    'projected-triangulation': 40
+  });
+  expect(checkedSegments).toBeGreaterThan(1000);
+  // The review's pair: every flag is a gap flag, on the two facing edges only.
+  const staggered = GAP_FIXTURE.scenes.find(scene => scene.name === 'staggered')!;
+  const [beside] = await runValidity(device, staggered, [0.125]);
+  expect(beside.flags.filter(flag => flag !== 0)).toEqual([
+    GPU_COVERAGE_VALIDITY_FLAG.gap,
+    GPU_COVERAGE_VALIDITY_FLAG.gap
+  ]);
 });
 
 it('GPUCoverageValidity reports flag kinds and re-encodes a new gap width without recompiling', async () => {

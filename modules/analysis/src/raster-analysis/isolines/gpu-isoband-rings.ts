@@ -75,8 +75,8 @@ export type GPUIsobandRingsProps = {
   grid: GPURasterMetadata;
   /** Packed row-major float32 raster. */
   values: GraphDataView<'float32'>;
-  /** Optional row-major `uint32` validity; zero marks a nodata sample. */
-  validity?: GraphDataView<'uint32'>;
+  /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
+  mask?: GraphDataView<'uint32'>;
   /** Optional finite nodata sentinel compared exactly against sample values. */
   noDataValue?: number;
   /** Break values, see `GPUIsobandsProps.breaks`. */
@@ -118,13 +118,21 @@ export type GPUIsobandRingsProps = {
  * optional `polygons` regrouped as shell plus holes). Rings follow the segment direction, so shells
  * are counter-clockwise and holes clockwise; the band region lies on the left. Band boundaries are
  * bit-identical to `GPUIsolines` of the same breaks. A band region that touches itself at a
- * single vertex (a saddle with the joined centre rule) is split into separate rings when
+ * single vertex (a saddle whose high corners are joined) is split into separate rings when
  * `splitTouchingRings` is on. Cells with a nodata corner emit no edges, so their border with valid
  * cells becomes part of a ring.
  *
  * Changing breaks, `breakCount`, the extent or the band window never recompiles the graph. The
  * edge and ring capacities are compile-time; the `overflow` and `status.edgeOverflow` words say when they
  * were too small.
+ *
+ * Row direction: row 0 of the raster is placed at `minY` of the per-frame extent and rows advance
+ * toward larger y. Only the width and height of `grid` are read; `grid.affine` is not, and nothing
+ * is checked at construction. A north-up grid (row 0 at the top, the default of
+ * `makeGPURasterMetadata`) therefore comes out mirrored north to south unless the caller reverses
+ * the row order of the raster before upload. Mirroring the output instead (`y' = minY + maxY - y`)
+ * also swaps the documented side: high values are then on the right of a segment, and ring
+ * windings are reversed. Following the grid affine is deferred (roadmap 12.4).
  */
 export class GPUIsobandRings implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -173,7 +181,7 @@ export class GPUIsobandRings implements GPUCommandNodeProducer {
       id: `${id}-isobands`,
       grid: props.grid,
       values: props.values,
-      validity: props.validity,
+      mask: props.mask,
       noDataValue: props.noDataValue,
       breaks: props.breaks,
       parameters: props.parameters,

@@ -256,6 +256,143 @@ it('GPUCompositeScore averages tied ranks and the output is bitwise reproducible
   }
 });
 
+it('GPUCompositeScore returns the major component of two negatively correlated indicators', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Two indicators that move against each other, both left at direction +1 (income and poverty).
+  // The correlation matrix [[1, r], [r, 1]] has the closed-form eigenpairs (1 + r, (1, 1)) and
+  // (1 - r, (1, -1)); with r < 0 the first principal component is the second pair.
+  //
+  // The design is exact in float32. Column 0 takes 10 or 14 (mean 12, deviation 2), column 1
+  // takes 3 or 9 (mean 6, deviation 3). 180 rows agree in sign and 220 disagree, so the
+  // covariance is (180 - 220) * 6 / 400 = -0.6 and r = -0.6 / (2 * 3) = -0.1.
+  const rows = 400;
+  const indicators = new Float32Array(rows * 2);
+  const expectedScore = new Float64Array(rows);
+  for (let row = 0; row < rows; row++) {
+    // Per 40 rows: 9 rows (+, +), 9 rows (-, -), 11 rows (+, -), 11 rows (-, +).
+    const slot = row % 40;
+    const firstSign = slot < 9 || (slot >= 18 && slot < 29) ? 1 : -1;
+    const secondSign = slot < 9 || slot >= 29 ? 1 : -1;
+    indicators[row * 2] = 12 + 2 * firstSign;
+    indicators[row * 2 + 1] = 6 + 3 * secondSign;
+    expectedScore[row] = (firstSign - secondSign) * Math.SQRT1_2;
+  }
+  const fixture = createFixture(device, {indicators, indicatorCount: 2});
+  try {
+    const result = await fixture.run({aggregation: 'principal-component', weights: []});
+    expectClose(result.columnStatistics, [10, 14, 12, 2, 3, 9, 6, 3], 1e-6, 'statistics');
+    const [eigenvalue, explainedVarianceRatio, residual] = result.principalComponentSummary;
+    expect(eigenvalue).toBeCloseTo(1.1, 5);
+    expect(explainedVarianceRatio).toBeCloseTo(0.55, 5);
+    expect(residual).toBeLessThan(1e-4);
+    // Zero-sum loadings: the first of the tied largest loadings is positive.
+    expect(result.loadings[0]).toBeCloseTo(Math.SQRT1_2, 4);
+    expect(result.loadings[1]).toBeCloseTo(-Math.SQRT1_2, 4);
+    expectClose(result.score, expectedScore, 1e-4, 'score');
+  } finally {
+    fixture.destroy();
+  }
+});
+
+/**
+ * Two columns of -1 and +1, each balanced, with `agreeing` rows of equal sign: every sum is an
+ * exact integer in float32, the deviations are 1 and r = (2 * agreeing - rows) / rows exactly.
+ */
+function createSignPair(rows: number, agreeing: number): Float32Array {
+  const indicators = new Float32Array(rows * 2);
+  const halfAgreeing = agreeing / 2;
+  const halfDisagreeing = (rows - agreeing) / 2;
+  for (let row = 0; row < rows; row++) {
+    // (+, +) and (-, -) for the agreeing rows, then (+, -) and (-, +).
+    let first = 1;
+    let second = 1;
+    if (row < halfAgreeing) {
+      first = 1;
+      second = 1;
+    } else if (row < agreeing) {
+      first = -1;
+      second = -1;
+    } else if (row < agreeing + halfDisagreeing) {
+      first = 1;
+      second = -1;
+    } else {
+      first = -1;
+      second = 1;
+    }
+    indicators[row * 2] = first;
+    indicators[row * 2 + 1] = second;
+  }
+  return indicators;
+}
+
+it('GPUCompositeScore gives the exact eigenvector of two weakly correlated indicators', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // [[1, r], [r, 1]] has eigenpairs (1 + r, (1, 1) / sqrt(2)) and (1 - r, (1, -1) / sqrt(2)) for
+  // every r, however small. A power iteration does not separate them when |r| is small: 64 steps
+  // from an axis gave (0.87, -0.49) at r = -0.01 and (0.998, -0.064) at r = -0.001.
+  for (const [rows, agreeing, correlation] of [
+    [400, 198, -0.01],
+    [4000, 1998, -0.001],
+    [400, 202, 0.01]
+  ] as const) {
+    const fixture = createFixture(device, {
+      indicators: createSignPair(rows, agreeing),
+      indicatorCount: 2
+    });
+    try {
+      const result = await fixture.run({aggregation: 'principal-component', weights: []});
+      const label = `r = ${correlation}`;
+      const [eigenvalue, explainedVarianceRatio, residual] = result.principalComponentSummary;
+      expect(eigenvalue, label).toBeCloseTo(1 + Math.abs(correlation), 6);
+      expect(explainedVarianceRatio, label).toBeCloseTo((1 + Math.abs(correlation)) / 2, 6);
+      expect(residual, label).toBeLessThan(1e-6);
+      expect(result.loadings[0], label).toBeCloseTo(Math.SQRT1_2, 6);
+      expect(result.loadings[1], label).toBeCloseTo(Math.sign(correlation) * Math.SQRT1_2, 6);
+    } finally {
+      fixture.destroy();
+    }
+  }
+});
+
+it('GPUCompositeScore separates two leading eigenvalues that are 8e-4 apart', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Three balanced columns of -1 and +1 over 10,000 rows. Columns 0 and 1 agree in 5,004 rows
+  // (r = 0.0008) and column 2 is uncorrelated with both: the correlation matrix is
+  // [[1, 0.0008, 0], [0.0008, 1, 0], [0, 0, 1]] with eigenvalues 1.0008, 1 and 0.9992, and the
+  // first component is (1, 1, 0) / sqrt(2). Every moment is an exact integer in float32.
+  const rows = 10000;
+  const indicators = new Float32Array(rows * 3);
+  let row = 0;
+  for (const [first, second, count] of [
+    [1, 1, 1251],
+    [-1, -1, 1251],
+    [1, -1, 1249],
+    [-1, 1, 1249]
+  ] as const) {
+    for (const third of [1, -1]) {
+      for (let repeat = 0; repeat < count; repeat++) {
+        indicators.set([first, second, third], row * 3);
+        row++;
+      }
+    }
+  }
+  expect(row).toBe(rows);
+  const fixture = createFixture(device, {indicators, indicatorCount: 3});
+  try {
+    const result = await fixture.run({aggregation: 'principal-component', weights: []});
+    const [eigenvalue, explainedVarianceRatio, residual] = result.principalComponentSummary;
+    expect(eigenvalue).toBeCloseTo(1.0008, 6);
+    expect(explainedVarianceRatio).toBeCloseTo(1.0008 / 3, 6);
+    expect(residual).toBeLessThan(1e-5);
+    expectClose(result.loadings, [Math.SQRT1_2, Math.SQRT1_2, 0], 1e-4, 'loadings');
+  } finally {
+    fixture.destroy();
+  }
+});
+
 it('GPUCompositeScore writes NaN for every row when nothing is included', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

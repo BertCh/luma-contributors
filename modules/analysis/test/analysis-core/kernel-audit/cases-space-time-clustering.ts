@@ -107,5 +107,35 @@ export const SPACE_TIME_CLUSTERING_AUDIT_CASES: KernelAuditCase[] = [
         }
       })
     )
+  ),
+  ...[false, true].map(
+    (geographic): KernelAuditCase => ({
+      exportName: 'GPUOPTICS',
+      name: `space-time 65536 rows,grid reachability,256 minimum samples,${geographic ? 'geographic' : 'planar'}`,
+      build: ({graph, view}) => {
+        graph.add(
+          new GPUOPTICS({
+            positions: view('float32x2', 65536),
+            times: view('float32', 65536),
+            temporalContext: TEMPORAL_CONTEXT,
+            maximumTimeDistance: 60_000,
+            minimumSamples: 256,
+            maximumDistance: 10,
+            extractionDistance: 10,
+            frontierBatchSize: 256,
+            neighborIndex: 'grid',
+            ...(geographic ? {spatialContext: GEOGRAPHIC} : {}),
+            output: {
+              ordering: view('uint32', 65536),
+              coreDistances: view('float32', 65536),
+              reachability: view('float32', 65536),
+              predecessors: view('uint32', 65536),
+              labels: view('uint32', 65536),
+              status: view('uint32', 3)
+            }
+          })
+        );
+      }
+    })
   )
 ];

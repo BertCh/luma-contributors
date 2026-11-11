@@ -17,7 +17,7 @@ import {
   createPublishNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {validatePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateSinglePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPUCardinalityPort,
   GPUCellTablePort,
@@ -47,10 +47,12 @@ export type GPUCellTable = GPUCellTablePort & {
   /** Rows aggregated into each cell. */
   counts: GraphDataView<'uint32'>;
   /**
-   * Exact fixed-point sums: signed 64-bit two's-complement integers as little-endian words, equal
+   * Fixed-point sums: signed 64-bit two's-complement integers as little-endian words, equal
    * to the sum over rows of `roundHalfEven(fround(value * sumScale))`. Integer sums are
-   * associative, so a roll-up equals a direct aggregation bit for bit. Required on a source
-   * table to roll sums up to a coarser level.
+   * associative, so a roll-up equals a direct aggregation bit for bit. The integer sum is exact;
+   * each row is first rounded to a multiple of `1 / sumScale` (an error of up to `2^-17` per row
+   * at the default 65536), so choose `sumScale` for the data (`getGPUCellSumScale`). Required on a
+   * source table to roll sums up to a coarser level.
    */
   sums?: GraphDataView<'uint32x2'>;
   /** `sums / sumScale` as f32, for styling. */
@@ -89,19 +91,19 @@ export function getCellTableFirstRow(table: GPUCellTable): number {
 
 /** Validates formats, packing and row counts of a cell table. @internal */
 export function validateCellTable(id: string, name: string, table: GPUCellTable): void {
-  validatePackedView(table.cells, ['uint32x2'], `${id} ${name}.cells`);
+  validateSinglePackedView(table.cells, ['uint32x2'], `${id} ${name}.cells`);
   const capacity = table.cells.length;
   if (capacity < 1) {
     throw new Error(`${id} ${name}.cells must hold at least one row`);
   }
   validatePackedUint32View(table.counts, `${id} ${name}.counts`);
   if (table.sums) {
-    validatePackedView(table.sums, ['uint32x2'], `${id} ${name}.sums`);
+    validateSinglePackedView(table.sums, ['uint32x2'], `${id} ${name}.sums`);
   }
   for (const column of ['sumValues', 'minimums', 'maximums'] as const) {
     const view = table[column];
     if (view) {
-      validatePackedView(view, ['float32'], `${id} ${name}.${column}`);
+      validateSinglePackedView(view, ['float32'], `${id} ${name}.${column}`);
     }
   }
   for (const column of ['counts', 'sums', 'sumValues', 'minimums', 'maximums'] as const) {

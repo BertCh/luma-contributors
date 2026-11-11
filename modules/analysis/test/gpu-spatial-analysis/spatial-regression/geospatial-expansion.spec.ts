@@ -248,16 +248,22 @@ it('marked point statistics cover cross-type K/L, supplied intensity and product
     );
   }
   context.run();
+  // Three points, four ordered pairs within 1.5, area 16. Same-type K without intensities uses
+  // n (n - 1) = 6 (GPURipley, spatstat Kest): 16 * 4 / 6 = 32 / 3.
   close(await readFloat32(homogeneous.buffer, 4), [
+    32 / 3,
+    Math.sqrt(32 / 3 / Math.PI),
+    32 / 3 / (Math.PI * 2.25),
+    1
+  ]);
+  // With intensities 3 / 16 the estimator is sum 1 / (lambda_i lambda_j area) = 4 * 256 / 144,
+  // the n^2 form, which is (n - 1) / n of the homogeneous one.
+  close(await readFloat32(inhomogeneous.buffer, 4), [
     64 / 9,
     Math.sqrt(64 / 9 / Math.PI),
     64 / 9 / (Math.PI * 2.25),
     1
   ]);
-  close(
-    await readFloat32(inhomogeneous.buffer, 4),
-    Array.from(await readFloat32(homogeneous.buffer, 4))
-  );
   close(await readFloat32(cross.buffer, 4), [
     16,
     Math.sqrt(16 / Math.PI),

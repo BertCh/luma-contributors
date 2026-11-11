@@ -26,7 +26,7 @@ export type GPURasterTextureProps = {
   id?: string;
   grid: GPURasterMetadata;
   values: GraphDataView<'float32'>;
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** 2–32 quantization bins, clamped to the supplied finite increasing range. */
   levels: number;
   range: readonly [number, number];
@@ -77,8 +77,8 @@ export class GPURasterTexture implements GPUCommandNodeProducer {
     );
     validateRequirement(
       this.id,
-      props.values.length >= count && (!props.validity || props.validity.length >= count),
-      'values and validity must hold at least grid.width times grid.height entries'
+      props.values.length >= count && (!props.mask || props.mask.length >= count),
+      'values and mask must hold at least grid.width times grid.height entries'
     );
     validateRequirement(
       this.id,
@@ -87,7 +87,7 @@ export class GPURasterTexture implements GPUCommandNodeProducer {
     );
     validateRasterViews(
       this.id,
-      [props.values, ...(props.validity ? [props.validity] : [])],
+      [props.values, ...(props.mask ? [props.mask] : [])],
       [props.features, props.pairCount]
     );
   }
@@ -98,7 +98,7 @@ export class GPURasterTexture implements GPUCommandNodeProducer {
     validateRasterGraph(
       id,
       graph,
-      [props.values, ...(props.validity ? [props.validity] : [])],
+      [props.values, ...(props.mask ? [props.mask] : [])],
       [props.features, props.pairCount]
     );
     return [
@@ -109,7 +109,7 @@ export class GPURasterTexture implements GPUCommandNodeProducer {
         workgroupSize: 64,
         bindings: [
           rasterBinding('values', props.values),
-          ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+          ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
           rasterBinding('features', props.features, true),
           rasterBinding('pairCount', props.pairCount, true)
         ],
@@ -127,7 +127,7 @@ for (var row = lower.y; row <= upper.y; row++) {
     let firstIndex = u32(row) * ${props.grid.width}u + u32(column);
     let secondIndex = u32(following.y) * ${props.grid.width}u + u32(following.x);
     let firstValue = values[valuesOffset + firstIndex]; let secondValue = values[valuesOffset + secondIndex];
-    if (!finite(firstValue) || !finite(secondValue) ${props.validity ? '|| validity[validityOffset + firstIndex] == 0u || validity[validityOffset + secondIndex] == 0u' : ''}) { continue; }
+    if (!finite(firstValue) || !finite(secondValue) ${props.mask ? '|| mask[maskOffset + firstIndex] == 0u || mask[maskOffset + secondIndex] == 0u' : ''}) { continue; }
     let first = quantize(firstValue); let second = quantize(secondValue);
     histogram[first * ${props.levels}u + second]++; count++;
     ${props.symmetric ? `histogram[second * ${props.levels}u + first]++; count++;` : ''}

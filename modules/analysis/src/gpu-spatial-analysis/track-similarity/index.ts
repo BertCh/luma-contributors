@@ -10,3 +10,16 @@ export {
 export type {GPUTrackSimilarityOutput, GPUTrackSimilarityProps} from './gpu-track-similarity';
 export {GPUTrackSimilaritySearch} from './gpu-track-similarity-search';
 export type {GPUTrackSimilaritySearchProps} from './gpu-track-similarity-search';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeTrackSimilarityOnCPU,
+  CPUTrackSimilarityOperation
+} from './cpu-track-similarity-operation';
+export type {
+  CPUTrackSimilarityInput,
+  CPUTrackSimilarityResult,
+  CPUTrackSimilarityOptions
+} from './cpu-track-similarity-operation';
+export {GPUTrackSimilarityOperation} from './gpu-track-similarity-operation';
+export type {TrackSimilarityOperationProps} from './gpu-track-similarity-operation';

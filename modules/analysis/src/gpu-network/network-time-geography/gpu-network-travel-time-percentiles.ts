@@ -14,7 +14,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -129,9 +129,9 @@ export class GPUNetworkTravelTimePercentiles implements GPUCommandNodeProducer {
       ),
       'percentiles must be ascending numbers in (0, 100]'
     );
-    validatePackedView(props.window, ['float32'], `${id} window`);
-    validatePackedView(props.initialState, ['uint32'], `${id} initialState`);
-    validatePackedView(props.output.travelTimes, ['float32'], `${id} output.travelTimes`);
+    validateSinglePackedView(props.window, ['float32'], `${id} window`);
+    validateSinglePackedView(props.initialState, ['uint32'], `${id} initialState`);
+    validateSinglePackedView(props.output.travelTimes, ['float32'], `${id} output.travelTimes`);
     validateViewLength(id, 'window', props.window, WINDOW_LENGTH);
     validateViewLength(id, 'initialState', props.initialState, 1);
     validateViewLength(
@@ -141,11 +141,15 @@ export class GPUNetworkTravelTimePercentiles implements GPUCommandNodeProducer {
       props.vertexCount * props.percentiles.length
     );
     if (props.output.reachedCounts) {
-      validatePackedView(props.output.reachedCounts, ['uint32'], `${id} output.reachedCounts`);
+      validateSinglePackedView(
+        props.output.reachedCounts,
+        ['uint32'],
+        `${id} output.reachedCounts`
+      );
       validateViewLength(id, 'output.reachedCounts', props.output.reachedCounts, props.vertexCount);
     }
     if (props.output.status) {
-      validatePackedView(props.output.status, ['uint32'], `${id} output.status`);
+      validateSinglePackedView(props.output.status, ['uint32'], `${id} output.status`);
       validateViewLength(id, 'output.status', props.output.status, 2 * props.departureCount);
     }
     validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [

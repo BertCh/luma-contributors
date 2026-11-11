@@ -11,7 +11,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -41,16 +41,16 @@ export class GPUCanonicalPolygonEquality implements GPUCommandNodeProducer {
       throw new Error('Invalid equality tolerance');
     }
     for (const geometry of [props.left, props.right]) {
-      validatePackedView(geometry.positions, ['float32x2'], this.id);
+      validateSinglePackedView(geometry.positions, ['float32x2'], this.id);
       for (const offsets of [
         geometry.ringOffsets,
         geometry.polygonOffsets,
         geometry.featureOffsets
       ]) {
-        validatePackedView(offsets, ['uint32'], this.id);
+        validateSinglePackedView(offsets, ['uint32'], this.id);
       }
     }
-    validatePackedView(props.output, ['uint32'], this.id);
+    validateSinglePackedView(props.output, ['uint32'], this.id);
     if (
       props.left.featureOffsets.length !== props.right.featureOffsets.length ||
       props.output.length !== props.left.featureOffsets.length - 1

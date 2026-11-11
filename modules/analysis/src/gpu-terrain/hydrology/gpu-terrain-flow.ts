@@ -20,7 +20,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
@@ -29,6 +29,7 @@ import {
   validateRasterBandBelongsToGraph,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 import {
@@ -271,6 +272,12 @@ export type GPUTerrainFlowOutput = {
    * north-west, 64 north, 128 north-east); 0 for terminal cells; `GPU_TERRAIN_FLOW_NONE` for
    * invalid cells; `GPU_TERRAIN_FLOW_UNRESOLVED` on every valid cell when depression filling or
    * flat resolution did not converge.
+   *
+   * The codes are raster offsets, not compass bearings: "south" is the next row (`row + 1`) and
+   * "east" the next column, whatever the row sign of the grid affine. On a north-up raster (rows
+   * advance south, `grid.affine[4] < 0`) the names are true compass directions; on a grid whose
+   * rows advance north, code 4 points geographically north. Every terrain consumer of a direction
+   * grid reads the codes the same way, so this output round-trips on any grid.
    */
   flowDirections?: GraphDataView<'uint32'>;
   /**
@@ -288,8 +295,10 @@ export type GPUTerrainFlowOutput = {
    * 1 where accumulation is finite and at least the `streamThreshold` setting; 0 below the threshold
    * and on invalid cells; `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` on valid cells whose accumulation
    * is unresolved (NaN) because `maximumAccumulationIterations` ran out, so an unresolved trunk never
-   * reads as "not a stream". Test `== 1u` for "is a stream"; `!= 0u` also counts unresolved
-   * cells. Also `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` on every valid cell when depression filling
+   * reads as "not a stream". Every terrain consumer of a stream mask uses one rule: a nonzero
+   * word is a stream cell, except the unresolved sentinel, which is a cell of unknown status
+   * (`!= 0u && < 0xfffffffeu` in WGSL). A plain `!= 0u` also counts unresolved cells.
+   * Also `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` on every valid cell when depression filling
    * or flat resolution did not converge. Accumulation is computed into a transient when `accumulation` is not provided.
    */
   streams?: GraphDataView<'uint32'>;
@@ -303,6 +312,10 @@ export type GPUTerrainFlowOutput = {
  * Compile-time: `grid` size, `cellSizeMode`, `fillDepressions`, `resolveFlats`,
  * `flowRouting`, iteration limits, `accumulationUnits`, the elevation format and calibration, and
  * which optional views are provided. Per-frame: the contents of `elevation`, `parameters`, and `runoff`.
+ *
+ * The grid may be rotated but not sheared: its two pixel axes must be orthogonal, because the
+ * diagonal D8 step is measured as `sqrt(x^2 + y^2)` of the two cell sizes. A sheared grid throws
+ * at construction.
  *
  * Output aliasing: an output view never shares a buffer with an input (`elevation`, its validity,
  * `parameters`, `runoff`). Outputs may share one buffer, for example `status.fillConverged` and
@@ -383,7 +396,14 @@ export type GPUTerrainFlowProps = {
  * Algorithm choices:
  * - Filling computes the Planchon-Darboux fixpoint
  *   `W(c) = max(Z(c), min over neighbors n of W(n) + epsilon)` (boundary cells keep their
- *   elevation). The fixpoint is unique, so every schedule gives the same bits. With `epsilon` 0 it
+ *   elevation). The fill is the greatest solution of that equation, which is the minimax
+ *   elevation: the smallest possible highest cell on a path to the boundary. With `epsilon` 0 the
+ *   equation has other, lower solutions (any level between a pit and its pour point satisfies it
+ *   inside a closed depression), so the equation alone does not define the fill. Both paths compute
+ *   the greatest one, the relaxation because it starts at +infinity and only lowers, the spill
+ *   graph because it computes the minimax directly, so every schedule gives the same bits. A
+ *   relaxation restarted from other values (for example a stale filled surface below the true
+ *   fill) can stop at a lower solution. With `epsilon` 0 it
  *   runs as a tiled spill graph (Barnes 2016): tile-local fill and outlet labels, a Boruvka
  *   spanning tree of the spill graph and bottleneck paths to the grid boundary, in O(log n) GPU
  *   rounds whatever the basin shape. With `epsilon` > 0 (selected per frame on the GPU, no
@@ -458,6 +478,8 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
     validateRasterParameters(id, props.parameters, GPU_TERRAIN_FLOW_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // The diagonal D8 step is sqrt(x^2 + y^2) of the two cell sizes, which needs orthogonal axes.
+    validateRasterGridOrthogonal(id, props.grid);
     if (!['cells', 'area'].includes(props.accumulationUnits ?? 'cells')) {
       throw new Error(`${id} accumulationUnits must be cells or area`);
     }
@@ -470,8 +492,8 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
         stage.values
       ]);
       for (const stage of Object.values(props.flatContinuation)) {
-        validatePackedView(stage.state, ['uint32'], `${id} flatContinuation.state`);
-        validatePackedView(stage.values, ['float32'], `${id} flatContinuation.values`);
+        validateSinglePackedView(stage.state, ['uint32'], `${id} flatContinuation.state`);
+        validateSinglePackedView(stage.values, ['float32'], `${id} flatContinuation.values`);
         if (
           stage.state.length !== getGPURasterRelaxationContinuationStateLength(props.grid) ||
           stage.values.length !== cellCount
@@ -543,7 +565,7 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
       ['runoff', props.runoff]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length !== cellCount) {
           throw new Error(`${id} ${name} must contain one value per cell`);
         }
@@ -555,7 +577,7 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
       ['output.streams', output.streams]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length !== cellCount) {
           throw new Error(`${id} ${name} must contain one value per cell`);
         }
@@ -570,7 +592,7 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
       ['accumulationIterationCount', status?.accumulationIterationCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
         if (view.length !== 1) {
           throw new Error(`${id} output.status.${name} must contain one row`);
         }

@@ -33,7 +33,7 @@ function createProps(
     positions: view('float32x2', rows),
     timestamps: view('float32', rows),
     trackOffsets: view('uint32', trackCount + 1),
-    trackValid: view('uint32', trackCount),
+    mask: view('uint32', trackCount),
     distance: view('float32', 1),
     cellSize: 10,
     timeCellSize: 60,

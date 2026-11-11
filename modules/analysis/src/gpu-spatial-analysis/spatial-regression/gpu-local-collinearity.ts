@@ -11,7 +11,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -86,7 +86,7 @@ export class GPULocalCollinearity implements GPUCommandNodeProducer {
       [props.output.status, 'uint32', rows]
     ] as const)
       if (view) {
-        validatePackedView(view, [format], this.id);
+        validateSinglePackedView(view, [format], this.id);
         if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
       }
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [

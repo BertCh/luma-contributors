@@ -125,7 +125,7 @@ it('RTS-03 similarity matches NumPy cosine and dot against four queries', async 
         queryCount,
         metric,
         vectors: harness.floats(decoded),
-        validity: harness.integers(valid),
+        mask: harness.integers(valid),
         queries: harness.floats(reference.queries),
         parameters: harness.floats(
           getGPURasterEmbeddingSimilarityParameterValues({matchThreshold: 0.9})
@@ -173,7 +173,7 @@ it('RTS-03 nearest pixels returns the NumPy top-k by cosine for each query', asy
     pixelCount,
     dimensions,
     vectors: harness.floats(decoded),
-    validity: harness.integers(valid),
+    mask: harness.integers(valid),
     queryCount: reference.queryCount,
     queries: harness.floats(reference.queries),
     resultCount: k,
@@ -212,10 +212,11 @@ it('RTS-03 change reports cosine, angle, magnitude and a threshold mask between 
   );
   const cosine = toFloat(reference.change.cosine);
   expect(getMaximumAbsoluteDifference(result['similarity'], cosine)).toBeLessThan(3e-6);
-  // acos is steep near 1, so the angle tolerance is looser than the cosine tolerance.
+  // The angle comes from the chord of the unit vectors, so it is as accurate as the cosine
+  // (it needed 5e-4 when it was acos of the float32 cosine).
   expect(
     getMaximumAbsoluteDifference(result['angle'], toFloat(reference.change.angle))
-  ).toBeLessThan(5e-4);
+  ).toBeLessThan(3e-6);
   expect(
     getMaximumAbsoluteDifference(result['magnitude'], toFloat(reference.change.magnitude))
   ).toBeLessThan(3e-6);
@@ -239,7 +240,7 @@ it('RTS-03 k-means recovers the blobs and their means', async () => {
     pixelCount,
     dimensions,
     vectors: harness.floats(decoded),
-    validity: harness.integers(valid),
+    mask: harness.integers(valid),
     clusterCount,
     maximumIterations: 20,
     output: {
@@ -294,7 +295,7 @@ for (const metric of ['euclidean', 'cosine'] as const) {
         dimensions,
         metric,
         vectors: harness.floats(decoded),
-        validity: harness.integers(valid),
+        mask: harness.integers(valid),
         trainingVectors: harness.floats(knn.training),
         trainingLabels: harness.integers(knn.trainingLabels),
         trainingCount: knn.trainingLabels.length,
@@ -327,7 +328,7 @@ it('RTS-03 linear probe matches the softmax of W x + b', async () => {
       dimensions,
       classCount,
       vectors: harness.floats(decoded),
-      validity: harness.integers(valid),
+      mask: harness.integers(valid),
       weights: harness.floats(linearProbe.weights),
       bias: harness.floats(linearProbe.bias),
       output: {
@@ -437,7 +438,7 @@ for (const rangeCount of [1, 7, undefined]) {
         dimensions,
         rangeCount,
         vectors: harness.floats(decoded),
-        validity: harness.integers(valid),
+        mask: harness.integers(valid),
         output: {
           mean: harness.output('mean', 'float32', dimensions),
           covariance: harness.output('covariance', 'float32', dimensions * dimensions),
@@ -496,7 +497,7 @@ it('RTS-03 projection and RGB stretch match NumPy', async () => {
       dimensions,
       componentCount,
       vectors: harness.floats(decoded),
-      validity: harness.integers(valid),
+      mask: harness.integers(valid),
       mean: harness.floats(reference.pca.mean as number[]),
       components: harness.floats(reference.pca.components as number[]),
       parameters: harness.floats(
@@ -523,7 +524,7 @@ it('RTS-03 the GPU covariance feeds the CPU eigenproblem and the projection end 
       pixelCount,
       dimensions,
       vectors: harness.floats(decoded),
-      validity: harness.integers(valid),
+      mask: harness.integers(valid),
       output: {
         mean: harness.output('mean', 'float32', dimensions),
         covariance: harness.output('covariance', 'float32', dimensions * dimensions)
@@ -546,7 +547,7 @@ it('RTS-03 the GPU covariance feeds the CPU eigenproblem and the projection end 
       dimensions,
       componentCount: 3,
       vectors: projectionHarness.floats(decoded),
-      validity: projectionHarness.integers(valid),
+      mask: projectionHarness.integers(valid),
       mean: projectionHarness.floats(covariance['mean']),
       components: projectionHarness.floats(Array.from(components)),
       output: {projected: projectionHarness.output('projected', 'float32', pixelCount * 3)}
@@ -570,7 +571,7 @@ it('RTS-03 zone mean over fractional-coverage tuples matches the weighted NumPy 
       dimensions,
       zoneCount,
       vectors: harness.floats(decoded),
-      validity: harness.integers(valid),
+      mask: harness.integers(valid),
       tuples: {
         zoneIds: harness.integers(zoneTuples.zoneIds),
         cellIds: harness.integers(zoneTuples.cellIds),
@@ -635,7 +636,7 @@ for (const scaleName of ['2x2', '3x2'] as const) {
           ? {quantized: harness.integers(packInt8(oddRaster.quantized))}
           : {
               vectors: harness.floats(toFloat(oddRaster.decoded)),
-              validity: harness.integers(
+              mask: harness.integers(
                 Array.from({length: oddRaster.width * oddRaster.height}, (_, pixel) =>
                   oddRaster.decoded[pixel * oddRaster.dimensions] === null ? 0 : 1
                 )
@@ -720,4 +721,92 @@ it('RTS-03 refuses sizes above the named limits at declaration', async () => {
         output: {vectors: harness.output('overview', 'float32', 2)}
       })
   ).toThrow(/horizontal scale must be an integer in \[1, 16\]/);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Math correctness review 2026-11-10 (raster-imagery-04 and raster-imagery-08)
+
+it('embedding change resolves angles far below the float32 cosine step', async () => {
+  const harness = await getHarness();
+  const bandCount = 64;
+  // Pixels 0 to 2: a unit vector with one component moved by 1e-3, 1e-4 and 1e-5.
+  // Pixels 3 to 7: closed forms in the first two bands.
+  const base = Array.from({length: bandCount}, () => 1 / Math.sqrt(bandCount));
+  const before: number[] = [];
+  const after: number[] = [];
+  for (const step of [1e-3, 1e-4, 1e-5]) {
+    before.push(...base);
+    after.push(...base.map((value, band) => (band === 5 ? value + step : value)));
+  }
+  const planar = (x: number, y: number) => [x, y, ...new Array(bandCount - 2).fill(0)];
+  const pairs: [number[], number[], number][] = [
+    [planar(1, 0), planar(1, 1e-4), Math.atan(1e-4)],
+    [planar(2, 0), planar(0, 3), Math.PI / 2],
+    [planar(1, 0), planar(-2, 0), Math.PI],
+    [planar(0, 0), planar(0, 0), 0],
+    [planar(0, 0), planar(0, 1), Math.PI / 2]
+  ];
+  for (const [left, right] of pairs) {
+    before.push(...left);
+    after.push(...right);
+  }
+  const pixels = 3 + pairs.length;
+  const result = await harness.run(
+    new GPURasterEmbeddingChange({
+      pixelCount: pixels,
+      dimensions: bandCount,
+      before: harness.floats(before),
+      after: harness.floats(after),
+      output: {angle: harness.output('angle', 'float32', pixels)}
+    })
+  );
+  // Binary64 angle of the float32 inputs from the chord of the unit vectors, 2 asin(|u - v| / 2).
+  const expected: number[] = [];
+  for (let pixel = 0; pixel < 3; pixel++) {
+    const left = Array.from(
+      Float32Array.from(before.slice(pixel * bandCount, (pixel + 1) * bandCount))
+    );
+    const right = Array.from(
+      Float32Array.from(after.slice(pixel * bandCount, (pixel + 1) * bandCount))
+    );
+    const leftLength = Math.hypot(...left);
+    const rightLength = Math.hypot(...right);
+    const chord = Math.hypot(
+      ...left.map((value, band) => value / leftLength - right[band] / rightLength)
+    );
+    expected.push(2 * Math.asin(chord / 2));
+  }
+  expected.push(...pairs.map(pair => pair[2]));
+  // The first three are about 9.9e-4, 9.9e-5 and 9.9e-6 rad; acos of the float32 cosine gave 0
+  // for the last two and was 2e-4 off on the first.
+  expect(expected[0]).toBeGreaterThan(9e-4);
+  expect(expected[2]).toBeLessThan(1.1e-5);
+  for (let pixel = 0; pixel < pixels; pixel++) {
+    expect(
+      Math.abs(result['angle'][pixel] - expected[pixel]),
+      `pixel ${pixel}: ${result['angle'][pixel]} against ${expected[pixel]}`
+    ).toBeLessThanOrEqual(4e-7 + 2e-6 * expected[pixel]);
+  }
+});
+
+it('k-nearest cosine distance between two zero vectors is zero, as in GPUSimilaritySearch', async () => {
+  const harness = await getHarness();
+  // Pixel 0 is the zero vector. Training sample 1 is the zero vector with class 1: similarity 1,
+  // distance 0, so it is the nearest neighbour. Samples 0 and 2 have similarity 0 with pixel 0.
+  // Pixel 1 is (0, 2): sample 2 is at distance 0, the zero sample at distance 1.
+  const result = await harness.run(
+    new GPURasterEmbeddingKNearestClassifier({
+      pixelCount: 2,
+      dimensions: 2,
+      metric: 'cosine',
+      vectors: harness.floats([0, 0, 0, 2]),
+      trainingVectors: harness.floats([1, 0, 0, 0, 0, 1]),
+      trainingLabels: harness.integers([0, 1, 2]),
+      trainingCount: 3,
+      classCount: 3,
+      neighborCount: 1,
+      output: {labels: harness.output('labels', 'uint32', 2)}
+    })
+  );
+  expect(result['labels']).toEqual([1, 2]);
 });

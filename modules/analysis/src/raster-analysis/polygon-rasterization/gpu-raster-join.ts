@@ -27,7 +27,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid, validateRasterParameters} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -198,13 +198,13 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
       throw new Error(`${id} zoneCount must be a positive integer below the no-zone sentinel`);
     }
     validateRasterParameters(id, props.parameters, GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH);
-    validatePackedView(props.points, ['float32x2'], `${id} points`);
+    validateSinglePackedView(props.points, ['float32x2'], `${id} points`);
     const pointCount = props.points.length;
     if (pointCount < 1) {
       throw new Error(`${id} points must not be empty`);
     }
     if (props.values) {
-      validatePackedView(props.values, ['float32'], `${id} values`);
+      validateSinglePackedView(props.values, ['float32'], `${id} values`);
       if (props.values.length !== pointCount) {
         throw new Error(`${id} values must contain one row per point`);
       }
@@ -214,7 +214,7 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
       ['boundary', props.boundary]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length !== cellCount) {
           throw new Error(`${id} ${name} must contain one row per cell`);
         }
@@ -244,13 +244,13 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['uint32'], `${id} output.${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
       if (view.length !== length) {
         throw new Error(`${id} output.${name} must contain ${length} uint32 rows`);
       }
     }
     if (output.sums) {
-      validatePackedView(output.sums, ['float32'], `${id} output.sums`);
+      validateSinglePackedView(output.sums, ['float32'], `${id} output.sums`);
       if (output.sums.length !== props.zoneCount) {
         throw new Error(`${id} output.sums must contain zoneCount rows`);
       }

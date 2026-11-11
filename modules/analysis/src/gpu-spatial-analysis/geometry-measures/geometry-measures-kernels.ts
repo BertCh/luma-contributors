@@ -10,7 +10,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {LON_LAT_RING_WGSL} from '../../analysis-core/lon-lat-ring-wgsl';
-import {SPHERICAL_EXCESS_WGSL} from '../cell-indexing/h3-measures-wgsl';
+import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {GEODESIC_WGSL} from './geodesic-wgsl';
 import {
   GPU_WGS84_ELLIPSOID,
@@ -105,7 +105,8 @@ const POLAR_Q: f32 = ${getWGSLFloatLiteral(authalic.polarQ)};
  *   `SIN_AUTHALIC_SCALE * ∫ (1 - e² s²)^-2 ds` over `[s0, s0 + Δs]` by 8-interval composite Simpson
  *   (integrand is smooth; relative error below 1e-8 for any span), so small polygons never subtract
  *   two rounded authalic values.
- * - `getGeodeticFromAuthalic(xi)`: series inverse of the authalic latitude.
+ * - `getGeodeticFromAuthalic(xi)`: series inverse of the authalic latitude (Snyder 3-18 through
+ *   `e^6`, within 2 mm of the exact inverse on WGS84).
  */
 const WGS84_WGSL = /* wgsl */ `
 fn getWgs84Length(a: vec2<f32>, b: vec2<f32>) -> f32 {
@@ -166,14 +167,26 @@ fn getSinAuthalic(s: f32) -> f32 {
     return s;
   }
   let es = WGS84_E * s;
-  let q = (1.0 - WGS84_E2) * (s / (1.0 - es * es) + log((1.0 + es) / (1.0 - es)) / (2.0 * WGS84_E));
+  let es2 = es * es;
+  // atanh(es) / e. For a small eccentricity the f32 quotient (1 + es) / (1 - es) rounds next to 1
+  // and its logarithm keeps six digits (1.6 m of latitude on WGS84); the series keeps them all.
+  var inverseHyperbolic = log((1.0 + es) / (1.0 - es)) / (2.0 * WGS84_E);
+  if (es2 < 0.01) {
+    inverseHyperbolic = s * (1.0 + es2 * (1.0 / 3.0 + es2 * (0.2 + es2 * (1.0 / 7.0 + es2 / 9.0))));
+  }
+  let q = (1.0 - WGS84_E2) * (s / (1.0 - es2) + inverseHyperbolic);
   return q / POLAR_Q;
 }
 
+// Snyder (1987) equation 3-18, the inverse series. (17 e^4 / 360 belongs to the forward series
+// 3-14; using it here misplaces the latitude by up to 4.8 m on WGS84.)
 fn getGeodeticFromAuthalic(xi: f32) -> f32 {
   let e4 = WGS84_E2 * WGS84_E2;
-  return xi + (WGS84_E2 / 3.0 + 31.0 * e4 / 180.0) * sin(2.0 * xi) +
-    (17.0 * e4 / 360.0) * sin(4.0 * xi);
+  let e6 = e4 * WGS84_E2;
+  return xi +
+    (WGS84_E2 / 3.0 + 31.0 * e4 / 180.0 + 517.0 * e6 / 5040.0) * sin(2.0 * xi) +
+    (23.0 * e4 / 360.0 + 251.0 * e6 / 3780.0) * sin(4.0 * xi) +
+    (761.0 * e6 / 45360.0) * sin(6.0 * xi);
 }
 `;
 
@@ -244,6 +257,73 @@ fn getGeodesicEdgeCross(
     startY = endY;
   }
   return total;
+}
+`;
+
+/**
+ * WGSL of the great-circle polygon area (`edgeModel: 'great-circle'`). The area sum keeps the
+ * Lambert chord cross product, which is formed from differences to the feature origin, and
+ * subtracts twice `getGreatCircleEdgeBulge(a, b, stepDegrees)`: the signed area, in steradians,
+ * between the great-circle arc `a -> b` and the chord that is straight in (longitude, sine of
+ * latitude). With `k = sin(middle latitude) / cos(half latitude difference)` and `t = tan(half
+ * longitude step)`, the area between the arc and the equator is `2 atan(k t)` and the chord's is
+ * `k cos^2(half latitude difference)` times the step, so the bulge is
+ * `(2 atan(k t) - k step) + k step sin^2(half latitude difference)`. The first bracket is third
+ * order in the step: it is summed from its series `2 k (1 - k^2) sum((-1)^(n+1) (1 + k^2 + ... +
+ * k^(2n-2)) t^(2n+1) / (2n+1))` below `t = 0.25` and from `(1 - k) step - 2 atan((1 - k) t / (1 +
+ * k t^2))` above, with `1 - k` taken from the exact colatitude of the vertex nearer a pole. No
+ * term subtracts two rounded areas, so a ring a few meters across keeps the f32 relative
+ * precision of a continental one (5e-7 against binary64 from 10 m to 1000 km squares).
+ *
+ * A fan of spherical-excess triangles on f32 unit vectors, the earlier form, cancels in the
+ * triangle determinant: it returned 60,920 m2 for a 10,008 m2 square.
+ */
+const GREAT_CIRCLE_AREA_WGSL = /* wgsl */ `
+fn getGreatCircleEdgeBulge(a: vec2<f32>, b: vec2<f32>, stepDegrees: f32) -> f32 {
+  let deltaLambda = stepDegrees * GEODESIC_DEGREES_TO_RADIANS;
+  let halfDeltaPhiDegrees = 0.5 * (b.y - a.y);
+  let middleDegrees = 0.5 * (a.y + b.y);
+  let cosHalfDeltaPhi = max(cos(halfDeltaPhiDegrees * GEODESIC_DEGREES_TO_RADIANS), 1e-20);
+  let sinHalfDeltaPhi = sin(halfDeltaPhiDegrees * GEODESIC_DEGREES_TO_RADIANS);
+  let sinMiddle = sin(middleDegrees * GEODESIC_DEGREES_TO_RADIANS);
+  // k is at most 1 in magnitude; the bulge is odd in k, so work with |k| and restore the sign.
+  let ratio = abs(sinMiddle) / cosHalfDeltaPhi;
+  // 1 - k = (sin(90 - |half difference|) - sin(|middle|)) / cos(half difference), as a product:
+  // 90 - |half difference| - |middle| is the colatitude of the vertex nearer a pole, exact in f32.
+  let colatitudeDegrees = 90.0 - max(abs(a.y), abs(b.y));
+  let complement = 2.0 *
+    cos(0.5 * (90.0 - abs(halfDeltaPhiDegrees) + abs(middleDegrees)) * GEODESIC_DEGREES_TO_RADIANS) *
+    sin(0.5 * colatitudeDegrees * GEODESIC_DEGREES_TO_RADIANS) / cosHalfDeltaPhi;
+  let sinHalfLambda = sin(0.5 * deltaLambda);
+  let cosHalfLambda = abs(cos(0.5 * deltaLambda));
+  var excess = 0.0;
+  if (abs(sinHalfLambda) < 0.25 * cosHalfLambda) {
+    let tangent = sinHalfLambda / cosHalfLambda;
+    let tangentSquared = tangent * tangent;
+    let ratioSquared = ratio * ratio;
+    var partialSum = 0.0;
+    var ratioPower = 1.0;
+    var tangentPower = tangent;
+    var termSign = 1.0;
+    var series = 0.0;
+    for (var order = 1u; order <= 6u; order++) {
+      partialSum += ratioPower;
+      ratioPower *= ratioSquared;
+      tangentPower *= tangentSquared;
+      series += termSign * partialSum * tangentPower / f32(2u * order + 1u);
+      termSign = -termSign;
+    }
+    excess = 2.0 * ratio * complement * (1.0 + ratio) * series;
+  } else {
+    // The second argument is positive (a floor keeps atan2(0, 0) out of a 180 degree step,
+    // which the ring check already reports as ambiguous).
+    excess = complement * deltaLambda - 2.0 * atan2(
+      complement * sinHalfLambda * cosHalfLambda,
+      max(cosHalfLambda * cosHalfLambda + ratio * sinHalfLambda * sinHalfLambda, 1e-30)
+    );
+  }
+  let bulge = excess + ratio * deltaLambda * sinHalfDeltaPhi * sinHalfDeltaPhi;
+  return select(bulge, -bulge, sinMiddle < 0.0);
 }
 `;
 
@@ -409,11 +489,11 @@ export function createFeatureMeasuresNode<Parameters>(
       'getGeodeticFromAuthalic(asin(clamp(getSinAuthalic(sin(origin.y * GEODESIC_DEGREES_TO_RADIANS)) + centroid.y, -1.0, 1.0))) * GEODESIC_RADIANS_TO_DEGREES'
   }[coordinateSystem];
   const edgeCrossSource = props.greatCircleEdges
-    ? `var edgeCross = 0.0;
-      if (IS_POLYGON && vertex > 0u && vertex + 1u < rowCount) {
-        // The ring's first vertex anchors a signed fan, including concave rings.
-        edgeCross = 2.0 * sphericalExcessTriangle(
-          geodesicUnitVector(firstPosition), geodesicUnitVector(position), geodesicUnitVector(nextPosition));
+    ? `var edgeCross = cross;
+      if (IS_POLYGON) {
+        // Lambert chord from local differences, less twice the great-circle bulge over it.
+        edgeCross = cross - 2.0 * getGreatCircleEdgeBulge(
+          position, nextPosition, lonLatRingStep(position, nextPosition));
       }`
     : isGeodesic
       ? `var edgeCross = cross;
@@ -465,7 +545,7 @@ ${WGS84_WGSL}`
 }
 
 ${LON_LAT_RING_WGSL}
-${props.greatCircleEdges ? SPHERICAL_EXCESS_WGSL : ''}
+${props.greatCircleEdges ? GREAT_CIRCLE_AREA_WGSL : ''}
 fn isAmbiguousEdge(first: vec2<f32>, second: vec2<f32>) -> bool {
   if (!IS_POLYGON) { return ${isEllipsoidal ? '!vincentyInverse(first, second).converged' : 'false'}; }
   return ${isEllipsoidal ? '!vincentyInverse(first, second).converged || ' : ''}${props.greatCircleEdges ? 'lonLatIsAmbiguousGreatCircleEdge' : 'lonLatIsAmbiguousLinearEdge'}(first, second);
@@ -484,14 +564,15 @@ fn getAreaY(position: vec2<f32>, origin: vec2<f32>) -> f32 {
 }
 ${isGeodesic ? (props.geodesicAreaTolerance !== undefined ? getAdaptiveGeodesicAreaWGSL(props.geodesicAreaTolerance, props.geodesicAreaMaximumSegments ?? 256, props.areaRadius) : GEODESIC_AREA_WGSL) : ''}
 
-// Neumaier compensated addition: sum.x holds the running sum, sum.y the compensation.
+${ADDITION_ROUNDING_ERROR_WGSL}
+// Compensated addition: sum.x holds the running sum, sum.y the accumulated rounding errors of its
+// additions. The error comes from getAdditionRoundingError, which reads it off the integer
+// significands. The float Neumaier term ((sum - total) + value) is algebraically zero and the
+// test GPU's shader compiler folds it away: a 300,000-vertex ring was 1.1e-3 off, the plain f32 sum.
 fn addCompensated(sum: ptr<function, vec2<f32>>, value: f32) {
-  let total = (*sum).x + value;
-  if (abs((*sum).x) >= abs(value)) {
-    (*sum).y = (*sum).y + (((*sum).x - total) + value);
-  } else {
-    (*sum).y = (*sum).y + ((value - total) + (*sum).x);
-  }
+  let previous = (*sum).x;
+  let total = previous + value;
+  (*sum).y = (*sum).y + getAdditionRoundingError(previous, value, total);
   (*sum).x = total;
 }
 

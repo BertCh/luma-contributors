@@ -18,7 +18,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUFlowAggregation, type GPUFlowAggregationOutput} from './gpu-flow-aggregation';
@@ -112,14 +112,18 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
     this.rowCount = props.trackCount * props.traversedEdgeCapacity;
     // Row indices are u32 in the kernel.
     validateCapacity(id, 'trackCount * traversedEdgeCapacity', this.rowCount, 1, 0xfffffffe);
-    validatePackedView(props.traversedEdges.edges, ['uint32'], `${id} traversedEdges.edges`);
-    validatePackedView(props.traversedEdges.counts, ['uint32'], `${id} traversedEdges.counts`);
+    validateSinglePackedView(props.traversedEdges.edges, ['uint32'], `${id} traversedEdges.edges`);
+    validateSinglePackedView(
+      props.traversedEdges.counts,
+      ['uint32'],
+      `${id} traversedEdges.counts`
+    );
     validateViewLength(id, 'traversedEdges.edges', props.traversedEdges.edges, this.rowCount);
     validateViewLength(id, 'traversedEdges.counts', props.traversedEdges.counts, props.trackCount);
-    validatePackedView(props.output.edgeVolumes, ['uint32'], `${id} output.edgeVolumes`);
+    validateSinglePackedView(props.output.edgeVolumes, ['uint32'], `${id} output.edgeVolumes`);
     validateViewLength(id, 'output.edgeVolumes', props.output.edgeVolumes, props.edgeCount);
     if (props.output.truncated) {
-      validatePackedView(props.output.truncated, ['uint32'], `${id} output.truncated`);
+      validateSinglePackedView(props.output.truncated, ['uint32'], `${id} output.truncated`);
       validateViewLength(id, 'output.truncated', props.output.truncated, 1);
     }
     if (props.output.transitions) {

@@ -190,3 +190,68 @@ it('GPUHuffTradeAreas matches the oracle with an exponent and keeps rows normali
   expect(Math.abs(captured - served) / served).toBeLessThan(1e-3);
   rig.destroy();
 });
+
+it('GPUHuffTradeAreas skips a non-finite demand and reports the row invalid', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Three demand rows reach both facilities with weight 1. Attractiveness 1 and 3 give every row
+  // the probabilities 1/4 and 3/4. Only row 1 has a usable demand (10), so by hand the expected
+  // demand is 10 / 4 = 2.5 and 3 * 10 / 4 = 7.5, the result GPUCatchmentAccessibility's rule
+  // (a non-finite demand is missing and adds nothing) gives.
+  const demandWeights = {
+    offsets: [0, 2, 4, 6],
+    neighbors: [0, 1, 0, 1, 0, 1],
+    weights: Array(6).fill(1)
+  };
+  const facilityWeights = {
+    offsets: [0, 3, 6],
+    neighbors: [0, 1, 2, 0, 1, 2],
+    weights: Array(6).fill(1)
+  };
+  const rig = new AnalysisRig(device);
+  const tradeArea = rig.output('uint32', 3);
+  const expectedDemand = rig.output('float32', 2);
+  const validity = rig.output('uint32', 3);
+  rig.run(
+    new GPUHuffTradeAreas({
+      attractiveness: rig.input(Float32Array.of(1, 3), 'float32'),
+      demand: rig.input(Float32Array.of(Number.NaN, 10, Number.POSITIVE_INFINITY), 'float32'),
+      demandWeights: rig.weights(demandWeights),
+      facilityWeights: rig.weights(facilityWeights),
+      output: {tradeArea, expectedDemand, validity}
+    })
+  );
+  expect(await rig.readFloat(expectedDemand)).toEqual([2.5, 7.5]);
+  expect(await rig.readUint(validity)).toEqual([0, 1, 0]);
+  // The trade area does not depend on the demand value.
+  expect(await rig.readUint(tradeArea)).toEqual([1, 1, 1]);
+  rig.destroy();
+});
+
+it('GPUCatchmentAccessibility skips a non-finite demand and reports the row invalid', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // One facility with supply 6 reaches three demand rows with weight 1. Only row 1 has a usable
+  // demand (3), so by hand R = 6 / 3 = 2 and every row's accessibility is 1 * R = 2: a row with a
+  // missing demand still has access, it only adds nothing to the facility's load.
+  const facilityWeights = {offsets: [0, 3], neighbors: [0, 1, 2], weights: [1, 1, 1]};
+  const demandWeights = {offsets: [0, 1, 2, 3], neighbors: [0, 0, 0], weights: [1, 1, 1]};
+  const rig = new AnalysisRig(device);
+  const accessibility = rig.output('float32', 3);
+  const ratios = rig.output('float32', 1);
+  const validity = rig.output('uint32', 3);
+  rig.run(
+    new GPUCatchmentAccessibility({
+      method: '2sfca',
+      supply: rig.input(Float32Array.of(6), 'float32'),
+      demand: rig.input(Float32Array.of(Number.NaN, 3, Number.NEGATIVE_INFINITY), 'float32'),
+      facilityWeights: rig.weights(facilityWeights),
+      demandWeights: rig.weights(demandWeights),
+      output: {accessibility, ratios, validity}
+    })
+  );
+  expect(await rig.readFloat(ratios)).toEqual([2]);
+  expect(await rig.readFloat(accessibility)).toEqual([2, 2, 2]);
+  expect(await rig.readUint(validity)).toEqual([0, 1, 0]);
+  rig.destroy();
+});

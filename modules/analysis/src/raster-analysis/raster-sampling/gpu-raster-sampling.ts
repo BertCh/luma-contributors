@@ -38,12 +38,15 @@ export type GPURasterSamplingProps = {
   id?: string;
   /** Raster grid: its width and height size the kernels; its extent places the samples. */
   grid: GPURasterMetadata;
-  /** Row-major raster of at least `width * height` rows (row 0 is the grid's first row). NaN is nodata. */
+  /**
+   * Row-major raster of at least `width * height` rows (row 0 is the grid's first row). A
+   * non-finite cell (NaN or an infinity) is nodata.
+   */
   values: GraphDataView<'float32'>;
   /** Optional finite sentinel treated as nodata. */
   noDataValue?: number;
-  /** Optional raster validity; zero marks a nodata cell. */
-  validity?: GraphDataView<'uint32'>;
+  /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
+  mask?: GraphDataView<'uint32'>;
   /** Packed points in extent units, relative to the parameters' `localOrigin`. */
   positions: GraphDataView<'float32x2'>;
   /** Optional one-row active point count, clamped to `positions.length`. */
@@ -95,8 +98,8 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
     const {output} = props;
     const pixelCount = validateRasterDescription(id, props.grid, props.noDataValue);
     validateRasterSamplingView(id, 'values', props.values, 'float32', pixelCount);
-    if (props.validity) {
-      validateRasterSamplingView(id, 'validity', props.validity, 'uint32', pixelCount);
+    if (props.mask) {
+      validateRasterSamplingView(id, 'mask', props.mask, 'uint32', pixelCount);
     }
     validateRasterSamplingView(id, 'positions', props.positions, 'float32x2', 0);
     if (props.pointCount) {
@@ -124,13 +127,7 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
       );
     }
     const outputs = [output.values, output.outputValidity].filter(view => view !== undefined);
-    const inputs = [
-      props.values,
-      props.validity,
-      props.positions,
-      props.pointCount,
-      props.parameters
-    ];
+    const inputs = [props.values, props.mask, props.positions, props.pointCount, props.parameters];
     if (new Set(outputs.map(view => view.buffer)).size !== outputs.length) {
       throw new Error(`${id} outputs must not share buffers`);
     }
@@ -150,7 +147,7 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
-      props.validity,
+      props.mask,
       props.positions,
       props.pointCount,
       props.parameters,
@@ -160,8 +157,8 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
     const bindings: WGSLKernelBinding[] = [
       {name: 'raster', view: props.values, type: 'f32', access: 'read'}
     ];
-    if (props.validity) {
-      bindings.push({name: 'validity', view: props.validity, type: 'u32', access: 'read'});
+    if (props.mask) {
+      bindings.push({name: 'validity', view: props.mask, type: 'u32', access: 'read'});
     }
     bindings.push({name: 'positions', view: props.positions, type: 'f32', access: 'read'});
     if (props.pointCount) {
@@ -190,7 +187,7 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
           width: props.grid.width,
           height: props.grid.height,
           noDataValue: props.noDataValue,
-          hasValidity: Boolean(props.validity)
+          hasValidity: Boolean(props.mask)
         })}
 const POINT_CAPACITY: u32 = ${props.positions.length}u;`,
         body: `let activeCount = ${props.pointCount ? 'min(pointCount[pointCountOffset], POINT_CAPACITY)' : 'POINT_CAPACITY'};

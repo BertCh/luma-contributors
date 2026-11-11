@@ -12,7 +12,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -270,8 +270,8 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
       props.spatialContext,
       EDGE_BUNDLING_SPATIAL_CONTEXT_SUPPORT
     );
-    validatePackedView(props.nodePositions, ['float32x2'], `${id} nodePositions`);
-    validatePackedView(output.paths, ['float32x2'], `${id} output.paths`);
+    validateSinglePackedView(props.nodePositions, ['float32x2'], `${id} nodePositions`);
+    validateSinglePackedView(output.paths, ['float32x2'], `${id} output.paths`);
     for (const [name, view] of [
       ['sourceNodes', props.sourceNodes],
       ['targetNodes', props.targetNodes],
@@ -280,11 +280,11 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
       ['output.drawRecord', output.drawRecord]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     if (props.parameters) {
-      validatePackedView(props.parameters, ['uint32', 'float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['uint32', 'float32'], `${id} parameters`);
       if (props.parameters.length < GPU_EDGE_BUNDLING_PARAMETER_LENGTH - 1) {
         throw new Error(`${id} parameters must contain at least 4 rows`);
       }

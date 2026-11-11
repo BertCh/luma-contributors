@@ -82,6 +82,11 @@ it('GPUTerrainHydrologicIndices validates its props', () => {
     length: number
   ) => createTransientView(graph, name, format, length);
   expect(() => create({grid: {...GRID, width: 0}})).toThrow(/dimensions/);
+  // The D8 descent slope uses the diagonal step: a sheared grid is rejected, a rotated one passes.
+  expect(() => create({grid: {...GRID, affine: [1, 0.5, 0, 0, -1, 0]}})).toThrow(
+    /^terrain-hydrologic-indices grid\.affine must have orthogonal pixel axes/
+  );
+  expect(() => create({grid: {...GRID, affine: [0.6, 0.8, 0, 0.8, -0.6, 0]}})).not.toThrow();
   expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() => create({parameters: view('s7', 'float32', 7)})).toThrow(/parameters/);
   expect(() => create({cellSizeMode: 'polar' as never})).toThrow(/cellSizeMode/);

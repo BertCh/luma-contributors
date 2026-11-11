@@ -16,7 +16,11 @@ f64 copies of shared intersections. This is reference robustness, not a GPU
 snap allowance. Shapely orients shells CCW, holes CW in local x-right/y-up.
 
 Isolines call find_contours on EACH valid 2x2 cell, choosing connectivity using
-the documented arithmetic-centre convention (not the asymptotic decider).
+the documented bilinear (asymptotic) decider, the rule of luma.gl's
+GPURasterContours: see saddle_joined. Until 2026-11-10 the kernels and this
+generator used the arithmetic centre; the committed fixtures were generated
+with that rule and were not regenerated, because no cell of any committed case
+is decided differently by the two rules (every parity spec passes unchanged).
 Negating values adapts equality-high; positive_orientation='high' puts original
 high values on the left after swapping (row,col) to (x,y). Zero-length corner
 bridges omitted by skimage are recovered by the high-side limit: perturb ONLY
@@ -55,6 +59,19 @@ original=json.loads(SOURCE.read_text())
 for source in original['sources']:
     assert hashlib.sha256((ROOT/source['path']).read_bytes()).hexdigest()==source['sha256']
 VERSIONS=dict(python=platform.python_version(),numpy=np.__version__,shapely=shapely.__version__,skimage=skimage.__version__)
+
+
+def saddle_joined(values, level):
+    """Bilinear (asymptotic) decider for a 2x2 cell [[v0, v1], [v3, v2]].
+
+    The saddle value of the bilinear surface is (v0 v2 - v1 v3) / (v0 + v2 - v1 - v3). The high
+    corners are joined when it is at or above the level. With d = v - level its sign relative to
+    the level is the sign of d0 d2 - d1 d3 when (v0, v2) is the high diagonal and the opposite
+    otherwise. Only used for saddles; any answer is harmless elsewhere.
+    """
+    d = np.asarray(values, dtype=float) - level
+    determinant = d[0, 0] * d[1, 1] - d[0, 1] * d[1, 0]
+    return determinant >= 0 if d[0, 0] >= 0 else determinant <= 0
 
 
 def unpack(value):
@@ -116,7 +133,7 @@ def make_lines(scene):
                 epsilon=(nonzero_gaps.min() if nonzero_gaps.size else 1.)*2**-20
                 topology_values=np.where(cell_values==level,level+epsilon,cell_values)
                 contours=find_contours(-topology_values,-level,
-                    fully_connected='low' if np.mean(cell_values)>=level else 'high',positive_orientation='high')
+                    fully_connected='low' if saddle_joined(cell_values,level) else 'high',positive_orientation='high')
                 for contour in contours:
                     assert len(contour)==2
                     coordinates=contour[:,::-1]
@@ -156,7 +173,7 @@ for row in range(16):
     for column in range(16):
         if not validity[row:row+2,column:column+2].all(): continue
         cell_values=values[row:row+2,column:column+2]
-        contours=find_contours(-cell_values,-1.,fully_connected='low' if np.mean(cell_values)>=1 else 'high')
+        contours=find_contours(-cell_values,-1.,fully_connected='low' if saddle_joined(cell_values,1.) else 'high')
         faces=list(polygonize(unary_union([square.boundary,*[LineString(contour[:,::-1]) for contour in contours]])))
         high_points=[Point(column_index,row_index) for row_index,column_index in np.ndindex(2,2) if cell_values[row_index,column_index]>1]
         high=unary_union([face for face in faces if any(face.covers(point) for point in high_points)])

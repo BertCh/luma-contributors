@@ -351,8 +351,8 @@ fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) 
 }
 
 /**
- * Publishes piece line offsets (clamped), the vertex count and overflow (vertex or line capacity),
- * the optional total and clamped line count, and the optional source-line-index column.
+ * Publishes piece line offsets (clamped), overflow (vertex or line capacity) and the optional
+ * clamped and unclamped vertex counts.
  *
  * @internal
  */
@@ -366,10 +366,9 @@ export function createPiecePublishNode<Parameters>(
     vertexStarts: GraphDataView<'uint32'>;
     capacity: number;
     outputLineOffsets: GraphDataView<'uint32'>;
-    count: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
-    requiredCount?: GraphDataView<'uint32'>;
-    lineCountOutput?: GraphDataView<'uint32'>;
+    vertexCount?: GraphDataView<'uint32'>;
+    requiredVertexCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const lineCapacity = props.vertexStarts.length;
@@ -378,16 +377,20 @@ export function createPiecePublishNode<Parameters>(
     {name: 'pieces', view: props.pieces, type: 'u32', access: 'read'},
     {name: 'vertexStarts', view: props.vertexStarts, type: 'u32', access: 'read'},
     {name: 'outputLineOffsets', view: props.outputLineOffsets, type: 'u32', access: 'read_write'},
-    {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   ];
-  if (props.requiredCount) {
-    bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
-  }
-  if (props.lineCountOutput) {
+  if (props.vertexCount) {
     bindings.push({
-      name: 'lineCountOut',
-      view: props.lineCountOutput,
+      name: 'vertexCountOut',
+      view: props.vertexCount,
+      type: 'u32',
+      access: 'read_write'
+    });
+  }
+  if (props.requiredVertexCount) {
+    bindings.push({
+      name: 'totalOut',
+      view: props.requiredVertexCount,
       type: 'u32',
       access: 'read_write'
     });
@@ -410,10 +413,9 @@ const STRIDE: u32 = ${LINE_PIECE_STRIDE}u;`,
   outputLineOffsets[outputLineOffsetsOffset + index] = min(start, CAPACITY);
   if (index == 0u) {
     let pieceTotal = pieceTotal[pieceTotalOffset];
-    countOut[countOutOffset] = min(total, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY || pieceTotal > LINE_CAPACITY);
-    ${props.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
-    ${props.lineCountOutput ? 'lineCountOut[lineCountOutOffset] = min(pieceTotal, LINE_CAPACITY);' : ''}
+    ${props.vertexCount ? 'vertexCountOut[vertexCountOutOffset] = min(total, CAPACITY);' : ''}
+    ${props.requiredVertexCount ? 'totalOut[totalOutOffset] = total;' : ''}
   }`
   });
 }

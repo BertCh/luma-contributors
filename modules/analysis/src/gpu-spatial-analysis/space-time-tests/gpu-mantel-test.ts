@@ -15,7 +15,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -217,10 +217,10 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
     if (!props.pairs.distances) {
       throw new Error(`${id} pairs.distances is required`);
     }
-    validatePackedView(props.times, ['float32'], `${id} times`);
-    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
-    validatePackedView(props.output.statistics, ['float32'], `${id} output.statistics`);
-    validatePackedView(props.output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(props.times, ['float32'], `${id} times`);
+    validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validateSinglePackedView(props.output.statistics, ['float32'], `${id} output.statistics`);
+    validateSinglePackedView(props.output.summary, ['float32'], `${id} output.summary`);
     if (this.rows < 2) {
       throw new Error(`${id} needs at least two rows`);
     }

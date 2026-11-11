@@ -29,6 +29,12 @@ export type GPUPointCloudVoxelMergeProps = {
   partitionPolicy: 'disjoint-owned-rows';
   parts: readonly {
     counts: GraphDataView<'uint32'>;
+    /**
+     * Arithmetic mean of the member positions per voxel. The published
+     * `GPUPointCloudVoxelDownsample` (10.0.0-alpha.10) does not produce it: its `output` is the
+     * representative point, and merging those gives a count-weighted mean of representatives, not
+     * a centroid. The caller computes the per-voxel means (see `docs/api/pointcloud-analysis.md`).
+     */
     centroids: GraphDataView<'float32x3'>;
     representatives: GraphDataView<'uint32'>;
     /** Adds a stable original-row offset to each nonempty part representative. */

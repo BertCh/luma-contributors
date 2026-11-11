@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGraphOutputViews} from '../../analysis-core/kernels/gpu-contributor-utils';
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -19,7 +17,12 @@ import {
 import {ADAPTIVE_INCIRCLE_WGSL} from '../delaunay-tessellation/gpu-delaunay-tessellation';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getGraphOutputViews,
+  validateCapacity,
+  validateGraphOutputsDisjointFromInputs,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 export type GPUConstrainedDelaunayTriangulationProps = Omit<
   GPUPolygonTriangulationProps,
@@ -45,11 +48,20 @@ export class GPUConstrainedDelaunayTriangulation implements GPUCommandNodeProduc
   constructor(props: GPUConstrainedDelaunayTriangulationProps) {
     this.id = props.id ?? 'constrained-delaunay';
     this.props = props;
-    assert(props.output.status.converged.length >= props.polygonOffsets.length - 1);
-    assert(Number.isInteger(props.maximumFlips ?? 4096) && (props.maximumFlips ?? 4096) > 0);
+    const polygonCount = props.polygonOffsets.length - 1;
+    validateRequirement(
+      this.id,
+      props.output.status.converged.length >= polygonCount,
+      `output.status.converged must have at least ${polygonCount} rows (one per polygon)`
+    );
+    validateCapacity(this.id, 'maximumFlips', props.maximumFlips ?? 4096);
     new GPUPolygonTriangulation(props);
     const outputs = getGraphOutputViews(props.output).filter(view => view !== undefined);
-    assert(new Set(outputs.map(view => view.buffer)).size === outputs.length);
+    validateRequirement(
+      this.id,
+      new Set(outputs.map(view => view.buffer)).size === outputs.length,
+      'output views must use distinct buffers'
+    );
     validateGraphOutputsDisjointFromInputs(this.id, outputs, [
       props.positions,
       props.featureOffsets,

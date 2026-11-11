@@ -22,3 +22,16 @@ export type {
 
 export {GPUBoundedFacilityAllocation} from './gpu-bounded-facility-allocation';
 export type {GPUBoundedFacilityAllocationProps} from './gpu-bounded-facility-allocation';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeLocationAllocationOnCPU,
+  CPULocationAllocationOperation
+} from './cpu-location-allocation-operation';
+export type {
+  CPULocationAllocationInput,
+  CPULocationAllocationResult,
+  CPULocationAllocationOptions
+} from './cpu-location-allocation-operation';
+export {GPULocationAllocationGraphOperation} from './gpu-location-allocation-operation';
+export type {LocationAllocationOperationProps} from './gpu-location-allocation-operation';

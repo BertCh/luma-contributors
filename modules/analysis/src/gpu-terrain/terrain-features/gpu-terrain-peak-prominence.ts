@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert, type Device} from '@luma.gl/core';
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUSort,
@@ -21,7 +21,9 @@ import {
 } from '../../raster-analysis/raster-band-utils';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateMaximumCount,
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getSpillCommonWGSL} from '../hydrology/terrain-flow-spill-utils';
@@ -93,9 +95,13 @@ export class GPUTerrainPeakProminence implements GPUCommandNodeProducer {
       ['parentPeak', props.output.parentPeak, 'uint32']
     ] as const) {
       if (!view) continue;
-      validatePackedView(view, [format], `${this.id} ${name}`);
+      validateSinglePackedView(view, [format], `${this.id} ${name}`);
       // Every output has one element per raster cell.
-      assert(view.length === count);
+      validateRequirement(
+        this.id,
+        view.length === count,
+        `${name} must have one element per raster cell (${count})`
+      );
     }
     validateRasterBuffersDistinct(
       this.id,
@@ -112,7 +118,12 @@ export class GPUTerrainPeakProminence implements GPUCommandNodeProducer {
     const {width, height} = props.grid;
     const count = width * height;
     // The child table must fit one binding; no silently truncated graph.
-    assert(count <= getGPUTerrainPeakProminenceMaximumCellCount(graph.device));
+    validateMaximumCount(
+      id,
+      'grid cells',
+      count,
+      getGPUTerrainPeakProminenceMaximumCellCount(graph.device)
+    );
     validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, Object.values(props.output));
     const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
@@ -134,7 +145,7 @@ export class GPUTerrainPeakProminence implements GPUCommandNodeProducer {
         ],
         invocationCount: count,
         declarations: common,
-        body: `let valid = validity[validityOffset + index] != 0u && isSpillFinite(values[valuesOffset + index]);
+        body: `let valid = validity[validityOffset + index] != 0u && isFiniteValue(values[valuesOffset + index]);
           result[resultOffset + index] = select(0x7fc00000u, 0xff800000u, valid);
           result[resultOffset + CELL_COUNT + index] = 0xffffffffu;`
       }),
@@ -154,7 +165,7 @@ export class GPUTerrainPeakProminence implements GPUCommandNodeProducer {
           var key = 0u;
           if (neighbor != SPILL_NONE && validity[validityOffset + cell] != 0u && validity[validityOffset + neighbor] != 0u) {
             let first = values[valuesOffset + cell]; let second = values[valuesOffset + neighbor];
-            if (isSpillFinite(first) && isSpillFinite(second)) {
+            if (isFiniteValue(first) && isFiniteValue(second)) {
               // Normalize signed zero so equal numerical saddles have one stable key.
               let saddle = min(first, second);
               key = getSpillKey(select(saddle, 0.0, saddle == 0.0));

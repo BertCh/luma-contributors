@@ -813,7 +813,7 @@ function addIsolines(
     new GPUIsolines({
       grid: makeGrid(options.width, options.height),
       values: view('float32', cellCount),
-      validity: view('uint32', cellCount),
+      mask: view('uint32', cellCount),
       noDataValue: -9999,
       levels: view('float32', options.levelCount),
       parameters: view('float32', 12),
@@ -913,7 +913,7 @@ function addIsobands({graph, view}: Context, options: IsobandsOptions): void {
     new GPUIsobands({
       grid: makeGrid(options.width, options.height),
       values: view('float32', cellCount),
-      validity: view('uint32', cellCount),
+      mask: view('uint32', cellCount),
       noDataValue: -9999,
       breaks: view('float32', options.breakCount),
       parameters: view('float32', 12),
@@ -1050,7 +1050,7 @@ function addIsobandRings(
     new GPUIsobandRings({
       grid: makeGrid(options.width, options.height),
       values: view('float32', cellCount),
-      validity: view('uint32', cellCount),
+      mask: view('uint32', cellCount),
       noDataValue: -9999,
       breaks: view('float32', options.breakCount),
       parameters: view('float32', 12),
@@ -1474,7 +1474,7 @@ function addReclassify(
     new GPURasterReclassify({
       values: view('float32', rowCount),
       rowCount: partialRows ? rowCount - 1 : undefined,
-      validity: view('uint32', rowCount),
+      mask: view('uint32', rowCount),
       noDataValue: -9999,
       breaks: view('float32', breakCount),
       classValues: view('float32', breakCount + 1),
@@ -1528,11 +1528,13 @@ function addWeightedOverlay(
   {graph, view}: Context,
   layerCount: number,
   cellCount: number,
-  tables: number | undefined
+  tables: number | undefined,
+  hasMask = false
 ): void {
   graph.add(
     new GPUWeightedOverlay({
       stack: view('float32', layerCount * cellCount),
+      mask: hasMask ? view('uint32', cellCount) : undefined,
       layerCount,
       cellCount,
       noDataValue: -9999,
@@ -1546,7 +1548,7 @@ function addWeightedOverlay(
         : {}),
       output: {
         score: view('float32', cellCount),
-        outputValidity: view('uint32', cellCount),
+        validity: view('uint32', cellCount),
         scoreRange: view('float32', 2)
       }
     })
@@ -1554,6 +1556,11 @@ function addWeightedOverlay(
 }
 
 const WEIGHTED_OVERLAY_CASES: KernelAuditCase[] = [
+  {
+    exportName: 'GPUWeightedOverlay',
+    name: 'every output, input mask, 16 layers, remap tables',
+    build: context => addWeightedOverlay(context, 16, 300, 32, true)
+  },
   {
     exportName: 'GPUWeightedOverlay',
     name: 'every output, 16 layers, remap tables',
@@ -1613,6 +1620,27 @@ function addCellStatistics(
 const CELL_STATISTICS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURasterCellStatistics',
+    name: 'every output, input mask, 64 layers',
+    build: ({graph, view}) =>
+      graph.add(
+        new GPURasterCellStatistics({
+          stack: view('float32', 64 * 300),
+          layerCount: 64,
+          cellCount: 300,
+          mask: view('uint32', 300),
+          parameters: view('float32', 4),
+          output: {
+            minimum: view('float32', 300),
+            mean: view('float32', 300),
+            majority: view('float32', 300),
+            variety: view('uint32', 300),
+            counts: view('uint32', 300)
+          }
+        })
+      )
+  },
+  {
+    exportName: 'GPURasterCellStatistics',
     name: 'every output, 64 layers',
     build: context => addCellStatistics(context, 64, 300)
   },
@@ -1657,7 +1685,7 @@ const CONDITIONAL_CASES: KernelAuditCase[] = [
   ].map(
     ({mask, a, b}): KernelAuditCase => ({
       exportName: 'GPURasterConditional',
-      name: `${mask ? 'mask' : 'condition values'}, a ${a}, b ${b}, output mask`,
+      name: `${mask ? 'mask' : 'condition values'}, a ${a}, b ${b}, condition result`,
       build: ({graph, view}) =>
         graph.add(
           new GPURasterConditional({
@@ -1668,7 +1696,7 @@ const CONDITIONAL_CASES: KernelAuditCase[] = [
             b: b ? view('float32', 5000) : undefined,
             noDataValue: -9999,
             parameters: view('float32', 8),
-            output: {values: view('float32', 5000), outputMask: view('uint32', 5000)}
+            output: {values: view('float32', 5000), conditionResult: view('uint32', 5000)}
           })
         )
     })
@@ -1686,7 +1714,7 @@ const CONDITIONAL_CASES: KernelAuditCase[] = [
           b: view('float32', cellCount),
           noDataValue: -9999,
           parameters: view('float32', 8),
-          output: {values: view('float32', cellCount), outputMask: view('uint32', cellCount)}
+          output: {values: view('float32', cellCount), conditionResult: view('uint32', cellCount)}
         })
       );
     }
@@ -1694,6 +1722,22 @@ const CONDITIONAL_CASES: KernelAuditCase[] = [
 ];
 
 const ARITHMETIC_CASES: KernelAuditCase[] = [
+  {
+    exportName: 'GPURasterArithmetic',
+    name: 'two rasters with nodata and an input mask',
+    build: ({graph, view}) =>
+      graph.add(
+        new GPURasterArithmetic({
+          cellCount: 5000,
+          a: view('float32', 5000),
+          b: view('float32', 5000),
+          mask: view('uint32', 5000),
+          noDataValue: -9999,
+          parameters: view('float32', 8),
+          output: {values: view('float32', 5000)}
+        })
+      )
+  },
   ...[true, false].map(
     (hasB): KernelAuditCase => ({
       exportName: 'GPURasterArithmetic',
@@ -1738,7 +1782,7 @@ function patchLabels({view}: Context, width: number, height: number) {
   return {
     grid: makeGrid(width, height),
     labels: view('uint32', width * height),
-    validity: view('uint32', width * height),
+    mask: view('uint32', width * height),
     status: {
       converged: view('uint32', 1),
       overflow: view('uint32', 1),
@@ -1774,6 +1818,30 @@ function addPatchMetrics(
 }
 
 const PATCH_METRICS_CASES: KernelAuditCase[] = [
+  ...(['geographic', 'web-mercator'] as const).map(
+    (cellSizeMode): KernelAuditCase => ({
+      exportName: 'GPURasterPatchMetrics',
+      name: `${cellSizeMode} cellSizeMode, area and perimeter, 100 x 80`,
+      build: ({graph, view}) =>
+        graph.add(
+          new GPURasterPatchMetrics({
+            grid: {
+              width: 100,
+              height: 80,
+              affine: [0.01, 0, 10, 0, -0.01, 61],
+              pixelInterpretation: 'area'
+            },
+            labels: view('uint32', 8000),
+            cellSizeMode,
+            output: {
+              pixelCounts: view('uint32', 500),
+              areas: view('float32', 500),
+              perimeters: view('float32', 500)
+            }
+          })
+        )
+    })
+  ),
   ...[true, false].map(
     (countRasterBorder): KernelAuditCase => ({
       exportName: 'GPURasterPatchMetrics',
@@ -1979,7 +2047,7 @@ function addSampling(
       grid: makeGrid(width, height),
       values: view('float32', width * height),
       noDataValue: -9999,
-      validity: view('uint32', width * height),
+      mask: view('uint32', width * height),
       positions: view('float32x2', pointCapacity),
       pointCount: view('uint32', 1),
       parameters: view('float32', 12),
@@ -2033,7 +2101,7 @@ function addProfile({graph, view}: Context, options: ProfileOptions): void {
       grid: makeGrid(options.width, options.height),
       values: view('float32', options.width * options.height),
       noDataValue: -9999,
-      validity: view('uint32', options.width * options.height),
+      mask: view('uint32', options.width * options.height),
       positions: view('float32x2', options.vertexCount),
       lineOffsets: view('uint32', lineCount + 1),
       sampleCapacity,
@@ -2149,7 +2217,7 @@ function addStretch({graph, view}: Context, options: StretchOptions): void {
       values: view('float32', cellCount),
       grid: makeGrid(options.width, options.height),
       noDataValue: -9999,
-      validity: view('uint32', cellCount),
+      mask: view('uint32', cellCount),
       regionMask: view('uint32', cellCount),
       parameters: view('float32', 16),
       palette: options.paletteSize ? view('uint32', options.paletteSize) : undefined,

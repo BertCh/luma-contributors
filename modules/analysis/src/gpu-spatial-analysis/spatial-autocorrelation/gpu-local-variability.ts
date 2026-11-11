@@ -17,7 +17,7 @@ import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgs
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSpatialWeightsChunkDispatches,
@@ -197,7 +197,7 @@ result[resultOffset + index] = resultValue; status[statusOffset + index] = state
       )
     ];
     if (props.output.normalizedResiduals) {
-      validatePackedView(props.output.normalizedResiduals, ['float32'], id);
+      validateSinglePackedView(props.output.normalizedResiduals, ['float32'], id);
       if (props.output.normalizedResiduals.length !== rows)
         throw new Error(`${id}: invalid residual row count`);
       validateGraphOutputsDisjointFromInputs(
@@ -359,7 +359,7 @@ function validateProps(id: string, props: LocalVariabilityProps, variableCount: 
   for (let index = 0; index < views.length; index++) {
     const view = views[index];
     if (!view) continue;
-    validatePackedView(view, [index < 2 ? 'float32' : 'uint32'], id);
+    validateSinglePackedView(view, [index < 2 ? 'float32' : 'uint32'], id);
     if (view.length !== lengths[index]) throw new Error(`${id}: invalid row count`);
   }
   validateGraphOutputsDisjointFromInputs(

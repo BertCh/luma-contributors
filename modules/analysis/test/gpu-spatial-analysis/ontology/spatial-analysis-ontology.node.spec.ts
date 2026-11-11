@@ -8,6 +8,7 @@ import {resolve} from 'node:path';
 import * as spatialAnalysis from '../../../src/gpu-spatial-analysis/index';
 import {GPUTerrainPeakProminence} from '../../../src/gpu-terrain/index';
 import {GPU_SPATIAL_ANALYSIS_CONTRACT_NAMES} from '../../../src/analysis-core/contracts/index';
+import {GPUContributorOperation, GPUParameterBuffer} from '../../../src/analysis-core/index';
 import {
   GPU_SPATIAL_ANALYSIS_CAPABILITIES,
   GPU_SPATIAL_ANALYSIS_AUDIT,
@@ -33,11 +34,28 @@ const ADDED_SPATIAL_OPERATOR_NAMES = SPATIOTEMPORAL_REVIEW_OPERATORS.map(
   ({exportName}) => exportName
 );
 
+/**
+ * A `GPU<Name>Operation` is the luma.gl GPUGraph form of a contributor that has its own catalogue
+ * entry, not a further contributor (contributor contract, section 14), so it is not catalogued.
+ */
+function isOperationForm(value: unknown): boolean {
+  return (
+    typeof value === 'function' &&
+    (value as {prototype?: unknown}).prototype instanceof GPUContributorOperation
+  );
+}
+
 it('catalogues every public contributor and recipe exactly once', () => {
-  const publicOperators = Object.entries({...spatialAnalysis, GPUTerrainPeakProminence})
+  const publicOperators = Object.entries({
+    ...spatialAnalysis,
+    GPUTerrainPeakProminence,
+    GPUParameterBuffer
+  })
     .filter(
       ([name, value]) =>
-        typeof value === 'function' && (/^GPU[A-Z]/.test(name) || /^add[A-Z]/.test(name))
+        typeof value === 'function' &&
+        (/^GPU[A-Z]/.test(name) || /^add[A-Z]/.test(name)) &&
+        !isOperationForm(value)
     )
     .map(([name]) => name)
     .sort();
@@ -51,10 +69,16 @@ it('catalogues every public contributor and recipe exactly once', () => {
 });
 
 it('describes every public contributor and recipe at operator level', () => {
-  const publicOperators = Object.entries({...spatialAnalysis, GPUTerrainPeakProminence})
+  const publicOperators = Object.entries({
+    ...spatialAnalysis,
+    GPUTerrainPeakProminence,
+    GPUParameterBuffer
+  })
     .filter(
       ([name, value]) =>
-        typeof value === 'function' && (/^GPU[A-Z]/.test(name) || /^add[A-Z]/.test(name))
+        typeof value === 'function' &&
+        (/^GPU[A-Z]/.test(name) || /^add[A-Z]/.test(name)) &&
+        !isOperationForm(value)
     )
     .map(([name]) => name)
     .sort();

@@ -7,6 +7,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import type {Device} from '@luma.gl/core';
 import {
+  getGPUGammaPermutationAdapter,
   getGPUSpatialAutocorrelationParameterValues,
   GPUGammaStatistic,
   GPULocalGeary,
@@ -18,6 +19,10 @@ import {
   GPUSpatialPearson
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
 import type {GPUIslandPolicy} from '../../../src/gpu-spatial-analysis/spatial-weights/index';
+import {
+  GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT,
+  GPUGlobalSpatialStatistics
+} from '../../../src/gpu-spatial-analysis/global-spatial-statistics/index';
 import {
   getReferenceMask,
   getReferenceValues,
@@ -309,3 +314,86 @@ it('permutation adapters of the local bivariate, join count and Lee statistics n
     statistic: 'localLeeL'
   });
 });
+
+// spatial-statistics-04: the cross-product Gamma centers on the edge-weighted means and divides by
+// the edge weight, so on a graph with unequal degrees it does not order permutations like the
+// Moran pair sum. The adapter to the 'moran' permutation test is therefore a test of Moran's I
+// there, not of this Gamma (it is the same ordering when every row, or every column, has the same
+// total weight). Star 0-1, 0-2, 0-3 plus the edge 3-4, binary weights, values 1, 2, 4, 7, 11
+// permuted two ways. Hand values, with the degree-weighted mean m = sum_i d_i x_i / 8:
+// - p = (7, 2, 4, 1, 11): m = 5, Gamma = 2 (2 * -3 + 2 * -1 + 2 * -4 + -4 * 6) / 8 = -10;
+//   Moran pair sum (global mean 5) = -80, I = (5 / 8) * -80 / 66 = -0.757576.
+// - q = (11, 2, 1, 7, 4): m = 6.75,
+//   Gamma = 2 (4.25 * -4.75 + 4.25 * -5.75 + 4.25 * 0.25 + 0.25 * -2.75) / 8 = -11.0625;
+//   Moran pair sum = 2 (6 * -3 + 6 * -4 + 6 * 2 + 2 * -1) = -64, I = (5 / 8) * -64 / 66 = -0.606061.
+// Gamma ranks p above q; Moran's I ranks q above p.
+it('cross-product Gamma and Moran order two permutations of a star-and-tail graph differently', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const offsets = Uint32Array.from([0, 3, 4, 5, 7, 8]);
+  const neighbors = Uint32Array.from([1, 2, 3, 0, 0, 0, 4, 3]);
+  const run = async (values: number[]) => {
+    const graph = new GPUCommandGraph(device, {id: 'gamma-against-moran'});
+    const inputs = [
+      createInputBuffer(device, offsets),
+      createInputBuffer(device, neighbors),
+      createInputBuffer(device, new Float32Array(neighbors.length).fill(1)),
+      createInputBuffer(device, Float32Array.from(values))
+    ];
+    const gammaBuffer = createOutputBuffer(device, 1);
+    const summaryBuffer = createOutputBuffer(device, GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length);
+    const weights = {
+      offsets: importGraphBuffer(graph, 'offsets', inputs[0], 'uint32', offsets.length),
+      neighbors: importGraphBuffer(graph, 'neighbors', inputs[1], 'uint32', neighbors.length),
+      weights: importGraphBuffer(graph, 'weights', inputs[2], 'float32', neighbors.length)
+    };
+    const valueView = importGraphBuffer(graph, 'values', inputs[3], 'float32', values.length);
+    graph.add(
+      new GPUGammaStatistic({
+        weights,
+        values: valueView,
+        operation: 'cross-product',
+        output: {statistic: importGraphBuffer(graph, 'gamma', gammaBuffer, 'float32', 1)}
+      })
+    );
+    graph.add(
+      new GPUGlobalSpatialStatistics({
+        weights,
+        values: valueView,
+        statistics: ['moran'],
+        output: {
+          summary: importGraphBuffer(
+            graph,
+            'summary',
+            summaryBuffer,
+            'float32',
+            GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length
+          )
+        }
+      })
+    );
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const gamma = (await readFloat32(gammaBuffer, 1))[0];
+    const moran = (await readFloat32(summaryBuffer, GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length))[
+      GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran
+    ];
+    compiled.destroy();
+    for (const buffer of [...inputs, gammaBuffer, summaryBuffer]) {
+      buffer.destroy();
+    }
+    return {gamma, moran};
+  };
+  const first = await run([7, 2, 4, 1, 11]);
+  const second = await run([11, 2, 1, 7, 4]);
+  expect(first.gamma).toBeCloseTo(-10, 4);
+  expect(second.gamma).toBeCloseTo(-11.0625, 4);
+  expect(first.moran).toBeCloseTo(-0.757576, 5);
+  expect(second.moran).toBeCloseTo(-0.606061, 5);
+  expect(first.gamma).toBeGreaterThan(second.gamma);
+  expect(first.moran).toBeLessThan(second.moran);
+  // The adapters still name the engine statistics; only the squared-difference one is exact.
+  expect(getGPUGammaPermutationAdapter('cross-product').statistic).toBe('moran');
+  expect(getGPUGammaPermutationAdapter('squared-difference').statistic).toBe('geary');
+  expect(() => getGPUGammaPermutationAdapter('absolute-difference')).toThrow();
+}, 60000);

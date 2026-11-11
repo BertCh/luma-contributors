@@ -74,7 +74,7 @@ export function addSurfacePreparationRecipe<Parameters>(
         values: fillValues,
         validity: fillValidity,
         filled: outputs.filled,
-        unresolvedCount: fillUnresolved
+        status: {invalidCount: fillUnresolved}
       }
     })
   );

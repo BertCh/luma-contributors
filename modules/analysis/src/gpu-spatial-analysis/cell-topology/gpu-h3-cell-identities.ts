@@ -12,7 +12,7 @@ import {
 import {dggs} from '@luma.gl/shaders';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -36,8 +36,8 @@ export class GPUH3CellIdentities implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUH3CellIdentitiesProps) {
     this.id = props.id ?? 'h3-cell-identities';
-    validatePackedView(props.cells, ['uint32x2'], this.id);
-    validatePackedView(props.output, ['uint32x2'], this.id);
+    validateSinglePackedView(props.cells, ['uint32x2'], this.id);
+    validateSinglePackedView(props.output, ['uint32x2'], this.id);
     if (props.output.length !== props.cells.length * 6)
       throw new Error('H3 identities require six output rows per cell');
     validateGraphOutputsDisjointFromInputs(this.id, [props.output], [props.cells]);

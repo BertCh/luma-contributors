@@ -274,7 +274,8 @@ compiles to, and the resources each pass reads and writes, drawn from a recorded
 {/* lens:execution-model */}
 
 Each contributor adds nodes to a `GPUCommandGraph`. `compile()` orders them by the buffers they read and write,
-`describe()` records that structure without running anything, and the lenses below draw it from recorded runs.
+`describeGPUCommandGraph(compiled, options)` from `@luma-contributors/analysis/computation-record` records that structure
+without running anything, and the lenses below draw it from recorded runs.
 
 ::lens{scenario=gpu-spatial-analysis.kernel-density rung=graph caption="Kernel density: grid index over the points, in-cell sort for determinism, then one gather pass."}
 

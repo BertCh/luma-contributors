@@ -139,3 +139,42 @@ export type {
   GPUSpaceTimeDiggleTestOutput,
   GPUSpaceTimeDiggleTestProps
 } from './gpu-space-time-diggle-test';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeVariogramModelFitOnCPU,
+  CPUVariogramModelFitOperation
+} from './cpu-variogram-model-fit-operation';
+export type {
+  CPUVariogramModelFitOptions,
+  CPUVariogramModelFitResult
+} from './cpu-variogram-model-fit-operation';
+export {
+  VARIOGRAM_MODEL_FIT_DEFAULT_MODELS,
+  GPUVariogramModelFitOperation
+} from './gpu-variogram-model-fit-operation';
+export type {VariogramModelFitOperationProps} from './gpu-variogram-model-fit-operation';
+export {
+  computeRipleyEnvelopeOnCPU,
+  CPURipleyEnvelopeOperation
+} from './cpu-ripley-envelope-operation';
+export type {
+  CPURipleyEnvelopeInput,
+  CPURipleyEnvelopeOptions,
+  CPURipleyEnvelopeResult
+} from './cpu-ripley-envelope-operation';
+export {
+  CPU_SPACE_TIME_DIGGLE_MAXIMUM_PERMUTATIONS,
+  CPU_SPACE_TIME_DIGGLE_MAXIMUM_BIN_COUNT,
+  computeSpaceTimeDiggleTestOnCPU,
+  CPUSpaceTimeDiggleTestOperation
+} from './cpu-space-time-diggle-test-operation';
+export type {
+  CPUSpaceTimeDiggleTestInput,
+  CPUSpaceTimeDiggleTestOptions,
+  CPUSpaceTimeDiggleTestResult
+} from './cpu-space-time-diggle-test-operation';
+export {GPURipleyEnvelopeOperation} from './gpu-ripley-envelope-operation';
+export type {RipleyEnvelopeOperationProps} from './gpu-ripley-envelope-operation';
+export {GPUSpaceTimeDiggleTestOperation} from './gpu-space-time-diggle-test-operation';
+export type {SpaceTimeDiggleTestOperationProps} from './gpu-space-time-diggle-test-operation';

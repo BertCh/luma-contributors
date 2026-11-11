@@ -17,7 +17,7 @@ import type {Device} from '@luma.gl/core';
 import {
   getStorageBindingElementLimit,
   validateCapacity,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createSegmentSumNode,
@@ -31,6 +31,10 @@ import {
   getStudyWindowWGSL,
   getStudyWindowWGSLOptions
 } from '../../analysis-core/kernels/study-window-wgsl';
+import {
+  GET_QUIET_NAN_SEEDED_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 
 /**
  * Number of leading float32 parameter slots shared by every pair-statistics contributor:
@@ -119,8 +123,8 @@ export function validatePairStatisticsInputs(
     mask?: GraphDataView<'uint32'>;
   }
 ): number {
-  validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-  validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+  validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+  validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
   const rows = props.positions.length;
   // The device-dependent maximum is checked at declaration by validatePairStatisticsRowCount.
   validateCapacity(id, 'positions length', rows, 1, 2 ** 24 - 1);
@@ -138,7 +142,7 @@ export function validatePairStatisticsInputs(
     throw new Error(`${id} gridSize must be two positive integers with columns * rows < 2^24`);
   }
   if (props.values) {
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rows) {
       throw new Error(`${id} values length must equal positions length`);
     }
@@ -153,20 +157,17 @@ export function validatePairStatisticsInputs(
 }
 
 /**
- * Parameter-free WGSL helpers: finiteness test, runtime quiet NaN, and order-preserving `u32`
- * keys of f32 values for deterministic integer `atomicMin`/`atomicMax`.
+ * Parameter-free WGSL helpers: finiteness test (`isFiniteValue`), runtime quiet NaN
+ * (`getQuietNaN(seed)`), both from `analysis-core`, and order-preserving `u32` keys of f32 values
+ * for deterministic integer `atomicMin`/`atomicMax`. Kernels that include it must not include
+ * `IS_FINITE_VALUE_WGSL` or `GET_QUIET_NAN_SEEDED_WGSL` again.
  *
  * @internal
  */
 export const PAIR_STATISTICS_FLOAT_WGSL = /* wgsl */ `
-fn isFiniteFloat(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}
-
+${IS_FINITE_VALUE_WGSL}
 // A runtime operand keeps the quiet-NaN bit pattern out of constant evaluation.
-fn getQuietNaN(seed: u32) -> f32 {
-  return bitcast<f32>(0x7fc00000u | (seed & 0u));
-}
+${GET_QUIET_NAN_SEEDED_WGSL}
 
 fn getOrderedFloatKey(value: f32) -> u32 {
   let bits = bitcast<u32>(value);
@@ -232,9 +233,9 @@ fn readLattice() -> Lattice {
   let radiusSquared = radius * radius;
   let cellRadius = radius * CELL_MARGIN;
   lattice.valid =
-    isFiniteFloat(minimumX) && isFiniteFloat(minimumY) && isFiniteFloat(maximumX) &&
-    isFiniteFloat(maximumY) && isFiniteFloat(radius) && isFiniteFloat(width) &&
-    isFiniteFloat(height) && isFiniteFloat(radiusSquared) && isFiniteFloat(cellRadius) &&
+    isFiniteValue(minimumX) && isFiniteValue(minimumY) && isFiniteValue(maximumX) &&
+    isFiniteValue(maximumY) && isFiniteValue(radius) && isFiniteValue(width) &&
+    isFiniteValue(height) && isFiniteValue(radiusSquared) && isFiniteValue(cellRadius) &&
     radius > 0.0 && width >= 0.0 && height >= 0.0;
   if (!lattice.valid) {
     return lattice;
@@ -253,7 +254,7 @@ fn readLattice() -> Lattice {
 }
 
 fn isPointValid(lattice: Lattice, x: f32, y: f32) -> bool {
-  return lattice.valid && isFiniteFloat(x) && isFiniteFloat(y) &&
+  return lattice.valid && isFiniteValue(x) && isFiniteValue(y) &&
     x >= lattice.minimumX && x <= lattice.maximumX &&
     y >= lattice.minimumY && y <= lattice.maximumY;
 }
@@ -409,7 +410,7 @@ ${getStudyWindowWGSL(getStudyWindowWGSLOptions(studyWindow))}`
   let y = positions[positionsOffset + index * 2u + 1u];
   let included = ${mask ? 'mask[maskOffset + index] != 0u' : 'true'};
   ${values ? 'let value = values[valuesOffset + index];' : ''}
-  let valid = included && ${values ? 'isFiniteFloat(value) &&' : ''} isPointValid(lattice, x, y)${studyWindow ? ' && isInsideStudyWindow(vec2f(x, y))' : ''};
+  let valid = included && ${values ? 'isFiniteValue(value) &&' : ''} isPointValid(lattice, x, y)${studyWindow ? ' && isInsideStudyWindow(vec2f(x, y))' : ''};
   var key = CELL_COUNT;
   if (valid) {
     key = getCellRow(lattice, y) * lattice.columns + getCellColumn(lattice, x);

@@ -221,6 +221,12 @@ export class GPURasterPhenologyMetrics implements GPUCommandNodeProducer {
     const fields = GPU_RASTER_PHENOLOGY_METRIC_COUNT;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     if (dateAxis) validateGPURasterDateAxisGraph(id, graph, dateAxis);
+    // Time of a slice. With a date axis it is read from a function-scope table filled from the
+    // axis. Without one it is the slice index, computed in place, so no table is needed. (A
+    // local integer table written only by a loop with a constant trip count can read back as
+    // zeros on the test GPU, contributor contract section 11; float tables, such as the one
+    // filled from the axis, read right at every size tried.)
+    const sliceTime = (slice: string) => (dateAxis ? `times[${slice}]` : `f32(${slice})`);
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id,
@@ -243,12 +249,12 @@ fn curve(cell: u32, slice: u32) -> f32 { return smoothed[smoothedOffset + cell *
 let endFraction = parameters[parametersOffset + 1u];
 let minimumAmplitude = parameters[parametersOffset + 2u];
 let secondFraction = parameters[parametersOffset + 3u];
-var times: array<f32, ${slices}>;
+${dateAxis ? `var times: array<f32, ${slices}>;` : ''}
 var lowest = curve(index, 0u);
 var highest = lowest;
 var allFinite = true;
 for (var slice = 0u; slice < ${slices}u; slice++) {
-  times[slice] = ${dateAxis ? 'rasterSliceYears(slice)' : 'f32(slice)'};
+  ${dateAxis ? 'times[slice] = rasterSliceYears(slice);' : ''}
   let value = curve(index, slice);
   if (!finite(value)) { allFinite = false; }
   lowest = min(lowest, value);
@@ -283,7 +289,7 @@ if (code == 0u) {
       if (peak < excludedLow) { upper = excludedLow - 1u; } else { lower = excludedHigh + 1u; }
     }
     var boundaryFlags = 0u;
-    var startTime = times[lower];
+    var startTime = ${sliceTime('lower')};
     var startValue = curve(index, lower);
     var leftIndex = lower;
     var crossing = peak;
@@ -296,12 +302,12 @@ if (code == 0u) {
       let below = curve(index, crossing);
       let above = curve(index, crossing + 1u);
       startValue = startLevel;
-      startTime = times[crossing] + (startLevel - below) / (above - below) * (times[crossing + 1u] - times[crossing]);
+      startTime = ${sliceTime('crossing')} + (startLevel - below) / (above - below) * (${sliceTime('crossing + 1u')} - ${sliceTime('crossing')});
       leftIndex = crossing + 1u;
     } else {
       boundaryFlags |= select(4u, 1u, lower == 0u);
     }
-    var endTime = times[upper];
+    var endTime = ${sliceTime('upper')};
     var endValue = curve(index, upper);
     var rightIndex = upper;
     crossing = peak;
@@ -314,7 +320,7 @@ if (code == 0u) {
       let above = curve(index, crossing - 1u);
       let below = curve(index, crossing);
       endValue = endLevel;
-      endTime = times[crossing - 1u] + (above - endLevel) / (above - below) * (times[crossing] - times[crossing - 1u]);
+      endTime = ${sliceTime('crossing - 1u')} + (above - endLevel) / (above - below) * (${sliceTime('crossing')} - ${sliceTime('crossing - 1u')});
       rightIndex = crossing - 1u;
     } else {
       boundaryFlags |= select(8u, 2u, upper == ${slices - 1}u);
@@ -324,12 +330,12 @@ if (code == 0u) {
     var previousHeight = startValue - lowest;
     for (var slice = leftIndex; slice <= rightIndex; slice++) {
       let height = curve(index, slice) - lowest;
-      integral += 0.5 * (height + previousHeight) * (times[slice] - previousTime);
-      previousTime = times[slice];
+      integral += 0.5 * (height + previousHeight) * (${sliceTime('slice')} - previousTime);
+      previousTime = ${sliceTime('slice')};
       previousHeight = height;
     }
     integral += 0.5 * ((endValue - lowest) + previousHeight) * (endTime - previousTime);
-    let peakTime = times[peak];
+    let peakTime = ${sliceTime('peak')};
     var entry: array<f32, ${fields}>;
     entry[0] = startTime;
     entry[1] = endTime;

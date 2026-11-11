@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH} from '../../../src/raster-analysis/gpu-raster-fractional-coverage';
 import {addDasymetricRedistributionRecipe} from '../../../src/gpu-spatial-analysis/recipes/dasymetric-redistribution-recipe';
 import {GPURasterFractionalZonalDistribution} from '../../../src/raster-analysis/gpu-raster-fractional-zonal-distribution';
 import {GPURasterFractionalCategoricalStatistics} from '../../../src/raster-analysis/gpu-raster-fractional-categorical-statistics';
@@ -303,6 +304,10 @@ for (const denominator of ['zone', 'overlap'] as const) {
               : {
                   kind: 'polygons',
                   tupleCapacity,
+                  parameters: context.view(
+                    'float32',
+                    GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH
+                  ),
                   zones: {
                     positions: context.view('float32x2', 128),
                     featureOffsets: context.view('uint32', sourceCount + 1),
@@ -332,4 +337,77 @@ for (const denominator of ['zone', 'overlap'] as const) {
   }
 }
 
+const GEOGRAPHIC_GRID: GPURasterMetadata = {
+  width: 128,
+  height: 128,
+  affine: [0.01, 0, 10, 0, -0.01, 61],
+  pixelInterpretation: 'area'
+};
+for (const cellSizeMode of ['geographic', 'web-mercator'] as const) {
+  add(
+    'GPURasterFractionalZonalDistribution',
+    `${cellSizeMode} cellSizeMode,4096 zones,every output`,
+    context => {
+      const zoneCount = 4096;
+      context.graph.add(
+        new GPURasterFractionalZonalDistribution({
+          grid: GEOGRAPHIC_GRID,
+          input: signedBand(context, 16384),
+          zoneCount,
+          cellSizeMode,
+          coverage: coverage(context, 65536, zoneCount),
+          probabilities: context.view('float32', 4),
+          output: {
+            means: context.view('float32', zoneCount),
+            populationVariances: context.view('float32', zoneCount),
+            sampleVariances: context.view('float32', zoneCount),
+            effectiveSampleSizes: context.view('float32', zoneCount),
+            weightSums: context.view('float32', zoneCount),
+            squaredWeightSums: context.view('float32', zoneCount),
+            coveredArea: context.view('float32', zoneCount),
+            validArea: context.view('float32', zoneCount),
+            quantiles: context.view('float32', zoneCount * 4),
+            quantileValidity: context.view('uint32', zoneCount * 4),
+            validity: context.view('uint32', zoneCount),
+            status: context.view('uint32', zoneCount)
+          }
+        })
+      );
+    }
+  );
+  add(
+    'GPURasterFractionalCategoricalStatistics',
+    `${cellSizeMode} cellSizeMode,63 zones,16 categories,every output`,
+    context => {
+      const zoneCount = 63;
+      const categoryCapacity = 16;
+      const classCount = zoneCount * categoryCapacity;
+      context.graph.add(
+        new GPURasterFractionalCategoricalStatistics({
+          grid: GEOGRAPHIC_GRID,
+          input: {
+            id: 'categories',
+            format: 'uint32',
+            storage: {kind: 'buffer', values: context.view('uint32', 16384)}
+          },
+          zoneCount,
+          categoryCapacity,
+          cellSizeMode,
+          coverage: coverage(context, 65536, zoneCount),
+          output: {
+            coverageSums: context.view('float32', classCount),
+            classAreas: context.view('float32', classCount),
+            proportions: context.view('float32', classCount),
+            coveredArea: context.view('float32', zoneCount),
+            validArea: context.view('float32', zoneCount),
+            missingArea: context.view('float32', zoneCount),
+            majority: context.view('uint32', zoneCount),
+            minority: context.view('uint32', zoneCount),
+            validity: context.view('uint32', zoneCount)
+          }
+        })
+      );
+    }
+  );
+}
 export const COVERAGE_TRANCHE_ONE_CASES: readonly KernelAuditCase[] = cases;

@@ -27,7 +27,7 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -307,11 +307,11 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       );
     }
     for (const chunk of getGraphViewChunks(props.positions)) {
-      validatePackedView(chunk, ['float32x2'], `${id} positions`);
+      validateSinglePackedView(chunk, ['float32x2'], `${id} positions`);
     }
     if (weights) {
       for (const chunk of getGraphViewChunks(weights)) {
-        validatePackedView(chunk, ['float32'], `${id} weights`);
+        validateSinglePackedView(chunk, ['float32'], `${id} weights`);
       }
       if (weights.length !== props.positions.length) {
         throw new Error(`${id} weights length must equal positions length`);
@@ -327,7 +327,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       }
     }
     if (mask) {
-      validatePackedView(mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(mask, ['uint32'], `${id} mask`);
       if (mask.length !== props.positions.length) {
         throw new Error(`${id} mask length must equal positions length`);
       }
@@ -343,7 +343,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
           throw new Error(`${id} hexagonRadius must be positive and finite`);
         }
       } else {
-        validatePackedView(radius, ['float32'], `${id} hexagonRadius`);
+        validateSinglePackedView(radius, ['float32'], `${id} hexagonRadius`);
         if (radius.length < 1) {
           throw new Error(`${id} hexagonRadius must contain one float32 row`);
         }
@@ -362,12 +362,12 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       }
       const {separableKernel} = smoothing;
       if (separableKernel) {
-        validatePackedView(
+        validateSinglePackedView(
           separableKernel.horizontal,
           ['float32'],
           `${id} smoothing.separableKernel.horizontal`
         );
-        validatePackedView(
+        validateSinglePackedView(
           separableKernel.vertical,
           ['float32'],
           `${id} smoothing.separableKernel.vertical`
@@ -384,7 +384,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         if (!smoothing.kernel) {
           throw new Error(`${id} smoothing requires kernel or separableKernel`);
         }
-        validatePackedView(smoothing.kernel, ['float32'], `${id} smoothing.kernel`);
+        validateSinglePackedView(smoothing.kernel, ['float32'], `${id} smoothing.kernel`);
         if (smoothing.kernel.length < smoothing.kernelWidth * smoothing.kernelHeight) {
           throw new Error(`${id} smoothing.kernel is shorter than kernelWidth * kernelHeight`);
         }
@@ -401,13 +401,13 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, [format], `${id} output.${name}`);
+      validateSinglePackedView(view, [format], `${id} output.${name}`);
       if (view.length !== this.cellCount) {
         throw new Error(`${id} output.${name} must have one row per cell`);
       }
     }
     if (output.extent) {
-      validatePackedView(output.extent, ['float32'], `${id} output.extent`);
+      validateSinglePackedView(output.extent, ['float32'], `${id} output.extent`);
       if (output.extent.length !== 2) {
         throw new Error(`${id} output.extent must have two rows`);
       }
@@ -417,7 +417,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       ['status.overflow', output.status?.overflow]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < 1) {
           throw new Error(`${id} output.${name} must have at least one row`);
         }
@@ -740,7 +740,7 @@ function validatePointDensityBounds(id: string, bounds: GPUPointDensityBounds): 
     return;
   }
   const view = bounds as GraphDataView;
-  validatePackedView(view, ['float32x4', 'float32'], `${id} bounds`);
+  validateSinglePackedView(view, ['float32x4', 'float32'], `${id} bounds`);
   if (
     (view.format === 'float32x4' && view.length !== 1) ||
     (view.format === 'float32' && view.length !== 4)

@@ -20,7 +20,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getKeyGroupNodes, getKeyPairSortNodes} from '../spatial-weights/key-pair-grouping';
 import {
@@ -137,8 +137,11 @@ export type GPUSpatialClusteringProps = {
    * in meters (kilometers with `units: 'kilometers'`) on a sphere of `sphereRadius` (mean Earth
    * radius by default); `bounds` are then `[minLon, minLat, maxLon, maxLat]` degrees and must lie
    * within `[-180, 180] x [-90, 90]` (otherwise every point is noise). The cell search is exact
-   * but does not wrap at the antimeridian: a cluster straddling +-180 is split in two, so keep
-   * `bounds` on one side of it (shift longitudes into a continuous range first). `denseBoxShortcut`
+   * and wraps at the antimeridian: points on the two sides of +-180 are neighbors when their
+   * great-circle distance is within `epsilon`, so a cluster straddling +-180 is one cluster, as in
+   * `GPUOPTICS`. `clusterCentroids` stay arithmetic means of the longitudes and latitudes, so the
+   * centroid longitude of a straddling cluster is not on the cluster: shift longitudes into a
+   * continuous range first if centroids are needed. `denseBoxShortcut`
    * is planar only. Other contexts and metrics throw.
    *
    * Precision (planar): positions are float32. Near a coordinate of magnitude `M` the spacing between
@@ -291,7 +294,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         props.temporalContext,
         CLUSTERING_TEMPORAL_CONTEXT_SUPPORT
       );
-      validatePackedView(props.times, ['float32'], `${id} times`);
+      validateSinglePackedView(props.times, ['float32'], `${id} times`);
       if (props.times.length !== rows) {
         throw new Error(`${id} times length must equal positions length`);
       }
@@ -309,8 +312,8 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} sumOrder must be atomic or sorted`);
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH} float32 values`
@@ -329,13 +332,13 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length !== rows) {
         throw new Error(`${id} ${name} length must equal positions length`);
       }
     }
     if (props.output.clusterCount) {
-      validatePackedView(props.output.clusterCount, ['uint32'], `${id} output.clusterCount`);
+      validateSinglePackedView(props.output.clusterCount, ['uint32'], `${id} output.clusterCount`);
       if (props.output.clusterCount.length < 1) {
         throw new Error(`${id} output.clusterCount must contain one uint32 row`);
       }
@@ -347,7 +350,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       }
     }
     if (props.output.drawInstanceCount) {
-      validatePackedView(
+      validateSinglePackedView(
         props.output.drawInstanceCount,
         ['uint32'],
         `${id} output.drawInstanceCount`
@@ -364,13 +367,13 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
     }
     const capacity = props.output.clusters?.ids.length ?? 0;
     if (props.output.clusterSizes) {
-      validatePackedView(props.output.clusterSizes, ['uint32'], `${id} output.clusterSizes`);
+      validateSinglePackedView(props.output.clusterSizes, ['uint32'], `${id} output.clusterSizes`);
       if (props.output.clusterSizes.length !== capacity) {
         throw new Error(`${id} output.clusterSizes length must equal clusters.ids length`);
       }
     }
     if (props.output.clusterCentroids) {
-      validatePackedView(
+      validateSinglePackedView(
         props.output.clusterCentroids,
         ['float32x2'],
         `${id} output.clusterCentroids`

@@ -25,7 +25,7 @@ import {
 import {
   getStorageBindingElementLimit,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -204,14 +204,14 @@ export class GPUNetworkLineGraph implements GPUCommandNodeProducer {
       ['output.status.overflow', output.status?.overflow]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     for (const [name, view] of [
       ['parameters', props.parameters],
       ['output.topology.weights', output.topology.weights]
     ] as const) {
-      validatePackedView(view, ['float32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} ${name}`);
     }
     this.nodeCount = nodeCount;
     this.edgeCount = edgeCount;

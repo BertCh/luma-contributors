@@ -38,7 +38,7 @@ it('RS03 conserves source totals and distinguishes uncovered from dynamic missin
         source: {width: 2, height: 1, origin: [10000000, 0], spacing: [1, 1]},
         destination: {width: 3, height: 1, origin: [9999999.5, 0], spacing: [1, 1]},
         values: harness.input([2, 6]),
-        validity: harness.mask([1, 1]),
+        mask: harness.mask([1, 1]),
         normalization,
         output: {
           values: harness.output('values', 'float32', 3),
@@ -57,7 +57,7 @@ it('RS03 conserves source totals and distinguishes uncovered from dynamic missin
       source: {width: 2, height: 1, origin: [0, 0], spacing: [1, 1]},
       destination: {width: 1, height: 1, origin: [0, 0], spacing: [2, 1]},
       values: harness.input([2, 6]),
-      validity: harness.mask([0, 0]),
+      mask: harness.mask([0, 0]),
       normalization: 'covered-area',
       output: {
         values: harness.output('values', 'float32', 1),
@@ -102,7 +102,7 @@ it('RS06 SG preserves quadratic polynomials at interpolation edges and through Q
       cellCount: 1,
       sliceCount: 9,
       values: harness.input(values),
-      validity: harness.mask([1, 1, 0, 1, 1, 1, 0, 1, 1]),
+      mask: harness.mask([1, 1, 0, 1, 1, 1, 0, 1, 1]),
       operation: 'savitzky-golay',
       windowLength: 7,
       polynomialOrder: 2,
@@ -129,7 +129,7 @@ it('RS06 composites retain original date provenance and omit QA/nonfinite values
         cellCount: 2,
         sliceCount: 5,
         values: harness.input([9, 3, 3, 100, NaN, NaN, NaN, NaN, NaN, NaN]),
-        validity: harness.mask([1, 1, 1, 0, 1, 1, 1, 1, 1, 1]),
+        mask: harness.mask([1, 1, 1, 0, 1, 1, 1, 1, 1, 1]),
         operation,
         output: {
           values: harness.output('values', 'float32', 2),
@@ -216,7 +216,7 @@ it('RS08 aggregates symmetric boundaries and reports unfinished fixed-weight mer
           adjacency: harness.output('adjacency', 'uint32', 16),
           weights: harness.output('weights', 'float32', 16),
           mapping: harness.output('mapping', 'uint32', 4),
-          status: harness.output('status', 'uint32', 1)
+          status: {iterationLimitReached: harness.output('status', 'uint32', 1)}
         }
       })
     );
@@ -301,7 +301,7 @@ it('RS11 harmonic level-break model recovers acquisition date and magnitude desp
       period: 12,
       minimumSegmentLength: 8,
       values: harness.input(values),
-      validity: harness.mask(values.map((_, index) => (index % 7 === 0 ? 0 : 1))),
+      mask: harness.mask(values.map((_, index) => (index % 7 === 0 ? 0 : 1))),
       output: {
         coefficients: harness.output('coefficients', 'float32', 10),
         components: harness.output('components', 'float32', 216),
@@ -458,7 +458,7 @@ it('RS03 compiled graph recomputes dynamic QA support without retaining previous
       source: {width: 2, height: 1, origin: [0, 0], spacing: [1, 1]},
       destination: {width: 1, height: 1, origin: [0, 0], spacing: [2, 1]},
       values: importView(sourceBuffer, 'float32', 2),
-      validity: importView(maskBuffer, 'uint32', 2),
+      mask: importView(maskBuffer, 'uint32', 2),
       normalization: 'covered-area',
       output: {
         values: importView(valueBuffer, 'float32', 1),
@@ -567,7 +567,7 @@ it('RS08 preserves finite zero region means for opposite-sign extreme observatio
           adjacency: harness.output('adjacency', 'uint32', 4),
           weights: harness.output('weights', 'float32', 4),
           mapping: harness.output('mapping', 'uint32', 2),
-          status: harness.output('status', 'uint32', 1)
+          status: {iterationLimitReached: harness.output('status', 'uint32', 1)}
         }
       })
     );

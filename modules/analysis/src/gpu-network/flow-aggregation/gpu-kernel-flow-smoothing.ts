@@ -21,7 +21,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -128,8 +128,18 @@ export type GPUKernelFlowSmoothingProps = {
 };
 
 /**
- * Kernel smoothing of origin-destination flows, after Guo and Zhu (IEEE TVCG 20(12), 2014): a flow
- * is re-estimated from the flows between neighbouring origins and neighbouring destinations.
+ * Kernel smoothing of origin-destination flows: a flow is re-estimated as the kernel-weighted mean
+ * of the flows between neighbouring origins and neighbouring destinations (a Nadaraya-Watson
+ * estimator on the product of two adaptive zone kernels). The idea of smoothing flows over
+ * neighbourhoods of both ends is that of Guo and Zhu (IEEE TVCG 20(12), 2014); this is not a
+ * reproduction of their estimator, which was not available to check.
+ *
+ * The estimate is a mean, so it does not conserve the total flow: each weight row is normalised
+ * to sum to 1, the columns are not. A zone that is a neighbour of many zones spreads its flows
+ * into all of them and the total grows; a zone that is nobody's neighbour loses part of its
+ * flows and the total shrinks. With zones at x = 0, 1 and 10, unit weights, neighbourhood size 2
+ * and ratio 0.5, a flow of 100 inside the middle zone sums to 125.3 after smoothing and a flow of
+ * 100 inside the far zone to 77.6. Rescale the output if totals must match.
  *
  * Definition used here:
  * 1. The neighbourhood of zone `i` is every zone within the smallest distance `h_i` at which the
@@ -142,10 +152,9 @@ export type GPUKernelFlowSmoothingProps = {
  *    without a flow count as 0, so smoothing also spreads mass into empty pairs.
  *
  * The weighting is separable, so it is computed as two passes (rows, then columns).
- * The neighbourhood size, the kernel and the bandwidth ratio are this contributor's reading of the
- * method as summarized in the review notes; the paper was not available to check them against, and
- * no packaged implementation exists, so tests use a binary64 reference written from the definition
- * above plus closed-form limits (identity for a zero-size neighbourhood, the global mean for a
+ * The neighbourhood size, the kernel and the bandwidth ratio are this contributor's own choices.
+ * Tests use a binary64 reference written from the definition above, a three-zone case worked by
+ * hand, and closed-form limits (identity for a zero-size neighbourhood, the global mean for a
  * very wide kernel). Flow selection (removing duplicates) is not provided.
  *
  * Tier: reference, see {@link GPU_KERNEL_FLOW_SMOOTHING_MAXIMUM_ZONES}.
@@ -167,13 +176,13 @@ export class GPUKernelFlowSmoothing implements GPUCommandNodeProducer {
       props.spatialContext,
       GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     this.zoneCount = props.positions.length;
     validateCapacity(id, 'zoneCount', this.zoneCount, 1);
     validateMaximumCount(id, 'zoneCount', this.zoneCount, GPU_KERNEL_FLOW_SMOOTHING_MAXIMUM_ZONES);
-    validatePackedView(props.locationWeights, ['float32'], `${id} locationWeights`);
+    validateSinglePackedView(props.locationWeights, ['float32'], `${id} locationWeights`);
     validateViewLength(id, 'locationWeights', props.locationWeights, this.zoneCount);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       props.parameters.length >= GPU_KERNEL_FLOW_SMOOTHING_PARAMETER_LENGTH,
@@ -182,14 +191,18 @@ export class GPUKernelFlowSmoothing implements GPUCommandNodeProducer {
     const {flows, output} = props;
     const matrixLength = this.zoneCount * this.zoneCount;
     if (flows.kind === 'matrix') {
-      validatePackedView(flows.matrix, ['float32'], `${id} flows.matrix`);
+      validateSinglePackedView(flows.matrix, ['float32'], `${id} flows.matrix`);
       validateViewLength(id, 'flows.matrix', flows.matrix, matrixLength);
     } else {
       validateRequirement(id, flows.kind === 'pairs', "flows.kind must be 'matrix' or 'pairs'");
-      validatePackedView(flows.originZoneIds, ['uint32'], `${id} flows.originZoneIds`);
-      validatePackedView(flows.destinationZoneIds, ['uint32'], `${id} flows.destinationZoneIds`);
-      validatePackedView(flows.weights, ['float32'], `${id} flows.weights`);
-      validatePackedView(flows.validPairCount, ['uint32'], `${id} flows.validPairCount`);
+      validateSinglePackedView(flows.originZoneIds, ['uint32'], `${id} flows.originZoneIds`);
+      validateSinglePackedView(
+        flows.destinationZoneIds,
+        ['uint32'],
+        `${id} flows.destinationZoneIds`
+      );
+      validateSinglePackedView(flows.weights, ['float32'], `${id} flows.weights`);
+      validateSinglePackedView(flows.validPairCount, ['uint32'], `${id} flows.validPairCount`);
       validateViewLength(
         id,
         'flows.destinationZoneIds',
@@ -203,10 +216,10 @@ export class GPUKernelFlowSmoothing implements GPUCommandNodeProducer {
         'flows.validPairCount must contain one uint32 row'
       );
     }
-    validatePackedView(output.smoothed, ['float32'], `${id} output.smoothed`);
+    validateSinglePackedView(output.smoothed, ['float32'], `${id} output.smoothed`);
     validateViewLength(id, 'output.smoothed', output.smoothed, matrixLength);
     if (output.radii) {
-      validatePackedView(output.radii, ['float32'], `${id} output.radii`);
+      validateSinglePackedView(output.radii, ['float32'], `${id} output.radii`);
       validateViewLength(id, 'output.radii', output.radii, this.zoneCount);
     }
     validateGraphOutputsDisjointFromInputs(
@@ -332,7 +345,8 @@ const ZONE_COUNT: u32 = ${zoneCount}u;`,
           {name: 'kernelWeights', view: kernelWeights, type: 'f32', access: 'read_write'}
         ],
         declarations: `${distanceSource}
-const ZONE_COUNT: u32 = ${zoneCount}u;`,
+const ZONE_COUNT: u32 = ${zoneCount}u;
+const RADIUS_MEMBERSHIP_MARGIN: f32 = 1.000001;`,
         body: /* wgsl */ `
   let zone = index / ZONE_COUNT;
   let neighbour = index % ZONE_COUNT;
@@ -340,7 +354,10 @@ const ZONE_COUNT: u32 = ${zoneCount}u;`,
   let radius = radii[radiiOffset + zone];
   let sigma = radius * parameters[parametersOffset + 1u];
   var weight = 0.0;
-  if (distance <= radius) {
+  // The radius is a distance the radii kernel computed in another pipeline. A compiler may round
+  // the same expression differently there (fused multiply-add), so the zone that defines the
+  // radius is admitted with a margin of a few rounding steps instead of an exact comparison.
+  if (distance <= radius * RADIUS_MEMBERSHIP_MARGIN) {
     weight = select(1.0, exp(-distance * distance / (2.0 * sigma * sigma)), sigma > 0.0);
   }
   kernelWeights[kernelWeightsOffset + index] = weight;`

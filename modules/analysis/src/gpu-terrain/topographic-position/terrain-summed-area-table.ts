@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert, type Device} from '@luma.gl/core';
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUScan,
@@ -18,7 +18,10 @@ import {
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {RASTER_WGSL_HELPERS} from '../../raster-analysis/raster-band-utils';
-import {getStorageBindingElementLimit} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getStorageBindingElementLimit,
+  validateMaximumCount
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /**
  * Largest grid cell count (`width * height`) of the summed-area table behind
@@ -156,7 +159,12 @@ export function addTerrainSummedAreaTableNodes<Parameters>(
   const countPlane = lowPlaneCount - 1;
   const pixelCount = width * height;
   // Every caller validates or chooses by getGPUTerrainSummedAreaMaximumCellCount(graph.device).
-  assert(pixelCount <= getGPUTerrainSummedAreaMaximumCellCount(graph.device));
+  validateMaximumCount(
+    id,
+    'summed-area table cells',
+    pixelCount,
+    getGPUTerrainSummedAreaMaximumCellCount(graph.device)
+  );
   const createStage = (stage: string) => ({
     low: createTransientView(
       graph,

@@ -23,7 +23,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -139,11 +139,11 @@ export class GPUTrajectoryLocations implements GPUCommandNodeProducer {
       SPATIAL_CONTEXT_SUPPORT
     );
     const {centroids, tracks, count, parameters, output} = props;
-    validatePackedView(centroids, ['float32x2'], `${id} centroids`);
-    validatePackedView(tracks, ['uint32'], `${id} tracks`);
-    validatePackedView(count, ['uint32'], `${id} count`);
-    validatePackedView(parameters, ['float32'], `${id} parameters`);
-    validatePackedView(output.locationIds, ['uint32'], `${id} output.locationIds`);
+    validateSinglePackedView(centroids, ['float32x2'], `${id} centroids`);
+    validateSinglePackedView(tracks, ['uint32'], `${id} tracks`);
+    validateSinglePackedView(count, ['uint32'], `${id} count`);
+    validateSinglePackedView(parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(output.locationIds, ['uint32'], `${id} output.locationIds`);
     validateRequirement(id, count.length >= 1, 'count must contain one uint32 row');
     this.capacity = centroids.length;
     validateViewLength(id, 'tracks', tracks, this.capacity);
@@ -155,7 +155,7 @@ export class GPUTrajectoryLocations implements GPUCommandNodeProducer {
       `parameters must hold ${GPU_TRAJECTORY_LOCATIONS_PARAMETER_LENGTH} float32 values`
     );
     if (output.centers) {
-      validatePackedView(output.centers, ['float32x2'], `${id} output.centers`);
+      validateSinglePackedView(output.centers, ['float32x2'], `${id} output.centers`);
       validateViewLength(id, 'output.centers', output.centers, this.capacity);
     }
     this.maximumIterations =

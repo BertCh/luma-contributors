@@ -15,7 +15,7 @@ import {
   getGraphViewChunks,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -107,7 +107,7 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
       // Published GraphVectorView chunks are not realigned; each column must be a single chunk.
       if (getGraphViewChunks(column).length > 1) throw new Error(`${this.id} ${name} single chunk`);
       for (const chunk of getGraphViewChunks(column))
-        validatePackedView(chunk, [format], `${this.id} ${name}`);
+        validateSinglePackedView(chunk, [format], `${this.id} ${name}`);
     }
     const outputChunks = getGraphViewChunks(props.output);
     for (let index = 0; index < outputChunks.length; index++) {

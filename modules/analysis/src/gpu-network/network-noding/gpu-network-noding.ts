@@ -20,7 +20,7 @@ import {
 import {createSortedSegmentOffsetsNode} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -42,6 +42,7 @@ import {
   getWorkgroupCounterKernelSource,
   WORKGROUP_COUNTER_WORKGROUP_SIZE
 } from '../network-workgroup-counters';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 const NODING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
   ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -61,10 +62,7 @@ export function getGPUNetworkNodingMaximumIntersectionCapacity(device: Device): 
 }
 
 /** Order-preserving u32 keys of f32 values (for the atomic minimum origin) and the finite test. */
-const NODING_SNAP_WGSL = /* wgsl */ `
-fn isFiniteCoordinate(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}
+const NODING_SNAP_WGSL = /* wgsl */ `${IS_FINITE_VALUE_WGSL}
 fn getOrderedKey(value: f32) -> u32 {
   let bits = bitcast<u32>(select(value, 0.0, value == 0.0));
   return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
@@ -100,8 +98,11 @@ export type GPUNetworkNodingEdges = {
 };
 
 /**
- * Undirected CSR of the noded network: every edge appears twice, once in the row of each end node
- * (a loop appears twice in one row). Rows are ordered by edge, then start before end. It has the
+ * Undirected CSR of the noded network: every edge appears twice, once in the row of each end node.
+ * A loop (a closed ring, or a piece whose two ends merge within the tolerance) appears once in the
+ * row of its node, as in official `GPUGraphAlgorithmsTopology`, `GPUNetworkCoarsening`,
+ * `GPUNetworkSubgraphFilter` and `GPUNetworkStatistics`; the entry count is
+ * `2 * edges - loops`. Rows are ordered by edge, then start before end. It has the
  * shape of `GPUNetworkTopology` (without node positions, which are `nodes.positions`), so it feeds
  * the `topology` of `GPUNetworkReachability` and `GPUNetworkServiceAreas`.
  */
@@ -110,7 +111,11 @@ export type GPUNetworkNodingTopology = {
   offsets: GraphDataView<'uint32'>;
   /** Neighbor node per entry. Capacity `2 * pieces.sourceIds.length`. */
   neighbors: GraphDataView<'uint32'>;
-  /** Edge length per entry in the context's length unit. 3.4028234e38 beyond the last valid entry. */
+  /**
+   * Edge length per entry in the context's length unit. NaN beyond the last valid entry (a
+   * missing float; the routing contributors read a NaN cost as impassable, and the neighbor of
+   * such a slot is `GPU_NETWORK_NODING_NONE`).
+   */
   weights: GraphDataView<'float32'>;
   /** Optional edge row per entry. */
   edgeIds?: GraphDataView<'uint32'>;
@@ -226,11 +231,11 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
     );
     const {nodes, edges, topology: csr, pieces} = props.output;
     validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
-    validatePackedView(props.tolerance, ['float32'], `${id} tolerance`);
+    validateSinglePackedView(props.tolerance, ['float32'], `${id} tolerance`);
     if (props.tolerance.length < 1) {
       throw new Error(`${id} tolerance must contain one float32 row`);
     }
-    validatePackedView(nodes.positions, ['float32x2'], `${id} output.nodes.positions`);
+    validateSinglePackedView(nodes.positions, ['float32x2'], `${id} output.nodes.positions`);
     for (const [name, view] of [
       ['output.nodes.status.count', nodes.status.count],
       ['output.nodes.status.requiredCount', nodes.status.requiredCount],
@@ -238,7 +243,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       ['output.status.uncertainCount', props.output.status?.uncertainCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length < 1) {
           throw new Error(`${id} ${name} must contain one uint32 row`);
         }
@@ -259,9 +264,9 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
         `${id} output.topology.offsets length must be output.nodes.positions.length + 1`
       );
     }
-    validatePackedView(csr.offsets, ['uint32'], `${id} output.topology.offsets`);
-    validatePackedView(csr.neighbors, ['uint32'], `${id} output.topology.neighbors`);
-    validatePackedView(csr.weights, ['float32'], `${id} output.topology.weights`);
+    validateSinglePackedView(csr.offsets, ['uint32'], `${id} output.topology.offsets`);
+    validateSinglePackedView(csr.neighbors, ['uint32'], `${id} output.topology.neighbors`);
+    validateSinglePackedView(csr.weights, ['float32'], `${id} output.topology.weights`);
     for (const [name, view] of [
       ['topology.neighbors', csr.neighbors],
       ['topology.weights', csr.weights],
@@ -271,9 +276,9 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
         throw new Error(`${id} output.${name} length must be twice the edge capacity`);
       }
     }
-    validatePackedView(edges.fromNodes, ['uint32'], `${id} output.edges.fromNodes`);
-    validatePackedView(edges.toNodes, ['uint32'], `${id} output.edges.toNodes`);
-    validatePackedView(edges.lengths, ['float32'], `${id} output.edges.lengths`);
+    validateSinglePackedView(edges.fromNodes, ['uint32'], `${id} output.edges.fromNodes`);
+    validateSinglePackedView(edges.toNodes, ['uint32'], `${id} output.edges.toNodes`);
+    validateSinglePackedView(edges.lengths, ['float32'], `${id} output.edges.lengths`);
     for (const [name, view] of [
       ['output.edges.fromNodes', edges.fromNodes],
       ['output.edges.toNodes', edges.toNodes],
@@ -371,7 +376,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
     var vertex = pieceOffsets[pieceOffsetsOffset + edge];
     if ((index & 1u) == 1u) { vertex = pieceOffsets[pieceOffsetsOffset + edge + 1u] - 1u; }
     point = vec2f(piecePositions[piecePositionsOffset + vertex * 2u], piecePositions[piecePositionsOffset + vertex * 2u + 1u]);
-    if (isFiniteCoordinate(point.x) && isFiniteCoordinate(point.y)) {
+    if (isFiniteValue(point.x) && isFiniteValue(point.y)) {
       minCounter(0u, getOrderedKey(point.x));
       minCounter(1u, getOrderedKey(point.y));
     }
@@ -433,7 +438,7 @@ ${endpointOrigin.declarations}`,
 // (only bit-identical end points merge). Sets isOverflow past 2^24 cells, where the f32 quotient
 // no longer resolves unit cells.
 fn snapKey(value: f32, origin: f32, size: f32, isOverflow: ptr<function, bool>) -> u32 {
-  if (!isFiniteCoordinate(value)) {
+  if (!isFiniteValue(value)) {
     return 0xfffffffeu;
   }
   if (size > 0.0) {
@@ -598,7 +603,7 @@ fn snapKey(value: f32, origin: f32, size: f32, isOverflow: ptr<function, bool>) 
       })
     );
 
-    // Undirected CSR: two directed entries per edge, grouped by start node. The endpoint sort above
+    // Undirected CSR: two directed entries per edge (one for a loop), grouped by start node. The endpoint sort above
     // already groups endpoints by node (ascending node ID) and keeps endpoints of one node in
     // ascending endpoint index (`2 * edge + side`, both radix sorts are stable), which is exactly
     // the CSR entry order. The CSR therefore needs no second sort: a scan compacts out the
@@ -620,9 +625,13 @@ fn snapKey(value: f32, origin: f32, size: f32, isOverflow: ptr<function, bool>) 
         ],
         invocationCount: endpointCount,
         declarations: `const NODE_CAPACITY: u32 = ${nodeCapacity}u;`,
-        body: `let edge = order[orderOffset + index] / 2u;
-  let isValid = fromNodes[fromNodesOffset + edge] < NODE_CAPACITY &&
-    toNodes[toNodesOffset + edge] < NODE_CAPACITY;
+        // A loop (both ends at one node) keeps only its start entry, so its node lists it once.
+        body: `let endpoint = order[orderOffset + index];
+  let edge = endpoint / 2u;
+  let fromNode = fromNodes[fromNodesOffset + edge];
+  let toNode = toNodes[toNodesOffset + edge];
+  let isValid = fromNode < NODE_CAPACITY && toNode < NODE_CAPACITY &&
+    !(fromNode == toNode && (endpoint & 1u) == 1u);
   csrFlags[csrFlagsOffset + index] = select(0u, 1u, isValid);`
       }),
       ...new GPUScan({
@@ -692,8 +701,10 @@ const LAST: u32 = ${endpointCount - 1}u;`,
         bindings: writeBindings,
         invocationCount: endpointCount,
         declarations: `const NODE_CAPACITY: u32 = ${nodeCapacity}u;`,
+        // A slot without an entry: a missing key is 0xffffffff and a missing float is NaN (the
+        // bits pass through a runtime value so the shader compiler does not fold a NaN constant).
         body: `var neighbor = 0xffffffffu;
-  var weight = 3.4028234e38;
+  var weight = bitcast<f32>(0x7fc00000u | (index & 0u));
   var edgeId = 0xffffffffu;
   if (sortedStarts[sortedStartsOffset + index] < NODE_CAPACITY) {
     let entry = sortedEntries[sortedEntriesOffset + index];

@@ -56,30 +56,30 @@ export function getBinOnCPU(
 }
 
 /**
- * Returns the percentile bound: first bin with positive cumulative count reaching `target`, then
- * linear interpolation inside it. Evaluated in f64 (the GPU uses f32 division).
+ * Returns the percentile bound by the rule of the published `GPURasterGlobalPercentile`: the bin
+ * that holds order statistic `floor((total - 1) * fraction)`, at its centre; the exact domain ends
+ * for fractions 0 and 1 of an automatic domain. Needs a non-empty CDF.
  */
 export function getPercentileValueOnCPU(
-  target: number,
+  fraction: number,
   cdf: Uint32Array,
   domainMinimum: number,
   domainMaximum: number,
-  binWidth: number
+  isAutomaticDomain: boolean
 ): number {
-  let bin = cdf.length - 1;
-  for (let index = 0; index < cdf.length; index++) {
-    if (cdf[index] > 0 && fround(cdf[index]) >= target) {
-      bin = index;
-      break;
-    }
+  if (isAutomaticDomain && fraction <= 0) {
+    return domainMinimum;
   }
-  const before = bin > 0 ? cdf[bin - 1] : 0;
-  const count = cdf[bin] - before;
-  const fraction = count > 0 ? Math.min(Math.max((target - before) / count, 0), 1) : 0;
-  return Math.min(
-    Math.max(domainMinimum + (bin + fraction) * binWidth, domainMinimum),
-    domainMaximum
-  );
+  if (isAutomaticDomain && fraction >= 1) {
+    return domainMaximum;
+  }
+  if (!(domainMaximum > domainMinimum)) {
+    return domainMinimum;
+  }
+  const total = cdf[cdf.length - 1];
+  const rank = Math.min(Math.floor(fround(fround(total - 1) * fraction)), total - 1);
+  const bin = cdf.findIndex(cumulative => cumulative > rank);
+  return domainMinimum + ((bin + 0.5) * (domainMaximum - domainMinimum)) / cdf.length;
 }
 
 /** Computes domain, histogram, CDF and stretch bounds (steps 1 to 5 of the pipeline). */
@@ -154,18 +154,18 @@ export function computeRasterStretchStatistics(
     stats.hi = stats.lo;
   } else if (mode === 1) {
     stats.lo = getPercentileValueOnCPU(
-      fround(parameters[8] * stats.total),
+      parameters[8],
       stats.cdf,
       domainMinimum,
       domainMaximum,
-      stats.binWidth
+      !explicit
     );
     stats.hi = getPercentileValueOnCPU(
-      fround(parameters[9] * stats.total),
+      parameters[9],
       stats.cdf,
       domainMinimum,
       domainMaximum,
-      stats.binWidth
+      !explicit
     );
   }
   return stats;
@@ -184,17 +184,21 @@ export function stretchValueOnCPU(
   }
   let unit: number;
   if (parameters[7] === 2) {
-    if (value <= stats.domainMinimum) {
-      unit = 0;
-    } else if (value >= stats.domainMaximum) {
-      unit = 1;
+    // The rule of the published GPURasterContrast: (cdf[bin] - cdfFirst) / (total - cdfFirst).
+    const firstCount = stats.cdf.find(cumulative => cumulative > 0) ?? 0;
+    const cumulativeWidth = stats.total - firstCount;
+    if (cumulativeWidth > 0) {
+      const position = Math.min(
+        Math.max(fround(fround(value - stats.domainMinimum) * stats.scale), 0),
+        binCount
+      );
+      const cumulative = stats.cdf[Math.min(Math.floor(position), binCount - 1)];
+      unit = Math.max(cumulative - firstCount, 0) / cumulativeWidth;
     } else {
-      const position = fround(fround(value - stats.domainMinimum) * stats.scale);
-      const bin = Math.min(Math.floor(position), binCount - 1);
-      const fraction = Math.min(Math.max(position - bin, 0), 1);
-      const before = bin > 0 ? stats.cdf[bin - 1] : 0;
-      const count = stats.cdf[bin] - before;
-      unit = (before + fraction * count) / stats.total;
+      unit = Math.min(
+        Math.max((value - stats.domainMinimum) / (stats.domainMaximum - stats.domainMinimum), 0),
+        1
+      );
     }
   } else {
     unit = Math.min(Math.max((value - lo) / (hi - lo), 0), 1);

@@ -12,11 +12,12 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateCapacity,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /** Largest state count: the single invocation relaxes every state per round (O(states * transitions)). */
 const MAXIMUM_STATE_COUNT = 256;
@@ -107,11 +108,11 @@ export class GPUNetworkTimeRouting implements GPUCommandNodeProducer {
       props.output.predecessorTransitions,
       props.output.summary
     ])
-      validatePackedView(view, ['uint32'], this.id);
-    validatePackedView(props.transitions, ['uint32x2'], this.id);
-    validatePackedView(props.costs, ['float32x2'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
+    validateSinglePackedView(props.transitions, ['uint32x2'], this.id);
+    validateSinglePackedView(props.costs, ['float32x2'], this.id);
     for (const view of [props.departure, props.output.arrivals])
-      validatePackedView(view, ['float32'], this.id);
+      validateSinglePackedView(view, ['float32'], this.id);
     validateRequirement(
       id,
       props.costs.length ===
@@ -184,7 +185,7 @@ export class GPUNetworkTimeRouting implements GPUCommandNodeProducer {
         ],
         declarations: `const STATE_COUNT: u32 = ${props.stateVertices.length}u;
 const TRANSITION_COUNT: u32 = ${props.transitions.length}u;
-fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
+${IS_FINITE_VALUE_WGSL}
 fn arrival(edge: u32, time: f32) -> f32 {
 ${
   props.costModel === 'piecewise-arrival'
@@ -214,7 +215,7 @@ for (var state = 0u; state < STATE_COUNT; state++) { arrivals[arrivalsOffset + s
 let initial = endpoints[endpointsOffset];
 let destination = endpoints[endpointsOffset + 1u];
 let startTime = departure[departureOffset];
-if (initial >= STATE_COUNT || !finite(startTime) || startTime < 0.0) { return; }
+if (initial >= STATE_COUNT || !isFiniteValue(startTime) || startTime < 0.0) { return; }
 for (var edge = 0u; edge < TRANSITION_COUNT; edge++) {
   let source = transitions[transitionsOffset + 2u * edge]; let destination = transitions[transitionsOffset + 2u * edge + 1u];
   if (source >= STATE_COUNT || destination >= STATE_COUNT) { return; }
@@ -225,11 +226,11 @@ for (var edge = 0u; edge < TRANSITION_COUNT; edge++) {
   for (var sample = 0u; sample < ${props.samplesPerTransition}u; sample++) {
     let offset = costsOffset + 2u * (edge * ${props.samplesPerTransition}u + sample);
     let sampleDeparture = costs[offset]; let sampleArrival = costs[offset + 1u];
-    if (!finite(sampleDeparture) || !finite(sampleArrival) || sampleDeparture < 0.0 || sampleDeparture <= previousDeparture || sampleArrival < sampleDeparture || sampleArrival < previousArrival) { return; }
+    if (!isFiniteValue(sampleDeparture) || !isFiniteValue(sampleArrival) || sampleDeparture < 0.0 || sampleDeparture <= previousDeparture || sampleArrival < sampleDeparture || sampleArrival < previousArrival) { return; }
     previousDeparture = sampleDeparture; previousArrival = sampleArrival;
   }`
       : `let base = costs[costsOffset + 2u * edge]; let slope = costs[costsOffset + 2u * edge + 1u];
-  if (!finite(base) || !finite(slope) || base < 0.0 || slope < 0.0) { return; }`
+  if (!isFiniteValue(base) || !isFiniteValue(slope) || base < 0.0 || slope < 0.0) { return; }`
   }
 }
 summary[summaryOffset] = 1u;
@@ -239,9 +240,9 @@ for (var round = 0u; round < ${props.maximumRelaxations ?? props.stateVertices.l
   for (var edge = 0u; edge < TRANSITION_COUNT; edge++) {
     let source = transitions[transitionsOffset + 2u * edge]; let destination = transitions[transitionsOffset + 2u * edge + 1u];
     let time = arrivals[arrivalsOffset + source];
-    if (!finite(time)) { continue; }
+    if (!isFiniteValue(time)) { continue; }
     let candidate = arrival(edge, time);
-    if (!finite(candidate)) { summary[summaryOffset] = 0u; return; }
+    if (!isFiniteValue(candidate)) { summary[summaryOffset] = 0u; return; }
     if (candidate < arrivals[arrivalsOffset + destination]) {
       arrivals[arrivalsOffset + destination] = candidate; predecessors[predecessorsOffset + destination] = edge; changed = true;
     }

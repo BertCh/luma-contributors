@@ -109,6 +109,10 @@ function createDerivativeFixture(
           PIXEL_COUNT
         )
       },
+      // The TypeScript oracle of this file models the 'clamp' border, so the fixture names it.
+      // The default 'one-sided' border is pinned by closed forms in
+      // terrain-border-row-direction.spec.ts.
+      borderMode: 'clamp',
       ...overrides(graph)
     })
   );
@@ -257,10 +261,22 @@ it('GPUTerrainDerivatives supports north row order, percent slope, and textures'
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const settingsValues = getGPUTerrainDerivativesParameterValues({}, GRID);
-  const north = createDerivativeFixture(device, PLANE, settingsValues, () => ({
-    rowDirection: 'north',
-    slopeUnits: 'percent'
-  }));
+  // The row direction must agree with the grid, so the north-row case runs on a grid whose rows
+  // advance north (affine[4] > 0).
+  const northGrid = makeGPURasterMetadata({
+    width: WIDTH,
+    height: HEIGHT,
+    cellSize: 10,
+    rowDirection: 'north'
+  });
+  const north = createDerivativeFixture(
+    device,
+    PLANE,
+    settingsValues,
+    () => ({rowDirection: 'north', slopeUnits: 'percent'}),
+    undefined,
+    northGrid
+  );
   let compiled = north.graph.compile();
   submitGraph(device, compiled, undefined);
   await expectDerivatives(north, PLANE, settingsValues, {
@@ -316,7 +332,9 @@ it('GPUTerrainDerivatives supports north row order, percent slope, and textures'
         storage: {kind: 'texture', view: importTexture('elevation-texture', inputTexture)}
       },
       parameters: settings.importToGraph(graph),
-      output: {hillshadeTexture: outputView}
+      output: {hillshadeTexture: outputView},
+      // The oracle models the 'clamp' border.
+      borderMode: 'clamp'
     })
   );
   new GPURasterTextureToBuffer({

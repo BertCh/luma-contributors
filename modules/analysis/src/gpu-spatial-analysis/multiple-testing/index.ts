@@ -29,3 +29,11 @@ export type {
   GPURasterFalseDiscoveryRateMaskSettings,
   GPURasterFalseDiscoveryRateMethod
 } from './gpu-raster-false-discovery-rate-mask';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeMultipleTestingAdjustmentOnCPU,
+  CPUMultipleTestingAdjustmentOperation
+} from './cpu-multiple-testing-adjustment-operation';
+export {GPUMultipleTestingAdjustmentOperation} from './gpu-multiple-testing-adjustment-operation';
+export type {MultipleTestingAdjustmentOperationProps} from './gpu-multiple-testing-adjustment-operation';

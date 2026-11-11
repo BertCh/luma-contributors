@@ -24,7 +24,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -159,8 +159,10 @@ export type GPUNeighborSearchProps = {
    * Optional relative time of each target, which turns the search into a space-time cylinder search:
    * a target is a neighbor only when it also satisfies `|t_target - t_query| <= timeRadius`
    * (per-frame, closed like the spatial test). kNN then means the `k` nearest targets inside the
-   * time window. A row whose time is non-finite or outside the per-frame `timeBounds` is invalid
-   * like a row outside `bounds`: it is empty, never a neighbor, and counted by `invalidCount`.
+   * time window. A target or self-join row whose time is non-finite or outside the per-frame
+   * `timeBounds` is invalid like a row outside `bounds`: it is empty, never a neighbor, and counted
+   * by `invalidCount`. A cross-join query of a planar search needs only a finite time: outside
+   * `timeBounds` it still finds its exact neighbors.
    * Requires `temporalContext` and parameters of
    * {@link GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH} words. Great-circle search takes times;
    * `searchStructure: 'bvh'` does not. Compile-time presence; per-frame contents.
@@ -234,7 +236,10 @@ export type GPUNeighborSearchProps = {
    * finite or lies outside the per-frame `bounds` (or, for great-circle search, has a latitude
    * beyond +-90). Such rows are silently empty and never a neighbor, so a nonzero count means
    * `bounds` is too small or the data has missing coordinates. It counts target rows, plus the
-   * query rows of a cross join (`queryPositions`).
+   * query rows of a cross join (`queryPositions`). A planar cross-join query is invalid only when
+   * its coordinates (or time) are not finite; `bounds` and `timeBounds` do not exclude it, so a
+   * query outside them gets the same neighbors as a brute-force scan. A great-circle cross-join
+   * query outside `bounds` is still counted and empty, because the longitude wrap follows the bounds.
    */
   output: GPUNeighborSearchOutput;
   /**
@@ -266,7 +271,21 @@ export type GPUNeighborSearchProps = {
  * Definition, which the GPU result matches exactly (IDs and offsets) or within f32 rounding
  * (distances, weights):
  * - A target is valid when its mask is nonzero, its coordinates are finite and it lies inside the
- *   per-frame bounds; queries likewise with `queryMask`. A self join skips the row itself.
+ *   per-frame bounds. A self join skips the row itself and its query rows are those targets. A
+ *   cross-join query (`queryPositions`, with `queryMask`) is valid when its coordinates are finite;
+ *   a planar query outside the bounds is searched exactly (the cell lookup clamps to the nearest
+ *   edge cell and every cell bound is measured from the true position, so the result equals a
+ *   brute-force scan). A great-circle query must lie inside the bounds, with latitude within +-90.
+ *   Cost: a planar query far outside the bounds (beyond a side or a corner by many lattice
+ *   widths) cannot stop its kNN ring walk early, because the clearance of the sides across from it
+ *   stays small, so it visits every lattice cell in one invocation (cell tests only; target loads
+ *   are still pruned). Measured with 200,000 targets in a 512 x 512 lattice, k = 8, 2,000 queries:
+ *   about 7.5 ms with the queries inside, about 25 ms with them 1e6 beyond a side or a corner.
+ *   Keep queries within a few lattice widths of the bounds when that matters.
+ * - When every squared distance of a query overflows float32 (offsets beyond about 1.8e19 give
+ *   infinity), all targets tie at infinity: kNN returns the lowest target IDs, the same as the
+ *   `(distance, id)` order of the scan, on both structures. Distances written for such rows are
+ *   infinite.
  * - Planar distances are Euclidean, `d^2 = dx^2 + dy^2` in f32 with `dx = target - query`. Planar
  *   f32 coordinates keep about 7 significant digits, so UTM northings (~4e6 m, ulp 0.5 m) or Web
  *   Mercator coordinates (~1e7, ulp 1 m) quantize `dx` and make ties and band edges noisy. Project
@@ -288,7 +307,8 @@ export type GPUNeighborSearchProps = {
  *   only those with `d <= radius`. Fewer valid targets give a shorter row.
  * - Radius: every valid target with `d <= radius`.
  * - Each row lists its neighbors by ascending ID, with `distances` and `weights` aligned.
- * - Weights: binary `1`; inverse distance `max(d, distanceFloor)^-power`; or a kernel `K(d / h)`
+ * - Weights: binary `1`; inverse distance `max(d, distanceFloor)^-power` (default floor `1e-6`, as
+ *   in `GPUNearestFeatureWeights`, so coincident points weigh `1e6^power`); or a kernel `K(d / h)`
  *   with bandwidth `h = radius` (radius mode) or the row's k-th neighbor distance (kNN, PySAL's
  *   adaptive bandwidth, `h_i` = the row's k-th neighbor distance times 1.0000001 =
  *   `GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON`, as libpysal `Kernel(fixed=False)` after
@@ -296,8 +316,16 @@ export type GPUNeighborSearchProps = {
  *   Non-finite weights are written as 0. Row standardization divides by the row sum (summed in
  *   slot order). Rows never list themselves: the kernel's self weight `K(0)` is the consumer's
  *   `selfWeight` (`getGPUSpatialWeightsKernelValue(kernel, 0)`). A slot whose weight is 0 (for
- *   example a triangular kernel at `d = radius`, or coincident points with inverse distance and no
- *   floor) is NOT a neighbor under the stream-wide definition: consumers skip zero-weight slots.
+ *   example a triangular kernel at `d = radius`, or coincident points with inverse distance and an
+ *   explicit `distanceFloor: 0`) is NOT a neighbor under the stream-wide definition: consumers skip zero-weight slots.
+ * - Coincident points under the default floor. Two distinct rows at the same position weigh
+ *   `1e6^power` to each other, far more than any neighbor at an ordinary distance (a neighbor
+ *   100 units away weighs 0.01 at power 1). With `rowStandardize` the coincident neighbor
+ *   therefore takes nearly all of the row (1e6 against 0.01 is a share of 0.99999999), and a
+ *   spatial lag of such a row is in effect the value of the duplicate. Data with repeated
+ *   positions (geocoded addresses, events on one site) should pass a `distanceFloor` on the scale
+ *   of the data, such as the typical nearest-neighbor spacing, or `distanceFloor: 0` to leave
+ *   duplicates out of each other's rows.
  * - `outputWeights` is `output` with `information` (`rowCount`, `transform` from `weightTransform` or
  *   `'unknown'`; `'row'` when `rowStandardize: true`, `symmetric` true only for an unmasked-query
  *   planar radius self join with a declared unstandardized transform, else `'unknown'`, `provenance` criterion `'knn'` or `'distance-band'`
@@ -364,11 +392,11 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     }
     this.searchStructure =
       this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'grid' : searchStructure;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const targetRows = props.positions.length;
     validateCapacity(id, 'positions length', targetRows, 1, 2 ** 31 - 1);
     if (props.queryPositions) {
-      validatePackedView(props.queryPositions, ['float32x2'], `${id} queryPositions`);
+      validateSinglePackedView(props.queryPositions, ['float32x2'], `${id} queryPositions`);
       validateCapacity(id, 'queryPositions length', props.queryPositions.length, 1, 2 ** 31 - 1);
     }
     const queryRows = this.getQueryRows();
@@ -384,7 +412,7 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
         this.searchStructure !== 'bvh',
         "times need searchStructure 'grid' or 'auto'"
       );
-      validatePackedView(props.times, ['float32'], `${id} times`);
+      validateSinglePackedView(props.times, ['float32'], `${id} times`);
       validateRequirement(
         id,
         props.times.length === targetRows,
@@ -396,7 +424,7 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
           props.queryTimes !== undefined,
           'queryTimes are required with times in a cross join'
         );
-        validatePackedView(props.queryTimes!, ['float32'], `${id} queryTimes`);
+        validateSinglePackedView(props.queryTimes!, ['float32'], `${id} queryTimes`);
         validateRequirement(
           id,
           props.queryTimes!.length === queryRows,
@@ -421,7 +449,7 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
         'temporalContext, queryTimes and timeBucketCount need times'
       );
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     const parameterLength = props.times
       ? GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH
       : GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH;
@@ -435,13 +463,13 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       validateCapacity(id, 'k', props.k ?? Number.NaN, 1, GPU_NEIGHBOR_SEARCH_MAXIMUM_K);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== targetRows) {
         throw new Error(`${id} mask length must equal positions length`);
       }
     }
     if (props.queryMask) {
-      validatePackedView(props.queryMask, ['uint32'], `${id} queryMask`);
+      validateSinglePackedView(props.queryMask, ['uint32'], `${id} queryMask`);
       if (props.queryMask.length !== queryRows) {
         throw new Error(`${id} queryMask length must equal the query row count`);
       }
@@ -458,14 +486,14 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       ['output.status.invalidCount', invalidCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length < 1) {
           throw new Error(`${id} ${name} must hold one uint32`);
         }
       }
     }
     if (output.neighborCounts) {
-      validatePackedView(output.neighborCounts, ['uint32'], `${id} output.neighborCounts`);
+      validateSinglePackedView(output.neighborCounts, ['uint32'], `${id} output.neighborCounts`);
       if (output.neighborCounts.length !== queryRows) {
         throw new Error(`${id} output.neighborCounts length must equal the query row count`);
       }
@@ -614,8 +642,15 @@ ${
       `${name}[${name}Offset + ${row}]`;
     const queryTimeName: 'times' | 'queryTimes' = crossJoin ? 'queryTimes' : 'times';
     const queryTimeBinding = timeBindings(queryTimeName);
-    const queryTimeValidWGSL = (row: string) =>
-      times ? ` && isTimeInBounds(lattice, ${readTimeWGSL(queryTimeName, row)})` : '';
+    // A cross-join query needs only finite coordinates and time (planar); a self join's query rows
+    // are its target rows, which stay bound by the bounds.
+    const queryPointInBoundsWGSL = crossJoin ? 'isCrossJoinQueryInBounds' : 'isPointInBounds';
+    const queryPointValidWGSL = crossJoin ? 'isCrossJoinQueryValid' : 'isPointValid';
+    const queryTimeInBoundsWGSL = (row: string) =>
+      crossJoin
+        ? `isCrossJoinQueryTimeInBounds(${readTimeWGSL(queryTimeName, row)})`
+        : `isTimeInBounds(lattice, ${readTimeWGSL(queryTimeName, row)})`;
+    const queryTimeValidWGSL = (row: string) => (times ? ` && ${queryTimeInBoundsWGSL(row)}` : '');
     const queryName = crossJoin ? 'queryPositions' : 'positions';
     const readQueryWGSL = (row: string) => `let x = ${queryName}[${queryName}Offset + ${row} * 2u];
   let y = ${queryName}[${queryName}Offset + ${row} * 2u + 1u];`;
@@ -756,7 +791,7 @@ ${
         body: `let lattice = readLattice();
   ${readQueryWGSL('index')}
   let included = ${queryMask ? 'queryMask[queryMaskOffset + index] != 0u' : 'true'};
-  counts[countsOffset + index] = select(0u, 1u, included && isPointValid(lattice, x, y)${queryTimeValidWGSL('index')});`
+  counts[countsOffset + index] = select(0u, 1u, included && ${queryPointValidWGSL}(lattice, x, y)${queryTimeValidWGSL('index')});`
       })
     ];
 
@@ -813,14 +848,16 @@ ${
           declarations: latticeWGSL,
           body: `let lattice = readLattice();
   ${readQueryWGSL('index')}
-  let included = ${queryMask ? 'queryMask[queryMaskOffset + index] != 0u' : 'true'} && isPointValid(lattice, x, y)${queryTimeValidWGSL('index')};
+  let included = ${queryMask ? 'queryMask[queryMaskOffset + index] != 0u' : 'true'} && ${queryPointValidWGSL}(lattice, x, y)${queryTimeValidWGSL('index')};
   let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
-  let unit = getGridUnitPosition(lattice, x, y);
+  // Only the cell order of the queries is used, so a query outside the lattice sorts with the
+  // nearest edge cell; the grid index would otherwise skip it.
+  let unit = clamp(getGridUnitPosition(lattice, x, y), vec2f(0.0), vec2f(1.0));
   queryGridPositions[queryGridPositionsOffset + index * ${gridDimension}u] = select(invalid, unit.x, included);
   queryGridPositions[queryGridPositionsOffset + index * ${gridDimension}u + 1u] = select(invalid, unit.y, included);${
     bucketed
       ? `
-  queryGridPositions[queryGridPositionsOffset + index * 3u + 2u] = select(invalid, getGridUnitTime(lattice, ${readTimeWGSL(queryTimeName, 'index')}), included);`
+  queryGridPositions[queryGridPositionsOffset + index * 3u + 2u] = select(invalid, max(0.0, getGridUnitTime(lattice, ${readTimeWGSL(queryTimeName, 'index')})), included);`
       : ''
   }`
         }),
@@ -1360,7 +1397,7 @@ const TARGET_ROWS: u32 = ${targetRows}u;`,
         ? `let queryRow = index - TARGET_ROWS;
     ${readPoint('queryPositions', 'queryRow')}
     included = ${crossJoin && props.queryMask ? 'queryMask[queryMaskOffset + queryRow] != 0u' : 'true'};
-    inside = isPointInBounds(lattice, x, y)${times ? ` && isTimeInBounds(lattice, ${readTimeWGSL('queryTimes', 'queryRow')})` : ''};`
+    inside = ${queryPointInBoundsWGSL}(lattice, x, y)${times ? ` && ${queryTimeInBoundsWGSL('queryRow')}` : ''};`
         : ''
     }
   }

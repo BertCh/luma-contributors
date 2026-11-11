@@ -13,6 +13,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   getRasterGridGeoreference,
   getRasterGroundScaleWGSL,
@@ -57,9 +58,11 @@ export function terrainBinding(
 ): WGSLKernelBinding {
   return rasterBinding(name, view, access === 'read_write');
 }
-/** @internal */
-export const TERRAIN_FINITE_WGSL = `fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
-fn missing() -> f32 { var bits = 0x7fc00000u; return bitcast<f32>(bits); }
+/**
+ * `isFiniteValue(value)` and `getNaN()` from `analysis-core` plus `infinity()`. A kernel that
+ * includes this string must not include `IS_FINITE_VALUE_WGSL` or `GET_NAN_WGSL` again. @internal
+ */
+export const TERRAIN_FINITE_WGSL = `${IS_FINITE_VALUE_WGSL}${GET_NAN_WGSL}
 fn infinity() -> f32 { var bits = 0x7f800000u; return bitcast<f32>(bits); }`;
 
 /**
@@ -155,7 +158,7 @@ export function createTerrainValidityMask<Parameters>(
           terrainBinding('validity', validity),
           terrainBinding('masked', masked, 'read_write')
         ],
-        body: 'masked[maskedOffset + index] = select(missing(), source[sourceOffset + index], validity[validityOffset + index] != 0u);'
+        body: 'masked[maskedOffset + index] = select(getNaN(), source[sourceOffset + index], validity[validityOffset + index] != 0u);'
       })
     ]
   };
@@ -170,4 +173,64 @@ export function createTerrainValidityMask<Parameters>(
  */
 export function getTerrainJumpRoundCount(pathBound: number): number {
   return Math.max(1, Math.ceil(Math.log2(Math.max(pathBound, 1))));
+}
+
+/**
+ * Publishes named one-row status ports (`requiredCount`, `overflow`, `converged`,
+ * `iterationLimitReached`) from words of an existing loose status view, so the loose view stays as
+ * it was and the named ports sit beside it. One invocation; returns no node when no port is given.
+ * Each `expression` is WGSL over `source[sourceOffset + word]`.
+ *
+ * @internal
+ */
+export function createTerrainStatusPortNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    source: GraphDataView<'uint32'>;
+    ports: readonly {
+      name: string;
+      view: GraphDataView<'uint32'> | undefined;
+      expression: string;
+    }[];
+  }
+): GPUCommandNode<Parameters>[] {
+  const ports = props.ports.filter(port => port.view);
+  if (ports.length === 0) {
+    return [];
+  }
+  return [
+    createWGSLKernelNode(graph, {
+      id: `${props.id}-status-ports`,
+      operation: props.operation,
+      variant: 'status-ports',
+      invocationCount: 1,
+      bindings: [
+        terrainBinding('source', props.source),
+        ...ports.map(port =>
+          terrainBinding(port.name, port.view as GraphDataView<'uint32'>, 'read_write')
+        )
+      ],
+      body: ports.map(port => `${port.name}[${port.name}Offset] = ${port.expression};`).join('\n  ')
+    })
+  ];
+}
+
+/** Throws unless every present named status port is a packed one-row `uint32` view. @internal */
+export function validateTerrainStatusPorts(
+  id: string,
+  ports: Record<string, GraphDataView<'uint32'> | undefined>,
+  prefix = 'output.status'
+): void {
+  for (const [name, view] of Object.entries(ports)) {
+    if (!view) {
+      continue;
+    }
+    validateRequirement(
+      id,
+      view.length === 1 && view.format === 'uint32',
+      `${prefix}.${name} must be one uint32 row`
+    );
+  }
 }

@@ -34,8 +34,8 @@ for (const fixture of reference.registration) {
         grid: makeGPURasterMetadata({width: fixture.width, height: fixture.height}),
         reference: harness.input(fixture.reference),
         moving: harness.input(fixture.moving),
-        referenceValidity: harness.mask(fixture.referenceMask),
-        movingValidity: harness.mask(fixture.movingMask),
+        referenceMask: harness.mask(fixture.referenceMask),
+        movingMask: harness.mask(fixture.movingMask),
         maximumShift: [4, 3],
         upsampleFactor: 20,
         minimumOverlapFraction: 0.3,
@@ -72,8 +72,8 @@ it('RS07 masked mode rejects insufficient overlap and constant local support', a
         grid: makeGPURasterMetadata({width: 8, height: 6}),
         reference: harness.input(values),
         moving: harness.input(values),
-        referenceValidity: harness.mask(values.map((_, index) => (constant || index < 2 ? 1 : 0))),
-        movingValidity: harness.mask(values.map(() => 1)),
+        referenceMask: harness.mask(values.map((_, index) => (constant || index < 2 ? 1 : 0))),
+        movingMask: harness.mask(values.map(() => 1)),
         maximumShift: [2, 2],
         minimumOverlapCount: 3,
         upsampleFactor: 1,
@@ -141,7 +141,7 @@ for (const [index, fixture] of reference.regions.entries()) {
           adjacency: harness.output('adjacency', 'uint32', regions ** 2),
           weights: harness.output('weights', 'float32', regions ** 2),
           mapping: harness.output('mapping', 'uint32', regions),
-          status: harness.output('status', 'uint32', 1)
+          status: {iterationLimitReached: harness.output('status', 'uint32', 1)}
         }
       })
     );
@@ -189,7 +189,7 @@ it('RS07 compiled masked graph resets FFT support after QA and radiometric updat
       grid: makeGPURasterMetadata({width: 8, height: 8}),
       reference: importView(referenceBuffer, 'float32', 64),
       moving: importView(movingBuffer, 'float32', 64),
-      movingValidity: importView(maskBuffer, 'uint32', 64),
+      movingMask: importView(maskBuffer, 'uint32', 64),
       maximumShift: [2, 2],
       upsampleFactor: 1,
       output: {

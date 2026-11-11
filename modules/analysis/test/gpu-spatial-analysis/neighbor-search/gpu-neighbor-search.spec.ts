@@ -145,7 +145,7 @@ it('GPUNeighborSearch kNN and radius cross joins with masks match the oracle', a
   const random = createSeededRandom(13);
   const mask = Uint32Array.from({length: 900}, () => (random() < 0.7 ? 1 : 0));
   const queryMask = Uint32Array.from({length: 400}, () => (random() < 0.8 ? 1 : 0));
-  // Some points outside the bounds are excluded.
+  // A target outside the bounds is excluded; a cross-join query outside them is still searched.
   positions[0] = -5;
   queryPositions[3] = 150;
   const knnParameters: GPUNeighborSearchSettings = {
@@ -317,6 +317,22 @@ it('GPUNeighborSearch kNN adaptive kernel weights and row standardization match 
       `floor ${distanceFloor}`
     );
     expect(result.weights[0]).toBe(distanceFloor === 0 ? 0 : 2);
+  }
+  // Without a distanceFloor the library default 1e-6 applies (math review cells-joins-04, the
+  // same default as GPUNearestFeatureWeights): coincident points weigh (1e-6)^-power.
+  for (const power of [1, 2]) {
+    const parameters: GPUNeighborSearchSettings = {
+      bounds: BOUNDS,
+      weightKind: 'inverseDistance',
+      power
+    };
+    const result = await small.run(parameters);
+    const expected = 1e6 ** power;
+    expect(result.neighbors.slice(0, 2), `default floor power ${power}`).toEqual([1, 2]);
+    expect(Math.abs(result.weights[0] - expected), `default floor power ${power}`).toBeLessThan(
+      1e-5 * expected
+    );
+    expect(result.weights[1]).toBeCloseTo(1, 5);
   }
   harness.destroy();
   small.destroy();

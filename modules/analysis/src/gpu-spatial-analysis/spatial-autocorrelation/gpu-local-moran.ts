@@ -85,7 +85,11 @@ export type GPULocalMoranOutput = {
    * quadrant is the sign of the centered value and of the lag, whatever the correction method.
    */
   quadrants?: GraphDataView<'uint32'>;
-  /** Optional caller-owned unadjusted two-sided normal p-value per row; quiet NaN where z is NaN. */
+  /**
+   * Optional caller-owned unadjusted two-sided normal p-value per row; quiet NaN where z is NaN.
+   * Never exactly 0: floored at the smallest normal float32 (1.17549435e-38), the rule shared by
+   * every analytic p-value of the spatial statistics.
+   */
   pValues?: GraphDataView<'float32'>;
   /**
    * Optional caller-owned p-value adjusted by `multipleTesting` (equal to `pValues` for `'none'`);
@@ -205,7 +209,10 @@ export type GPULocalMoranProps = {
  * double-precision evaluation while `|z|` and p agree. The normality approximation is weak for
  * small `k_i` or skewed values; permutation inference lives in `GPULocalPermutationTest`.
  *
- * Precision: the mean gets a second-pass correction and the variance uses centered deviations.
+ * Precision: the mean gets a second-pass correction, the centered values are the stored
+ * first-pass deviations minus the mean of those deviations (one scheme with
+ * `GPUGlobalSpatialStatistics` and `GPUHotSpotAnalysis`), and the variance uses them. A value
+ * equal to the reported f32 mean is therefore not centered to exactly 0 unless every value is.
  *
  * Determinism and the viewport caveat are as in `GPUHotSpotAnalysis`: fixed-order sums only, and
  * moments follow the included rows unless `fixedMoments` pins them.

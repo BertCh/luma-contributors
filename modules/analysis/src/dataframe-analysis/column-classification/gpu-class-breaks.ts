@@ -19,7 +19,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -175,6 +175,19 @@ const HEAD_TAIL_BREAKS_OFFSET = 4;
  *   extents pass plus two passes over the rows per round, at most eight rounds, usually two.
  * - `'custom'`: the edges from the parameter view, used as given.
  *
+ * Kind of edge per method. It decides which class a value equal to an inner edge belongs to when
+ * the edges are applied to data (`GPUClassAssignment` `intervalClosure`); `classCounts` here always
+ * counts with the lower-edge rule (`'left'`).
+ * - Lower edges, classes `[e[j], e[j + 1])`, `intervalClosure: 'left'`: `'natural-breaks'` (each
+ *   inner edge is the smallest value of its class; `'right'` would put that value one class low).
+ * - The same numbers as mapclassify's upper-bound `bins`, classes `(e[j], e[j + 1]]` there,
+ *   `intervalClosure: 'right'` to reproduce mapclassify's or giddy's classes: `'quantile'`,
+ *   `'equal-interval'`, `'standard-deviation'`, `'head-tail'`, `'box-plot'`. Used as a d3
+ *   threshold or quantile domain the same numbers are lower edges (`'left'`).
+ * - `'maximum-breaks'`: midpoints between two consecutive distinct values, so no data value
+ *   equals an edge (unless the two are adjacent float32 values) and the closure does not matter.
+ * - `'custom'`: whichever the caller's edges are.
+ *
  * Every computed inner edge is clamped to `[min, max]`. With no finite values, or when any edge is
  * NaN (only a hand-written parameter view with a NaN probability, hinge, interval or custom edge can
  * cause that), the class count is 0 and every edge is NaN, so every row is unclassified; when every finite value is equal the class count is 1 (except `'custom'`).
@@ -233,7 +246,7 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
       MAXIMUM_NATURAL_BREAKS_BIN_COUNT
     );
     this.quantileCount = Math.max(maximumClassCount - 1, 3);
-    validatePackedView(props.values, ['float32', 'uint32', 'sint32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32', 'uint32', 'sint32'], `${id} values`);
     const rowCount = props.values.length;
     if (
       props.naturalBreaksMode !== undefined &&
@@ -268,26 +281,26 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
       `values length must be in [1, ${MAXIMUM_ROW_COUNT}] (2^24): moment counts and quantile ranks are held in float32 and are exact only up to 2^24`
     );
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rowCount) {
         throw new Error(`${id} mask length must equal values length`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     const parameterLength = getGPUClassBreaksParameterLength(maximumClassCount);
     if (props.parameters.length < parameterLength) {
       throw new Error(`${id} parameters must hold ${parameterLength} float32 values`);
     }
-    validatePackedView(output.breaks, ['float32'], `${id} output.breaks`);
+    validateSinglePackedView(output.breaks, ['float32'], `${id} output.breaks`);
     if (output.breaks.length < maximumClassCount + 1) {
       throw new Error(`${id} output.breaks must hold maximumClassCount + 1 rows`);
     }
-    validatePackedView(output.classCount, ['uint32'], `${id} output.classCount`);
+    validateSinglePackedView(output.classCount, ['uint32'], `${id} output.classCount`);
     if (output.classCount.length < 1) {
       throw new Error(`${id} output.classCount must hold one row`);
     }
     if (output.classCounts) {
-      validatePackedView(output.classCounts, ['uint32'], `${id} output.classCounts`);
+      validateSinglePackedView(output.classCounts, ['uint32'], `${id} output.classCounts`);
       if (output.classCounts.length < maximumClassCount) {
         throw new Error(`${id} output.classCounts must hold maximumClassCount rows`);
       }

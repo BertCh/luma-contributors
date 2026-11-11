@@ -30,3 +30,16 @@ export type {
   GPUNetworkAdjacency,
   GPUNetworkTopology
 } from '../../analysis-core/network-topology';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeNetworkReachabilityOnCPU,
+  CPUNetworkReachabilityOperation
+} from './cpu-network-reachability-operation';
+export type {
+  CPUNetworkReachabilityInput,
+  CPUNetworkReachabilityOptions,
+  CPUNetworkReachabilityResult
+} from './cpu-network-reachability-operation';
+export {GPUNetworkReachabilityOperation} from './gpu-network-reachability-operation';
+export type {NetworkReachabilityOperationProps} from './gpu-network-reachability-operation';

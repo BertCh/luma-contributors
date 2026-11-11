@@ -345,3 +345,36 @@ it('GPUSinkhornDivergence grows as a distribution moves away and is bitwise repe
     }
   }
 }, 240000);
+
+it('GPUSinkhornDivergence sums a million cells to float32 accuracy (no compensated float sum to fold away)', async () => {
+  // Math correctness review 2026-11-10, the note on compensated float sums: a Kahan or Neumaier
+  // correction is algebraically zero and the test GPU's shader compiler removes it, leaving a
+  // plain serial float32 sum. A serial float32 sum of a million equal terms is about 1 percent
+  // off (0.1 added a million times gives 100958.34, not 100000). This checks the two sums of the
+  // operator at that size: the mass totals that normalize the inputs, and the dual objective.
+  //
+  // Closed form, independent of the kernel: with epsilon far below the squared cell size the
+  // Gibbs kernel exp(-C / epsilon) is the identity to float32 (exp(-40) = 4e-18), the optimal
+  // plan of OT(a, a) is diag(a) with zero transport cost, and
+  // OT(a, a) = epsilon KL(diag(a) | a x a) = -epsilon sum a_i log(a_i) = epsilon log(N)
+  // for N equal masses. Every mass is 0.1, so the masses must first be divided by their sum.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 1000;
+  const cellCount = width * width;
+  const masses = new Float32Array(cellCount).fill(0.1);
+  const epsilon = 1 / 40;
+  const result = await runSinkhornGPU(
+    device,
+    {width, height: width, cellWidth: 1, cellHeight: 1, epsilon, source: masses, target: masses},
+    {blurRadius: 1, maximumIterations: 4}
+  );
+  expect(result.invalidCount).toBe(0);
+  expect(result.converged).toBe(1);
+  const expected = epsilon * Math.log(cellCount);
+  for (const component of result.components) {
+    expect(Math.abs(component / expected - 1)).toBeLessThan(1e-5);
+  }
+  expect(Math.abs(result.divergence)).toBeLessThan(1e-5 * expected);
+  expect(result.marginalError).toBeLessThan(1e-5);
+}, 240000);

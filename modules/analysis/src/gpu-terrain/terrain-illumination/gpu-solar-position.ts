@@ -14,7 +14,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateParameterTarget,
@@ -119,7 +119,7 @@ export class GPUSolarPosition implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rowCount = props.positions.length;
     if (!output.azimuth && !output.altitude && !output.daylight) {
       throw new Error(`${id} requires at least one output`);
@@ -248,7 +248,7 @@ fn getRefractionDegrees(elevation: f32) -> f32 {
   let azimuth = wrapDegrees(atan2(sin(hourAngle),
     cos(hourAngle) * sin(latitudeRadians) - tan(declination) * cos(latitudeRadians)) *
     RADIANS_TO_DEGREES + 180.0, 360.0);
-  let invalidValue = getNaN(index);
+  let invalidValue = getQuietNaN(index);
   ${output.azimuth ? 'azimuthValues[azimuthValuesOffset + index] = select(invalidValue, azimuth, isValid);' : ''}
   ${output.altitude ? 'altitudeValues[altitudeValuesOffset + index] = select(invalidValue, altitude, isValid);' : ''}
   ${

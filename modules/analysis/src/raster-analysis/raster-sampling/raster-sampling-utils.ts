@@ -73,6 +73,8 @@ ${IS_FINITE_VALUE_WGSL}
 fn fetchCell(column: i32, row: i32) -> f32 {
   let cell = u32(row * RASTER_WIDTH + column);
   var value = raster[rasterOffset + cell];
+  // An infinity is nodata like NaN (the published band rule): a weighted sum cannot interpolate it.
+  if (!isFiniteValue(value)) { value = getNaN(); }
   ${hasValidity ? 'if (validity[validityOffset + cell] == 0u) { value = getNaN(); }' : ''}
   ${noDataValue !== undefined ? `if (value == ${getWGSLFloatLiteral(noDataValue)}) { value = getNaN(); }` : ''}
   return value;

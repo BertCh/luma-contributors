@@ -63,7 +63,16 @@ export type GPUTerrainDEMCoregistrationProps = {
   stableMask: GraphDataView<'uint32'>;
   /** Known variance of the raw difference per cell, in squared vertical units. */
   differenceVariance: GraphDataView<'float32'>;
-  /** Exponential covariance range in the horizontal units above; zero means independent measurement errors. */
+  /**
+   * E-folding length `L` of the exponential error correlation `exp(-d / L)`, in the horizontal
+   * units above; zero means independent measurement errors. The correlation is 0.37 at `L` and
+   * 0.05 at `3 L`. It is not the practical (effective) range of an exponential variogram, the
+   * distance where the variogram reaches 95 % of its sill, which is `3 L`: when a tool reports that
+   * range (scikit-gstat, which xDEM builds on, documents its exponential model by the effective
+   * range; check the convention of yours), pass a third of it. Passing the practical range itself
+   * gives correlation 0.72 instead of 0.37 at a third of the range and overstates the volume
+   * uncertainty.
+   */
   correlationLength?: number;
   output: {
     /** [moving-minus-reference median, residual NMAD, stable count, estimated bias standard error]. */
@@ -192,7 +201,7 @@ ${TERRAIN_FINITE_WGSL}
 ${getTerrainGroundMeasureWGSL(props.grid, props.cellSizeMode)}`;
     const declarations = `${measureDeclarations}
 fn residual(cell: u32) -> f32 { return moving[movingOffset + cell] - reference[referenceOffset + cell]; }
-fn usable(cell: u32) -> bool { return stable[stableOffset + cell] != 0u && finite(residual(cell)); }
+fn usable(cell: u32) -> bool { return stable[stableOffset + cell] != 0u && isFiniteValue(residual(cell)); }
 fn correlation(first: u32, second: u32) -> f32 {
  ${
    correlation === 0
@@ -237,7 +246,7 @@ fn correlation(first: u32, second: u32) -> f32 {
         ],
         body: `var stableCovariance = 0.0; var measurementCovariance = 0.0;
 let firstVariance = variance[varianceOffset + index];
-let valid = finite(residual(index)) && finite(firstVariance) && firstVariance >= 0.0;
+let valid = isFiniteValue(residual(index)) && isFiniteValue(firstVariance) && firstVariance >= 0.0;
 ${
   correlation === 0
     ? `stableCovariance = f32(usable(index));
@@ -246,7 +255,7 @@ measurementCovariance = select(0.0, firstVariance, valid);`
  let secondVariance = variance[varianceOffset + second];
  let weight = correlation(index, second);
  if (usable(index) && usable(second)) { stableCovariance += weight; }
- if (valid && finite(residual(second)) && finite(secondVariance) && secondVariance >= 0.0) { measurementCovariance += deviations[deviationsOffset + index] * deviations[deviationsOffset + second] * weight; }
+ if (valid && isFiniteValue(residual(second)) && isFiniteValue(secondVariance) && secondVariance >= 0.0) { measurementCovariance += deviations[deviationsOffset + index] * deviations[deviationsOffset + second] * weight; }
 }`
 }
 stableRows[stableRowsOffset + index] = stableCovariance;
@@ -304,7 +313,7 @@ cells[cellsOffset + index] = index;`
           ],
           body: `let sampleCount = usableCount[usableCountOffset]; let covariance = stableTotal[stableTotalOffset];
 let samples = f32(sampleCount);
-var median = missing();
+var median = getNaN();
 if (sampleCount > 0u) {
  let lower = order[orderOffset + (sampleCount - 1u) / 2u]; let upper = order[orderOffset + sampleCount / 2u];
  median = ${absoluteDeviation ? '(abs(residual(lower) - fit[fitOffset]) + abs(residual(upper) - fit[fitOffset])) * 0.5' : '(residual(lower) + residual(upper)) * 0.5'};
@@ -313,8 +322,8 @@ ${
   absoluteDeviation
     ? `let deviation = median * 1.4826022;
 fit[fitOffset + 1u] = deviation;
-fit[fitOffset + 3u] = select(missing(), 1.2533141 * deviation * sqrt(covariance) / max(samples, 1.0), samples >= 2.0);`
-    : 'fit[fitOffset] = median; fit[fitOffset + 1u] = missing(); fit[fitOffset + 2u] = samples; fit[fitOffset + 3u] = missing();'
+fit[fitOffset + 3u] = select(getNaN(), 1.2533141 * deviation * sqrt(covariance) / max(samples, 1.0), samples >= 2.0);`
+    : 'fit[fitOffset] = median; fit[fitOffset + 1u] = getNaN(); fit[fitOffset + 2u] = samples; fit[fitOffset + 3u] = getNaN();'
 }`
         })
       );
@@ -335,10 +344,10 @@ fit[fitOffset + 3u] = select(missing(), 1.2533141 * deviation * sqrt(covariance)
         body: `let difference = residual(index) - fit[fitOffset];
 let cellVariance = variance[varianceOffset + index];
 let biasError = fit[fitOffset + 3u];
-let valid = finite(difference) && finite(cellVariance) && cellVariance >= 0.0 && finite(biasError);
+let valid = isFiniteValue(difference) && isFiniteValue(cellVariance) && cellVariance >= 0.0 && isFiniteValue(biasError);
 validity[validityOffset + index] = u32(valid);
-differences[differencesOffset + index * 2u] = select(missing(), difference, valid);
-differences[differencesOffset + index * 2u + 1u] = select(missing(), sqrt(max(cellVariance, 0.0) + biasError * biasError), valid);`
+differences[differencesOffset + index * 2u] = select(getNaN(), difference, valid);
+differences[differencesOffset + index * 2u + 1u] = select(getNaN(), sqrt(max(cellVariance, 0.0) + biasError * biasError), valid);`
       }),
       // Per-cell planes for the volume sums: GPUReduction needs packed scalar inputs.
       createWGSLKernelNode(graph, {
@@ -416,8 +425,8 @@ let deviation = sqrt(covariance + f32(samples) * f32(samples) * biasError * bias
     : `let validArea = areaTotal[areaTotalOffset]; let meanArea = validArea / f32(max(samples, 1u)); let change = changeTotal[changeTotalOffset];
 let deviation = sqrt(covariance * meanArea * meanArea + validArea * validArea * biasError * biasError);`
 }
-volume[volumeOffset] = select(missing(), change, samples > 0u);
-volume[volumeOffset + 1u] = select(missing(), deviation, samples > 0u);
+volume[volumeOffset] = select(getNaN(), change, samples > 0u);
+volume[volumeOffset + 1u] = select(getNaN(), deviation, samples > 0u);
 volume[volumeOffset + 2u] = validArea;`
       })
     );

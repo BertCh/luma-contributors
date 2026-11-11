@@ -123,10 +123,14 @@ export function buildCellBandPieces(
       0
     )
   );
-  const centre = f32(f32(f32(values[0] + values[1]) + f32(values[2] + values[3])) * 0.25);
+  // Value of the bilinear surface through the four corners at its saddle point, in float64 (the
+  // textbook asymptotic decider; NaN for a cell that is not a saddle, where it is unused).
+  const saddleValue =
+    (values[0] * values[2] - values[1] * values[3]) /
+    (values[0] + values[2] - values[1] - values[3]);
   const joined = [
-    override.lo ?? (lo !== null && centre >= lo),
-    override.hi ?? (hi !== null && centre >= hi)
+    override.lo ?? (lo !== null && saddleValue >= lo),
+    override.hi ?? (hi !== null && saddleValue >= hi)
   ];
   const {cellColumn, cellRow} = geometry;
 

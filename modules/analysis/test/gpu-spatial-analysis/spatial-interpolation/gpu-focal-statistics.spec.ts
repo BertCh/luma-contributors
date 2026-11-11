@@ -273,3 +273,30 @@ it('GPUFocalStatistics clips windows at raster edges and skips nodata', async ()
   );
   fixture.destroy();
 });
+
+it('GPUFocalStatistics treats an infinity as nodata, like NaN (raster-fields-07)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // One row: 1, +Infinity, 3, -Infinity, 5. With radius 1 the windows hold, after dropping the
+  // infinities, {1}, {1, 3}, {3}, {3, 5}, {5}. Keeping the infinities as data (the old rule) gave
+  // a mean of +Infinity and a NaN standard deviation at cell 0, with a count of 2.
+  const scene: Scene = {
+    values: Float32Array.from([1, Infinity, 3, -Infinity, 5]),
+    width: 5,
+    height: 1,
+    maximumRadius: 1
+  };
+  const fixture = createFixture(device, scene);
+  let actual = await fixture.run({radius: 1});
+  expect(Array.from(actual.count)).toEqual([1, 2, 1, 2, 1]);
+  expect(Array.from(actual.mean)).toEqual([1, 2, 3, 4, 5]);
+  expect(Array.from(actual.sum)).toEqual([1, 4, 3, 8, 5]);
+  expect(Array.from(actual.min)).toEqual([1, 1, 3, 3, 5]);
+  expect(Array.from(actual.max)).toEqual([1, 3, 3, 5, 5]);
+  expect(Array.from(actual.standardDeviation)).toEqual([0, 1, 0, 1, 0]);
+  // An infinite centre is a nodata centre for the centre policy.
+  actual = await fixture.run({radius: 1, propagateCenterNoData: true});
+  expect(Array.from(actual.mean)).toEqual([1, NaN, 3, NaN, 5]);
+  expect(Array.from(actual.count)).toEqual([1, 2, 1, 2, 1]);
+  fixture.destroy();
+});

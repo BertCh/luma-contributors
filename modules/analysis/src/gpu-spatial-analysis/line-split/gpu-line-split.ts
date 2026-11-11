@@ -22,7 +22,7 @@ import {
   getStorageBindingElementLimit,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {
@@ -37,7 +37,8 @@ import type {
   GPUBoundedResultStatusPort,
   GPUGeneratedGeometryPort,
   GPULineGeometryPort,
-  GPUPackedGeometryPort
+  GPUPackedGeometryPort,
+  GPUVertexCountStatusPort
 } from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPULineSplit';
@@ -80,12 +81,7 @@ export type GPULineSplitPieces = GPUGeneratedGeometryPort<GPULineGeometryPort> &
    * Bounded-result status plus the vertex counts of the written pieces. `count` counts pieces
    * (linestrings), not vertices.
    */
-  status: GPUBoundedResultStatusPort & {
-    /** Optional one-row scalar receiving the number of vertices written. */
-    vertexCount?: GraphDataView<'uint32'>;
-    /** Optional one-row scalar receiving the unclamped number of vertices. */
-    requiredVertexCount?: GraphDataView<'uint32'>;
-  };
+  status: GPUBoundedResultStatusPort & GPUVertexCountStatusPort;
   /**
    * Optional per-vertex source edge, aligned with `geometry.positions`. For every written vertex
    * that is not the last of its piece, the low 31 bits hold the input edge (the index of its first
@@ -202,7 +198,7 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     if (lines.kind !== 'lines') {
       throw new Error(`${id} lines must be linestring geometry`);
     }
-    validatePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
+    validateSinglePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
     validatePackedUint32View(lines.lineOffsets, `${id} lines.lineOffsets`);
     if (lines.lineOffsets.length < 2) {
       throw new Error(`${id} lines.lineOffsets requires at least one line and a terminal entry`);
@@ -218,7 +214,11 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     this.lineCount = lines.lineOffsets.length - 1;
     validatePackedUint32View(pieces.sourceIds, `${id} pieces.sourceIds`);
     validatePackedUint32View(pieces.geometry.lineOffsets, `${id} pieces.geometry.lineOffsets`);
-    validatePackedView(pieces.geometry.positions, ['float32x2'], `${id} pieces.geometry.positions`);
+    validateSinglePackedView(
+      pieces.geometry.positions,
+      ['float32x2'],
+      `${id} pieces.geometry.positions`
+    );
     this.pieceCapacity = pieces.sourceIds.length;
     this.vertexCapacity = pieces.geometry.positions.length;
     if (this.pieceCapacity < 1 || pieces.geometry.lineOffsets.length !== this.pieceCapacity + 1) {
@@ -322,13 +322,19 @@ export class GPULineSplit implements GPUCommandNodeProducer {
         variant: 'flag-non-finite',
         bindings: [
           {name: 'positions', view: lines.positions, type: 'f32', access: 'read'},
+          {name: 'lineOffsets', view: lines.lineOffsets, type: 'u32', access: 'read'},
           {name: 'flag', view: nonFiniteFlag, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: vertexCount,
         declarations: `const VERTEX_COUNT: u32 = ${vertexCount}u;
+const LINE_COUNT: u32 = ${lineCount}u;
 ${IS_FINITE_BITS_WGSL}`,
+        // Only rows some line owns are checked: rows before the first line and from the end of the
+        // last line on are padding (unwritten capacity or reused scratch) that no segment reads.
         // Only non-finite rows touch the flag, so the atomic is not a hot address for valid data.
-        body: `if (index >= VERTEX_COUNT) { return; }
+        body: `let firstRow = lineOffsets[lineOffsetsOffset];
+  let endRow = min(lineOffsets[lineOffsetsOffset + LINE_COUNT], VERTEX_COUNT);
+  if (index < firstRow || index >= endRow) { return; }
   if (!isFiniteBits(positions[positionsOffset + index * 2u]) || !isFiniteBits(positions[positionsOffset + index * 2u + 1u])) {
     atomicOr(&flag[flagOffset], 1u);
   }`

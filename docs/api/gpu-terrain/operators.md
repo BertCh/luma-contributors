@@ -11,7 +11,18 @@ description: "Every GPU Terrain contributor: inputs, outputs, parameters and how
 
 Elevation-tile analysis composed from `gpu-raster` operators. `GPUTerrainDerivatives` computes
 Horn slope, aspect, and hillshade (uniform, Web Mercator, or geographic cell sizes) with an optional
-hillshade texture. `GPUTerrainContours` extracts marching-squares segments for several fixed or
+hillshade texture. Its border pixels use one-sided differences by default
+(`borderMode: 'one-sided'`): the surface is extended one cell by the quadratic through the three
+nearest samples, which makes the difference across the edge the second-order one-sided stencil
+`(-3 f0 + 4 f1 - f2) / (2 h)` of luma.gl's `GPUFiniteDifference2D`, exact on a plane.
+`borderMode: 'clamp'` repeats the edge sample instead and halves the gradient across the edge (a
+plane of slope 11.31° reads 5.71° in its border column); `'reflect'`, `'constant'` and `'nodata'`
+are forwarded to `GPURasterGradient`. North comes from the grid: `rowDirection` defaults to the
+sign of the row term `grid.affine[4]` (negative: rows advance south), and an explicit value that
+contradicts the grid throws at construction. The same rule holds for `GPUTerrainCurvature`,
+`GPUTerrainVectorRuggedness`, `GPUReliefShading`, `GPUTerrainHorizon` and `GPUTerrainCastShadow`.
+Columns are taken to advance east, and on a rotated `'uniform'` grid azimuths are measured from
+the grid's up axis. `GPUTerrainContours` extracts marching-squares segments for several fixed or
 per-frame levels with one aggregate overflow flag (`output.status.overflow`). Every contributor
 takes a `grid` (`GPURasterMetadata`), reads `parameters`, and writes into an `output` bag. The grid
 supplies the width, height, cell size and latitude band, so the packers take it as their second
@@ -342,9 +353,17 @@ A 360° horizon profile from any number of observers, ported from mt-image's hor
   - `'web-mercator'`: a window of the EPSG:3857 grid (square pixels, rows increasing south). The
     packer derives the world size `worldPixelSize = 2πa/cellSize` (pixels per 360°, a = 6378137 m)
     and the Mercator ordinate of the top edge `northEdge/a` from the grid, so no `worldPixelSize`
-    or `originY` is passed. The ray is a piecewise great circle on a sphere of R = 6371008.8 m.
-    Breakpoints are baked from `maximumLatitude` and `segmentTolerance`, and positions are linear in
-    pixels between them.
+    or `originY` is passed. The ray is a piecewise great circle traced on a sphere of
+    R = 6371008.8 m. Breakpoints are baked from `maximumLatitude` and `segmentTolerance`, and
+    positions are linear in pixels between them. Distances and azimuths are WGS84 ground metres
+    and ground bearings, by the same rule as the `'web-mercator'` row scale of the raster-grid
+    contributors (`M cos(lat)/a` north-south and `N cos(lat)/a` east-west per EPSG:3857 metre): a
+    sphere metre along sphere azimuth `A` is `sqrt((N sin A)² + (M cos A)²)/R` ground metres at the
+    observer latitude, and a ground bearing `T` is traced along `normalize(M sin T, N cos T)`.
+    The scale is evaluated once per ray at the observer. Tangents, the curvature drop, the
+    per-frame `maximumDistance`, `targetIgnoreDistance` and the distance outputs are ground
+    metres; the topology `maximumDistance` sizes the sample lattice in sphere metres, so a ray
+    reaches `min(1, scale)` times that far (0.56% short due north at the equator).
   - `getGPUPointHorizonProfileParameterValues(settings, grid)` and
     `getGPUPointHorizonVisibilityParameterValues(settings, grid)` tag the words with
     `settings.projection` (default `'planar'`); a contributor whose `projection` differs reports NaN
@@ -384,11 +403,14 @@ above preserves this sample set as well, including its unequal distance interval
 mt-image's peak classifier:
 
 - **The ray.** It marches the full ray along the observer→target bearing. On Web Mercator the
-  bearing and distance come from a cancellation-free spherical inverse.
+  bearing and distance come from a cancellation-free spherical inverse, and the distance is then
+  scaled to WGS84 ground metres as above, so a `maximumDistance` cut agrees with
+  `GPUTerrainLineOfSight` on the same tile.
 - **What it records.** It keeps the occluder maximum before `q = d − max(targetIgnoreDistance,
   targetIgnoreFraction·d)` and the full skyline maximum.
 - **Codes.** With `tol = toleranceDegrees + σz/d`, a target is `hidden` below the occluder by more
-  than `tol`, `marginal` within `tol`, and otherwise `visible`.
+  than `tol`, `marginal` from exactly `tol` below it up to (not including) `tol` above it, and
+  otherwise `visible`. The classes are ordered with no gap between `hidden` and `marginal`.
 - **Skyline.** `onSkyline` is set when the target is within `skylineToleranceDegrees` of the
   skyline.
 - **Details.** The optional `output.details` holds `[targetElevation°, occluderElevation°,
@@ -501,8 +523,9 @@ cells (4194304, 2048 × 2048 on a default device), because the per-component vot
 bytes per cell in one storage binding. It fixes ±256·k m Terrarium red-byte errors, such as canvas
 anti-fingerprinting noise:
 
-1. It labels 4-connected components across edges with |Δh| ≤ `jump`, using
-   `GPUGraphAlgorithmsConnectedComponents` on a fixed-stride grid CSR.
+1. It labels 4-connected components across edges with |Δh| ≤ `jump`, using the analysis-domain
+   weak-component kernel (bounded minimum-label propagation with pointer jumping) on a
+   fixed-stride grid CSR. A label is the lowest pixel index of its component.
 2. A component that is neither the largest nor bigger than 25 % of the valid pixels is shifted by
    −`step`·k when at least 80 % of its border seams agree on a jump of `step`·k ± `tolerance`.
 
@@ -526,7 +549,9 @@ graph.add(new GPUTerrainSpikeRepair({
 remainingJumpCount, converged]`. If the labelling does not converge within
 `maximumComponentIterations`, nothing is repaired and the valid pixels are marked instead of
 copied: heights are `+Infinity`, validity and labels hold `GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED`,
-and `converged` is 0.
+and `converged` is 0. The optional one-row `output.status.converged` and `output.status.iterationLimitReached`
+ports carry the same answer under the shared status names (`iterationLimitReached` is the
+complement).
 
 #### `GPUTerrainRGBDecode`
 
@@ -678,7 +703,8 @@ Non-maximum suppression within `suppressionRadius` runs in GPU rounds (at most
 `maximumSuppressionIterations`) and reaches exactly the greedy (prominence-descending) result. If
 it does not converge, `output.status.converged` is 0, undecided candidates carry the
 `GPU_PROFILE_PEAKS_UNRESOLVED_*` sentinels and `output.peaks.status.overflow` has
-`GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED` set. `minimumProminence` is set per frame and
+`GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED` set. The optional `output.status.iterationLimitReached` is
+1 in that case. `minimumProminence` is set per frame and
 `minimumSide` at compile time.
 
 {/* parameters: GPUProfilePeaks generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
@@ -803,7 +829,14 @@ the direction-dependent kinds are 0, as in Whitebox. Window samples are differen
 centre before any sum, so a 1000 m base height costs no float32 precision.
 `ringCurvature` ports mt-image's multi-radius ring curvature: up to four rings of 8 samples,
 `Σ gain_k · Σ(z_c − z_i) / (8 r_k · cell)`, with an optional Padé-tanh squash. Cell sizes are
-uniform, Web Mercator, or geographic per row, as for `GPUTerrainDerivatives`. Outputs go into
+uniform, Web Mercator, or geographic per row, as for `GPUTerrainDerivatives`. Window samples
+outside the raster follow `borderMode`: `'one-sided'` (default) extends the surface with the
+quadratic through the three nearest in-grid samples, so first derivatives across the edge are the
+second-order one-sided stencil of luma.gl's `GPUFiniteDifference2D` and every curvature is 0 on a
+plane and exact on a quadratic surface up to the border; `'clamp'` repeats the edge sample, which
+reports curvature on a plane (gradient 0.2 on 10 m cells: profile curvature −0.0197 1/m in the
+border column with Zevenbergen–Thorne); `'nodata'` invalidates windows that leave the raster.
+`'florinsky'` is a third-order (cubic) 5×5 fit, not a quadratic one. Outputs go into
 `output` (`curvatures`, `ringCurvature`, and the per-pixel `outputValidity`). `zFactor`,
 `flatGradient` and `ringGains` are per-frame settings; the ring radii are compile time.
 
@@ -861,7 +894,10 @@ the border are invalid, as in GRASS. A line of sight with no valid sample after 
 digit 0 (flat) in every mode, where GRASS `anglev2` gives +1 from its initial ±90° angles. Outputs `forms`, `ternary`, `pattern` and `outputValidity` go
 into `output`. The flatness threshold, `flatDistance` and `zFactor` are per-frame settings
 (`getGPUGeomorphonsParameterValues(settings, grid)` takes the cell size and latitude band from the
-grid); `searchRadius` and `skipRadius` size the line-of-sight loops and are compile time.
+grid); `searchRadius` and `skipRadius` size the line-of-sight loops and are compile time. North
+comes from the grid: `rowDirection` defaults to the direction `grid.affine[4]` states (negative:
+rows advance south) and an explicit value that contradicts the grid throws. It fixes the digit
+order of `pattern`; forms and `ternary` are mirror-invariant and do not depend on it.
 
 {/* parameters: GPUGeomorphons generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -1045,16 +1081,31 @@ validity outputs are named `outputValidity`.
   bilinear samples, z factor, earth curvature, and an optional ground `maximumDistance`. It writes
   a pixel-major horizon map (`horizon[pixel * directionCount + sector]`, degrees, sector `d` at
   azimuth `d * 360 / directionCount`), the sky-view factor `1 - mean(sin(max(h, 0)))`, and positive
-  openness `mean(90 - h)`, all in `output`. Sky-view-only use needs no `output.horizon` buffer. Sector azimuths are ground
+  openness `mean(90 - h)`, all in `output`. Sky-view-only use needs no `output.horizon` buffer.
+  There are two sky-view factors and they are not interchangeable. `output.skyViewFactor` is the
+  solid-angle factor of Zakšek et al. (2011), `1 - mean(sin(max(h, 0)))`: the visible fraction of
+  the hemisphere, made for relief visualization. `output.irradianceSkyViewFactor` is the
+  cosine-weighted factor of Dozier and Frew (1990) for a horizontal receiver,
+  `mean(cos²(max(h, 0)))`: the fraction of isotropic diffuse irradiance received, which is what
+  `GPUSolarIrradiance` needs. A uniform 30 degree horizon gives 0.50 and 0.75; an infinite plane
+  of slope `s` gives `(1 + cos(s)) / 2` in the second. The irradiance factor is reduced from the
+  horizon map (the quantised one when `output.horizon` is `'unorm16'`, error below 3e-5; a
+  transient float32 map when `output.horizon` is not bound). Sector azimuths are ground
   azimuths on any cell shape: on anisotropic cells (`'geographic'` off the equator, or non-square
   grid cells) each ray's pixel step is `normalize(groundDirection / groundCell)` at the pixel's own
   row, so a 45 degree sector at 60 N steps about two columns per row instead of along the pixel
   diagonal (a 26.6 degree ground ray). The cell size is not re-evaluated along a ray; at 60 N and
   30 km that leaves a 0.25 degree bearing and 0.14% distance error. Options:
   - `algorithm: 'sweep'` replaces the per-pixel march with an exact upper-hull sweep (Stewart 1998
-    style) over digital lines through pixel centres: amortised O(1) per pixel and sector, exact
-    against brute force over the same samples, 4x faster at radius 256 and 36x at full-tile radius on
-    1024² (16 sectors). Samples are pixel centres within half a pixel of the ray, so sky-view
+    style) over digital lines through pixel centres: amortised O(1) per pixel and sector, equal
+    to brute force over the same samples, 4x faster at radius 256 and 36x at full-tile radius on
+    1024² (16 sectors). It is nearest-pixel sampling of the ray, not an exact horizon of the
+    surface: each sample takes the elevation of a pixel centre on the digital line, whose lateral
+    offset from the ray through the pixel's own centre is below one pixel (up to 0.86 px at line
+    slope 0.3), and its distance is measured along the ideal ray (`k · hypot(1, slope)` cells),
+    not to that centre. A sample one cell ahead and 10 m higher on 10 m cells reads 41.8° at line
+    slope 0.5, where centre-to-centre geometry gives 45.0° (side neighbour) or 35.3° (diagonal).
+    Sky-view
     factors differ from the bilinear march by about 0.01 on rough terrain. The sweep has a large
     fixed cost per pixel and sector: it wins at large radii (1024² at radius 1023: 41 ms against
     about 1300 ms; 512² at full radius: 36 against 109 ms) and loses at small ones (512² at radius
@@ -1076,7 +1127,23 @@ validity outputs are named `outputValidity`.
     azimuth `t`. `anisotropyLevel` is RVT's integer `a_poly_level` with RVT's signed power (presets:
     low 4 with minimum weight 0.4, high 8 with 0.1). Parameter slots 8-10 hold them per frame
     (`parameters` must then hold 12 floats). This is the only counterclockwise angle in gpu-terrain; sun
-    azimuths already match RVT's compass `shadow_az`.
+    azimuths already match RVT's compass `shadow_az`. In compass terms, independent of RVT: the
+    sector at compass azimuth `(360 - A) mod 360` gets the largest weight, so `A = 315` weights the
+    north-east sky and `A = 90` the west. This is checked against unmodified rvt-py 2.2.1
+    (`test/oracles/terrain-sky-view-rvt.py`): RVT direction `i` has angle `i * 360 / n` and looks at
+    the pixel offset `(-cos, -sin) * r` over (rows, columns) of a north-up array, which is
+    counterclockwise from north; a wall to the north, west, south, east or north-east of a pixel
+    darkens it most at `A = 0, 90, 180, 270, 315`, in RVT and here, on north-up and rows-north
+    grids. RVT does not wrap `a - A`, so odd levels are not periodic in `A`; the kernel follows.
+  - Agreement with RVT in numbers: RVT samples whole pixels (1 to the radius on the axes, `(k, k)`
+    on the diagonals, a rounded staircase in between, each at its centre-to-centre distance) and
+    reflect-pads the array by the radius. Where the kernel reads the same samples (the march with
+    4 sectors, the sweep with 4 or 8, any plane with up to 8) the sky-view factor and the
+    anisotropic factor agree with RVT to 3e-7 and both openness outputs to 3e-5 degrees, away from
+    the edge band. Otherwise the two differ by sampling, not by definition: on a plane of gradient
+    0.5 with 16 sectors the march equals the closed form (openness 90), RVT reads a sky-view factor
+    0.022 and an openness 3.3 degrees lower, and the sweep 0.019 and 2.6 degrees lower. Inside the
+    edge band a ray here stops at the edge, where RVT sees mirrored terrain.
   - Breaking change: `anisotropyAzimuthDegrees` used to be a compass azimuth, so the default 315
     weighted the north-west sky. It now weights the north-east sky, as RVT does. To keep a previous
     compass azimuth `t`, pass `(360 - t) mod 360`. Non-integer levels now throw.
@@ -1107,7 +1174,13 @@ validity outputs are named `outputValidity`.
   this is a sampling difference, not a floating-point error allowance.
 - `GPUSolarIrradiance` integrates a sun path over a horizon map: `output.sunHours` (disk-visible
   hours) and `output.insolation` (Wh/m², direct normal irradiance times visibility times cos incidence, plus an
-  optional diffuse term scaled by the sky-view factor). `getGPUSolarIrradianceSunTable` samples
+  optional diffuse term `diffuseIrradiance * skyViewFactor * duration`). Bind the horizon's
+  `output.irradianceSkyViewFactor` as `skyViewFactor`, not its solid-angle `output.skyViewFactor`,
+  which understates diffuse energy (50 instead of 75 Wh/m² for 100 W/m² over one hour under a
+  uniform 30 degree horizon). The diffuse term is for a horizontal receiver: slope and aspect
+  enter the direct term only, and no `(1 + cos(slope)) / 2` factor is added because a horizon
+  measured on the same terrain already contains the receiver's own slope. Terrain-reflected
+  radiation is not modelled. `getGPUSolarIrradianceSunTable` samples
   `getSolarPosition` over a day or a date range (Meinel clear-sky DNI with Kasten–Young air mass by
   default). `samplesPerNode` splits long tables across dispatches.
 - `GPUReliefShading` computes a hillshade from up to 8 lights with fixed weights or the USGS
@@ -1169,7 +1242,7 @@ shading, and 28 ms for six-level texture shading.
 ```ts
 graph.add(new GPUTerrainHorizon({
   grid, elevation, parameters, directionCount: 16, maximumRadius: 1023,
-  algorithm: 'sweep', horizonFormat: 'unorm16', output: {horizon, skyViewFactor}
+  algorithm: 'sweep', horizonFormat: 'unorm16', output: {horizon, irradianceSkyViewFactor}
 }));
 const {values, sampleCount} = getGPUSolarIrradianceSunTable({
   longitude: 8.2, latitude: 46.8, start: Date.UTC(2026, 5, 21), end: Date.UTC(2026, 5, 22)
@@ -1178,7 +1251,7 @@ sunTableBuffer.write(values);
 graph.add(new GPUSolarIrradiance({
   grid, directionCount: 16, horizonFormat: 'unorm16', horizon,
   sunTable: sunTableBuffer.importToGraph(graph), sampleCapacity: 288, parameters: irradianceParameters,
-  slope, aspect, skyViewFactor, output: {sunHours, insolation}
+  slope, aspect, skyViewFactor: irradianceSkyViewFactor, output: {sunHours, insolation}
 }));
 ```
 
@@ -1227,7 +1300,7 @@ Settings of `getGPUSolarIrradianceParameterValues`:
 |---|---|---|
 | `sampleCount` | `number` | Number of valid sun table rows, an integer in `[0, sampleCapacity]`. |
 | `angularRadiusDegrees` (optional) | `number` | Angular radius of the solar disk in degrees: 0 gives hard shadows. Defaults to `GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES`. |
-| `diffuseIrradiance` (optional) | `number` | Diffuse horizontal irradiance in W/m^2 added while the sun is up, scaled by the sky-view factor when one is bound. Defaults to 0. |
+| `diffuseIrradiance` (optional) | `number` | Diffuse horizontal irradiance of an open site in W/m^2, added while the sun is up and scaled by `GPUSolarIrradianceProps.skyViewFactor` when one is bound (the irradiance sky-view factor, not the solid-angle one). Defaults to 0. |
 
 {/* /parameters */}
 
@@ -1314,7 +1387,7 @@ Settings of `getGPUTextureShadingParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `detail` (optional) | `number` | Fractional Laplacian order `alpha` (Leland Brown's "detail"): band `k` gets weight `2^(-k * detail)`. 0 weighs every band equally; 1 approaches a Laplacian. Defaults to 0.5. |
+| `detail` (optional) | `number` | Fractional Laplacian order `alpha` (Leland Brown's "detail"): band `k` gets weight `2^(-k * detail)`, which approximates the frequency response `\|f\|^detail`. 0 weighs every band equally; 1 is the half Laplacian `\|f\|`; 2 approaches a Laplacian, whose response is `\|f\|^2`. Defaults to 0.5. |
 | `gain` (optional) | `number` | Output multiplier. Defaults to 1. |
 | `levelWeights` (optional) | `readonly number[]` | Explicit per-band weights (up to 8), overriding `detail`. |
 
@@ -1597,8 +1670,12 @@ or geographic cells) with flat, pit, and outlet classes, flow accumulation in ce
 optionally weighted by a per-cell runoff view, and a stream mask with a per-frame threshold.
 With `fillEpsilon` 0, filling is a tiled spill graph (Barnes 2016): tile-local fill with outlet
 labels, a Borůvka spanning tree of the spill graph, and bottleneck paths to the grid boundary, in
-O(log n) gated GPU rounds whatever the basin shape, bit-identical to the Planchon–Darboux fixpoint
+O(log n) gated GPU rounds whatever the basin shape, bit-identical to the Planchon–Darboux fill
 (and to pysheds `fill_depressions`); `output.status.fillIterationCount` then reports Borůvka rounds.
+The fill is the greatest solution of `W = max(Z, min W(n) + epsilon)`, the minimax elevation to the
+boundary. With `fillEpsilon` 0 that equation has lower solutions too (any level between a pit and
+its pour point), so a relaxation restarted from a stale surface is not guaranteed to reach the fill;
+both paths here start from above and reach it.
 A `fillEpsilon` above 0 selects, per frame on the GPU, the GPU-gated tiled min-relaxation, which is
 also used on grids whose `8 · (cells + 1)` bytes exceed one storage binding. D8 `'cells'` accumulation without `runoff` is tree
 contraction on the Euler tour of the receiver forest: every cell enumerates its children in fixed
@@ -1620,12 +1697,18 @@ graph has about a third fewer nodes.
 
 The grid supplies the width, height, cell size and latitude band, so the settings carry only the
 algorithm values (`fillEpsilon`, `streamThreshold`, `flowExponent`) and the packer takes the grid as
-its second argument.
+its second argument. The grid may be rotated but not sheared: `GPUTerrainFlow`,
+`GPUTerrainHydrologicIndices` and `GPUTerrainFlowFractions` measure the diagonal D8 step as
+`sqrt(x² + y²)` of the two cell sizes, so they throw at construction when the two pixel axes of the
+affine are not orthogonal, as `GPUCostDistance` does.
 
 When `maximumAccumulationIterations` runs out on the pull path, unresolved cells keep NaN `accumulation`, and their
 `streams` word is `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` (`0xffffffff`), never 0: the unresolved cells
-are the downstream trunk, so 0 would silently drop the main river. Test `streams == 1` for "is a
-stream". `GPUTerrainHeightAboveDrainage` and `GPUTerrainStreamOrder` propagate the unresolved word.
+are the downstream trunk, so 0 would silently drop the main river. Every consumer of a stream mask
+(height above drainage, stream order, stream network, flow distance, the catchment summary and tiled
+flow) reads it the same way: a nonzero word is a stream cell, so a mask of Strahler orders works
+too, and the unresolved word is a cell of unknown status, never a stream cell.
+`GPUTerrainHeightAboveDrainage` and `GPUTerrainStreamOrder` propagate the unresolved word.
 
 ```ts
 const grid = makeGPURasterMetadata({width, height, cellSize: 30});
@@ -1699,11 +1782,32 @@ Settings of `getGPUTerrainFlowParameterValues`:
 
 ### `GPUTerrainHeightAboveDrainage`, `GPUTerrainWatersheds`, `GPUTerrainStreamOrder`, and `GPUTerrainHydrologicIndices`
 
-Products derived from `GPUTerrainFlow` outputs. Each takes a `grid` and ESRI D8 `flowDirections`
-(any D8 grid, for example one imported from TauDEM or Whitebox), plus `streams` or `accumulation`
-where needed, and writes into an `output` bag. Their inputs stay inputs; the convergence words are
-`output.status.converged` and `output.status.iterationCount`, and the iteration caps are
-`maximumIterations`.
+Products derived from `GPUTerrainFlow` outputs. Each takes a `grid` and D8 `flowDirections`, plus
+`streams` or `accumulation` where needed, and writes into an `output` bag. The direction codes are
+ESRI by default (1 east, then powers of two clockwise), which is what `GPUTerrainFlow`, ArcGIS,
+pysheds and WhiteboxTools with `--esri_pntr` write. A grid from another tool needs the compile-time
+`directionEncoding` prop: `'whitebox'` for the WhiteboxTools default pointer (1 north-east, then
+powers of two clockwise) and `'taudem'` for a TauDEM D8 grid (1 east, then 2 to 8
+counter-clockwise). Without it a Whitebox grid is read 45 degrees off with no error, because all its
+codes are valid ESRI codes, and most TauDEM codes are read as terminal cells. In every encoding 0
+is a terminal cell, `0xffffffff` a cell without data and `0xfffffffe` an unresolved direction, so
+map the tool's own no-data value to `0xffffffff`.
+
+**Direction codes are raster offsets, not compass bearings.** In every encoding "south" means the
+next row (`row + 1`), "north" the previous row and "east" the next column. No hydrology class reads
+the row sign of the grid affine (`grid.affine[4]`), and `GPUTerrainFlow` writes its `flowDirections`
+by the same rule, so producer and consumers agree on any grid. On a north-up raster (rows advance
+south), which is how ArcGIS, WhiteboxTools and TauDEM write their grids, the names are true compass
+directions. On a grid whose rows advance north, code 4 of `GPUTerrainFlow` points geographically
+north. A tool's direction grid held with its rows flipped to advance north still carries the tool's
+compass codes and would be followed mirrored north to south with no error: flip the rows back, or
+exchange the north and south codes, before passing it in.
+
+`GPUTerrainFlowDistance`,
+`GPUTerrainStreamNetwork`, `GPUTerrainCatchmentSummary` and `GPUTerrainTiledFlow` take the same
+prop. The inputs of the four products stay inputs; the convergence words are
+`output.status.converged`, `output.status.iterationLimitReached` (1 when the cap ran out before
+convergence) and `output.status.iterationCount`, and the iteration caps are `maximumIterations`.
 
 - `GPUTerrainHeightAboveDrainage`: HAND (Rennó et al. 2008), the height of each cell above the
   first stream cell on its D8 path, with an optional `output.drainageCells` index output. A path that

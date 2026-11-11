@@ -15,7 +15,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUNetworkTopologyViews,
@@ -68,9 +68,14 @@ export type GPUNetworkAnalyticsColumnsProps = {
   topology: GPUNetworkAdjacency;
   /** Optional reverse CSR with the same node count. Its presence makes the graph directed. */
   reverseTopology?: Pick<GPUNetworkAdjacency, 'offsets' | 'neighbors'>;
-  /** Outgoing degree (incident degree when undirected). */
+  /**
+   * Outgoing degree (incident degree when undirected): the number of live slots of the node's row,
+   * those whose neighbor is `< nodeCount`. A self-loop slot counts once, as in luma.gl's
+   * `GPUGraphAlgorithmsDegree`. `GPUNetworkStatistics` counts an undirected self-loop twice (the
+   * modularity volume rule), so its degrees differ from this column on nodes with self-loops.
+   */
   degree?: GPUNetworkAnalyticsColumn<'uint32'>;
-  /** Incoming degree. Requires the reverse CSR. */
+  /** Incoming degree: the live slots of the node's row in the reverse CSR. Requires the reverse CSR. */
   inDegree?: GPUNetworkAnalyticsColumn<'uint32'>;
   /**
    * Weak connected component label, the lowest node index of each component once converged.
@@ -111,6 +116,11 @@ type AnalyticsMetric = {
  * Without a reverse CSR the graph is undirected and the forward CSR must be symmetric. Reverse
  * CSRs can be built with `GPUCOOToCSR`.
  *
+ * Degree rules: a slot whose neighbor is `>= nodeCount` is not an edge and is not counted, and a
+ * self-loop slot counts once (as luma.gl `GPUGraphAlgorithmsDegree` counts it).
+ * `GPUNetworkStatistics` follows the modularity volume rule instead, where an undirected self-loop
+ * adds 2.
+ *
  * Non-goals: weighted metrics (edge weights are ignored), betweenness or closeness centrality,
  * modularity-optimizing communities, and CPU readback of any column.
  */
@@ -130,12 +140,12 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
     this.nodeCount = validateGPUNetworkTopology(id, props.topology).nodeCount;
     const {nodeCount} = this;
     if (props.reverseTopology) {
-      validatePackedView(
+      validateSinglePackedView(
         props.reverseTopology.offsets,
         ['uint32'],
         `${id} reverseTopology.offsets`
       );
-      validatePackedView(
+      validateSinglePackedView(
         props.reverseTopology.neighbors,
         ['uint32'],
         `${id} reverseTopology.neighbors`
@@ -172,11 +182,11 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
       nodeColumns.push([`${name}.output`, metric.output, format]);
       if (metric.normalized) {
         companions.push([`${name}.normalized`, metric.normalized, nodeCount]);
-        validatePackedView(metric.normalized, ['float32'], `${id} ${name}.normalized`);
+        validateSinglePackedView(metric.normalized, ['float32'], `${id} ${name}.normalized`);
       }
       if (metric.extent) {
         companions.push([`${name}.extent`, metric.extent, 2]);
-        validatePackedView(metric.extent, [format], `${id} ${name}.extent`);
+        validateSinglePackedView(metric.extent, [format], `${id} ${name}.extent`);
       }
       if (metric.extent && !metric.normalized) {
         throw new Error(`${id} ${name}.extent requires ${name}.normalized`);
@@ -187,7 +197,7 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
     }
     scalars.push(['components.status.converged', props.components?.status?.converged, 'uint32']);
     for (const [name, view, format] of nodeColumns) {
-      validatePackedView(view, [format], `${id} ${name}`);
+      validateSinglePackedView(view, [format], `${id} ${name}`);
       if (view.length !== nodeCount) {
         throw new Error(`${id} ${name} length must equal the node count`);
       }
@@ -196,7 +206,7 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, [format], `${id} ${name}`);
+      validateSinglePackedView(view, [format], `${id} ${name}`);
       if (view.length !== 1) {
         throw new Error(`${id} ${name} must contain exactly one row`);
       }
@@ -286,9 +296,12 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
   private createMetrics(): AnalyticsMetric[] {
     const {id, props, nodeCount} = this;
     const metrics: AnalyticsMetric[] = [];
+    // Live slots of the row: a slot whose neighbor is >= nodeCount is not an edge (the documented
+    // rule, and the one the component labels follow), so the offset difference would overcount
+    // (review network-paths-06). A self-loop slot counts once.
     const createDegreeAlgorithm = (
       step: string,
-      offsets: GraphDataView<'uint32'>,
+      adjacency: Pick<GPUNetworkAdjacency, 'offsets' | 'neighbors'>,
       output: GraphDataView<'uint32'>
     ): AnalyticsAlgorithm => ({
       getNodes: <Parameters>(graph: GPUCommandGraph<Parameters>) => [
@@ -297,18 +310,27 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
           operation: 'GPUNetworkAnalyticsColumns',
           variant: step,
           bindings: [
-            {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
+            {name: 'offsets', view: adjacency.offsets, type: 'u32', access: 'read'},
+            {name: 'neighbors', view: adjacency.neighbors, type: 'u32', access: 'read'},
             {name: 'degrees', view: output, type: 'u32', access: 'read_write'}
           ],
           invocationCount: nodeCount,
-          body: 'degrees[degreesOffset + index] = offsets[offsetsOffset + index + 1u] - offsets[offsetsOffset + index];'
+          declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
+const SLOT_CAPACITY: u32 = ${adjacency.neighbors.length}u;`,
+          body: `let firstSlot = min(offsets[offsetsOffset + index], SLOT_CAPACITY);
+  let endSlot = min(offsets[offsetsOffset + index + 1u], SLOT_CAPACITY);
+  var liveCount = 0u;
+  for (var slot = firstSlot; slot < endSlot; slot++) {
+    liveCount += select(0u, 1u, neighbors[neighborsOffset + slot] < NODE_COUNT);
+  }
+  degrees[degreesOffset + index] = liveCount;`
         })
       ]
     });
     if (props.degree) {
       metrics.push({
         step: 'degree',
-        algorithm: createDegreeAlgorithm('degree', props.topology.offsets, props.degree.output),
+        algorithm: createDegreeAlgorithm('degree', props.topology, props.degree.output),
         format: 'uint32',
         raw: props.degree.output,
         normalized: props.degree.normalized,
@@ -318,11 +340,7 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
     if (props.inDegree && props.reverseTopology) {
       metrics.push({
         step: 'in-degree',
-        algorithm: createDegreeAlgorithm(
-          'in-degree',
-          props.reverseTopology.offsets,
-          props.inDegree.output
-        ),
+        algorithm: createDegreeAlgorithm('in-degree', props.reverseTopology, props.inDegree.output),
         format: 'uint32',
         raw: props.inDegree.output,
         normalized: props.inDegree.normalized,

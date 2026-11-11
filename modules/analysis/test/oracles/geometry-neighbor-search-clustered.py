@@ -17,13 +17,26 @@ Scenes (seed 20261014), bounds [0, 0, 2047, 2047]:
   many exact duplicates and tied distances), 10% uniform; 6 NaN rows, 6 outside the bounds, every
   seventh row masked out;
 - `collinear`: 300 points on y = 100 with x = i // 2 (duplicates and exactly tied neighbors on a line);
-- `cross`: the clustered targets queried by 120 other points (some NaN and outside the bounds).
+- `cross`: the clustered targets queried by 120 other points (one NaN, one outside the bounds).
 Per scene and k in (1, 4, 32), `knn` holds the CSR; per radius, `radius` holds the CSR. Neighbors of a
 row ascend by id; `distancesSquared` are the exact integer squared distances. Invalid rows (NaN, outside
-the bounds, masked) are never targets and have empty rows as queries.
+the bounds, masked) are never targets; a self join's invalid rows and a cross join's non-finite queries
+have empty rows (a cross-join query outside the bounds is searched, see the notes below).
 
-Usage (writes fixtures/geometry-neighbor-search-clustered.json):  python3 -I geometry-neighbor-search-clustered.py
-Needs numpy and scipy (versions recorded in the fixture).
+Usage (writes fixtures/geometry-neighbor-search-clustered.json):  /usr/bin/python3 geometry-neighbor-search-clustered.py
+(not `python3 -I`: isolated mode drops the user site that holds numpy). Needs numpy and scipy;
+the versions are recorded in the fixture.
+
+Regeneration notes (2026-11-11). The fixture now records NumPy 2.0.2 and SciPy 1.13.1, the
+versions of /usr/bin/python3 that wrote it; the committed one before it (74dddcf5) was written with
+NumPy 2.5.4 and SciPy 1.16.3, and its `generator` path was `modules/graph/test/oracles/...` (now
+`modules/analysis/...`). The scenes, seeds and every other number are unchanged. The one data
+change is in scene `cross`, `knn` for k = 1, 4 and 32: query row 9, at (-1, 4) and the only finite
+query outside the bounds, used to get an empty row (the old definition dropped queries outside the
+bounds) and now gets its brute-force neighbors (for k = 1: [109]); every later `offsets` entry of
+those three CSRs shifts by the neighbors that row gained. The `radius` entries of `cross`, and the
+scenes `clustered` and `collinear`, are identical to the committed ones (no target is within
+radius 2 or 5 of row 9). Compared field by field against `git show 74dddcf5:<fixture>`.
 """
 import json
 import math
@@ -77,7 +90,8 @@ def solve(positions, mask, queries, self_join, k=None, radius=None):
     target_ids = np.flatnonzero(valid)
     targets = positions[target_ids]
     tree = cKDTree(targets)
-    query_valid = valid if self_join else is_valid(queries)
+    # A cross-join query needs only finite coordinates: the bounds clip targets, not queries.
+    query_valid = valid if self_join else np.isfinite(queries).all(axis=1)
     rows, squared = [], []
     for row in range(len(queries)):
         if not query_valid[row]:

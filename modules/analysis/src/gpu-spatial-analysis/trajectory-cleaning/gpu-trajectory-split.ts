@@ -19,7 +19,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -101,12 +101,16 @@ export type GPUTrajectorySplitProps = GPUTrajectoryGeometryFields & {
 };
 
 /**
- * Splits tracks into segments and rewrites the offsets. MovingPandas 0.23 semantics:
+ * Splits tracks into segments and rewrites the offsets. `'gap'` and `'value-change'` follow
+ * MovingPandas 0.23 (pinned by a committed fixture); `'stop'` is the trackintel tripleg rule:
  *
  * - `'gap'` (`ObservationGapSplitter`): a new segment starts after every step strictly longer than
  *   `maximumGap`.
- * - `'stop'` (`StopSplitter`, on staypoints): segments are the maximal runs of rows outside every
- *   staypoint.
+ * - `'stop'`: segments are the maximal runs of rows outside every staypoint, the rule trackintel
+ *   uses for triplegs between staypoints. The rows of a staypoint belong to no segment, so a stay
+ *   on rows 3 to 8 ends the segment before it at row 2 and starts the next at row 9. This is not
+ *   the `StopSplitter` of MovingPandas, whose segments are described as running from the last fix
+ *   of one stop to the first fix of the next, both included (not run here).
  * - `'value-change'` (`ValueChangeSplitter`): a new segment starts where the value changes, and
  *   each segment but the last repeats the first row of the next segment.
  *
@@ -127,9 +131,9 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {positions, timestamps, trackOffsets, output, mode} = props;
-    validatePackedView(positions, ['float32x2'], `${id} positions`);
-    validatePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
-    validatePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
     validateViewLength(id, 'timestamps', timestamps, positions.length);
     resolveGPUTrajectoryTemporalContext(id, timestamps, props.temporalContext);
     validateRequirement(
@@ -144,7 +148,7 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
     );
     if (mode === 'gap') {
       validateRequirement(id, Boolean(props.parameters), "mode 'gap' requires parameters");
-      validatePackedView(props.parameters!, ['float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters!, ['float32'], `${id} parameters`);
       validateRequirement(
         id,
         props.parameters!.length >= GPU_TRAJECTORY_SPLIT_PARAMETER_LENGTH,
@@ -152,16 +156,16 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
       );
     } else if (mode === 'stop') {
       validateRequirement(id, Boolean(props.staypointIds), "mode 'stop' requires staypointIds");
-      validatePackedView(props.staypointIds!, ['uint32'], `${id} staypointIds`);
+      validateSinglePackedView(props.staypointIds!, ['uint32'], `${id} staypointIds`);
       validateViewLength(id, 'staypointIds', props.staypointIds!, positions.length);
     } else {
       validateRequirement(id, Boolean(props.values), "mode 'value-change' requires values");
-      validatePackedView(props.values!, ['uint32'], `${id} values`);
+      validateSinglePackedView(props.values!, ['uint32'], `${id} values`);
       validateViewLength(id, 'values', props.values!, positions.length);
     }
-    validatePackedView(output.segmentOffsets, ['uint32'], `${id} output.segmentOffsets`);
-    validatePackedView(output.segmentTracks, ['uint32'], `${id} output.segmentTracks`);
-    validatePackedView(output.rowIds, ['uint32'], `${id} output.rowIds`);
+    validateSinglePackedView(output.segmentOffsets, ['uint32'], `${id} output.segmentOffsets`);
+    validateSinglePackedView(output.segmentTracks, ['uint32'], `${id} output.segmentTracks`);
+    validateSinglePackedView(output.rowIds, ['uint32'], `${id} output.rowIds`);
     validateCapacity(id, 'output.segmentTracks', output.segmentTracks.length);
     validateCapacity(id, 'output.rowIds', output.rowIds.length);
     this.segmentCapacity = output.segmentTracks.length;
@@ -173,11 +177,11 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
       this.segmentCapacity + 1
     );
     if (output.positions) {
-      validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+      validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
       validateViewLength(id, 'output.positions', output.positions, this.rowCapacity);
     }
     if (output.timestamps) {
-      validatePackedView(output.timestamps, [timestamps.format], `${id} output.timestamps`);
+      validateSinglePackedView(output.timestamps, [timestamps.format], `${id} output.timestamps`);
       validateViewLength(id, 'output.timestamps', output.timestamps, this.rowCapacity);
     }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());

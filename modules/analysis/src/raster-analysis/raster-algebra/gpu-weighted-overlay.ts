@@ -41,7 +41,7 @@ export type GPUWeightedOverlayOutput = {
   /** Weighted score per cell; NaN for nodata or restricted cells. */
   score: GraphDataView<'float32'>;
   /** Optional `1` where `score` is defined, else `0`. */
-  outputValidity?: GraphDataView<'uint32'>;
+  validity?: GraphDataView<'uint32'>;
   /** Optional two rows `[minimum, maximum]` of the defined scores; NaN when none is defined. */
   scoreRange?: GraphDataView<'float32'>;
 };
@@ -67,6 +67,12 @@ export type GPUWeightedOverlayProps = {
   cellCount: number;
   /** Optional finite nodata sentinel compared exactly against input values. */
   noDataValue?: number;
+  /**
+   * Optional input row filter (`uint32`, at least `cellCount` rows): nonzero keeps the cell, zero
+   * marks it no-data across all layers (score NaN, `validity` 0). Combines with NaN,
+   * `noDataValue` and the per-frame nodata policy.
+   */
+  mask?: GraphDataView<'uint32'>;
   /**
    * Per-frame float32 view of at least `getGPUWeightedOverlayParameterLength(layerCount)` values
    * written with `getGPUWeightedOverlayParameterValues`.
@@ -120,6 +126,7 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
     }
     validateRasterAlgebraNoData(id, props.noDataValue);
     validateRasterAlgebraView(id, 'stack', props.stack, 'float32', layerCount * cellCount);
+    validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', cellCount);
     validateRasterAlgebraView(
       id,
       'parameters',
@@ -152,18 +159,12 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
       throw new Error(`${id} needs output.score`);
     }
     validateRasterAlgebraView(id, 'output.score', output.score, 'float32', cellCount);
-    validateRasterAlgebraView(
-      id,
-      'output.outputValidity',
-      output.outputValidity,
-      'uint32',
-      cellCount
-    );
+    validateRasterAlgebraView(id, 'output.validity', output.validity, 'uint32', cellCount);
     validateRasterAlgebraView(id, 'output.scoreRange', output.scoreRange, 'float32', 2);
     validateRasterAlgebraAliasing(
       id,
-      [output.score, output.outputValidity, output.scoreRange],
-      [props.stack, props.parameters, props.remapBreaks, props.remapValues]
+      [output.score, output.validity, output.scoreRange],
+      [props.stack, props.mask, props.parameters, props.remapBreaks, props.remapValues]
     );
   }
 
@@ -175,11 +176,12 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
     const {output, layerCount, cellCount} = props;
     validateRasterAlgebraGraph(id, graph, [
       props.stack,
+      props.mask,
       props.parameters,
       props.remapBreaks,
       props.remapValues,
       output.score,
-      output.outputValidity,
+      output.validity,
       output.scoreRange
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -202,6 +204,9 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
     const hasTables = Boolean(props.remapBreaks);
     const bindings: WGSLKernelBinding[] = [
       {name: 'stack', view: props.stack, type: 'f32', access: 'read'},
+      ...(props.mask
+        ? [{name: 'mask', view: props.mask, type: 'u32', access: 'read'} as const]
+        : []),
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
     ];
     if (hasTables) {
@@ -211,10 +216,10 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
       );
     }
     bindings.push({name: 'scoreOut', view: output.score, type: 'f32', access: 'read_write'});
-    if (output.outputValidity) {
+    if (output.validity) {
       bindings.push({
         name: 'validityOut',
-        view: output.outputValidity,
+        view: output.validity,
         type: 'u32',
         access: 'read_write'
       });
@@ -296,7 +301,7 @@ ${GET_ORDERED_KEY_WGSL}`,
     weightSum = weightSum + abs(weight);
     usedCount = usedCount + 1u;
   }
-  isDefined = isDefined && usedCount > 0u;
+  isDefined = isDefined && usedCount > 0u${props.mask ? ' && mask[maskOffset + index] != 0u' : ''};
   var score = sum;
   if (normalizeWeights) {
     isDefined = isDefined && weightSum > 0.0;
@@ -305,7 +310,7 @@ ${GET_ORDERED_KEY_WGSL}`,
   score = select(getNaN(), score, isDefined && !isNaNValue(score));
   let isScoreDefined = !isNaNValue(score);
   scoreOut[scoreOutOffset + index] = score;
-  ${output.outputValidity ? 'validityOut[validityOutOffset + index] = select(0u, 1u, isScoreDefined);' : ''}
+  ${output.validity ? 'validityOut[validityOutOffset + index] = select(0u, 1u, isScoreDefined);' : ''}
   ${
     rangeKeys
       ? `if (isScoreDefined) {

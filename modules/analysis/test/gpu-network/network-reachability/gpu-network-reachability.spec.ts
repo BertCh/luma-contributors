@@ -427,6 +427,56 @@ it('GPUNetworkReachability reports convergence against the iteration bound', asy
   destroyFixture(bounded);
 });
 
+it('GPUNetworkReachability publishes iterationLimitReached beside converged, and without it', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const pathEdges: NetworkEdge[] = Array.from({length: 19}, (_, node) => [node, node + 1, 1]);
+  const path = buildCSR(20, pathEdges);
+  for (const withConverged of [true, false]) {
+    for (const [maxIterations, limitReached] of [
+      [3, 1],
+      [32, 0]
+    ] as const) {
+      const fixture = createReachabilityFixture(device, path, 20, {
+        id: `limit-${withConverged}-${maxIterations}`,
+        sources: [0],
+        maxIterations,
+        localIterations: 1
+      });
+      const limitBuffer = createOutputBuffer(device, 1);
+      const {converged, ...status} = fixture.props.output.status!;
+      fixture.graph.add(
+        new GPUNetworkReachability({
+          ...fixture.props,
+          output: {
+            ...fixture.props.output,
+            status: {
+              ...status,
+              ...(withConverged ? {converged} : {}),
+              iterationLimitReached: importGraphBuffer(
+                fixture.graph,
+                `limit-reached-${withConverged}-${maxIterations}`,
+                limitBuffer,
+                'uint32',
+                1
+              )
+            }
+          }
+        })
+      );
+      const compiled = fixture.graph.compile();
+      submitGraph(device, compiled, undefined);
+      expect(await readUint32(limitBuffer, 1)).toEqual([limitReached]);
+      if (withConverged) {
+        expect(await readUint32(fixture.convergedBuffer, 1)).toEqual([1 - limitReached]);
+      }
+      compiled.destroy();
+      limitBuffer.destroy();
+      destroyFixture(fixture);
+    }
+  }
+});
+
 it('GPUNetworkReachability handles high degree, invalid data, and fractional weights', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

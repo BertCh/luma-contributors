@@ -37,7 +37,10 @@ export type GPURasterCellStatisticsOutput = {
   sum?: GraphDataView<'float32'>;
   /** `sum / count`. */
   mean?: GraphDataView<'float32'>;
-  /** Population standard deviation from a centred second pass. */
+  /**
+   * Population standard deviation, `sqrt(sum (v - mean)^2 / n)` (divisor `n`), from a centred
+   * second pass. `GPURasterZonalStatistics` divides by `n - 1`.
+   */
   standardDeviation?: GraphDataView<'float32'>;
   /** Most frequent valid value (exact f32 equality); ties pick the smallest value. */
   majority?: GraphDataView<'float32'>;
@@ -45,7 +48,7 @@ export type GPURasterCellStatisticsOutput = {
   minority?: GraphDataView<'float32'>;
   /** Number of distinct valid values (0 where the cell is nodata). */
   variety?: GraphDataView<'uint32'>;
-  /** Number of valid layers, written for every cell. */
+  /** Number of valid layers, written for every cell (0 where `mask` is zero). */
   counts?: GraphDataView<'uint32'>;
 };
 
@@ -66,6 +69,11 @@ export type GPURasterCellStatisticsProps = {
   cellCount: number;
   /** Optional finite nodata sentinel compared exactly. NaN is always nodata. */
   noDataValue?: number;
+  /**
+   * Optional input row filter (`uint32`, at least `cellCount` rows): nonzero keeps the cell, zero
+   * marks the whole cell no-data across all layers (float outputs NaN, `variety` and `counts` 0).
+   */
+  mask?: GraphDataView<'uint32'>;
   /** Per-frame float32 view written with `getGPURasterCellStatisticsParameterValues`. */
   parameters: GraphDataView<'float32'>;
   /** Caller-owned outputs. */
@@ -76,6 +84,11 @@ export type GPURasterCellStatisticsProps = {
  * Local (per-cell) statistics across a stack of rasters, like ArcGIS "Cell Statistics" or GDAL
  * `gdal_calc` reductions: minimum, maximum, range, sum, mean, standard deviation, majority,
  * minority, variety, and valid count.
+ *
+ * Standard deviation divisor: `n`, the population form of ArcGIS Cell Statistics (`numpy.std` with
+ * `ddof=0`). Two layers with values 1 and 3 give 1. `GPURasterZonalStatistics` uses the sample form
+ * (`n - 1`), which gives 1.414 for the same two values; published luma.gl raster statistics state
+ * no divisor, so each class keeps and documents its own.
  *
  * Each cell is one invocation that reads its layers in fixed order, so every output is
  * deterministic and no atomics are used. Moments, extremes, and frequencies are separate kernels,
@@ -101,6 +114,7 @@ export class GPURasterCellStatistics implements GPUCommandNodeProducer {
     }
     validateRasterAlgebraNoData(id, props.noDataValue);
     validateRasterAlgebraView(id, 'stack', props.stack, 'float32', layerCount * cellCount);
+    validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', cellCount);
     validateRasterAlgebraView(
       id,
       'parameters',
@@ -124,7 +138,7 @@ export class GPURasterCellStatistics implements GPUCommandNodeProducer {
     validateRasterAlgebraAliasing(
       id,
       outputs.map(([, view]) => view),
-      [props.stack, props.parameters]
+      [props.stack, props.mask, props.parameters]
     );
   }
 
@@ -136,11 +150,15 @@ export class GPURasterCellStatistics implements GPUCommandNodeProducer {
     const {output, layerCount, cellCount} = props;
     validateRasterAlgebraGraph(id, graph, [
       props.stack,
+      props.mask,
       props.parameters,
       ...getOutputEntries(output).map(([, view]) => view)
     ]);
     const inputs: WGSLKernelBinding[] = [
       {name: 'stack', view: props.stack, type: 'f32', access: 'read'},
+      ...(props.mask
+        ? [{name: 'mask', view: props.mask, type: 'u32', access: 'read'} as const]
+        : []),
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
     ];
     const write = (
@@ -161,8 +179,9 @@ fn readLayer(layer: u32, cell: u32, value: ptr<function, f32>) -> bool {
     const setupPrefix = `let propagateNoData = params[paramsOffset] != 0.0;
   let minimumCountValue = params[paramsOffset + 1u];
   let minimumCount = max(u32(clamp(select(1.0, minimumCountValue, isFiniteValue(minimumCountValue)), 0.0, 4294967040.0)), 1u);
-  var count = 0u;`;
-    const setupSuffix = `let isDefined = count >= minimumCount && (!propagateNoData || count == LAYER_COUNT);
+  var count = 0u;
+  let isKept = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};`;
+    const setupSuffix = `let isDefined = isKept && count >= minimumCount && (!propagateNoData || count == LAYER_COUNT);
   let nan = getNaN();`;
     const forEachValid = (
       statement: string
@@ -196,7 +215,7 @@ fn readLayer(layer: u32, cell: u32, value: ptr<function, f32>) -> bool {
   let mean = sum / f32(max(count, 1u));
   ${output.sum ? 'sumOut[sumOutOffset + index] = select(nan, sum, isDefined);' : ''}
   ${output.mean ? 'meanOut[meanOutOffset + index] = select(nan, mean, isDefined);' : ''}
-  ${output.counts ? 'countOut[countOutOffset + index] = count;' : ''}
+  ${output.counts ? 'countOut[countOutOffset + index] = select(0u, count, isKept);' : ''}
   ${
     output.standardDeviation
       ? `var squaredDeviationSum = 0.0;

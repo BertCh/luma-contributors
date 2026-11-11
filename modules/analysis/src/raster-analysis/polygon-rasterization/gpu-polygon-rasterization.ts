@@ -25,7 +25,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid, validateRasterParameters} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -183,7 +183,7 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
       throw new Error(`${id} height * (width + 1) must fit in uint32`);
     }
     validateRasterParameters(id, props.parameters, GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} positions must not be empty`);
     }
@@ -192,7 +192,7 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
       ['polygonOffsets', props.polygonOffsets],
       ['ringOffsets', props.ringOffsets]
     ] as const) {
-      validatePackedView(view, ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length < 2) {
         throw new Error(`${id} ${name} requires at least one range and a terminal entry`);
       }
@@ -219,7 +219,7 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['uint32'], `${id} output.${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
       if (view.length !== length) {
         throw new Error(`${id} output.${name} must contain ${length} uint32 rows`);
       }

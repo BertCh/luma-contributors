@@ -10,7 +10,7 @@ import {
   type GPUCommandNode
 } from '@luma.gl/graph/gpu-core';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -37,7 +37,7 @@ export function validateRasterViews(
   inputs: GraphDataView[],
   outputs: GraphDataView[]
 ): void {
-  for (const view of [...inputs, ...outputs]) validatePackedView(view, [view.format], id);
+  for (const view of [...inputs, ...outputs]) validateSinglePackedView(view, [view.format], id);
   validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
   for (let index = 0; index < outputs.length; index++)
     validateGraphOutputsDisjointFromInputs(id, [outputs[index]], outputs.slice(index + 1));

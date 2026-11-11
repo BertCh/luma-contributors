@@ -73,7 +73,7 @@ it('point-cloud analysis generated shaders pass reserved-word and baseline resou
       counts,
       capacity: 64,
       meanDistances: view('float32', 9),
-      mask: view('uint32', 9)
+      validity: view('uint32', 9)
     }),
     new GPUPointCloudVoxelDownsample({
       positions,

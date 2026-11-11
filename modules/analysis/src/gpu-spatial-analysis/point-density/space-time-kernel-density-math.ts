@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getComplementaryErrorFunction} from '../shared/complementary-error-function';
 import {
   getGPUKernelDensityParameterValues,
@@ -29,8 +30,10 @@ export type GPUSpaceTimeKernelDensitySettings = GPUKernelDensitySettings & {
   /** Time between slices, positive and finite. */
   sliceInterval: number;
   /**
-   * `[start, end]` of the temporal edge correction window. Defaults to the first and last slice
-   * time. Ignored without `temporalEdgeCorrection: 'uniform'`.
+   * `[start, end]` of the temporal edge correction window, `start < end`. Defaults to the first
+   * and last slice time. Ignored without `temporalEdgeCorrection: 'uniform'`. With one slice the
+   * default is the instant of that slice, which holds no kernel mass: under the uniform temporal
+   * correction every voxel is then NaN, so give one slice an explicit window.
    */
   timeWindow?: readonly [number, number];
 };
@@ -44,11 +47,12 @@ export type GPUSpaceTimeKernelDensitySettings = GPUKernelDensitySettings & {
  *
  * @param settings Bandwidths, slice times and optional windows.
  * @param grid The output grid, as for `getGPUKernelDensityParameterValues`.
- * @param sliceCount Number of slices, to default the time window.
+ * @param sliceCount Number of slices (a positive integer), to default the time window.
  * @param target Optional destination of at least {@link GPU_SPACE_TIME_KERNEL_DENSITY_PARAMETER_LENGTH} elements.
  * @throws If a spatial value is invalid (see `getGPUKernelDensityParameterValues`), the temporal
- * bandwidth or slice interval is not positive and finite, the first slice time is not finite, or
- * the time window is not finite and ordered. A polygon `'study-window'` is not supported.
+ * bandwidth or slice interval is not positive and finite, the first slice time is not finite,
+ * `sliceCount` is not a positive integer, or an explicit time window is not finite with
+ * `start < end`. A polygon `'study-window'` is not supported.
  */
 export function getGPUSpaceTimeKernelDensityParameterValues(
   settings: GPUSpaceTimeKernelDensitySettings,
@@ -74,14 +78,19 @@ export function getGPUSpaceTimeKernelDensityParameterValues(
   if (!Number.isFinite(settings.sliceInterval) || settings.sliceInterval <= 0) {
     throw new Error(`${name} sliceInterval must be positive and finite`);
   }
+  validateCapacity(name, 'sliceCount', sliceCount, 1, Number.MAX_SAFE_INTEGER);
   const timeWindow = settings.timeWindow ?? [
     settings.firstSliceTime,
     settings.firstSliceTime + (sliceCount - 1) * settings.sliceInterval
   ];
+  // The default window of one slice is the instant of that slice, start equal to end. It is
+  // packed as it is: the window is not read without the uniform temporal correction, and with it
+  // an instant has no kernel mass, so every voxel is NaN. An explicit window must have a length.
+  const isDefaultInstant = settings.timeWindow === undefined && sliceCount === 1;
   if (
     timeWindow.length !== 2 ||
     !timeWindow.every(Number.isFinite) ||
-    !(timeWindow[0] < timeWindow[1])
+    !(timeWindow[0] < timeWindow[1] || isDefaultInstant)
   ) {
     throw new Error(`${name} timeWindow must be finite [start, end] with start < end`);
   }

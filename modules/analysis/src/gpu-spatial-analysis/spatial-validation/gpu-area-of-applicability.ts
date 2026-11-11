@@ -14,7 +14,7 @@ import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kerne
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
@@ -124,8 +124,8 @@ export class GPUAreaOfApplicability implements GPUCommandNodeProducer {
       1,
       GPU_AREA_OF_APPLICABILITY_MAXIMUM_PREDICTOR_COUNT
     );
-    validatePackedView(props.training, ['float32'], `${id} training`);
-    validatePackedView(props.query, ['float32'], `${id} query`);
+    validateSinglePackedView(props.training, ['float32'], `${id} training`);
+    validateSinglePackedView(props.query, ['float32'], `${id} query`);
     this.rows = props.training.length / columns;
     this.queryRows = props.query.length / columns;
     validateCapacity(
@@ -137,19 +137,19 @@ export class GPUAreaOfApplicability implements GPUCommandNodeProducer {
     );
     validateCapacity(id, 'query rows', this.queryRows, 1);
     if (props.weights) {
-      validatePackedView(props.weights, ['float32'], `${id} weights`);
+      validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
       validateViewLength(id, 'weights', props.weights, columns);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       validateViewLength(id, 'mask', props.mask, this.rows);
     }
     const cross = props.crossValidation;
     if (cross) {
       validateCapacity(id, 'crossValidation.foldCount', cross.foldCount, 1, 64);
-      validatePackedView(cross.folds, ['uint32'], `${id} crossValidation.folds`);
+      validateSinglePackedView(cross.folds, ['uint32'], `${id} crossValidation.folds`);
       validateViewLength(id, 'crossValidation.folds', cross.folds, this.rows);
-      validatePackedView(cross.training, ['uint32'], `${id} crossValidation.training`);
+      validateSinglePackedView(cross.training, ['uint32'], `${id} crossValidation.training`);
       validateViewLength(
         id,
         'crossValidation.training',
@@ -165,7 +165,7 @@ export class GPUAreaOfApplicability implements GPUCommandNodeProducer {
       ['summary', output.summary, 'float32', GPU_AREA_OF_APPLICABILITY_SUMMARY_LENGTH],
       ['status', output.status, 'uint32', 1]
     ] as const) {
-      validatePackedView(view, [format], `${id} output.${name}`);
+      validateSinglePackedView(view, [format], `${id} output.${name}`);
       validateViewLength(id, `output.${name}`, view, length);
     }
     validatePredictionViews(id, this.getInputViews(), Object.values(output));

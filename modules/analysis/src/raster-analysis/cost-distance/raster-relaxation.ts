@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   getBoundedDispatchLayout,
   type GPUBoundedDispatchLayout,
@@ -12,7 +11,10 @@ import {
   type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {validatePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateSinglePackedView,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPURasterCellSizeMode} from '../../analysis-core/raster-grid';
 import {
   createWGSLDispatchGate,
@@ -250,7 +252,11 @@ export function createRasterGateSlotTable<Parameters>(
   });
   const getSlot = (slot: number): GraphDataView<'uint32'> => {
     // Callers only ask for positions inside a group or for a group size, both within the table.
-    assert(Number.isSafeInteger(slot) && slot >= 0 && slot <= groupSize);
+    validateRequirement(
+      props.operation,
+      Number.isSafeInteger(slot) && slot >= 0 && slot <= groupSize,
+      `gate slot must be an integer in [0, ${groupSize}] (the group size)`
+    );
     return graph.createDataView(table.buffer, {
       format: 'uint32',
       length: 1,
@@ -435,6 +441,8 @@ export function createRasterIterationFinalizeNode<Parameters>(
     state: RasterIterationState<Parameters>;
     converged?: GraphDataView<'uint32'>;
     iterationCount?: GraphDataView<'uint32'>;
+    /** Optional: 1 when the iteration limit stopped an unconverged run, else 0. */
+    iterationLimitReached?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -442,6 +450,14 @@ export function createRasterIterationFinalizeNode<Parameters>(
   ];
   if (props.converged) {
     bindings.push({name: 'converged', view: props.converged, type: 'u32', access: 'read_write'});
+  }
+  if (props.iterationLimitReached) {
+    bindings.push({
+      name: 'iterationLimitReached',
+      view: props.iterationLimitReached,
+      type: 'u32',
+      access: 'read_write'
+    });
   }
   if (props.iterationCount) {
     bindings.push({
@@ -458,7 +474,8 @@ export function createRasterIterationFinalizeNode<Parameters>(
     bindings,
     invocationCount: 1,
     body: `${props.converged ? 'converged[convergedOffset] = status[statusOffset + 3u];' : ''}
-  ${props.iterationCount ? 'iterationCount[iterationCountOffset] = status[statusOffset + 2u];' : ''}`
+  ${props.iterationCount ? 'iterationCount[iterationCountOffset] = status[statusOffset + 2u];' : ''}
+  ${props.iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = 1u - status[statusOffset + 3u];' : ''}`
   });
 }
 
@@ -798,7 +815,7 @@ export function createRasterTiledRelaxationNodes<Parameters>(
     if (props.continuation || relaxation.continuation) {
       throw new Error(`${props.id} settledAt is not supported with continuation`);
     }
-    validatePackedView(props.settledAt, ['uint32'], `${props.id} settledAt`);
+    validateSinglePackedView(props.settledAt, ['uint32'], `${props.id} settledAt`);
     if (props.settledAt.length !== props.width * props.height) {
       throw new Error(`${props.id} settledAt must contain one value per cell`);
     }

@@ -23,7 +23,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
@@ -132,7 +132,7 @@ export class GPUTerrainContours implements GPUCommandNodeProducer {
     for (const [index, level] of props.levels.entries()) {
       validateContourLevelDraw(id, index, level);
     }
-    validatePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
+    validateSinglePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
     if (overflow.length < 1) {
       throw new Error(`${id} output.status.overflow must contain one uint32 row`);
     }
@@ -265,7 +265,7 @@ function validateContourLevelDraw(id: string, index: number, level: GPUTerrainCo
   if (commandIndex >= draw.capacity) {
     throw new Error(`${label} drawCommandIndex exceeds the indirect draw capacity`);
   }
-  validatePackedView(draw.words, ['uint32'], `${label} draw words`);
+  validateSinglePackedView(draw.words, ['uint32'], `${label} draw words`);
   if (draw.words.buffer !== draw.buffer || draw.words.length < draw.capacity * 4) {
     throw new Error(`${label} draw words must span every draw record`);
   }

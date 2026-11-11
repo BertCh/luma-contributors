@@ -69,7 +69,7 @@ export type GPURasterHANTSProps = {
   /** Cell-major `cell * sliceCount + slice`; nonfinite samples are missing. */
   values: GraphDataView<'float32'>;
   /** Per-observation QA; zero rejects the sample. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Float32, see {@link getGPURasterHANTSParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Harmonics; coefficients per cell are `2 * harmonicCount + 1`. */
@@ -147,10 +147,10 @@ export class GPURasterHANTS implements GPUCommandNodeProducer {
     validateCapacity(id, 'cellCount times sliceCount', observationCount);
     validateRequirement(
       id,
-      [props.values, props.validity, props.output.smoothed].every(
+      [props.values, props.mask, props.output.smoothed].every(
         view => !view || view.length >= observationCount
       ),
-      'values, validity and output.smoothed must hold cellCount times sliceCount entries'
+      'values, mask and output.smoothed must hold cellCount times sliceCount entries'
     );
     validateRequirement(
       id,
@@ -179,8 +179,8 @@ export class GPURasterHANTS implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, parameters} = this.props;
-    return [values, parameters, ...(validity ? [validity] : [])];
+    const {values, mask, parameters} = this.props;
+    return [values, parameters, ...(mask ? [mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -192,15 +192,7 @@ export class GPURasterHANTS implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, rejectionPassCount, rejectionSide} = this;
-    const {
-      sliceCount: slices,
-      harmonicCount,
-      values,
-      validity,
-      parameters,
-      dateAxis,
-      output
-    } = props;
+    const {sliceCount: slices, harmonicCount, values, mask, parameters, dateAxis, output} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     if (dateAxis) validateGPURasterDateAxisGraph(id, graph, dateAxis);
     const columns = 2 * harmonicCount + 1;
@@ -222,7 +214,7 @@ export class GPURasterHANTS implements GPUCommandNodeProducer {
         bindings: [
           rasterBinding('values', values),
           rasterBinding('parameters', parameters),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           ...(dateAxis ? [getGPURasterDateAxisBinding(dateAxis)] : []),
           rasterBinding('smoothed', output.smoothed, true),
           rasterBinding('coefficients', output.coefficients, true),
@@ -246,7 +238,7 @@ var keptMask: array<u32, ${Math.ceil(slices / 32)}>;
 var keptCount = 0u;
 for (var slice = 0u; slice < ${slices}u; slice++) {
   let source = index * ${slices}u + slice;
-  if (finite(values[valuesOffset + source]) ${validity ? '&& validity[validityOffset + source] != 0u' : ''}) { keptMask[slice / 32u] |= 1u << (slice % 32u); keptCount++; }
+  if (finite(values[valuesOffset + source]) ${mask ? '&& mask[maskOffset + source] != 0u' : ''}) { keptMask[slice / 32u] |= 1u << (slice % 32u); keptCount++; }
 }
 var code = 0u;
 var fitted: LeastSquaresResult;

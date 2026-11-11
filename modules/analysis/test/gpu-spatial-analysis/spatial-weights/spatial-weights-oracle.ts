@@ -58,12 +58,15 @@ export function flattenPolygons(polygons: OraclePolygons): PolygonLayout {
   };
 }
 
-function quantise(value: number, tolerance: number): number {
+/** Snap cell of a coordinate on the grid anchored at `origin` (the first vertex of the data). */
+function quantise(value: number, tolerance: number, origin = 0): number {
   const x = Math.fround(value);
   if (tolerance <= 0) {
     return x === 0 ? 0 : x;
   }
-  return Math.floor(Math.fround(Math.fround(x / Math.fround(tolerance)) + 0.5));
+  const steps = Math.fround(Math.fround(x - origin) / Math.fround(tolerance));
+  // From 2^23 steps the float32 quotient is an integer and is the cell as it is.
+  return Math.abs(steps) >= 2 ** 23 ? steps : Math.floor(Math.fround(steps + 0.5));
 }
 
 /**
@@ -88,8 +91,14 @@ export function computeContiguityOracle(
     }
     set.add(polygon);
   };
+  // The snap grid is anchored at the first vertex of the data (see `snapTolerance`).
+  const first: [number, number] = polygons[0]?.[0]?.[0] ?? [0, 0];
+  const origin: [number, number] =
+    Number.isFinite(first[0]) && Number.isFinite(first[1])
+      ? [Math.fround(first[0]), Math.fround(first[1])]
+      : [0, 0];
   const pointKey = (point: [number, number]) =>
-    `${quantise(point[0], snapTolerance)},${quantise(point[1], snapTolerance)}`;
+    `${quantise(point[0], snapTolerance, origin[0])},${quantise(point[1], snapTolerance, origin[1])}`;
   polygons.forEach((rings, polygon) => {
     for (const ring of rings) {
       ring.forEach((point, index) => {

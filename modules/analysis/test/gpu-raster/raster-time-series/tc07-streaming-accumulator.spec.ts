@@ -85,7 +85,7 @@ it('TC-07 streaming accumulator matches binary64 statistics over 512 slices in f
         chunkSliceCount: CHUNK,
         slotCount,
         values: harness.floats(values),
-        validity: harness.integers(validity),
+        mask: harness.integers(validity),
         slotIndices: harness.integers(chunkSlots),
         parameters: harness.floats(
           getGPURasterStreamingAccumulatorParameterValues(

@@ -102,7 +102,7 @@ function createOverlayOutput(
   polygonOffsets: Buffer;
   ringOffsets: Buffer;
   count: Buffer;
-  requiredCount: Buffer;
+  requiredRingCount: Buffer;
   overflow: Buffer;
   candidateOverflow: Buffer;
 } {
@@ -118,10 +118,9 @@ function createOverlayOutput(
     ringCapacity + 1
   );
   const ringOffsets = graphBuffers.output(`${prefix}-ring-offsets`, 'uint32', ringCapacity + 1);
-  const sourceIds = graphBuffers.output(`${prefix}-source-ids`, 'uint32', ringCapacity);
   const scalar = (name: string) => graphBuffers.output(`${prefix}-${name}`, 'uint32', 1);
   const count = scalar('count');
-  const requiredCount = scalar('required-count');
+  const requiredRingCount = scalar('required-ring-count');
   const overflow = scalar('overflow');
   const candidateOverflow = scalar('candidate-overflow');
   const boundaryCount = scalar('boundary-count');
@@ -134,12 +133,11 @@ function createOverlayOutput(
       positions: positions.view,
       featureOffsets: featureOffsets.view,
       polygonOffsets: polygonOffsets.view,
-      ringOffsets: ringOffsets.view,
-      sourceIds: sourceIds.view
+      ringOffsets: ringOffsets.view
     },
     status: {
       count: count.view,
-      requiredCount: requiredCount.view,
+      requiredRingCount: requiredRingCount.view,
       overflow: overflow.view,
       candidateOverflow: candidateOverflow.view
     },
@@ -167,7 +165,7 @@ function createOverlayOutput(
     polygonOffsets: polygonOffsets.buffer,
     ringOffsets: ringOffsets.buffer,
     count: count.buffer,
-    requiredCount: requiredCount.buffer,
+    requiredRingCount: requiredRingCount.buffer,
     overflow: overflow.buffer,
     candidateOverflow: candidateOverflow.buffer
   };
@@ -222,9 +220,9 @@ async function runRectangleOverlay(
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
-  const [count, requiredCount, overflow, candidateOverflow, area] = await Promise.all([
+  const [count, requiredRingCount, overflow, candidateOverflow, area] = await Promise.all([
     readUint32(result.count, 1).then(values => values[0]),
-    readUint32(result.requiredCount, 1).then(values => values[0]),
+    readUint32(result.requiredRingCount, 1).then(values => values[0]),
     readUint32(result.overflow, 1).then(values => values[0]),
     readUint32(result.candidateOverflow, 1).then(values => values[0]),
     readPolygonArea(result)
@@ -233,7 +231,7 @@ async function runRectangleOverlay(
   for (const buffer of graphBuffers.buffers) {
     buffer.destroy();
   }
-  return {count, requiredCount, overflow, candidateOverflow, area};
+  return {count, requiredRingCount, overflow, candidateOverflow, area};
 }
 
 it('GPUPolygonOverlay matches rectangle set-operation areas and complete status', async () => {
@@ -261,7 +259,7 @@ it('GPUPolygonOverlay reports incomplete candidate generation when arrangement c
     nodedSegments: 1
   });
   expect(result.overflow).toBe(1);
-  expect(result.requiredCount).toBeGreaterThanOrEqual(result.count);
+  expect(result.requiredRingCount).toBeGreaterThanOrEqual(result.count);
 });
 
 it('GPUPolygonOverlay dissolves overlapping features into their union surface', async () => {
@@ -527,14 +525,14 @@ it('GPUPolygonOverlay publishes the unclamped ring requirement', async () => {
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
-  const [count, requiredCount, overflow] = await Promise.all([
+  const [count, requiredRingCount, overflow] = await Promise.all([
     readUint32(result.count, 1).then(values => values[0]),
-    readUint32(result.requiredCount, 1).then(values => values[0]),
+    readUint32(result.requiredRingCount, 1).then(values => values[0]),
     readUint32(result.overflow, 1).then(values => values[0])
   ]);
   expect(overflow).toBe(1);
   expect(count).toBeLessThanOrEqual(2);
-  expect(requiredCount).toBe(3);
+  expect(requiredRingCount).toBe(3);
   compiled.destroy();
   for (const buffer of graphBuffers.buffers) {
     buffer.destroy();

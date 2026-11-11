@@ -17,16 +17,16 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateGPUNetworkTopology,
   type GPUNetworkTopology
 } from '../../analysis-core/network-topology';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 const OPERATION = 'GPUNetworkPotentialPathArea';
-const FINITE_WGSL = `fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }`;
 
 /** Words of `output.summary`: nodes in the prism, edges in the prism. */
 export const GPU_NETWORK_POTENTIAL_PATH_AREA_SUMMARY_LENGTH = 2;
@@ -105,14 +105,14 @@ export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
       ['budget', props.budget],
       ['output.edgeSlack', props.output.edgeSlack]
     ] as const) {
-      validatePackedView(view, ['float32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} ${name}`);
     }
     for (const [name, view] of [
       ['output.edgeInPrism', props.output.edgeInPrism],
       ['output.nodeInPrism', props.output.nodeInPrism],
       ['output.summary', props.output.summary]
     ] as const) {
-      if (view) validatePackedView(view, ['uint32'], `${id} ${name}`);
+      if (view) validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
     }
     validateViewLength(id, 'forwardCosts', props.forwardCosts, this.nodeCount);
     validateViewLength(id, 'reverseCosts', props.reverseCosts, this.nodeCount);
@@ -180,11 +180,11 @@ export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
           {name: 'nodeInPrism', view: output.nodeInPrism, type: 'u32', access: 'read_write'},
           getWGSLKernelBinding('summary', summary, 'atomic')
         ],
-        declarations: FINITE_WGSL,
+        declarations: IS_FINITE_VALUE_WGSL,
         body: `let limit = budget[budgetOffset];
 let fromOrigin = forward[forwardOffset + index];
 let toDestination = reverse[reverseOffset + index];
-let nodeFits = finite(limit) && finite(fromOrigin) && finite(toDestination) && fromOrigin + toDestination <= limit;
+let nodeFits = isFiniteValue(limit) && isFiniteValue(fromOrigin) && isFiniteValue(toDestination) && fromOrigin + toDestination <= limit;
 nodeInPrism[nodeInPrismOffset + index] = select(0u, 1u, nodeFits);
 if (nodeFits) { atomicAdd(&summary[summaryOffset], 1u); }`
       }),
@@ -203,7 +203,7 @@ if (nodeFits) { atomicAdd(&summary[summaryOffset], 1u); }`
           {name: 'edgeInPrism', view: output.edgeInPrism, type: 'u32', access: 'read_write'},
           {name: 'edgeSlack', view: output.edgeSlack, type: 'f32', access: 'read_write'}
         ],
-        declarations: FINITE_WGSL,
+        declarations: IS_FINITE_VALUE_WGSL,
         // One thread per node visits that node's out-edges (a bounded neighbourhood).
         body: `var infinityBits = 0xff800000u; let negativeInfinity = bitcast<f32>(infinityBits);
 let limit = budget[budgetOffset];
@@ -211,12 +211,12 @@ let fromOrigin = forward[forwardOffset + index];
 for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
   let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot];
   var slack = negativeInfinity;
-  if (neighbor < ${nodeCount}u && finite(weight) && weight >= 0.0 && finite(fromOrigin) && finite(limit)) {
+  if (neighbor < ${nodeCount}u && isFiniteValue(weight) && weight >= 0.0 && isFiniteValue(fromOrigin) && isFiniteValue(limit)) {
     let arrival = reverse[reverseOffset + neighbor];
-    if (finite(arrival)) { slack = limit - (fromOrigin + weight + arrival); }
+    if (isFiniteValue(arrival)) { slack = limit - (fromOrigin + weight + arrival); }
   }
   edgeSlack[edgeSlackOffset + slot] = slack;
-  edgeInPrism[edgeInPrismOffset + slot] = select(0u, 1u, finite(slack) && slack >= 0.0);
+  edgeInPrism[edgeInPrismOffset + slot] = select(0u, 1u, isFiniteValue(slack) && slack >= 0.0);
 }`
       }),
       createWGSLKernelNode<Parameters>(graph, {

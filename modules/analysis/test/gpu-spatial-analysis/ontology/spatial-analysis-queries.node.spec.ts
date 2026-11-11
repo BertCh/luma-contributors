@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import * as analysisCore from '../../../src/analysis-core/index';
 import * as spatialAnalysis from '../../../src/gpu-spatial-analysis/index';
 import * as terrain from '../../../src/gpu-terrain/index';
 import {
@@ -70,14 +71,21 @@ it('operator descriptors use declared data kinds and resolve their tags', () => 
       ).toBeDefined();
     }
     const exports =
-      operator.package === '@luma-contributors/analysis/gpu-terrain' ? terrain : spatialAnalysis;
+      operator.package === '@luma-contributors/analysis/gpu-terrain'
+        ? terrain
+        : operator.package === '@luma-contributors/analysis/analysis-core'
+          ? analysisCore
+          : spatialAnalysis;
     expect(exports, `${operator.exportName} package ${operator.package}`).toHaveProperty(
       operator.exportName
     );
+    // GPUParameterBuffer is part of the contributor contract, exported only from analysis-core.
     expect(operator.package).toBe(
       operator.exportName === 'GPUTerrainPeakProminence'
         ? '@luma-contributors/analysis/gpu-terrain'
-        : '@luma-contributors/analysis/gpu-spatial-analysis'
+        : operator.exportName === 'GPUParameterBuffer'
+          ? '@luma-contributors/analysis/analysis-core'
+          : '@luma-contributors/analysis/gpu-spatial-analysis'
     );
   }
 });

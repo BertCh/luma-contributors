@@ -11,14 +11,11 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
@@ -31,7 +28,11 @@ import {
   GPUSegmentRingAssembly,
   type GPUSegmentRingAssemblyOutput
 } from '../../analysis-core/ring-assembly/index';
-import {createRingOrientationNode} from './coverage-topology-kernels';
+import {
+  createCoverageSnapRangeNodes,
+  createRingOrientationNode,
+  getCoverageSnapKeyWGSL
+} from './coverage-topology-kernels';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   resolveGPUSpatialContext,
@@ -60,16 +61,25 @@ export type GPUCoverageDissolveOutput = Omit<GPUSegmentRingAssemblyOutput, 'stat
      * and vertex capacity.
      */
     boundarySegmentCount?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row count of vertices whose snap cell could not be certified: finite vertices
+     * `2^24 * snapTolerance` or farther from the first vertex on either axis (see `snapTolerance`).
+     * Their point identity comes from an inexact key, so such a vertex may be merged with a vertex
+     * of a neighbouring cell and the dissolved boundary is not reliable. Always 0 without a snap
+     * tolerance. It is not an `overflow`: no capacity changes it.
+     */
+    uncertainCount?: GraphDataView<'uint32'>;
   };
 };
 
-/** Separates the boundary-segment scalar from the ring-assembly output. */
+/** Separates the dissolve's own status scalars from the ring-assembly output. */
 function splitDissolveOutput(output: GPUCoverageDissolveOutput): {
   boundarySegmentCount: GraphDataView<'uint32'> | undefined;
+  uncertainCount: GraphDataView<'uint32'> | undefined;
   ringOutput: GPUSegmentRingAssemblyOutput;
 } {
-  const {boundarySegmentCount, ...status} = output.status;
-  return {boundarySegmentCount, ringOutput: {...output, status}};
+  const {boundarySegmentCount, uncertainCount, ...status} = output.status;
+  return {boundarySegmentCount, uncertainCount, ringOutput: {...output, status}};
 }
 
 /** Properties for {@link GPUCoverageDissolve}. */
@@ -87,8 +97,8 @@ export type GPUCoverageDissolveProps = GPUPolygonGeometryFields & {
    * Layout notes. `positions` are flattened ring vertices, planar and finite (use tile- or
    * view-local units because the output keeps f32 coordinates). Rows are features; rings close
    * implicitly. The first ring of each polygon is its shell, the others are holes. Ring winding is
-   * free: orientation is read from the signed area. `ringOffsets`, `polygonOffsets` and
-   * `featureOffsets` each carry a terminal entry.
+   * free: orientation is read from the exact turn at an extreme vertex. `ringOffsets`,
+   * `polygonOffsets` and `featureOffsets` each carry a terminal entry.
    */
   /**
    * Group label of every feature, `featureOffsets.length - 1` rows. Features with equal labels
@@ -100,6 +110,13 @@ export type GPUCoverageDissolveProps = GPUPolygonGeometryFields & {
    * Vertex snap tolerance with the meaning of `GPUCoverageSimplification.snapTolerance`: two
    * vertices that snap to the same point are one point of the coverage, and the output uses the
    * coordinates of the lowest vertex index of that point. Defaults to `0` (exact f32 equality).
+   *
+   * A vertex snaps to cell `floor((coordinate - origin) / snapTolerance + 0.5)` per axis, with the
+   * first vertex of `positions` as `origin`, so the limit is on the extent of the data and not on
+   * its distance from zero: every vertex must be within `2^24 * snapTolerance` of the first vertex
+   * on both axes (float32 cannot tell cells apart beyond that). Vertices outside that range are
+   * counted in the optional `output.status.uncertainCount`; when it is not zero, use a larger
+   * tolerance or split the data.
    */
   snapTolerance?: number;
   /**
@@ -119,13 +136,15 @@ export type GPUCoverageDissolveProps = GPUPolygonGeometryFields & {
  * Shapely `coverage_union_all` per label.
  *
  * **Definition.**
- * - Vertices are snapped as in `GPUCoverageSimplification` and get dense point IDs; every ring edge
+ * - Vertices are snapped as in `GPUCoverageSimplification` (relative to the first vertex, see
+ *   `snapTolerance`) and get dense point IDs; every ring edge
  *   gets the key `(min, max)` of its endpoint IDs. An edge is *internal* when another polygon with
  *   the same label holds an edge with the same key, and a *boundary edge* otherwise, which includes
  *   outer boundary and edges shared with a polygon of another label.
  * - Boundary edges are oriented with the interior on the left (a ring's orientation is read from
- *   its signed area, shells counter-clockwise and holes clockwise) and written, with the label as
- *   group, as the directed segments of `GPUSegmentRingAssembly`. Rings never mix labels.
+ *   the exact turn at its lexicographically smallest vertex, shells counter-clockwise and holes
+ *   clockwise) and written, with the label as group, as the directed segments of
+ *   `GPUSegmentRingAssembly`. Rings never mix labels.
  *   Assembly gives holes and shells (`ringIsHole`, `ringShells`, `polygons`).
  * - Vertices are kept at every node, as GEOS does: a boundary chain that two input polygons used
  *   to share keeps its collinear vertices.
@@ -158,7 +177,7 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1 || props.positions.length >= 2 ** 30) {
       throw new Error(`${id} positions must hold between 1 and 2^30 - 1 vertices`);
     }
@@ -187,14 +206,19 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
     if (props.vertexTolerance !== undefined && !(props.vertexTolerance > 0)) {
       throw new Error(`${id} vertexTolerance must be positive`);
     }
-    const {boundarySegmentCount, ringOutput} = splitDissolveOutput(props.output);
-    if (boundarySegmentCount) {
-      validatePackedUint32View(boundarySegmentCount, `${id} output.status.boundarySegmentCount`);
-      if (boundarySegmentCount.length < 1) {
-        throw new Error(`${id} output.status.boundarySegmentCount must hold one uint32`);
+    const {boundarySegmentCount, uncertainCount, ringOutput} = splitDissolveOutput(props.output);
+    for (const [name, scalar] of [
+      ['boundarySegmentCount', boundarySegmentCount],
+      ['uncertainCount', uncertainCount]
+    ] as const) {
+      if (scalar) {
+        validatePackedUint32View(scalar, `${id} output.status.${name}`);
+        if (scalar.length < 1) {
+          throw new Error(`${id} output.status.${name} must hold one uint32`);
+        }
       }
     }
-    validatePackedView(ringOutput.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(ringOutput.positions, ['float32x2'], `${id} output.positions`);
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -214,7 +238,8 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
         ringOutput.status.requiredCount,
         ringOutput.status.openSegmentCount,
         ringOutput.status.touchingSegmentCount,
-        boundarySegmentCount
+        boundarySegmentCount,
+        uncertainCount
       ],
       [props.positions, props.ringOffsets, props.polygonOffsets, props.featureOffsets, props.labels]
     );
@@ -226,14 +251,15 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {positions, ringOffsets, polygonOffsets, featureOffsets, labels: featureLabels} = props;
-    const {boundarySegmentCount, ringOutput} = splitDissolveOutput(props.output);
+    const {boundarySegmentCount, uncertainCount, ringOutput} = splitDissolveOutput(props.output);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       ringOffsets,
       polygonOffsets,
       featureOffsets,
       featureLabels,
-      boundarySegmentCount
+      boundarySegmentCount,
+      uncertainCount
     ]);
     const vertexCount = positions.length;
     const ringCount = ringOffsets.length - 1;
@@ -301,17 +327,9 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
         invocationCount: vertexCount,
         declarations: `const RING_COUNT: u32 = ${ringCount}u;
 const POLYGON_COUNT: u32 = ${polygonCount}u;
-const SNAP_TOLERANCE: f32 = ${getWGSLFloatLiteral(snapTolerance)};
 
 ${IS_FINITE_FLOAT_WGSL}
-
-fn quantise(value: f32) -> u32 {
-  if (SNAP_TOLERANCE <= 0.0) {
-    return bitcast<u32>(select(value, 0.0, value == 0.0));
-  }
-  let snapped = clamp(floor(value / SNAP_TOLERANCE + 0.5), -2147483520.0, 2147483520.0);
-  return bitcast<u32>(i32(snapped)) ^ 0x80000000u;
-}`,
+${getCoverageSnapKeyWGSL(snapTolerance)}`,
         body: `var ring = 0u;
   var high = RING_COUNT;
   while (ring + 1u < high) {
@@ -340,8 +358,9 @@ fn quantise(value: f32) -> u32 {
     ring >= polygonOffsets[polygonOffsetsOffset] && ring < polygonOffsets[polygonOffsetsOffset + POLYGON_COUNT] &&
     ring < polygonOffsets[polygonOffsetsOffset + polygon + 1u];
   let valid = inRing && isFiniteFloat(x) && isFiniteFloat(y);
-  vertexHigh[vertexHighOffset + index] = select(${INVALID}, quantise(x), valid);
-  vertexLow[vertexLowOffset + index] = select(${INVALID}, quantise(y), valid);
+  let snapOrigin = getSnapOrigin();
+  vertexHigh[vertexHighOffset + index] = select(${INVALID}, quantise(x, snapOrigin.x), valid);
+  vertexLow[vertexLowOffset + index] = select(${INVALID}, quantise(y, snapOrigin.y), valid);
   vertexPolygon[vertexPolygonOffset + index] = select(${INVALID}, polygon, valid);
   let next = select(index + 1u, ringBegin, index + 1u == ringEnd);
   vertexNext[vertexNextOffset + index] = next | select(0u, ${FLIP_BIT}, ringFlip[ringFlipOffset + ring] != 0u);`
@@ -567,6 +586,20 @@ fn quantise(value: f32) -> u32 {
         output: ringOutput
       }).getCommandNodes(graph)
     );
+    // A snap key that left its exact range may have merged distinct vertices. That is a vertex
+    // identity that could not be certified, not a dropped row: it has its own count.
+    if (uncertainCount) {
+      nodes.push(
+        ...createCoverageSnapRangeNodes<Parameters>(graph, {
+          id: `${id}-snap-range`,
+          operation: OPERATION,
+          positions,
+          ringOffsets,
+          snapTolerance,
+          uncertainCount
+        })
+      );
+    }
     return nodes;
   }
 }

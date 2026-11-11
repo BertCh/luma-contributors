@@ -1,6 +1,6 @@
 # Spatial fold designs and nested interpolation validation
 
-`GPUSpatialCrossValidation` retains its existing seeded block-hash assignment when `design` is omitted. The optional design consumes resident covariates and prediction locations; outcomes are never an input to fold construction. All coordinates and exclusion distances use native planar units; an optional `spatialContext` accepts only the default planar context. Reference tier: fold designs are one serial invocation (256 rows; 64 for NNDM) and buffered masks cost O(folds * rows^2) at up to 65,536 rows and 64 folds. Fold-major training/testing masks remain the estimator boundary.
+`GPUSpatialCrossValidation` deals blocks to folds in a seeded random order (rank of a per-block Philox draw, modulo the fold count) when `design` is omitted. The optional design consumes resident covariates and prediction locations; outcomes are never an input to fold construction. All coordinates and exclusion distances use native planar units; an optional `spatialContext` accepts only the default planar context. Reference tier: fold designs are one serial invocation (256 rows; 64 for NNDM) and buffered masks cost O(folds * rows^2) at up to 65,536 rows and 64 folds. Fold-major training/testing masks remain the estimator boundary.
 
 | Design | Executed contract | Bounds and distinctions |
 | --- | --- | --- |

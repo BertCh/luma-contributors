@@ -19,7 +19,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateRasterBuffersDistinct,
@@ -28,8 +28,10 @@ import {
 import {
   createTerrainFlowPointerNodes,
   getTerrainFlowTracingWGSL,
+  validateTerrainFlowDirectionEncoding,
   validateTerrainTracingCellView,
-  validateTerrainTracingStatus
+  validateTerrainTracingStatus,
+  type GPUTerrainFlowDirectionEncoding
 } from './terrain-flow-tracing';
 
 const OPERATION = 'GPUTerrainWatersheds';
@@ -49,6 +51,8 @@ export const GPU_TERRAIN_WATERSHED_UNRESOLVED = 0xfffffffe;
 export type GPUTerrainWatershedsStatus = {
   /** One row set to 1 when pointer jumping reached its fixpoint. Presence is compile-time. */
   converged?: GraphDataView<'uint32'>;
+  /** One row set to 1 when `maximumIterations` ran out before pointer jumping converged. Presence is compile-time. */
+  iterationLimitReached?: GraphDataView<'uint32'>;
   /** One row: gated pointer-jumping rounds executed. Presence is compile-time. */
   iterationCount?: GraphDataView<'uint32'>;
 };
@@ -88,9 +92,16 @@ export type GPUTerrainWatershedsProps = {
    * north-west, 64 north, 128 north-east; 0 terminal; `0xffffffff` invalid;
    * `GPU_TERRAIN_FLOW_UNRESOLVED` (0xfffffffe) unknown, which makes the labels that depend on it
    * `GPU_TERRAIN_WATERSHED_UNRESOLVED`. Any other code, and any code pointing outside the grid, is
-   * treated as terminal. Typically `GPUTerrainFlow.flowDirections`. Per-frame.
+   * treated as terminal. Typically `GPUTerrainFlow.flowDirections`. A grid in another numbering
+   * needs `directionEncoding`. Per-frame.
    */
   flowDirections: GraphDataView<'uint32'>;
+  /**
+   * Numbering of `flowDirections`: `'esri'` (default), `'whitebox'` (the WhiteboxTools default
+   * pointer) or `'taudem'`, see {@link GPUTerrainFlowDirectionEncoding}. Zero and the two
+   * sentinels mean the same in each. Compile-time.
+   */
+  directionEncoding?: GPUTerrainFlowDirectionEncoding;
   /**
    * Optional pour points as cell indices (`row * width + column`). Indices outside the grid and
    * indices of invalid cells are ignored. When several points share a cell the lowest point index
@@ -123,8 +134,14 @@ export type GPUTerrainWatershedsProps = {
  * directions, leave `output.status.converged` at 0 and the labels of the affected cells at
  * `GPU_TERRAIN_WATERSHED_UNRESOLVED`.
  *
- * Compose it with {@link GPUTerrainFlow} through `flowDirections`; grids imported from TauDEM or
- * Whitebox work as well. Results are tile-local: watersheds do not continue across tile edges.
+ * Compose it with {@link GPUTerrainFlow} through `flowDirections`. The default numbering is ESRI
+ * (also WhiteboxTools with `--esri_pntr`); a default WhiteboxTools pointer grid needs
+ * `directionEncoding: 'whitebox'` and a TauDEM D8 grid `'taudem'`. Without the right encoding a
+ * Whitebox grid is read 45 degrees off with no error, because its codes are all valid ESRI codes.
+ * In every numbering the codes are raster offsets ("south" is `row + 1`), not compass bearings:
+ * the row sign of the grid affine is not read, so a tool's grid held with its rows flipped to
+ * advance north must have its rows flipped back first, see {@link GPUTerrainFlowDirectionEncoding}.
+ * Results are tile-local: watersheds do not continue across tile edges.
  */
 export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -139,13 +156,19 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
     const {output} = props;
     const cellCount = validateRasterGrid(id, props.grid);
     validateRasterIterations(id, 'maximumIterations', props.maximumIterations ?? 32);
+    validateTerrainFlowDirectionEncoding(id, props.directionEncoding);
     validateTerrainTracingCellView(id, 'flowDirections', props.flowDirections, 'uint32', cellCount);
     validateTerrainTracingCellView(id, 'output.labels', output.labels, 'uint32', cellCount);
     if (props.pourPoints) {
-      validatePackedView(props.pourPoints, ['uint32'], `${id} pourPoints`);
+      validateSinglePackedView(props.pourPoints, ['uint32'], `${id} pourPoints`);
     }
     validateTerrainTracingStatus(id, output.status);
-    const outputs = [output.labels, output.status?.converged, output.status?.iterationCount];
+    const outputs = [
+      output.labels,
+      output.status?.converged,
+      output.status?.iterationLimitReached,
+      output.status?.iterationCount
+    ];
     validateGraphOutputsDisjointFromInputs(id, outputs, [props.flowDirections, props.pourPoints]);
     validateRasterBuffersDistinct(id, outputs, []);
   }
@@ -162,6 +185,7 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
       props.pourPoints,
       output.labels,
       output.status?.converged,
+      output.status?.iterationLimitReached,
       output.status?.iterationCount
     ]);
     const cellCount = width * height;
@@ -219,9 +243,11 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
         height,
         maxIterations: props.maximumIterations ?? 32,
         flowDirections: props.flowDirections,
+        directionEncoding: props.directionEncoding,
         pointer,
         stops: markers ? {kind: 'markers', markers} : {kind: 'none'},
         converged: output.status?.converged,
+        iterationLimitReached: output.status?.iterationLimitReached,
         iterationCount: output.status?.iterationCount
       })
     );

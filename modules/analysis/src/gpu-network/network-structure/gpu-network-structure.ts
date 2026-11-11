@@ -16,7 +16,7 @@ import {
 } from '../../analysis-core/network-topology';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs,
   validateCapacity,
@@ -102,7 +102,7 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
     validateRequirement(this.id, Object.values(output).some(Boolean), 'requires an output');
     for (const [name, view] of Object.entries(output)) {
       if (!view) continue;
-      validatePackedView(view, ['uint32'], `${this.id} ${name}`);
+      validateSinglePackedView(view, ['uint32'], `${this.id} ${name}`);
       const length =
         name === 'strongComponents' || name === 'articulationPoints'
           ? this.nodeCount
@@ -121,7 +121,7 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
         props.reverseEdgeSlots !== undefined,
         'reverseEdgeSlots is required for bridges, articulationPoints and biconnectedComponents'
       );
-      validatePackedView(props.reverseEdgeSlots, ['uint32'], `${this.id} reverseEdgeSlots`);
+      validateSinglePackedView(props.reverseEdgeSlots, ['uint32'], `${this.id} reverseEdgeSlots`);
       validateRequirement(
         this.id,
         props.reverseEdgeSlots.length === this.edgeCount,

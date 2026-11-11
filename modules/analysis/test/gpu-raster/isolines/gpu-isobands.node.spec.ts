@@ -94,8 +94,8 @@ describe('GPUIsobands oracle', () => {
         }
         const [v0, v1, v2, v3] = corners;
         if (v0 >= 1 === v2 >= 1 && v1 >= 1 === v3 >= 1 && v0 >= 1 !== v1 >= 1) {
-          const centre = (v0 + v1 + (v2 + v3)) * 0.25;
-          saddleCentres.add(`${centre >= 1}`);
+          const saddleValue = (v0 * v2 - v1 * v3) / (v0 + v2 - v1 - v3);
+          saddleCentres.add(`${saddleValue >= 1}`);
         }
       }
     }
@@ -334,7 +334,7 @@ describe('GPUIsobands validation and wiring', () => {
       id: 'bands',
       grid: makeGPURasterMetadata({width: 4, height: 3}),
       values: view('float32', 12),
-      validity: view('uint32', 12),
+      mask: view('uint32', 12),
       breaks: view('float32', 3),
       parameters: view('float32', 12),
       output: {

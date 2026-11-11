@@ -316,7 +316,7 @@ ${getTerrainSolarVisibilityWGSL(this.horizonFormat, 'horizon', directionCount)}`
   let horizonAngle = getHorizonAtAzimuth(index, azimuthDegrees);
   let visibility = getSolarDiskVisibility(altitudeDegrees, radiusDegrees, horizonAngle);
   var isValid = isFiniteValue(horizonAngle);
-  let invalidValue = getNaN(index);
+  let invalidValue = getQuietNaN(index);
   ${visibilityTarget ? 'visibilityValues[visibilityValuesOffset + index] = select(invalidValue, visibility, isValid);' : ''}
   ${
     illuminationTarget

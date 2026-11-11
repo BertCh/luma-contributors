@@ -21,8 +21,8 @@ const result = addDasymetricRedistributionRecipe(graph, {
 });
 ```
 
-`source: {kind: 'polygons', zones, tupleCapacity}` also constructs fractional coverage from
-packed planar polygons. `sourceTotals.length` is the source-feature count. Feature rows and
+`source: {kind: 'polygons', zones, tupleCapacity, parameters}` also constructs fractional coverage from
+packed planar polygons; `parameters` is the `getGPURasterFractionalCoverageParameterValues(grid)` view. `sourceTotals.length` is the source-feature count. Feature rows and
 target IDs remain stable, including empty sources and targets. Prepared coverage uses the
 `GPURasterFractionalCoverage` output layout and retains its original status views.
 

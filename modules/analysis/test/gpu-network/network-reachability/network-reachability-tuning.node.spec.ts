@@ -23,6 +23,16 @@ it('recommends rounds from hop eccentricity and local iterations', () => {
   ).toBe(36);
 });
 
+it('gives the one round budget that reachability, service areas and isochrones document (network-paths-09)', () => {
+  // Review network-paths-09: the service-area and isochrone documentation gave
+  // ceil(h / L) + 1 = 15 and ceil(h / L) = 14 rounds for h = 224 hops and L = 16, which leaves
+  // `converged` at 0. All three now state ceil(h / (0.7 L)) + 4: ceil(224 / 11.2) + 4 = 24.
+  expect(
+    recommendReachabilityIterations({nodeCount: 50176, hopEccentricity: 224, localIterations: 16})
+      .maximumIterations
+  ).toBe(24);
+});
+
 it('recommends fewer rounds for longer chains and clamps to [1, 1024]', () => {
   const short = recommendReachabilityIterations({nodeCount: 490000, localIterations: 16});
   const long = recommendReachabilityIterations({nodeCount: 490000, localIterations: 64});

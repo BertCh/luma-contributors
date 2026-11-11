@@ -15,7 +15,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_FLOAT_WGSL} from '../analysis-core/kernels/wgsl-common';
@@ -35,6 +35,12 @@ const MAXIMUM_EDGE_COUNT = 65536;
 const MAXIMUM_RADIUS_COUNT = 256;
 /** Threads of the workgroup that reduces the pairs of one radius. A power of two for the tree. */
 const FINISH_WORKGROUP_SIZE = 256;
+/**
+ * Ang shell count: level-set locations closer than this fraction of the pair distance are one
+ * location. About 100 f32 rounding steps of the pair distance, which covers a distance table
+ * accumulated over long paths; real gaps of whole edge-length units stay far above it.
+ */
+const ANG_SHELL_RELATIVE_TOLERANCE = '1.0e-5';
 const CORRECTIONS = ['none', 'ang'];
 const NORMALIZATIONS = ['network-length', 'inverse-intensity', 'inverse-intensity-squared'];
 
@@ -80,6 +86,16 @@ export type GPUNetworkInhomogeneousKProps = {
  * Ang correction e(i,j)=1/m(i,dij) counts network locations at exactly that shortest-path distance.
  * Vertices count once and each unique undirected edge contributes its interior level-set crossings.
  * This handles junctions, cycles and disconnected support in the supplied f32 shortest-path metric.
+ * The count uses a tolerance: locations within 1e-5 of the pair distance of
+ * each other along the network are one location, so a crossing that close to an edge end is that
+ * node and a node that close to the pair distance is on the shell. The distance table holds
+ * rounded sums, and without the tolerance the edge into the destination is counted as a second
+ * crossing whenever its sum rounded down. Counts are exact while real gaps exceed the tolerance.
+ * The tolerance is relative to the pair distance, not to the edge lengths. Where an edge is
+ * shorter than about two tolerances, both of its ends can be on the shell with one crossing
+ * between them: nodes on the shell that are joined by such a shortest-path edge are counted
+ * once, as the earliest of them (smallest distance, then smallest node ID). A junction just
+ * inside the tolerance with several edges leaving it is likewise one location.
  *
  * Events are network nodes, including nodes inserted by upstream noding/snapping preparation.
  * No Euclidean distance substitute or CPU numerical fallback is used. O(events²*(nodes+edges))
@@ -131,7 +147,7 @@ export class GPUNetworkInhomogeneousK implements GPUCommandNodeProducer {
     validatePointProcessView(props.intensity, 'float32', eventCount);
     validatePointProcessView(props.nodeDistances, 'float32', eventCount * props.nodeCount);
     validatePointProcessView(props.edgeLengths, 'float32', props.edgeLengths.length);
-    validatePackedView(props.edgeNodes, ['uint32x2'], 'network-inhomogeneous-k edgeNodes');
+    validateSinglePackedView(props.edgeNodes, ['uint32x2'], 'network-inhomogeneous-k edgeNodes');
     validateRequirement(
       id,
       props.edgeNodes.length === props.edgeLengths.length,
@@ -166,6 +182,27 @@ fn validDistance(value: f32) -> bool {
 }
 fn nodeDistance(event: u32, node: u32) -> f32 {
   return distances[distancesOffset + event * ${props.nodeCount}u + node];
+}
+const NO_MERGED_NODE: u32 = 0xffffffffu;
+// Two nodes that are both within the tolerance of the shell and joined by an edge that is tight
+// within the tolerance (a shortest-path edge, so at most about two tolerances long) hold one
+// level-set location between them, not two. The later of the two (larger distance, then larger
+// node ID) is merged into the earlier; this returns the merged node of an edge, or NO_MERGED_NODE.
+// The earliest node of such a run is never merged, so every run keeps exactly its entries.
+fn getShellMergedNode(event: u32, edge: u32, pairDistance: f32, shellTolerance: f32) -> u32 {
+  let first = edges[edgesOffset + 2u * edge];
+  let second = edges[edgesOffset + 2u * edge + 1u];
+  if (first >= ${props.nodeCount}u || second >= ${props.nodeCount}u || first == second) { return NO_MERGED_NODE; }
+  let firstDistance = nodeDistance(event, first);
+  let secondDistance = nodeDistance(event, second);
+  if (!isFiniteFloat(firstDistance) || !isFiniteFloat(secondDistance)) { return NO_MERGED_NODE; }
+  if (abs(firstDistance - pairDistance) > shellTolerance || abs(secondDistance - pairDistance) > shellTolerance) { return NO_MERGED_NODE; }
+  let length = lengths[lengthsOffset + edge];
+  let isTight = abs(firstDistance + length - secondDistance) <= shellTolerance ||
+    abs(secondDistance + length - firstDistance) <= shellTolerance;
+  if (!isTight) { return NO_MERGED_NODE; }
+  let firstIsEarlier = firstDistance < secondDistance || (firstDistance == secondDistance && first < second);
+  return select(first, second, firstIsEarlier);
 }`;
     return [
       createWGSLKernelNode(graph, {
@@ -241,25 +278,58 @@ fn nodeDistance(event: u32, node: u32) -> f32 {
         correction === 'ang'
           ? `
       shellCount = 0u;
+      // Two level-set locations closer than this along the network are one location. The table
+      // entries are rounded sums, so a root that is really an edge end lands a rounding step
+      // inside the edge about half the time; an exact comparison would count it twice.
+      let shellTolerance = pairDistance * ${ANG_SHELL_RELATIVE_TOLERANCE};
       for (var node = 0u; node < ${props.nodeCount}u; node++) {
         let value = nodeDistance(source, node);
         if (!validDistance(value)) { flags |= 4u; }
-        if (value == pairDistance) { shellCount++; }
+        if (node == destinationNode || (isFiniteFloat(value) && abs(value - pairDistance) <= shellTolerance)) { shellCount++; }
       }
       for (var edge = 0u; edge < ${props.edgeLengths.length}u; edge++) {
         let first = edges[edgesOffset + 2u * edge];
         let second = edges[edgesOffset + 2u * edge + 1u];
         if (first >= ${props.nodeCount}u || second >= ${props.nodeCount}u) { continue; }
+        // Both ends on the shell and the edge tight: the node loop counted two nodes for one
+        // location. Take the later one off again, once per node however many edges merge it.
+        // Such an edge has no interior root: both candidate roots are within the tolerance of
+        // an end.
+        let mergedNode = getShellMergedNode(source, edge, pairDistance, shellTolerance);
+        if (mergedNode != NO_MERGED_NODE) {
+          var isFirstMerge = true;
+          for (var earlier = 0u; earlier < edge; earlier++) {
+            if (getShellMergedNode(source, earlier, pairDistance, shellTolerance) == mergedNode) {
+              isFirstMerge = false;
+              break;
+            }
+          }
+          if (isFirstMerge) { shellCount--; }
+          continue;
+        }
         let length = lengths[lengthsOffset + edge];
         let firstDistance = nodeDistance(source, first);
         let secondDistance = nodeDistance(source, second);
-        // Interior roots of min(firstDistance+s, secondDistance+length-s)=pairDistance.
+        // Roots of min(firstDistance+s, secondDistance+length-s)=pairDistance, both measured from
+        // the first end. A root within the tolerance of an edge end is that node, counted above.
         let fromFirst = pairDistance - firstDistance;
         let fromSecond = length - (pairDistance - secondDistance);
-        let firstRoot = isFiniteFloat(firstDistance) && fromFirst > 0.0 && fromFirst < length && pairDistance <= secondDistance + (length - fromFirst);
-        let secondRoot = isFiniteFloat(secondDistance) && fromSecond > 0.0 && fromSecond < length && pairDistance <= firstDistance + fromSecond;
-        if (firstRoot) { shellCount++; }
-        if (secondRoot && (!firstRoot || fromSecond != fromFirst)) { shellCount++; }
+        let interiorEnd = length - shellTolerance;
+        let firstInterior = isFiniteFloat(firstDistance) && fromFirst > shellTolerance && fromFirst < interiorEnd;
+        let secondInterior = isFiniteFloat(secondDistance) && fromSecond > shellTolerance && fromSecond < interiorEnd;
+        if (!isFiniteFloat(firstDistance) || !isFiniteFloat(secondDistance)) {
+          // Only one end is reachable in the supplied table: its branch is the whole profile.
+          if (firstInterior || secondInterior) { shellCount++; }
+          continue;
+        }
+        // fromSecond - fromFirst is twice the height of the edge profile's peak above pairDistance:
+        // positive means two separate roots, about zero one root at the peak, negative none.
+        let rootSeparation = fromSecond - fromFirst;
+        if (rootSeparation > shellTolerance) {
+          shellCount += u32(firstInterior) + u32(secondInterior);
+        } else if (rootSeparation >= -shellTolerance && (firstInterior || secondInterior)) {
+          shellCount++;
+        }
       }
       if (shellCount == 0u) { flags |= 8u; }`
           : ''

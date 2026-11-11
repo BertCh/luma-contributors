@@ -1022,3 +1022,32 @@ it('GPUEmergingHotSpots reports undetermined categories for series below the Man
     unguarded.destroy();
   }
 }, 120000);
+
+// spatial-statistics-07: the space-time Gi* centers on the stored first-pass deviations minus
+// their mean, like the other spatial statistics. It used to subtract a single f32 tree-sum mean
+// with no second pass: for whole numbers near 1e7 (f32 grid 1) that mean is off by up to several
+// units, and the error enters every z as (mean error) * k / (S sqrt(...)).
+it('GPUEmergingHotSpots Gi* matches binary64 for whole-number values near 1e7', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const base = createSpaceTimeCube(7);
+  const values = Float32Array.from(base.values, value =>
+    Number.isFinite(value) ? 1e7 + Math.round(value * 3) : NaN
+  );
+  const cube = {...base, values};
+  const harness = createHarness(device, cube, {maximumRadius: 4});
+  try {
+    const frame = {radius: 2, temporalWindow: 3};
+    const result = await harness.run(frame);
+    const moments = computeEmergingHotSpotMoments(cube);
+    expect(result.globalStatistics[0]).toBe(moments.count);
+    expect(Math.abs(result.globalStatistics[1] - moments.mean)).toBeLessThanOrEqual(1);
+    expectZScoresClose(
+      result.giZScores,
+      computeSpaceTimeGiStar(cube, getGPUEmergingHotSpotsParameterValues(frame), 4),
+      'offset 1e7'
+    );
+  } finally {
+    harness.destroy();
+  }
+}, 120000);

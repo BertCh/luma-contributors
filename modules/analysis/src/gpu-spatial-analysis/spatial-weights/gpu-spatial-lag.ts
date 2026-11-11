@@ -15,7 +15,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createFloat32ValuesNodes,
@@ -95,7 +95,7 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
     this.props = props;
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
     const valueCount = validateFloat32OrUint32Values(props.values, `${id} values`);
-    validatePackedView(props.output, ['float32'], `${id} output`);
+    validateSinglePackedView(props.output, ['float32'], `${id} output`);
     const columnCount = props.columnCount ?? 1;
     validateCapacity(id, 'columnCount', columnCount);
     if (valueCount % columnCount !== 0 || valueCount === 0) {
@@ -109,7 +109,7 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
       if (props.rowStart === undefined ? maskRows !== rows : maskRows < rows) {
         throw new Error(`${id} mask requires square weights`);
       }
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== maskRows) {
         throw new Error(`${id} mask length must equal the weights row count`);
       }

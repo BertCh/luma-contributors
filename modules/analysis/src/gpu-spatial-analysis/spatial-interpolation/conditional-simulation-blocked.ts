@@ -433,7 +433,8 @@ if (component == 0u) { statuses[statusesOffset + replicate] = status; }
 normals[normalsOffset + index] = 0.0;
 if (status != 0u) { return; }
 let random = philox4x32(vec4<u32>(replicate + ${replicateOffset}, component, 0u, 0u), vec2<u32>(${seed}, ${PHILOX_PURPOSES.conditionalGaussianSimulation.id}u));
-normals[normalsOffset + index] = sqrt(-2.0 * log((f32(random.x >> 8u) + 0.5) / 16777216.0)) * cos(6.28318530718 * (f32(random.y >> 8u) + 0.5) / 16777216.0);`
+// Box-Muller with an open radius uniform, as in the cooperative path (same words, same draws).
+normals[normalsOffset + index] = sqrt(-2.0 * log(philoxOpenUnitFloat(random.x))) * cos(6.28318530718 * (f32(random.y >> 8u) + 0.5) / 16777216.0);`
     }),
     createWGSLKernelNode(graph, {
       id: `${id}-blocked-realizations`,

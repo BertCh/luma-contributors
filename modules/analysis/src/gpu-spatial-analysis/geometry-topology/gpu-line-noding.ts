@@ -20,7 +20,7 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -102,7 +102,7 @@ export function validateLineNodingBounds(
 
 /**
  * Nodes arbitrary finite planar linework and emits one atomic row for every segment between
- * consecutive noded vertices. Crossings, touches and both ends of collinear overlaps reuse the
+ * consecutive distinct noded vertices (a repeated vertex yields no zero-length row). Crossings, touches and both ends of collinear overlaps reuse the
  * exact-or-uncertain predicates of `GPUSegmentIntersection` through `GPULineSplit`.
  *
  * `requiredCount` is exact when `candidateOverflow` is zero. A candidate overflow (the
@@ -127,7 +127,7 @@ export class GPULineNoding implements GPUCommandNodeProducer {
     if (lines.kind !== 'lines') {
       throw new Error(`${id} lines must be linestring geometry`);
     }
-    validatePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
+    validateSinglePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
     validatePackedUint32View(lines.lineOffsets, `${id} lines.lineOffsets`);
     if (lines.lineOffsets.length < 2 || lines.positions.length < 1) {
       throw new Error(`${id} lines require at least one line and one vertex`);
@@ -138,7 +138,7 @@ export class GPULineNoding implements GPUCommandNodeProducer {
       validatePowerOfTwo(id, 'leafCapacity', props.leafCapacity);
     }
     const capacity = output.endpoints.length;
-    validatePackedView(output.endpoints, ['float32x4'], `${id} output.endpoints`);
+    validateSinglePackedView(output.endpoints, ['float32x4'], `${id} output.endpoints`);
     for (const [name, view] of [
       ['sourceFeatureIds', output.sourceFeatureIds],
       ['sourceRingIds', output.sourceRingIds],
@@ -153,7 +153,7 @@ export class GPULineNoding implements GPUCommandNodeProducer {
       ['sourceStartParameters', output.sourceStartParameters],
       ['sourceEndParameters', output.sourceEndParameters]
     ] as const) {
-      validatePackedView(view, ['float32'], `${id} output.${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
       if (view.length !== capacity) {
         throw new Error(`${id} output.${name} length must equal output.endpoints length`);
       }
@@ -266,14 +266,21 @@ fn pieceOfVertex(vertex: u32) -> u32 {
         variant: 'segment-flags',
         bindings: [
           ...commonBindings,
+          {name: 'piecePositions', view: piecePositions, type: 'f32', access: 'read'},
           {name: 'flags', view: segmentFlags, type: 'u32', access: 'read_write'}
         ],
         invocationCount: pieceVertexCapacity,
         declarations: pieceLookupWGSL,
+        // A repeated vertex is not a segment: a zero-length row would be a self-loop in the
+        // arrangement, which strands the rings through its vertex in polygonization.
         body: `var valid = false;
   if (index < pieceVertexCount[pieceVertexCountOffset] && pieceCount[pieceCountOffset] > 0u) {
     let piece = pieceOfVertex(index);
     valid = index + 1u < pieceOffsets[pieceOffsetsOffset + piece + 1u];
+    if (valid) {
+      let base = piecePositionsOffset + index * 2u;
+      valid = piecePositions[base] != piecePositions[base + 2u] || piecePositions[base + 1u] != piecePositions[base + 3u];
+    }
   }
   flags[flagsOffset + index] = select(0u, 1u, valid);`
       }),

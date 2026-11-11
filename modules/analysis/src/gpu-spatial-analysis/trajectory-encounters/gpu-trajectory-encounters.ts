@@ -33,7 +33,7 @@ import {
   validateCapacity,
   validateExtent,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
@@ -126,7 +126,7 @@ export type GPUTrajectoryEncountersProps = {
    * Optional per-track flags, `trackCount` rows. Zero ignores the track in every bucket, for
    * example empty tracks that `GPUTrajectoryResample` writes as zeros.
    */
-  trackValid?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /**
    * Per-frame distance in the context's length unit, one float32 row. A pair is an encounter in
    * a bucket when the distance of its two samples is at most this value. It is clamped to
@@ -184,7 +184,7 @@ export type GPUTrajectoryEncountersProps = {
  * common clock are required (column `k` means the same instant for every track). Use
  * {@link addClockEncounters} (`GPUTrajectoryResample` with `spacing: 'clock'`) to build that table
  * for tracks with different time windows, or supply your own table and mark absent samples with
- * NaN or `trackValid`.
+ * NaN or `mask`.
  *
  * Spatial context: with a great-circle context the test is the great-circle distance in the
  * context's length unit
@@ -223,8 +223,9 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
   /** Great-circle lattice parameters, or `undefined` for a planar context. */
   private readonly geodesic?: {radius: number; maximumDistance: number; wrapColumns: boolean};
 
-  constructor(props: GPUTrajectoryEncountersProps) {
-    this.id = props.id ?? 'trajectory-encounters';
+  constructor(input: GPUTrajectoryEncountersProps) {
+    this.id = input.id ?? 'trajectory-encounters';
+    const props = input;
     this.props = props;
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(
@@ -240,17 +241,17 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     if (sampleCount >= 0x7fffffff) {
       throw new Error(`${id} trackCount * bucketCount must be below 2^31`);
     }
-    validatePackedView(props.samples, ['float32x2'], `${id} samples`);
+    validateSinglePackedView(props.samples, ['float32x2'], `${id} samples`);
     if (props.samples.length !== sampleCount) {
       throw new Error(`${id} samples length must equal trackCount * bucketCount`);
     }
-    if (props.trackValid) {
-      validatePackedView(props.trackValid, ['uint32'], `${id} trackValid`);
-      if (props.trackValid.length !== props.trackCount) {
-        throw new Error(`${id} trackValid length must equal trackCount`);
+    if (props.mask) {
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
+      if (props.mask.length !== props.trackCount) {
+        throw new Error(`${id} mask length must equal trackCount`);
       }
     }
-    validatePackedView(props.distance, ['float32'], `${id} distance`);
+    validateSinglePackedView(props.distance, ['float32'], `${id} distance`);
     if (props.distance.length < 1) {
       throw new Error(`${id} distance must contain one float32 row`);
     }
@@ -296,7 +297,11 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     this.rows = Math.max(1, Math.floor((Math.fround(maxY) - Math.fround(minY)) / props.cellSize));
     const {pairs, status} = props.output;
     validateCompactOutput(id, pairs);
-    validatePackedView(status.candidateOverflow, ['uint32'], `${id} status.candidateOverflow`);
+    validateSinglePackedView(
+      status.candidateOverflow,
+      ['uint32'],
+      `${id} status.candidateOverflow`
+    );
     if (status.candidateOverflow.length < 1) {
       throw new Error(`${id} status.candidateOverflow must hold one row`);
     }
@@ -309,7 +314,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       ['firstTimes', pairs.firstTimes, 'float32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} pairs.${name}`);
+        validateSinglePackedView(view, [format], `${id} pairs.${name}`);
         if (view.length !== capacity) {
           throw new Error(`${id} pairs.${name} length must equal the capacity`);
         }
@@ -319,7 +324,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       throw new Error(`${id} pairs.firstTimes requires bucketTimes and pairs.firstBuckets`);
     }
     if (props.bucketTimes) {
-      validatePackedView(props.bucketTimes, ['float32'], `${id} bucketTimes`);
+      validateSinglePackedView(props.bucketTimes, ['float32'], `${id} bucketTimes`);
       if (props.bucketTimes.length !== props.bucketCount) {
         throw new Error(`${id} bucketTimes length must equal bucketCount`);
       }
@@ -338,7 +343,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
         pairs.bucketCounts,
         pairs.firstTimes
       ],
-      [props.samples, props.trackValid, props.distance, props.bucketTimes]
+      [props.samples, props.mask, props.distance, props.bucketTimes]
     );
   }
 
@@ -350,7 +355,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     const {pairs, status} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
       props.samples,
-      props.trackValid,
+      props.mask,
       props.distance,
       props.bucketTimes,
       pairs.ids,
@@ -412,7 +417,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
         id: `${id}-positions`,
         shape,
         samples: props.samples,
-        trackValid: props.trackValid,
+        trackValid: props.mask,
         positions
       }),
       ...new GPUGridIndex({

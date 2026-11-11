@@ -131,7 +131,7 @@ const BUILDERS: Record<string, {names: string[]; build: Builder}> = {
         lineOffsets: view('uint32', 4),
         radius: view('float32', 1),
         candidateCapacity: 64,
-        output: {measures: view('float32', 8), status: {overflow: view('uint32', 1)}},
+        output: {measures: view('float32', 8), status: {candidateOverflow: view('uint32', 1)}},
         ...overrides
       } as never)
   },

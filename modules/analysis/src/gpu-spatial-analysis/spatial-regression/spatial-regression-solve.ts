@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getDenseCholeskyWGSL} from '../../analysis-core/kernels/dense-solve-wgsl';
+import {GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE} from './ordinary-least-squares-parameters';
+
 /** Largest predictor count (including the intercept) the small dense solvers support. */
 export const SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT = 16;
 
@@ -11,12 +14,19 @@ export const SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT = 16;
  *
  * Generated functions (suffix `_${p}`):
  * - `choleskyFactor_p(a: ptr<function, array<f32, p*p>>) -> bool` overwrites the lower triangle
- *   (row-major `a[row * p + column]`) with `L` such that `A = L L^T`. Returns false when a pivot is
- *   not strictly positive or not finite (singular, indefinite, or ill-conditioned system).
+ *   (row-major `a[row * p + column]`) with `L` such that `A = L L^T`. Returns false when an entry of
+ *   the lower triangle or a pivot is not finite, or a pivot is not strictly positive (singular,
+ *   indefinite, or ill-conditioned system).
  * - `choleskySolve_p(a, b: ptr<function, array<f32, p>>)` solves `L L^T x = b` in place in `b`
  *   using a factor from `choleskyFactor_p`.
  * - `choleskyInverseDiagonal_p(a, column: u32) -> f32` returns `(A^-1)[column][column]`, used for
  *   coefficient standard errors and hat-matrix terms.
+ *
+ * These are adapters over the shared `factorDenseCholesky_p` of `analysis-core` (contributor
+ * contract rule 11), which this string also declares, called without equilibration and without a
+ * pivot-ratio limit: the scale is exactly one, so the arithmetic is that of the unequilibrated
+ * algorithm. The module needs `isFiniteValue` (`IS_FINITE_VALUE_WGSL`), included once by the
+ * kernel. Emitting this string twice for the same `p` fails compilation.
  *
  * The loop order is fixed, so results are deterministic for a given adapter. The CPU reference
  * (test/reference/spatial-regression-solve-cpu.ts) uses the same operation order with `Math.fround`
@@ -32,55 +42,63 @@ export function getCholeskyWGSL(
   validatePredictorCount(predictorCount, maximumSize);
   const p = predictorCount;
   const size = p * p;
-  return /* wgsl */ `
+  // A literal initializer, not a fill loop (contributor contract rule 11).
+  const unitScale = `array<f32, ${p}>(${Array.from({length: p}, () => '1.0').join(', ')})`;
+  return /* wgsl */ `${getDenseCholeskyWGSL(p)}
 fn choleskyFactor_${p}(a: ptr<function, array<f32, ${size}>>) -> bool {
-  for (var column = 0u; column < ${p}u; column++) {
-    var diagonal = (*a)[column * ${p}u + column];
-    for (var k = 0u; k < column; k++) {
-      let value = (*a)[column * ${p}u + k];
-      diagonal = diagonal - value * value;
-    }
-    if (!(diagonal > 0.0) || diagonal > 3.0e38) {
-      return false;
-    }
-    let pivot = sqrt(diagonal);
-    (*a)[column * ${p}u + column] = pivot;
-    for (var row = column + 1u; row < ${p}u; row++) {
-      var value = (*a)[row * ${p}u + column];
-      for (var k = 0u; k < column; k++) {
-        value = value - (*a)[row * ${p}u + k] * (*a)[column * ${p}u + k];
-      }
-      (*a)[row * ${p}u + column] = value / pivot;
-    }
-  }
-  return true;
+  return factorDenseCholesky_${p}(a, ${p}u, false, 0.0).status == 0u;
+}
+
+// The factorization record of a successful unequilibrated factor: unit scale, full size.
+fn getCholeskyFactorization_${p}() -> DenseCholesky_${p} {
+  return DenseCholesky_${p}(${unitScale}, ${p}u, 0u, 1.0);
 }
 
 fn choleskySolve_${p}(a: ptr<function, array<f32, ${size}>>, b: ptr<function, array<f32, ${p}>>) {
-  for (var row = 0u; row < ${p}u; row++) {
-    var value = (*b)[row];
-    for (var k = 0u; k < row; k++) {
-      value = value - (*a)[row * ${p}u + k] * (*b)[k];
-    }
-    (*b)[row] = value / (*a)[row * ${p}u + row];
-  }
-  for (var offset = 0u; offset < ${p}u; offset++) {
-    let row = ${p - 1}u - offset;
-    var value = (*b)[row];
-    for (var k = row + 1u; k < ${p}u; k++) {
-      value = value - (*a)[k * ${p}u + row] * (*b)[k];
-    }
-    (*b)[row] = value / (*a)[row * ${p}u + row];
-  }
+  var factorization = getCholeskyFactorization_${p}();
+  solveDenseCholesky_${p}(a, &factorization, b);
 }
 
 fn choleskyInverseDiagonal_${p}(a: ptr<function, array<f32, ${size}>>, column: u32) -> f32 {
-  var unit: array<f32, ${p}>;
-  for (var row = 0u; row < ${p}u; row++) {
-    unit[row] = select(0.0, 1.0, row == column);
+  var factorization = getCholeskyFactorization_${p}();
+  return getDenseCholeskyInverseDiagonal_${p}(a, &factorization, column);
+}
+`;
+}
+
+/**
+ * Returns WGSL for a Cholesky factorization with the relative pivot limit of
+ * `GPUOrdinaryLeastSquares` and the GWR family, for callers that factor a matrix whose diagonal is
+ * not one. Emit it after {@link getCholeskyWGSL} for the same size.
+ *
+ * Generated function (suffix `_${p}`):
+ * - `choleskyFactorLimited_p(a: ptr<function, array<f32, p*p>>) -> bool` factors as
+ *   `choleskyFactor_p` and also returns false when a factor pivot `L[i][i]` is below
+ *   `GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE * sqrt(A[i][i])`. Cholesky commutes with a
+ *   symmetric diagonal scaling, so this is the pivot of the unit-diagonal (equilibrated) matrix:
+ *   a column within `1 - 1e-6` (squared cosine) of the span of the earlier ones is singular.
+ */
+export function getPivotLimitedCholeskyWGSL(
+  predictorCount: number,
+  maximumSize = SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
+): string {
+  validatePredictorCount(predictorCount, maximumSize);
+  const p = predictorCount;
+  return /* wgsl */ `
+fn choleskyFactorLimited_${p}(a: ptr<function, array<f32, ${p * p}>>) -> bool {
+  var diagonal: array<f32, ${p}>;
+  for (var column = 0u; column < ${p}u; column++) {
+    diagonal[column] = (*a)[column * ${p}u + column];
   }
-  choleskySolve_${p}(a, &unit);
-  return unit[column];
+  if (!choleskyFactor_${p}(a)) {
+    return false;
+  }
+  for (var column = 0u; column < ${p}u; column++) {
+    if (!((*a)[column * ${p}u + column] >= ${GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE} * sqrt(diagonal[column]))) {
+      return false;
+    }
+  }
+  return true;
 }
 `;
 }

@@ -15,7 +15,7 @@ import {ERFC_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createPairStatisticsClearNode,
@@ -107,6 +107,9 @@ fn getGammaPrefix(shape: f32, value: f32) -> f32 {
 function getChiSquarePValueWGSL(quadratCount: number): string {
   // Preserve the established small-df kernels, including their byte-level regression contract.
   // Polygon grids may have fewer active quadrats; getGammaPrefix also handles those small df.
+  // The small-df kernel still carries a Wilson-Hilferty branch for more than 100 degrees of
+  // freedom. It cannot run: that kernel is compiled only for at most 101 quadrats, so the degrees
+  // of freedom are at most 100. It stays so that the shader text of that kernel does not change.
   const useStableGamma = quadratCount > 101;
   return /* wgsl */ `
 fn getLogGamma(value: f32) -> f32 {
@@ -312,9 +315,10 @@ export type GPUPointPatternIndicesProps = {
  *   bitwise reproducible. `pValue` is the chi-square p-value with `m - 1` degrees of freedom for
  *   the per-frame `alternative`: `'two-sided'` (default) is `min(1, 2 min(P(X <= x), P(X >= x)))`,
  *   `'greater'` the upper tail (clustered, spatstat `quadrat.test` alternative `"clustered"`),
- *   `'lesser'` the lower tail (regular). It uses the exact regularized incomplete gamma function
- *   up to 100 degrees of freedom and the Wilson-Hilferty approximation (absolute error below 2e-4)
- *   above. The test assumes expected counts of about 5 or more per quadrat.
+ *   `'lesser'` the lower tail (regular). It uses the regularized incomplete gamma function at
+ *   every degree of freedom (series or Lentz continued fraction in float32; above 101 quadrats
+ *   with a centred Stirling prefactor). There is no normal approximation. The test assumes
+ *   expected counts of about 5 or more per quadrat.
  *
  * Polygon quadrats sample a quadratSamples² midpoint lattice, normalize the sampled areas to A,
  * drop zero-area quadrats and use expected counts n * area / A. The variance row is the sum
@@ -349,7 +353,7 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
       throw new Error(`${id} output needs at least one view`);
     }
     if (output.nearestNeighborDistances) {
-      validatePackedView(
+      validateSinglePackedView(
         output.nearestNeighborDistances,
         ['float32'],
         `${id} output.nearestNeighborDistances`
@@ -365,7 +369,7 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
       }
     }
     if (output.clarkEvans) {
-      validatePackedView(output.clarkEvans, ['float32'], `${id} output.clarkEvans`);
+      validateSinglePackedView(output.clarkEvans, ['float32'], `${id} output.clarkEvans`);
       if (output.clarkEvans.length < GPU_CLARK_EVANS_LENGTH) {
         throw new Error(`${id} output.clarkEvans must hold ${GPU_CLARK_EVANS_LENGTH} rows`);
       }
@@ -395,7 +399,7 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
         );
       }
       if (output.quadratAreas) {
-        validatePackedView(output.quadratAreas, ['float32'], `${id} output.quadratAreas`);
+        validateSinglePackedView(output.quadratAreas, ['float32'], `${id} output.quadratAreas`);
         if (output.quadratAreas.length !== quadratGrid[0] * quadratGrid[1]) {
           throw new Error(`${id} output.quadratAreas must hold columns * rows rows`);
         }
@@ -407,7 +411,11 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
         }
       }
       if (output.quadratStatistics) {
-        validatePackedView(output.quadratStatistics, ['float32'], `${id} output.quadratStatistics`);
+        validateSinglePackedView(
+          output.quadratStatistics,
+          ['float32'],
+          `${id} output.quadratStatistics`
+        );
         if (output.quadratStatistics.length < GPU_QUADRAT_STATISTICS_LENGTH) {
           throw new Error(
             `${id} output.quadratStatistics must hold ${GPU_QUADRAT_STATISTICS_LENGTH} rows`
@@ -644,7 +652,7 @@ ${getStudyWindowWGSL(getStudyWindowWGSLOptions(studyWindow))}`
             invocationCount: rows,
             declarations: PAIR_STATISTICS_FLOAT_WGSL,
             body: `let distance = distances[distancesOffset + index];
-  terms[termsOffset + index] = select(0.0, distance, isFiniteFloat(distance));`
+  terms[termsOffset + index] = select(0.0, distance, isFiniteValue(distance));`
           }),
           ...getPairStatisticsTotalSumNodes<Parameters>(graph, {
             id: `${id}-nearest-sum`,
@@ -681,7 +689,7 @@ const CELL_COUNT: u32 = ${cellCount}u;`,
   var standardError = nan;
   var zScore = nan;
   var pValue = nan;
-  if (n >= 2.0 && isFiniteFloat(area) && area > 0.0) {
+  if (n >= 2.0 && isFiniteValue(area) && area > 0.0) {
     observed = total[totalOffset] / n;
     expected = 0.5 * sqrt(area / n);
     standardError = 0.26136 * sqrt(area) / n;
@@ -729,8 +737,8 @@ const CELL_COUNT: u32 = ${cellCount}u;`,
             body: `let distance = distances[distancesOffset + index];
   let guardDistance = parameters[parametersOffset + 7u];
   var focus = false;
-  if (parameters[parametersOffset + 5u] == 2.0 && isFiniteFloat(distance) &&
-      isFiniteFloat(guardDistance) && guardDistance > 0.0) {
+  if (parameters[parametersOffset + 5u] == 2.0 && isFiniteValue(distance) &&
+      isFiniteValue(guardDistance) && guardDistance > 0.0) {
     let point = vec2f(positions[positionsOffset + index * 2u], positions[positionsOffset + index * 2u + 1u]);
     let boundaryDistance = ${
       studyWindow
@@ -776,7 +784,7 @@ ${NORMAL_P_VALUE_WGSL}`,
   let area = ${studyWindow ? 'studyWindowSummaryValue(4u)' : '(parameters[parametersOffset + 2u] - parameters[parametersOffset]) * (parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u])'};
   let nan = getQuietNaN(index);
   for (var row = 1u; row < 7u; row++) { clarkEvans[clarkEvansOffset + row] = nan; }
-  if (count >= 2.0 && focusCount > 0.0 && isFiniteFloat(area) && area > 0.0) {
+  if (count >= 2.0 && focusCount > 0.0 && isFiniteValue(area) && area > 0.0) {
     let observed = guardTotal[guardTotalOffset] / focusCount;
     let expected = 0.5 * sqrt(area / count);
     let standardError = 0.26136 * sqrt(area / (count * focusCount));
@@ -1002,7 +1010,7 @@ const QUADRAT_COUNT: u32 = ${quadratCount}u;`,
   quadratStatistics[quadratStatisticsOffset + 5u] = m - 1.0;
   quadratStatistics[quadratStatisticsOffset + 6u] = select(nan,
     getChiSquarePValue(chiSquare, m - 1.0, u32(parameters[parametersOffset + 6u] + 0.5)),
-    isFiniteFloat(chiSquare));`
+    isFiniteValue(chiSquare));`
               : `let nan = getQuietNaN(index);
   let m = f32(QUADRAT_COUNT);
   let n = f32(cellOffsets[cellOffsetsOffset + CELL_COUNT]);
@@ -1020,13 +1028,13 @@ const QUADRAT_COUNT: u32 = ${quadratCount}u;`,
   quadratStatistics[quadratStatisticsOffset + 1u] = mean;
   quadratStatistics[quadratStatisticsOffset + 2u] = variance;
   quadratStatistics[quadratStatisticsOffset + 3u] = ratio;
-  let chiSquare = select(nan, (m - 1.0) * ratio, isFiniteFloat(ratio));
+  let chiSquare = select(nan, (m - 1.0) * ratio, isFiniteValue(ratio));
   quadratStatistics[quadratStatisticsOffset + 4u] = chiSquare;
   quadratStatistics[quadratStatisticsOffset + 5u] = m - 1.0;
   quadratStatistics[quadratStatisticsOffset + 6u] = select(
     nan,
     getChiSquarePValue(chiSquare, m - 1.0, u32(parameters[parametersOffset + 6u] + 0.5)),
-    isFiniteFloat(chiSquare));`
+    isFiniteValue(chiSquare));`
           })
         );
       }

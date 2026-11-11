@@ -13,7 +13,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
@@ -139,20 +139,20 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
       GPU_MGTWR_MAXIMUM_ITERATION_COUNT
     );
     resolveGPUTemporalContext(id, props.temporalContext, {encodings: ['float32-relative']});
-    validatePackedView(props.response, ['float32'], `${id} response`);
+    validateSinglePackedView(props.response, ['float32'], `${id} response`);
     this.rows = props.response.length;
     validateCapacity(id, 'rows', this.rows, 2, GPU_GTWR_MAXIMUM_ROW_COUNT);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateViewLength(id, 'positions', props.positions, this.rows);
-    validatePackedView(props.times, ['float32'], `${id} times`);
+    validateSinglePackedView(props.times, ['float32'], `${id} times`);
     validateViewLength(id, 'times', props.times, this.rows);
-    validatePackedView(props.predictors, ['float32'], `${id} predictors`);
+    validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
     validateViewLength(id, 'predictors', props.predictors, this.rows * columns);
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       validateViewLength(id, 'mask', props.mask, this.rows);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < 2 + 2 * (columns + 1)) {
       throw new Error(`${id} parameters must have ${2 + 2 * (columns + 1)} values`);
     }
@@ -164,7 +164,7 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
       ['localStatus', output.localStatus, 'uint32', this.rows],
       ['scores', output.scores, 'float32', props.iterationCount]
     ] as const) {
-      validatePackedView(view, [format], `${id} output.${name}`);
+      validateSinglePackedView(view, [format], `${id} output.${name}`);
       validateViewLength(id, `output.${name}`, view, length);
     }
     validatePredictionViews(id, this.getInputViews(), Object.values(output));

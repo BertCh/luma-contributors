@@ -20,7 +20,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
@@ -218,8 +218,8 @@ export class GPUNetworkCostWeights implements GPUCommandNodeProducer {
       throw new Error(`${id} orientation must be 'rows' or 'columns'`);
     }
     const {output} = props;
-    validatePackedView(props.costs, ['float32'], `${id} costs`);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.costs, ['float32'], `${id} costs`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length !== GPU_NETWORK_COST_WEIGHTS_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must contain ${GPU_NETWORK_COST_WEIGHTS_PARAMETER_LENGTH} rows`
@@ -232,17 +232,17 @@ export class GPUNetworkCostWeights implements GPUCommandNodeProducer {
     }
     this.columnCount = props.costs.length / this.rowCount;
     if (props.columns) {
-      validatePackedView(props.columns, ['uint32'], `${id} columns`);
+      validateSinglePackedView(props.columns, ['uint32'], `${id} columns`);
     }
     this.locationCount = props.columns?.length ?? this.columnCount;
     validateCapacity(id, 'columns length', this.locationCount);
     this.weightsRowCount = this.orientation === 'rows' ? this.rowCount : this.locationCount;
 
-    validatePackedView(output.offsets, ['uint32'], `${id} output.offsets`);
+    validateSinglePackedView(output.offsets, ['uint32'], `${id} output.offsets`);
     if (output.offsets.length !== this.weightsRowCount + 1) {
       throw new Error(`${id} output.offsets must contain one row per weights row plus one`);
     }
-    validatePackedView(output.neighbors, ['uint32'], `${id} output.neighbors`);
+    validateSinglePackedView(output.neighbors, ['uint32'], `${id} output.neighbors`);
     this.capacity = output.neighbors.length;
     validateCapacity(id, 'output.neighbors length', this.capacity);
     for (const [name, view] of [
@@ -250,7 +250,7 @@ export class GPUNetworkCostWeights implements GPUCommandNodeProducer {
       ['output.distances', output.distances]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length !== this.capacity) {
           throw new Error(`${id} ${name} length must equal output.neighbors length`);
         }

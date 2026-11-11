@@ -267,3 +267,127 @@ it('review C-05: the default ignore stretch is one ground pixel, so a near ridge
   });
   expect(preset.codes[0]).toBe(V.visible);
 });
+
+it('GPUPointHorizonVisibility classes are ordered: a target exactly on the lower band edge is marginal', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A target 600 m east at about 6 degrees, behind the ridge at about 7.97 degrees.
+  const targets: VisibilityConfig['targets'] = [[80, 64, 65, 0]];
+  const run = (toleranceDegrees: number) =>
+    runVisibility(device, {
+      grid: GRID,
+      values: createRidgeTerrain(true),
+      observers: [OBSERVER],
+      targets,
+      // sigmaZ 0 makes the tolerance exactly `toleranceDegrees`.
+      settings: {toleranceDegrees, sigmaZ: 0},
+      model: MODEL
+    });
+  // The angles do not depend on the tolerance: read the float32 values the kernel compares.
+  const reference = await run(0.02);
+  const targetAngle = reference.rows[0];
+  const occluderAngle = reference.rows[1];
+  expect(reference.codes[0]).toBe(V.hidden);
+  expect(occluderAngle - targetAngle).toBeGreaterThan(1);
+  // Both angles are within a factor of two, so their float32 difference is exact (Sterbenz) and
+  // occluder - tolerance is exactly the target angle: the target sits on the lower band edge.
+  const tolerance = Math.fround(occluderAngle - targetAngle);
+  expect(Math.fround(occluderAngle - tolerance)).toBe(targetAngle);
+  // On the edge: not below the band, so marginal. (The former rule tested |difference| < tolerance
+  // and classed this target visible, between hidden and marginal.)
+  expect((await run(tolerance)).codes[0]).toBe(V.marginal);
+  // One float32 step narrower: the target is below the band. One step wider: inside it.
+  const step = tolerance * 2 ** -22;
+  expect((await run(Math.fround(tolerance - step))).codes[0]).toBe(V.hidden);
+  expect((await run(Math.fround(tolerance + step))).codes[0]).toBe(V.marginal);
+  // A band narrower than the gap above the occluder: a target above it by more is visible.
+  const above = await runVisibility(device, {
+    grid: GRID,
+    values: createRidgeTerrain(true),
+    observers: [OBSERVER],
+    targets: [[80, 64, 120, 0]],
+    settings: {toleranceDegrees: 0.02, sigmaZ: 0},
+    model: MODEL
+  });
+  expect(above.codes[0]).toBe(V.visible);
+});
+
+it('GPUPointHorizonVisibility measures a Web Mercator tile in WGS84 ground metres, like the raster grid', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A zoom 12 window (512 px tiles) centred on the equator: one pixel is 2 pi a / worldPixelSize
+  // = 19.109 EPSG:3857 metres. Expected distances below are closed forms on the WGS84 ellipsoid,
+  // independent of the kernel: the meridian arc (integral of M) north-south and a times the
+  // longitude difference along the equator. They are the row scales of analysis-core/raster-grid
+  // (M cos(lat) / a and N cos(lat) / a per EPSG:3857 metre). The mean sphere of 6371008.8 m gives
+  // 0.56% more north-south and 0.11% less east-west.
+  const size = 256;
+  const worldPixelSize = 512 * 2 ** 12;
+  const originY = worldPixelSize / 2 - size / 2;
+  const grid = makeMercatorTestGrid(size, size, worldPixelSize, originY);
+  const semiMajorAxis = 6378137;
+  const flattening = 1 / 298.257223563;
+  const eccentricitySquared = flattening * (2 - flattening);
+  const getLatitude = (row: number): number =>
+    Math.atan(Math.sinh(Math.PI * (1 - (2 * (originY + row + 0.5)) / worldPixelSize)));
+  const getMeridionalRadius = (latitude: number): number =>
+    (semiMajorAxis * (1 - eccentricitySquared)) /
+    (1 - eccentricitySquared * Math.sin(latitude) ** 2) ** 1.5;
+  // Meridian arc between two rows by Simpson's rule.
+  const getMeridianArc = (fromRow: number, toRow: number): number => {
+    const start = getLatitude(fromRow);
+    const end = getLatitude(toRow);
+    const intervalCount = 200;
+    const step = (end - start) / intervalCount;
+    let sum = getMeridionalRadius(start) + getMeridionalRadius(end);
+    for (let index = 1; index < intervalCount; index++) {
+      sum += (index % 2 === 1 ? 4 : 2) * getMeridionalRadius(start + index * step);
+    }
+    return Math.abs((sum * step) / 3);
+  };
+  const pixelCount = 144;
+  const northSouth = getMeridianArc(200, 200 - pixelCount);
+  const eastWest = (2 * Math.PI * semiMajorAxis * pixelCount) / worldPixelSize;
+  const sphereArc = (2 * Math.PI * 6371008.8 * pixelCount) / worldPixelSize;
+  expect(northSouth).toBeCloseTo(2733.3, 0);
+  expect(eastWest).toBeCloseTo(2751.7, 0);
+  expect(sphereArc).toBeCloseTo(2748.7, 0);
+  const values = new Float32Array(size * size);
+  const run = (
+    observer: readonly [number, number, number],
+    target: readonly [number, number, number, number],
+    maximumDistance: number
+  ) =>
+    runVisibility(device, {
+      grid,
+      values,
+      observers: [observer],
+      targets: [target],
+      settings: {projection: 'web-mercator', maximumDistance, sigmaZ: 0},
+      model: {projection: 'web-mercator', maximumDistance: 4000, cellSize: 19, maximumLatitude: 5}
+    });
+  // North-south: 144 rows due north of the eye. The cut sits between the WGS84 arc and the
+  // sphere arc, so the target is in range (the sphere would call it out of range).
+  const northObserver = [128, 200, 2] as const;
+  const northTarget = [128, 200 - pixelCount, 302, 0] as const;
+  const northInside = await run(northObserver, northTarget, northSouth + 5);
+  expect(northInside.codes[0]).toBe(V.visible);
+  expect((await run(northObserver, northTarget, northSouth - 5)).codes[0]).toBe(V.outOfRange);
+  // The target angle uses the same ground distance: atan(300 / 2733.3 m) = 6.2637 degrees
+  // (6.2291 on the sphere).
+  const northAngle = (Math.atan(300 / northSouth) * 180) / Math.PI;
+  expect(Math.abs(northInside.rows[0] - northAngle)).toBeLessThan(
+    isSoftwareDevice(device) ? 0.05 : 3e-3
+  );
+  // East-west along the equator (row 127.5 is the equator): 144 pixels are 144 * 19.109 m of
+  // ground, more than the sphere arc, so a cut between the two is out of range.
+  const eastObserver = [56, 127.5, 2] as const;
+  const eastTarget = [56 + pixelCount, 127.5, 302, 0] as const;
+  expect((await run(eastObserver, eastTarget, eastWest - 1.5)).codes[0]).toBe(V.outOfRange);
+  const eastInside = await run(eastObserver, eastTarget, eastWest + 1.5);
+  expect(eastInside.codes[0]).toBe(V.visible);
+  const eastAngle = (Math.atan(300 / eastWest) * 180) / Math.PI;
+  expect(Math.abs(eastInside.rows[0] - eastAngle)).toBeLessThan(
+    isSoftwareDevice(device) ? 0.05 : 3e-3
+  );
+});

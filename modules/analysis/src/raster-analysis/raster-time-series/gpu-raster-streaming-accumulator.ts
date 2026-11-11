@@ -123,7 +123,7 @@ export type GPURasterStreamingState = {
 /**
  * Properties of {@link GPURasterStreamingAccumulator}.
  *
- * Per-frame: the contents of `values`, `validity`, `slotIndices` and `parameters`. Compile-time:
+ * Per-frame: the contents of `values`, `mask`, `slotIndices` and `parameters`. Compile-time:
  * `cellCount`, `chunkSliceCount`, `slotCount`, and which optional views and state fields exist.
  */
 export type GPURasterStreamingAccumulatorProps = {
@@ -136,7 +136,7 @@ export type GPURasterStreamingAccumulatorProps = {
   /** Cell-major chunk `cell * chunkSliceCount + slice`; nonfinite samples are missing. */
   values: GraphDataView<'float32'>;
   /** Per-observation QA, same layout as `values`; zero rejects the sample. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Slot of each chunk slice, shared by all cells; required when `slotCount` exceeds 1. Slots out of range are skipped. */
   slotIndices?: GraphDataView<'uint32'>;
   /** Float32, see {@link getGPURasterStreamingAccumulatorParameterValues}. */
@@ -180,8 +180,8 @@ export class GPURasterStreamingAccumulator implements GPUCommandNodeProducer {
     validateRequirement(
       id,
       props.values.length >= props.cellCount * props.chunkSliceCount &&
-        (!props.validity || props.validity.length >= props.cellCount * props.chunkSliceCount),
-      'values and validity must hold cellCount times chunkSliceCount entries'
+        (!props.mask || props.mask.length >= props.cellCount * props.chunkSliceCount),
+      'values and mask must hold cellCount times chunkSliceCount entries'
     );
     validateRequirement(
       id,
@@ -208,13 +208,8 @@ export class GPURasterStreamingAccumulator implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, slotIndices, parameters} = this.props;
-    return [
-      values,
-      parameters,
-      ...(validity ? [validity] : []),
-      ...(slotIndices ? [slotIndices] : [])
-    ];
+    const {values, mask, slotIndices, parameters} = this.props;
+    return [values, parameters, ...(mask ? [mask] : []), ...(slotIndices ? [slotIndices] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -226,7 +221,7 @@ export class GPURasterStreamingAccumulator implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, slotCount} = this;
-    const {values, validity, slotIndices, parameters, state, cellCount, chunkSliceCount} = props;
+    const {values, mask, slotIndices, parameters, state, cellCount, chunkSliceCount} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const slotExpression = slotCount > 1 ? 'slotIndices[slotIndicesOffset + slice]' : '0u';
     return [
@@ -238,7 +233,7 @@ export class GPURasterStreamingAccumulator implements GPUCommandNodeProducer {
         bindings: [
           rasterBinding('values', values),
           rasterBinding('parameters', parameters),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           ...(slotCount > 1 && slotIndices ? [rasterBinding('slotIndices', slotIndices)] : []),
           rasterBinding('counts', state.counts, true),
           rasterBinding('sums', state.sums, true),
@@ -264,7 +259,7 @@ let activeSliceCount = u32(clamp(parameters[parametersOffset + 1u], 0.0, ${chunk
 for (var slice = 0u; slice < activeSliceCount; slice++) {
   let source = index * ${chunkSliceCount}u + slice;
   let value = values[valuesOffset + source];
-  if (!finite(value) ${validity ? '|| validity[validityOffset + source] == 0u' : ''}) { continue; }
+  if (!finite(value) ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
   if (abs(value) > parameters[parametersOffset + 4u]) { continue; }
   let slot = ${slotExpression};
   if (slot >= ${slotCount}u) { continue; }

@@ -12,6 +12,7 @@ import {createTransientView, GPUReduction} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateFiniteNumber,
+  validateRequirement,
   validateViewLength
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY} from './pointcloud-limits';
@@ -31,7 +32,7 @@ export type GPUPointCloudStatisticalFilterProps = {
    * distances. There is no per-row status word: a row without neighbors (`meanDistances` is -1) is
    * an outlier by definition.
    */
-  mask: GraphDataView<'uint32'>;
+  validity: GraphDataView<'uint32'>;
 };
 
 /**
@@ -43,8 +44,13 @@ export type GPUPointCloudStatisticalFilterProps = {
  */
 export class GPUPointCloudStatisticalFilter implements GPUCommandNodeProducer {
   readonly id: string;
+  /** The inlier flags, `props.validity`. */
+  readonly validity: GraphDataView<'uint32'>;
   constructor(readonly props: GPUPointCloudStatisticalFilterProps) {
     this.id = props.id ?? 'gpu-pointcloud-statistical-filter';
+    const {validity} = props;
+    validateRequirement(this.id, validity !== undefined, 'validity must be given');
+    this.validity = validity;
     validateCapacity(
       this.id,
       'capacity',
@@ -59,13 +65,14 @@ export class GPUPointCloudStatisticalFilter implements GPUCommandNodeProducer {
       props.counts.length * props.capacity
     );
     validateViewLength(this.id, 'meanDistances', props.meanDistances, props.counts.length);
-    validateViewLength(this.id, 'mask', props.mask, props.counts.length);
+    validateViewLength(this.id, 'validity', this.validity, props.counts.length);
     validateFiniteNumber(this.id, 'standardDeviations', props.standardDeviations ?? 2, 0);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {squaredDistances, counts, capacity, meanDistances, mask} = this.props;
+    const {squaredDistances, counts, capacity, meanDistances} = this.props;
+    const mask = this.validity;
     const nodes: GPUCommandNode<Parameters>[] = getPointCloudKernelNodes(graph, {
       id: `${this.id}-means`,
       length: counts.length,

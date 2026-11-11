@@ -54,7 +54,7 @@ export type BufferResult = {
   polygonOffsets: Buffer;
   ringOffsets: Buffer;
   count: Buffer;
-  requiredCount: Buffer;
+  requiredRingCount: Buffer;
   overflow: Buffer;
 };
 
@@ -69,10 +69,9 @@ export function createBufferResult(
   const featureOffsets = graphBuffers.output(`${prefix}-feature`, 'uint32', ringCapacity + 1);
   const polygonOffsets = graphBuffers.output(`${prefix}-polygon`, 'uint32', ringCapacity + 1);
   const ringOffsets = graphBuffers.output(`${prefix}-ring`, 'uint32', ringCapacity + 1);
-  const sourceIds = graphBuffers.output(`${prefix}-source-ids`, 'uint32', ringCapacity);
   const scalar = (name: string) => graphBuffers.output(`${prefix}-${name}`, 'uint32', 1);
   const count = scalar('count');
-  const requiredCount = scalar('required-count');
+  const requiredRingCount = scalar('required-ring-count');
   const overflow = scalar('overflow');
   const candidateOverflow = scalar('candidate-overflow');
   const output: GPUPolygonOverlayOutput = {
@@ -81,12 +80,11 @@ export function createBufferResult(
       positions: positions.view,
       featureOffsets: featureOffsets.view,
       polygonOffsets: polygonOffsets.view,
-      ringOffsets: ringOffsets.view,
-      sourceIds: sourceIds.view
+      ringOffsets: ringOffsets.view
     },
     status: {
       count: count.view,
-      requiredCount: requiredCount.view,
+      requiredRingCount: requiredRingCount.view,
       overflow: overflow.view,
       candidateOverflow: candidateOverflow.view
     },
@@ -114,7 +112,7 @@ export function createBufferResult(
     polygonOffsets: polygonOffsets.buffer,
     ringOffsets: ringOffsets.buffer,
     count: count.buffer,
-    requiredCount: requiredCount.buffer,
+    requiredRingCount: requiredRingCount.buffer,
     overflow: overflow.buffer
   };
 }

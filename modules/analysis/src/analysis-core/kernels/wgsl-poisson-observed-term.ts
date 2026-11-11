@@ -5,8 +5,10 @@
 /**
  * WGSL `getEntropyExcess` and `getObservedTerm`: the Poisson term `o ln(o/e) - o + e`, evaluated as
  * `e ((1 + d) ln(1 + d) - d)` with `d = (o - e) / e` so the two large logarithm terms never cancel.
- * `getObservedTerm` is 0 for `e <= 0` and `e` for `o = 0`. Shared by the scan statistics and the
- * per-location Poisson change point cost.
+ * `getObservedTerm` is 0 for `e <= 0` and `e` for `o = 0`, and stays finite when `o` is positive
+ * but negligible beside `e` (`d` rounds to -1, where the term is `e`). Shared by the scan
+ * statistics and the per-location Poisson change point cost. Checked against float64 in
+ * `test/utils/wgsl-poisson-observed-term.spec.ts`.
  *
  * @internal
  */
@@ -31,7 +33,14 @@ fn getEntropyExcess(delta: f32) -> f32 {
     series = 1.0 / 2.0 + delta * series;
     return delta * delta * series;
   }
-  return (1.0 + delta) * log(1.0 + delta) - delta;
+  // At d = -1 the product is 0 * log(0), which is NaN in float32; its limit is 0, so the value is
+  // -d = 1. Reached when the observed count is positive but below 2^-25 of the expected count (one
+  // case against an expectation above 3.4e7), where (o - e) / e rounds to exactly -1.
+  let scaled = 1.0 + delta;
+  if (scaled <= 0.0) {
+    return -delta;
+  }
+  return scaled * log(scaled) - delta;
 }
 // Kulldorff term o ln(o/e) minus its linear part o - e, which sums to 0 over the cells of a full
 // partition of the cases, as e * ((1 + d) ln(1 + d) - d) with d = (o - e) / e: near o = e the

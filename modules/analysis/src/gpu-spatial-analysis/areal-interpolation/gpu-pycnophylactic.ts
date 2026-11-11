@@ -24,7 +24,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createSegmentSumNode,
@@ -236,9 +236,9 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
       throw new Error(`${id} kernel must be 'rook' or 'box'`);
     }
     const {output} = props;
-    validatePackedView(props.zones, ['uint32'], `${id} zones`);
-    validatePackedView(props.totals, ['float32'], `${id} totals`);
-    validatePackedView(output.mass, ['float32'], `${id} output.mass`);
+    validateSinglePackedView(props.zones, ['uint32'], `${id} zones`);
+    validateSinglePackedView(props.totals, ['float32'], `${id} totals`);
+    validateSinglePackedView(output.mass, ['float32'], `${id} output.mass`);
     if (props.zones.length !== cellCount) {
       throw new Error(`${id} zones must contain one row per grid cell`);
     }
@@ -254,19 +254,19 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
       throw new Error(`${id} parameters need a longitude-latitude spatialContext`);
     }
     if (output.density) {
-      validatePackedView(output.density, ['float32'], `${id} output.density`);
+      validateSinglePackedView(output.density, ['float32'], `${id} output.density`);
       if (output.density.length !== cellCount) {
         throw new Error(`${id} output.density must contain one row per grid cell`);
       }
     }
     if (props.zoneAnchorCells) {
-      validatePackedView(props.zoneAnchorCells, ['uint32'], `${id} zoneAnchorCells`);
+      validateSinglePackedView(props.zoneAnchorCells, ['uint32'], `${id} zoneAnchorCells`);
       if (props.zoneAnchorCells.length !== props.zoneCount) {
         throw new Error(`${id} zoneAnchorCells must have zoneCount rows`);
       }
     }
     if (props.tolerance) {
-      validatePackedView(props.tolerance, ['float32'], `${id} tolerance`);
+      validateSinglePackedView(props.tolerance, ['float32'], `${id} tolerance`);
       if (props.tolerance.length < 1) {
         throw new Error(`${id} tolerance must hold one float32`);
       }
@@ -277,7 +277,7 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
       ['output.status.invalidCount', output.status?.invalidCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length < 1) {
           throw new Error(`${id} ${name} must hold one uint32`);
         }

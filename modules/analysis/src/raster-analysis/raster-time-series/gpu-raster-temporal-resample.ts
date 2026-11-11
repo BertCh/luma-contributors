@@ -71,7 +71,7 @@ export type GPURasterTemporalResampleProps = {
   /** Cell-major `cell * sliceCount + slice`; nonfinite samples are missing. */
   values: GraphDataView<'float32'>;
   /** Per-observation QA; zero rejects the sample. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Float32, see {@link getGPURasterTemporalResampleParameterValues}. */
   parameters: GraphDataView<'float32'>;
   dateAxis: GPURasterIrregularDateAxis;
@@ -108,8 +108,8 @@ export class GPURasterTemporalResample implements GPUCommandNodeProducer {
     validateRequirement(
       id,
       props.values.length >= observationCount &&
-        (!props.validity || props.validity.length >= observationCount),
-      'values and validity must hold cellCount times sliceCount entries'
+        (!props.mask || props.mask.length >= observationCount),
+      'values and mask must hold cellCount times sliceCount entries'
     );
     validateRequirement(
       id,
@@ -127,8 +127,8 @@ export class GPURasterTemporalResample implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, parameters} = this.props;
-    return [values, parameters, ...(validity ? [validity] : [])];
+    const {values, mask, parameters} = this.props;
+    return [values, parameters, ...(mask ? [mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -139,7 +139,7 @@ export class GPURasterTemporalResample implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    const {sliceCount: slices, gridCount, values, validity, parameters, dateAxis, output} = props;
+    const {sliceCount: slices, gridCount, values, mask, parameters, dateAxis, output} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     validateGPURasterDateAxisGraph(id, graph, dateAxis);
     return [
@@ -151,7 +151,7 @@ export class GPURasterTemporalResample implements GPUCommandNodeProducer {
         bindings: [
           rasterBinding('values', values),
           rasterBinding('parameters', parameters),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           getGPURasterDateAxisBinding(dateAxis),
           rasterBinding('resampled', output.values, true),
           rasterBinding('resampleStatus', output.status, true)
@@ -160,7 +160,7 @@ export class GPURasterTemporalResample implements GPUCommandNodeProducer {
 ${getGPURasterDateAxisDeclarations(this.ticksPerYear, slices)}
 fn isObserved(cell: u32, slice: u32) -> bool {
   let source = cell * ${slices}u + slice;
-  return finite(values[valuesOffset + source]) ${validity ? '&& validity[validityOffset + source] != 0u' : ''};
+  return finite(values[valuesOffset + source]) ${mask ? '&& mask[maskOffset + source] != 0u' : ''};
 }
 fn advanceObserved(cell: u32, start: u32) -> u32 {
   var slice = start;

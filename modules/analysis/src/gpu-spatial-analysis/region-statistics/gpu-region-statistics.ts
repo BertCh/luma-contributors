@@ -29,7 +29,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateCapacity,
   validateCompactOutput,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUPickRegionMask} from './gpu-pick-region-mask';
 import {
@@ -44,7 +44,9 @@ import {
   type GridCandidates
 } from './region-statistics-grid';
 import {
+  GPU_REGION_STATISTICS_FLAGS,
   GPU_REGION_STATISTICS_HEADER_LENGTH,
+  GPU_REGION_STATISTICS_SUMMARY_LAYOUT,
   resolveGPURegionSpatialContext,
   validateGPURegionSecondarySpatialContext,
   type GPURegionHistogramProps,
@@ -176,7 +178,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
       }
     }
     for (const chunk of values ? getGraphViewChunks(values) : []) {
-      validatePackedView(chunk, ['float32'], `${id} values`);
+      validateSinglePackedView(chunk, ['float32'], `${id} values`);
     }
     if (histogram) {
       if (!values) {
@@ -190,14 +192,14 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
           throw new Error(`${id} histogram.domain must be finite with min <= max`);
         }
       } else if (domain && domain !== 'selection') {
-        validatePackedView(domain as GraphDataView, ['float32'], `${id} histogram.domain`);
+        validateSinglePackedView(domain as GraphDataView, ['float32'], `${id} histogram.domain`);
         if ((domain as GraphDataView).length !== 2) {
           throw new Error(`${id} histogram.domain view must hold two float32 values`);
         }
       }
     }
     if (selection.kind === 'radius') {
-      validatePackedView(selection.circle, ['float32'], `${id} region.circle`);
+      validateSinglePackedView(selection.circle, ['float32'], `${id} region.circle`);
       if (selection.circle.length !== 3) {
         throw new Error(`${id} region.circle must contain three float32 values`);
       }
@@ -243,7 +245,9 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         output?.status.requiredCount,
         drawInstanceCount,
         props.output.status?.antimeridianUncertainCount,
-        props.output.status?.poleUncertainCount
+        props.output.status?.poleUncertainCount,
+        props.output.status?.overflow,
+        props.output.status?.candidateOverflow
       ],
       getStatisticsInputs(props)
     );
@@ -266,6 +270,8 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
       drawInstanceCount,
       props.output.status?.antimeridianUncertainCount,
       props.output.status?.poleUncertainCount,
+      props.output.status?.overflow,
+      props.output.status?.candidateOverflow,
       ...getStatisticsInputs(props)
     ]);
     const nodes = getRegionLonLatPolygonCheckNodes(
@@ -509,8 +515,52 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         summary
       })
     );
+    // Stage 7: named status scalars from the flags word (the summary node binds eight buffers).
+    const {overflow, candidateOverflow} = props.output.status ?? {};
+    if (overflow || candidateOverflow) {
+      nodes.push(getStatusNode(graph, {id: `${id}-status`, summary, overflow, candidateOverflow}));
+    }
     return nodes;
   }
+}
+
+/** Builds the node that publishes the summary flag bits as named status scalars. */
+function getStatusNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    summary: GraphDataView<'uint32'>;
+    overflow?: GraphDataView<'uint32'>;
+    candidateOverflow?: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const {overflow, candidateOverflow} = props;
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'summary', view: props.summary, type: 'u32', access: 'read'}
+  ];
+  if (overflow) {
+    bindings.push({name: 'overflow', view: overflow, type: 'u32', access: 'read_write'});
+  }
+  if (candidateOverflow) {
+    bindings.push({
+      name: 'candidateOverflow',
+      view: candidateOverflow,
+      type: 'u32',
+      access: 'read_write'
+    });
+  }
+  const {flags} = GPU_REGION_STATISTICS_SUMMARY_LAYOUT;
+  const {selectionTruncated, regionTruncated, candidatesTruncated} = GPU_REGION_STATISTICS_FLAGS;
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: `status-${overflow ? 'overflow' : 'none'}-${candidateOverflow ? 'candidate' : 'none'}`,
+    bindings,
+    invocationCount: 1,
+    body: `let flags = summary[summaryOffset + ${flags}u];
+  ${overflow ? `overflow[overflowOffset] = select(0u, 1u, (flags & ${selectionTruncated | regionTruncated}u) != 0u);` : ''}
+  ${candidateOverflow ? `candidateOverflow[candidateOverflowOffset] = select(0u, 1u, (flags & ${candidatesTruncated}u) != 0u);` : ''}`
+  });
 }
 
 /** Returns every read-only view used by a region statistics contributor. */

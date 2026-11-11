@@ -21,7 +21,7 @@ import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-no
 import {
   captureGraphCommandNodes,
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -72,13 +72,22 @@ export function getGPUAdjacencyMatrixParameterValues(
   return new Uint32Array([rowStart, rowEnd, colStart, colEnd]);
 }
 
-/** Fixed-point weight contributed by one edge: `clamp(round(weight * scale), 0, 2^32 - 1)`. */
+/**
+ * Fixed-point weight contributed by one edge, exactly as the GPU kernel computes it: the float32
+ * product `weight * scale`, rounded half up, clamped to `[0, 2^32 - 1]` (a product of 2^32 - 256
+ * or more gives `2^32 - 1`). With a power-of-two scale the product is exact; with another scale
+ * the product is rounded to float32 before the half-up rounding.
+ */
 export function getGPUAdjacencyMatrixFixedWeight(weight: number, scale: number): number {
-  const scaled = Math.fround(weight) * scale;
+  const scaled = Math.fround(Math.fround(weight) * Math.fround(scale));
   if (!(scaled > 0)) {
     return 0;
   }
-  return Math.min(Math.floor(scaled + 0.5), 0xffffffff);
+  if (scaled >= 4294967040) {
+    return 0xffffffff;
+  }
+  const whole = Math.floor(scaled);
+  return whole + (scaled >= whole + 0.5 ? 1 : 0);
 }
 
 /**
@@ -150,7 +159,8 @@ export type GPUAdjacencyMatrixProps = {
  * the next encoding rewrites every bin, with no recompilation.
  *
  * Counts are exact `u32` atomic adds. Weight sums are fixed-point `u32` atomic adds of
- * `round(weight * weightScale)`; integer addition is associative, so results are bit-identical
+ * `round(weight * weightScale)` (the float32 product, rounded half up, which
+ * `getGPUAdjacencyMatrixFixedWeight` reproduces exactly); integer addition is associative, so results are bit-identical
  * regardless of thread order. The cost is a quantization of at most half a step per edge and
  * wraparound at 2^32 total (4,194,304 units of weight per cell at the default scale). Float
  * atomics are not used. Dead nodes keep their matrix positions but write no cells. Maxima are
@@ -194,13 +204,13 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length !== length) {
         throw new Error(`${id} ${name} must contain ${length} rows`);
       }
     }
     if (props.parameters) {
-      validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
       if (props.parameters.length < GPU_ADJACENCY_MATRIX_PARAMETER_LENGTH) {
         throw new Error(`${id} parameters must contain at least four uint32 rows`);
       }
@@ -216,7 +226,7 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['uint32'], `${id} output.${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
       if (
         name === 'maximumCount' || name === 'maximumWeightSum'
           ? view.length < 1
@@ -404,15 +414,20 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
           declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
 const RESOLUTION: u32 = ${resolution}u;
 const WEIGHT_SCALE: f32 = ${Math.fround(this.weightScale)};
+// Rounds the float32 product half up. The product feeds only floor() and comparisons, so no
+// compiler can fuse it into an addition, and above 2^23 (where every float32 is an integer and
+// adding 0.5 would round to the even neighbour) the product is returned as it is.
 fn fixedWeight(weight: f32) -> u32 {
-  let scaled = weight * WEIGHT_SCALE + 0.5;
-  if (!(scaled > 0.5)) {
+  let scaled = weight * WEIGHT_SCALE;
+  if (!(scaled > 0.0)) {
     return 0u;
   }
   if (scaled >= 4294967040.0) {
     return 0xffffffffu;
   }
-  return u32(floor(scaled));
+  let whole = floor(scaled);
+  let roundsUp = whole < 8388608.0 && scaled >= whole + 0.5;
+  return u32(whole) + select(0u, 1u, roundsUp);
 }
 fn getBin(position: u32, start: u32, end: u32) -> u32 {
   return (position - start) * RESOLUTION / (end - start);

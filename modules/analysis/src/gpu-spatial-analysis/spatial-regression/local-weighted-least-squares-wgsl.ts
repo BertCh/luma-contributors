@@ -56,53 +56,33 @@ fn getLocalKernelWeight(distance: f32, bandwidth: f32, isBisquare: bool) -> f32 
 /**
  * WGSL of the diagonally equilibrated Cholesky solve of a symmetric positive definite `size x size`
  * system held in function-local arrays (lower triangle, row-major). Requires
- * `getCholeskyWGSL(size)` and `isFiniteBits` in the same module. Equilibration (`s_i = 1 /
- * sqrt(A_ii)`) makes the factorization insensitive to the scale of each design column.
+ * `getCholeskyWGSL(size)` (which declares the shared `factorDenseCholesky_size` of `analysis-core`)
+ * and `isFiniteValue` in the same module. Equilibration (`s_i = 1 / sqrt(A_ii)`) makes the
+ * factorization insensitive to the scale of each design column.
  *
- * - `factorEquilibrated_size(a, scale) -> bool` fills `scale` and factors `S A S`; false when a
- *   diagonal is not positive and finite or a Cholesky pivot of the unit-diagonal matrix is below
- *   `GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE` (the OLS limit: a column within `1 - 1e-6` of
- *   the span of the earlier ones, so GWR reports `SINGULAR` where OLS reports status 1).
+ * - `factorEquilibrated_size(a, scale) -> bool` fills `scale` and factors `S A S` with
+ *   `factorDenseCholesky_size(a, size, true, limit^2)`; false when an entry is not finite, a
+ *   diagonal is not positive, or the pivot ratio of the unit-diagonal matrix is below the square of
+ *   `GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE` (the OLS limit, a factor pivot of `1e-3`: a column
+ *   within `1 - 1e-6` of the span of the earlier ones, so GWR reports `SINGULAR` where OLS reports
+ *   status 1).
  * - `solveEquilibrated_size(a, scale, vector)` solves `A x = vector` in place.
  * - `inverseDiagonalEquilibrated_size(a, scale, column) -> f32` is `(A^-1)[column][column]`.
  *
  * @internal
  */
 export function getEquilibratedCholeskyWGSL(size: number): string {
+  const minimumPivotRatio = getWGSLFloatLiteral(GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE ** 2);
   return /* wgsl */ `
 fn factorEquilibrated_${size}(a: ptr<function, array<f32, ${size * size}>>, scale: ptr<function, array<f32, ${size}>>) -> bool {
-  for (var column = 0u; column < ${size}u; column++) {
-    let diagonal = (*a)[column * ${size}u + column];
-    if (!(diagonal > 0.0) || !isFiniteBits(diagonal)) {
-      return false;
-    }
-    (*scale)[column] = 1.0 / sqrt(diagonal);
-  }
-  for (var row = 0u; row < ${size}u; row++) {
-    for (var column = 0u; column <= row; column++) {
-      (*a)[row * ${size}u + column] = (*a)[row * ${size}u + column] * (*scale)[row] * (*scale)[column];
-    }
-  }
-  if (!choleskyFactor_${size}(a)) {
-    return false;
-  }
-  // Pivots are measured on the unit-diagonal (correlation) matrix, as in OLS.
-  for (var column = 0u; column < ${size}u; column++) {
-    if (!((*a)[column * ${size}u + column] >= ${getWGSLFloatLiteral(GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE)})) {
-      return false;
-    }
-  }
-  return true;
+  let factorization = factorDenseCholesky_${size}(a, ${size}u, true, ${minimumPivotRatio});
+  *scale = factorization.scale;
+  return factorization.status == 0u;
 }
 
 fn solveEquilibrated_${size}(a: ptr<function, array<f32, ${size * size}>>, scale: ptr<function, array<f32, ${size}>>, vector: ptr<function, array<f32, ${size}>>) {
-  for (var column = 0u; column < ${size}u; column++) {
-    (*vector)[column] = (*vector)[column] * (*scale)[column];
-  }
-  choleskySolve_${size}(a, vector);
-  for (var column = 0u; column < ${size}u; column++) {
-    (*vector)[column] = (*vector)[column] * (*scale)[column];
-  }
+  var factorization = DenseCholesky_${size}(*scale, ${size}u, 0u, 1.0);
+  solveDenseCholesky_${size}(a, &factorization, vector);
 }
 
 fn inverseDiagonalEquilibrated_${size}(a: ptr<function, array<f32, ${size * size}>>, scale: ptr<function, array<f32, ${size}>>, column: u32) -> f32 {

@@ -301,4 +301,16 @@ it('GPUMapMatching: the log-likelihood of a long track stays accurate as scores 
     (pointCount - 1) * -Math.log(beta);
   expect(Math.abs(expected)).toBeGreaterThan(9e6);
   expect(Math.abs(result.logLikelihoods[0] - expected)).toBeLessThan(8);
+  // The size discriminates: a plain float32 running sum of the same per-step terms (which is
+  // also what a Kahan or Neumaier sum becomes when the shader compiler folds its correction
+  // away, as the Metal test device does) is off by far more than the tolerance above.
+  let plainSum = 0;
+  result.snapDistances.forEach((distance, index) => {
+    const term =
+      emissionConstant - 0.5 * (distance / sigma) ** 2 - (index > 0 ? Math.log(beta) : 0);
+    plainSum = Math.fround(plainSum + Math.fround(term));
+  });
+  // Measured on the test device: the plain sum is 236.6 off, the matcher 0.6 (one ULP is 1).
+  expect(Math.abs(plainSum - expected)).toBeGreaterThan(100);
+  expect(Math.abs(result.logLikelihoods[0] - expected)).toBeLessThan(1.5);
 });

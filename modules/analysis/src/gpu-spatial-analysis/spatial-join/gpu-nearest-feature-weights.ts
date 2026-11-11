@@ -22,7 +22,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateCapacity
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -31,6 +31,7 @@ import {
   type GPUSpatialWeightsOutput,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import {GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR} from '../neighbor-search/neighbor-search-parameters';
 import {GPU_SPATIAL_JOIN_NO_FEATURE} from './spatial-join-types';
 import {validateStatusScalars} from './spatial-join-geometry';
 
@@ -90,7 +91,9 @@ export type GPUNearestFeatureWeightsProps = {
   power?: number;
   /**
    * Lower bound on the distance in the inverse-distance rule, so coincident features get a finite
-   * weight (libpysal would divide by zero). A positive finite number. Defaults to `1e-6`.
+   * weight (libpysal would divide by zero). A positive finite number. Defaults to `1e-6`, the
+   * default of `GPUNeighborSearch` inverse-distance weights too: coincident features weigh
+   * `1e6^power`.
    */
   distanceFloor?: number;
   /**
@@ -148,8 +151,8 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     validateCapacity(id, 'slotCapacity', slotCapacity, 1, MAXIMUM_SLOTS);
     this.k = props.k ?? (props.excludeSelf ? Math.max(slotCapacity - 1, 1) : slotCapacity);
     validateCapacity(id, 'k', this.k, 1, slotCapacity);
-    validatePackedView(props.neighborIds, ['uint32'], `${id} neighborIds`);
-    validatePackedView(props.neighborCounts, ['uint32'], `${id} neighborCounts`);
+    validateSinglePackedView(props.neighborIds, ['uint32'], `${id} neighborIds`);
+    validateSinglePackedView(props.neighborCounts, ['uint32'], `${id} neighborCounts`);
     this.rows = props.neighborCounts.length;
     if (this.rows < 1) {
       throw new Error(`${id} neighborCounts needs at least one row`);
@@ -162,7 +165,7 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
       throw new Error(`${id} weightType must be 'binary' or 'inverse-distance'`);
     }
     if (props.neighborDistances) {
-      validatePackedView(props.neighborDistances, ['float32'], `${id} neighborDistances`);
+      validateSinglePackedView(props.neighborDistances, ['float32'], `${id} neighborDistances`);
       if (props.neighborDistances.length !== props.neighborIds.length) {
         throw new Error(`${id} neighborDistances needs one row per slot`);
       }
@@ -234,7 +237,7 @@ const KEEP: u32 = ${k}u;
 const EXCLUDE_SELF: bool = ${props.excludeSelf === true};
 const NO_FEATURE: u32 = ${GPU_SPATIAL_JOIN_NO_FEATURE}u;
 const POWER: f32 = ${getWGSLFloatLiteral(props.power ?? 1)};
-const FLOOR: f32 = ${getWGSLFloatLiteral(props.distanceFloor ?? 1e-6)};`;
+const FLOOR: f32 = ${getWGSLFloatLiteral(props.distanceFloor ?? GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR)};`;
     const inputBindings = [
       {name: 'ids', view: props.neighborIds, type: 'u32' as const, access: 'read' as const},
       {

@@ -16,7 +16,7 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../../../src/analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPUBoundedResultStatusPort,
@@ -180,7 +180,7 @@ function validatePolygons(id: string, name: string, polygons: PackedPolygons): v
   if (polygons.kind !== 'polygons') {
     throw new Error(`${id} ${name}.kind must be polygons`);
   }
-  validatePackedView(polygons.positions, ['float32x2'], `${id} ${name}.positions`);
+  validateSinglePackedView(polygons.positions, ['float32x2'], `${id} ${name}.positions`);
   for (const [field, view] of [
     ['featureOffsets', polygons.featureOffsets],
     ['polygonOffsets', polygons.polygonOffsets],
@@ -298,7 +298,7 @@ export class LegacyGPUPolygonOverlay implements GPUCommandNodeProducer {
       throw new Error(`${id} output polygon offsets and source IDs must share one ring capacity`);
     }
     const boundary = output.boundary;
-    validatePackedView(boundary.endpoints, ['float32x4'], `${id} output.boundary.endpoints`);
+    validateSinglePackedView(boundary.endpoints, ['float32x4'], `${id} output.boundary.endpoints`);
     for (const [name, view] of [
       ['operandIds', boundary.operandIds],
       ['sourceFeatureIds', boundary.sourceFeatureIds]

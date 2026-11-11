@@ -151,6 +151,14 @@ it('GPUTerrainHeightAboveDrainage validates its props', () => {
   );
   expect(() => hand({output: {status: {converged: view('uint32', 2)}}})).toThrow(/one row/);
   expect(() => hand({output: {status: {iterationCount: view('uint32', 2)}}})).toThrow(/one row/);
+  expect(() => hand({output: {status: {iterationLimitReached: view('uint32', 2)}}})).toThrow(
+    /one row/
+  );
+  expect(
+    hand({id: 'limit', output: {status: {iterationLimitReached: view('uint32', 1)}}})
+      .getCommandNodes(graph)
+      .map(node => node.id)
+  ).toContain('limit-pointer-limit');
   expect(() => hand({maximumIterations: 0})).toThrow(/maximumIterations/);
   expect(() => hand({maximumIterations: 2000})).toThrow(/maximumIterations/);
   expect(() =>

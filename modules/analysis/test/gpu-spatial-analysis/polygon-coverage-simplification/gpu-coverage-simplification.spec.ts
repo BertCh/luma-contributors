@@ -317,7 +317,11 @@ it('GPUCoverageSimplification repairs crossings of simplified arcs and keeps rin
   // not (3 invalid polygons, coverage_is_valid false), and the repaired result passes
   // shapely.is_valid for every polygon and shapely.coverage_is_valid (no gaps, no overlaps).
   // Shapely's own coverage_simplify keeps 212 vertices here (area-based), the repair keeps 118.
-  expect(repaired.topologyStats).toEqual([12, 0, 18, 0]);
+  // The first count is 12 crossing pairs plus 5 spans whose shortcut passes over a kept vertex of
+  // a neighbour (the sweep test, review 2026-11-10 polygon-topology-02; it was 12 before that
+  // test existed). The restored and kept counts did not change, so on this scene the sweep test
+  // restores no vertex that the crossing repair had not.
+  expect(repaired.topologyStats).toEqual([17, 0, 18, 0]);
   expect(kept(repaired)).toBe(118);
   // The strip corners are nodes of the coverage and are always kept.
   const nodeVertices = polygons.flatMap(([ring]) =>
@@ -489,4 +493,208 @@ it('GPUCoverageSimplification simplifyBoundary false keeps every unshared vertex
   }
   expect(boundaryCount).toBeGreaterThan(0);
   expect(boundaryDropped).toBeGreaterThan(0);
+});
+
+/** Even-odd containment of a point in a ring, float64 (the test points are far from every edge). */
+function isInsideRing(point: Point, ring: readonly Point[]): boolean {
+  let inside = false;
+  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
+    const [ax, ay] = ring[previous];
+    const [bx, by] = ring[index];
+    if (ay > point[1] !== by > point[1]) {
+      if (point[0] < ((bx - ax) * (point[1] - ay)) / (by - ay) + ax) {
+        inside = !inside;
+      }
+    }
+  }
+  return inside;
+}
+
+function getOutputRings(result: Result): Point[][] {
+  const rings: Point[][] = [];
+  for (let ring = 0; ring + 1 < result.ringOffsets.length; ring++) {
+    const vertices: Point[] = [];
+    for (let vertex = result.ringOffsets[ring]; vertex < result.ringOffsets[ring + 1]; vertex++) {
+      vertices.push([result.positions[2 * vertex], result.positions[2 * vertex + 1]]);
+    }
+    rings.push(vertices);
+  }
+  return rings;
+}
+
+/**
+ * The scene of math correctness review 2026-11-10, polygon-topology-02. Polygons A (left, with a
+ * triangular bulge to (3, 5)) and B (right) share the arc (0,0), (0,4), (3,5), (0,6), (0,10). A
+ * small island C sits inside the bulge, so A has a hole there.
+ */
+function createSweptIsland(): OraclePolygons {
+  const island: Point[] = [
+    [0.5, 4.8],
+    [1.5, 5],
+    [0.5, 5.2]
+  ];
+  const left: Point[] = [
+    [-10, 0],
+    [0, 0],
+    [0, 4],
+    [3, 5],
+    [0, 6],
+    [0, 10],
+    [-10, 10]
+  ];
+  const right: Point[] = [
+    [0, 0],
+    [10, 0],
+    [10, 10],
+    [0, 10],
+    [0, 6],
+    [3, 5],
+    [0, 4]
+  ];
+  return [[left, [...island].reverse()], [right], [island]];
+}
+
+it('GPUCoverageSimplification does not sweep an arc over an island (review 02)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const polygons = createSweptIsland();
+  // Douglas-Peucker at tolerance 3.5 straightens the shared arc to x = 0: the farthest vertex,
+  // (3, 5), is 3 units from the chord. No simplified segment crosses another, yet the island
+  // would then lie in B while A keeps its hole outside its own shell. A valid result keeps every
+  // island vertex inside A's shell and outside B's.
+  const result = await runCoverage(device, polygons, 3.5, undefined, 4);
+  expect(result.overflow).toBe(0);
+  const [leftShell, leftHole, rightShell, island] = getOutputRings(result);
+  expect(island.length).toBe(3);
+  expect(leftHole.length).toBe(3);
+  for (const vertex of island) {
+    expect(isInsideRing(vertex, leftShell), `island vertex ${vertex} in A`).toBe(true);
+    expect(isInsideRing(vertex, rightShell), `island vertex ${vertex} in B`).toBe(false);
+  }
+  // The sweep is reported with the crossings: one before repair, none left, one vertex restored.
+  expect(result.topologyStats[0]).toBe(1);
+  expect(result.topologyStats[1]).toBe(0);
+  expect(result.topologyStats[2]).toBeGreaterThanOrEqual(1);
+  // The shared arc is still simplified: the bulge keeps its tip and drops (0, 4) and (0, 6).
+  expect(leftShell).toEqual([
+    [-10, 0],
+    [0, 0],
+    [3, 5],
+    [0, 10],
+    [-10, 10]
+  ]);
+  expect(rightShell).toEqual([
+    [0, 0],
+    [10, 0],
+    [10, 10],
+    [0, 10],
+    [3, 5]
+  ]);
+  // Without the island the same tolerance straightens the arc, as before.
+  const plain = await runCoverage(device, [[polygons[0][0]], polygons[1]], 3.5, undefined, 4);
+  const [plainLeft] = getOutputRings(plain);
+  expect(plainLeft).toEqual([
+    [-10, 0],
+    [0, 0],
+    [0, 10],
+    [-10, 10]
+  ]);
+  expect(plain.topologyStats.slice(0, 3)).toEqual([0, 0, 0]);
+});
+
+/** Two squares of the given side, side by side at `northing`, with a vertex on the shared side. */
+async function runProjectedSquares(
+  device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
+  side: number,
+  northing: number,
+  snapTolerance: number
+) {
+  const left: Point[] = [
+    [0, northing],
+    [side, northing],
+    [side, northing + side / 2],
+    [side, northing + side],
+    [0, northing + side]
+  ];
+  const right: Point[] = [
+    [side, northing],
+    [2 * side, northing],
+    [2 * side, northing + side],
+    [side, northing + side],
+    [side, northing + side / 2]
+  ];
+  const layout = flattenPolygons([[left], [right]]);
+  const vertexCount = layout.positions.length / 2;
+  const rig = new WeightsRig(device);
+  const outputPositions = rig.output('float32x2', vertexCount);
+  const outputOffsets = rig.output('uint32', 3);
+  const overflow = rig.output('uint32', 1);
+  const uncertainCount = rig.output('uint32', 1);
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'coverage-tolerance-projected',
+    format: 'float32',
+    length: 4,
+    values: getGPULineSimplificationParameterValues({tolerance: 1})
+  });
+  rig.run(
+    new GPUCoverageSimplification({
+      positions: rig.input(layout.positions, 'float32x2', vertexCount),
+      ringOffsets: rig.input(layout.ringOffsets, 'uint32', layout.ringOffsets.length),
+      polygonOffsets: rig.input(layout.polygonOffsets, 'uint32', layout.polygonOffsets.length),
+      featureOffsets: rig.input(layout.featureOffsets, 'uint32', layout.featureOffsets.length),
+      parameters: parameters.importToGraph(rig.graph),
+      snapTolerance,
+      output: {
+        positions: outputPositions.view,
+        ringOffsets: outputOffsets.view,
+        status: {overflow: overflow.view, uncertainCount: uncertainCount.view}
+      }
+    })
+  );
+  const result = {
+    offsets: Array.from(await readUint32(outputOffsets.buffer, 3)),
+    coordinates: await readFloat32(outputPositions.buffer, 2 * vertexCount),
+    overflow: (await readUint32(overflow.buffer, 1))[0],
+    uncertainCount: (await readUint32(uncertainCount.buffer, 1))[0]
+  };
+  parameters.destroy();
+  rig.destroy();
+  return result;
+}
+
+it('GPUCoverageSimplification snap keys follow the extent at projected coordinates (review 03)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Two 100 m squares side by side at a northing of 3,000,000 m, with an extra vertex on the shared
+  // side, 1 mm snap tolerance. Absolute snap keys gave both northings one key, so every vertex of
+  // a side was one point and no edge survived.
+  const northing = 3000000;
+  const run = await runProjectedSquares(device, 100, northing, 0.001);
+  expect(run.overflow).toBe(0);
+  expect(run.uncertainCount).toBe(0);
+  // Each square keeps its four corners; the collinear vertex on the shared side is dropped.
+  expect(run.offsets).toEqual([0, 4, 8]);
+  const kept: Point[] = [];
+  for (let vertex = 0; vertex < 8; vertex++) {
+    kept.push([run.coordinates[2 * vertex], run.coordinates[2 * vertex + 1] - northing]);
+  }
+  expect(kept).toEqual([
+    [0, 0],
+    [100, 0],
+    [100, 100],
+    [0, 100],
+    [100, 0],
+    [200, 0],
+    [200, 100],
+    [100, 100]
+  ]);
+  // Squares of 10,000 m: the two vertices at x = 20000 are 2e7 steps of 1 mm from the first
+  // vertex, past the 2^24 steps float32 can key exactly. They are counted in `uncertainCount`;
+  // `overflow` is for dropped rows only (fix review fr-geometry-07).
+  const wide = await runProjectedSquares(device, 10000, northing, 0.001);
+  expect(wide.uncertainCount).toBe(2);
+  expect(wide.overflow).toBe(0);
+  // Without a snap tolerance there is no range.
+  const exact = await runProjectedSquares(device, 10000, northing, 0);
+  expect(exact.uncertainCount).toBe(0);
 });

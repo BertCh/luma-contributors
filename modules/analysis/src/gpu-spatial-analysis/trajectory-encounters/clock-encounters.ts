@@ -20,7 +20,7 @@ import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/in
  * Properties for {@link addClockEncounters}.
  *
  * The encounter options (`distance`, `cellSize`, `bounds`, `hitCapacity`, `output`) are those of
- * {@link GPUTrajectoryEncountersProps}; `samples`, `trackCount`, `bucketCount` and `trackValid`
+ * {@link GPUTrajectoryEncountersProps}; `samples`, `trackCount`, `bucketCount` and `mask`
  * are derived. Per-frame (no recompile): every input buffer, `clock` (start and step) and
  * `distance`. Compile-time: view lengths, `bucketCount`, `cellSize`, `bounds`, `hitCapacity`, the
  * output capacity, and the time format.
@@ -28,7 +28,7 @@ import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/in
 export type AddClockEncountersProps = GPUTrajectoryGeometryFields &
   Omit<
     GPUTrajectoryEncountersProps,
-    'samples' | 'trackCount' | 'bucketCount' | 'trackValid' | 'bucketTimes' | 'output'
+    'samples' | 'trackCount' | 'bucketCount' | 'mask' | 'bucketTimes' | 'output'
   > & {
     /** Prefix for generated node and transient IDs. Defaults to `'clock-encounters'`. */
     id?: string;

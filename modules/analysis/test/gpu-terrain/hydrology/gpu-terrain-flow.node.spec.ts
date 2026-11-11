@@ -158,6 +158,13 @@ it('GPUTerrainFlow validates its props', () => {
     length: number
   ) => createTransientView(graph, name, format, length);
   expect(() => create({grid: {...GRID, width: 0}})).toThrow(/dimensions/);
+  // A sheared grid has two different diagonal step lengths: rejected, as GPUCostDistance does. A
+  // rotated grid (orthogonal axes) and a rows-north grid pass.
+  expect(() => create({grid: {...GRID, affine: [1, 0.5, 0, 0, -1, 0]}})).toThrow(
+    /^terrain-flow grid\.affine must have orthogonal pixel axes/
+  );
+  expect(() => create({grid: {...GRID, affine: [0.6, 0.8, 0, 0.8, -0.6, 0]}})).not.toThrow();
+  expect(() => create({grid: {...GRID, affine: [1, 0, 0, 0, 1, 0]}})).not.toThrow();
   expect(() => create({output: {flowDirections: undefined}})).toThrow(/at least one output/);
   expect(() => create({parameters: view('s7', 'float32', 7)})).toThrow(/parameters/);
   expect(() => create({output: {flowDirections: view('short', 'uint32', 29)}})).toThrow(

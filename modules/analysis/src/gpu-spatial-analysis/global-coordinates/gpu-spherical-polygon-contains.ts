@@ -16,7 +16,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getReadPoint3WGSL} from '../shared/spatial-wgsl-point-helpers';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
@@ -97,14 +97,14 @@ export class GPUSphericalPolygonContains implements GPUCommandNodeProducer {
     if (props.hemisphereCenter)
       assertUnitVector(props.hemisphereCenter, this.id, 'hemisphereCenter');
     for (const view of [props.positions, props.queries])
-      validatePackedView(view, ['float32x3'], this.id);
+      validateSinglePackedView(view, ['float32x3'], this.id);
     for (const view of [
       props.ringOffsets,
       props.polygonOffsets,
       props.polygonIndices,
       ...Object.values(props.output)
     ])
-      validatePackedView(view, ['uint32'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
     validateRequirement(
       this.id,
       props.ringOffsets.length >= 1 && props.polygonOffsets.length >= 1,

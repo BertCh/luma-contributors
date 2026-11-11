@@ -12,6 +12,7 @@ import {
 import type {GPUMultipleTestingMethod} from '../../../src/analysis-core/contracts/index';
 import {
   computeHotSpotOracle,
+  computeLocalMoranOracle,
   createAutocorrelatedScene,
   createDistanceBandWeights,
   createSeededRandom,
@@ -618,3 +619,84 @@ it('GPUHotSpotAnalysis centers large-offset values with a second-pass mean', asy
     harness.destroy();
   }
 }, 120000);
+
+// spatial-statistics-07: the centered values are the stored first-pass deviations minus their
+// mean, as in GPUGlobalSpatialStatistics. Subtracting the corrected mean rounded to one f32 from
+// the raw value left every centered value on the f32 grid of the raw values: at 1e7 that grid is
+// 1, a mean error of up to half a unit, which moved z by about 0.5 sqrt(k) / s.
+for (const contributor of ['hot-spot', 'local-moran'] as const) {
+  it(`${contributor} z-scores match binary64 for integer values near 1e7`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const scene = createAutocorrelatedScene(62, 3000, [6]);
+    // Whole numbers near 1e7 (the f32 grid there is 1) with a spread of a few units.
+    const values = Float32Array.from(scene.values, value => 1e7 + Math.round(value - 100));
+    const weights = createDistanceBandWeights(scene.positions, 6);
+    const harness = createSpatialAutocorrelationHarness(device, {
+      contributor,
+      scene: {values},
+      weights: toCsr(weights)
+    });
+    try {
+      const result = await harness.run();
+      const oracle =
+        contributor === 'hot-spot'
+          ? computeHotSpotOracle({values, weights})
+          : computeLocalMoranOracle({values, weights});
+      expect(Math.sqrt(oracle.moments.variance)).toBeLessThan(20);
+      expect(isClose(result.globalStatistics[2], oracle.moments.variance, 1e-4, 1e-3)).toBe(true);
+      let tested = 0;
+      let worst = 0;
+      for (const [row, expected] of oracle.zScores.entries()) {
+        if (!Number.isFinite(expected)) {
+          expect(result.zScores[row], `row ${row}`).toBeNaN();
+          continue;
+        }
+        tested++;
+        worst = Math.max(
+          worst,
+          Math.abs(result.zScores[row] - expected) / (1 + Math.abs(expected))
+        );
+      }
+      expect(tested).toBeGreaterThan(2000);
+      expect(worst, 'largest z error relative to 1 + |z|').toBeLessThan(2e-3);
+    } finally {
+      harness.destroy();
+    }
+  }, 120000);
+}
+
+// spatial-statistics-08: one floor for every analytic p-value. erfc(|z| / sqrt(2)) is below the
+// smallest f32 for |z| above about 13.2 (z = 15 gives 7e-51), so Gi* and local Moran used to
+// write exactly 0 where the global statistics and the emerging hot spots write 1.17549435e-38.
+for (const contributor of ['hot-spot', 'local-moran'] as const) {
+  it(`${contributor} p-values are floored at the smallest normal float32, never 0`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const scene = createAutocorrelatedScene(63, 3000, [6]);
+    const weights = createDistanceBandWeights(scene.positions, 6);
+    // A tight cluster of 100s around row 0 in a background near 0: row 0 and all of its neighbors
+    // are hot, so its z is far beyond 15.
+    const values = Float32Array.from({length: 3000}, (_, row) =>
+      Math.hypot(
+        scene.positions[row * 2] - scene.positions[0],
+        scene.positions[row * 2 + 1] - scene.positions[1]
+      ) < 9
+        ? 100
+        : (row % 7) * 0.01
+    );
+    const harness = createSpatialAutocorrelationHarness(device, {
+      contributor,
+      scene: {values},
+      weights: toCsr(weights)
+    });
+    try {
+      const result = await harness.run();
+      expect(Math.abs(result.zScores[0])).toBeGreaterThan(15);
+      expect(result.pValues[0]).toBe(Math.fround(1.17549435e-38));
+      expect(result.pValues.every(pValue => Number.isNaN(pValue) || pValue > 0)).toBe(true);
+    } finally {
+      harness.destroy();
+    }
+  }, 120000);
+}

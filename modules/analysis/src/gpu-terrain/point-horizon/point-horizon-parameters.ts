@@ -31,8 +31,10 @@ export const POINT_HORIZON_VISIBILITY_PROJECTION_SLOT = 11;
 export const POINT_HORIZON_PROJECTION_TAGS = {planar: 1, 'web-mercator': 2} as const;
 
 /**
- * Spherical earth radius in meters used for Web Mercator great-circle distances: the IUGG mean
- * radius `GPU_EARTH_MEAN_RADIUS_METERS` (6371008.8 m).
+ * Radius in meters of the sphere on which Web Mercator rays are traced as great circles: the IUGG
+ * mean radius `GPU_EARTH_MEAN_RADIUS_METERS` (6371008.8 m). It fixes the path of a ray and the
+ * sample lattice. Reported distances and bearings are not on this sphere: they are WGS84 ground
+ * meters and ground bearings, see {@link GPUPointHorizonProjection}.
  */
 export const GPU_POINT_HORIZON_EARTH_RADIUS = GPU_EARTH_MEAN_RADIUS_METERS;
 
@@ -46,8 +48,19 @@ export const GPU_POINT_HORIZON_EARTH_RADIUS = GPU_EARTH_MEAN_RADIUS_METERS;
  *   increase to the south). Rays follow the great circle on a sphere of radius
  *   `GPU_POINT_HORIZON_EARTH_RADIUS` (6371008.8 m), approximated piecewise: positions are linear
  *   in pixels between breakpoints whose spacing keeps the chord sagitta below
- *   `segmentTolerance` of the distance (the model of mt-image's fast horizon). Distances are
- *   spherical arc meters; the true ground size of a pixel varies with `cos(latitude)` and is
+ *   `segmentTolerance` of the distance (the model of mt-image's fast horizon). Ground distance
+ *   and bearing use the WGS84 metric at the observer latitude, the same rule as the
+ *   `'web-mercator'` row scale of `GPURasterCellSizeMode` (viewshed, line of sight, horizon,
+ *   derivatives): a sphere step along sphere azimuth `A` covers
+ *   `sqrt((N sin A)^2 + (M cos A)^2) / R` ground meters per sphere meter, with `M` the meridional
+ *   and `N` the prime-vertical radius of curvature (0.9944 to 1.0045 north-south and 1.0011 to
+ *   1.0045 east-west from equator to pole), and azimuth inputs are ground bearings, converted with
+ *   `normalize(M sin T, N cos T)`. The scale is evaluated once per ray at the observer, as the
+ *   raster-grid scale is evaluated once per row. Tangents, the curvature drop `c d^2`, the
+ *   per-frame `maximumDistance`, `targetIgnoreDistance` and the distance outputs are all in ground
+ *   meters. The topology `maximumDistance` and the sample lattice are sphere meters, so a ray
+ *   reaches `min(1, scale)` times that many ground meters (0.56% short due north at the equator).
+ *   The true ground size of a pixel varies with `cos(latitude)` and is
  *   handled by the projection, so `cellSize` only drives the sample spacing rule. The grid is in
  *   EPSG:3857 meters; the packer derives the world size (pixels per 360 degrees, for example
  *   `512 * 2^zoom`) and the Mercator ordinate of the window's top edge from it.
@@ -55,9 +68,11 @@ export const GPU_POINT_HORIZON_EARTH_RADIUS = GPU_EARTH_MEAN_RADIUS_METERS;
 export type GPUPointHorizonProjection = 'planar' | 'web-mercator';
 
 /**
- * Direction in which raster rows increase. `'south'` (default) is the image convention: row 0 is
- * the northern edge. `'north'` is for rasters stored bottom-up. Only used by `'planar'`; Web
- * Mercator windows always increase to the south.
+ * Direction in which raster rows increase. `'south'` is the image convention: row 0 is the
+ * northern edge. `'north'` is for rasters stored bottom-up. The default is the direction the grid
+ * affine states (the sign of `grid.affine[4]`), and an explicit value that contradicts the grid
+ * throws at construction. Only used by `'planar'`; Web Mercator windows always increase to the
+ * south.
  */
 export type GPUPointHorizonRowDirection = 'south' | 'north';
 
@@ -87,8 +102,9 @@ export type GPUPointHorizonTraversal = 'march' | 'pyramid';
  * square pixels and rows increasing to the south; the world size `worldPixelSize` (pixels per 360
  * degrees) is `2 * pi * a / cellSize` and the Mercator ordinate of the top edge of row 0 is
  * `northEdge / a`, with `a = 6378137` m, which equals the former `originY` form
- * `pi * (1 - 2 * originY / worldPixelSize)`. Distances are spherical arc meters on
- * `R = 6371008.8` m.
+ * `pi * (1 - 2 * originY / worldPixelSize)`. Distances are WGS84 ground meters: the arc on the
+ * sphere of `R = 6371008.8` m scaled by the ellipsoid's local metric at the observer latitude
+ * (see {@link GPUPointHorizonProjection}).
  *
  * Curvature convention: the earth drops terrain at ground distance `d` by `c * d^2` with
  * `c = (1 - k) / (2 * R)`, `R = 6371008.8` m and refraction coefficient `k`. mt-image and

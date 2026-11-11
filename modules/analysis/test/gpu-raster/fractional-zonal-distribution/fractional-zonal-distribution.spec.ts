@@ -3,7 +3,10 @@
 import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {GPURasterFractionalCoverage} from '../../../src/raster-analysis/gpu-raster-fractional-coverage';
+import {
+  GPURasterFractionalCoverage,
+  getGPURasterFractionalCoverageParameterValues
+} from '../../../src/raster-analysis/gpu-raster-fractional-coverage';
 import {GPURasterFractionalZonalDistribution} from '../../../src/raster-analysis/gpu-raster-fractional-zonal-distribution';
 import {createParityGraph} from '../../oracles/parity-wp2-geodesic-harness';
 import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
@@ -110,6 +113,11 @@ function createDistribution(device: Device, settings: Settings) {
           polygonOffsets: rig.input('polygon-offsets', [0, 2], 'uint32').view,
           ringOffsets: rig.input('ring-offsets', [0, 4, 8], 'uint32').view
         },
+        parameters: rig.input(
+          'coverage-parameters',
+          Array.from(getGPURasterFractionalCoverageParameterValues(grid)),
+          'float32'
+        ).view,
         output: {
           zoneIds: zoneIds.view,
           cellIds: cellIds.view,
@@ -592,3 +600,80 @@ it('RS01 nonbinary independent weights at 16384 rows match pinned NumPy moments 
     rig.destroy();
   }
 }, 120000);
+
+it('RS01 sums of 65536 tuples keep float32 accuracy on the GPU (striped partial sums, math review)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // The largest accepted zone. A serial float32 loop over 65536 equal terms drifts: computed
+  // with Math.fround, the serial sum of the areas (0.7 each) is off by 6.5e-4 of its value and
+  // the serial sum of the squared weights by 3.5e-4. The kernel stripes each zone over 256 partial
+  // sums and reduces them in a fixed tree, and centres the values on an anchor before the
+  // moments. This spec checks on the GPU that those sums are right to float32 accuracy; a float
+  // Kahan or Neumaier correction would not survive the shader compiler (see the math fix brief).
+  const count = 65536;
+  const fraction = Math.fround(0.7);
+  const observationWeight = Math.fround(0.1);
+  const weight = Math.fround(fraction * observationWeight);
+  // A large mean with a small spread: 100000 + k / 16, k = 0..15, each exact in float32.
+  const rig = createDistribution(device, {
+    values: Array.from({length: count}, (_, index) => 100000 + (index % 16) / 16),
+    fractions: Array(count).fill(fraction),
+    observationWeights: Array(count).fill(observationWeight),
+    probabilities: [0.5]
+  });
+  const compiled = await rig.graph.compileAsync();
+  try {
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(rig.output.status.buffer, 1)).toEqual([0]);
+    const expectRelative = (actual: number, expected: number, tolerance: number, label: string) =>
+      expect(Math.abs(actual - expected) / Math.abs(expected), label).toBeLessThan(tolerance);
+    // Each of the 256 partial sums is a serial float32 sum of 256 terms, so a few parts in a
+    // million remain; the serial sum over all 65536 terms is off by sixty times this bound.
+    const SUM_TOLERANCE = 1e-5;
+    // Float64 closed forms. Equal weights: the mean is 100000 + 15 / 32 and the population
+    // variance of k / 16 for k = 0..15 is (16^2 - 1) / 12 / 256.
+    expectRelative(
+      (await readFloat32(rig.output.weightSums.buffer, 1))[0],
+      count * weight,
+      SUM_TOLERANCE,
+      'weight sum'
+    );
+    expectRelative(
+      (await readFloat32(rig.output.squaredWeightSums.buffer, 1))[0],
+      count * weight * weight,
+      SUM_TOLERANCE,
+      'squared weight sum'
+    );
+    expectRelative(
+      (await readFloat32(rig.output.coveredArea.buffer, 1))[0],
+      count * fraction,
+      SUM_TOLERANCE,
+      'covered area'
+    );
+    expectRelative(
+      (await readFloat32(rig.output.validArea.buffer, 1))[0],
+      count * fraction,
+      SUM_TOLERANCE,
+      'valid area'
+    );
+    // One float32 ulp at 100000 is 0.0078.
+    expect(
+      Math.abs((await readFloat32(rig.output.means.buffer, 1))[0] - (100000 + 15 / 32))
+    ).toBeLessThanOrEqual(0.0079);
+    expectRelative(
+      (await readFloat32(rig.output.populationVariances.buffer, 1))[0],
+      255 / 12 / 256,
+      1e-4,
+      'population variance'
+    );
+    expectRelative(
+      (await readFloat32(rig.output.effectiveSampleSizes.buffer, 1))[0],
+      count,
+      2 * SUM_TOLERANCE,
+      'effective sample size'
+    );
+  } finally {
+    compiled.destroy();
+    rig.destroy();
+  }
+}, 240000);

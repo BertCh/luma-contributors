@@ -15,7 +15,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateGPUStorageBindingByteLength,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -123,20 +123,28 @@ export class GPUColocationQuotient implements GPUCommandNodeProducer {
       1,
       GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT
     );
-    validatePackedView(props.categories, ['uint32'], `${id} categories`);
+    validateSinglePackedView(props.categories, ['uint32'], `${id} categories`);
     validateRequirement(
       id,
       props.categories.length === this.rowCount,
       'categories length must equal the weights row count'
     );
-    validatePackedView(props.output.globalQuotients, ['float32'], `${id} output.globalQuotients`);
+    validateSinglePackedView(
+      props.output.globalQuotients,
+      ['float32'],
+      `${id} output.globalQuotients`
+    );
     validateRequirement(
       id,
       props.output.globalQuotients.length >= props.categoryCount ** 2,
       'output.globalQuotients must hold categoryCount * categoryCount entries'
     );
     if (props.output.localQuotients) {
-      validatePackedView(props.output.localQuotients, ['float32'], `${id} output.localQuotients`);
+      validateSinglePackedView(
+        props.output.localQuotients,
+        ['float32'],
+        `${id} output.localQuotients`
+      );
       validateRequirement(
         id,
         props.output.localQuotients.length >= this.rowCount * props.categoryCount,
@@ -144,7 +152,7 @@ export class GPUColocationQuotient implements GPUCommandNodeProducer {
       );
     }
     if (props.output.categoryRowCounts) {
-      validatePackedView(
+      validateSinglePackedView(
         props.output.categoryRowCounts,
         ['uint32'],
         `${id} output.categoryRowCounts`

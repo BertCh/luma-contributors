@@ -55,7 +55,9 @@ export function getNeighborWeight(
   const weightKind = parameters.weightKind ?? 'binary';
   let weight = 1;
   if (weightKind === 'inverseDistance') {
-    weight = Math.max(distance, f32(parameters.distanceFloor ?? 0)) ** -f32(parameters.power ?? 1);
+    // 1e-6 is the library default floor of inverse-distance weights.
+    weight =
+      Math.max(distance, f32(parameters.distanceFloor ?? 1e-6)) ** -f32(parameters.power ?? 1);
   } else if (weightKind === 'kernel') {
     const z = bandwidth > 0 ? distance / bandwidth : 0;
     switch (GPU_NEIGHBOR_SEARCH_KERNEL[parameters.kernel ?? 'triangular']) {
@@ -131,7 +133,12 @@ export function computeNeighborSearchOracle(
     const x = queries[query * 2];
     const y = queries[query * 2 + 1];
     let candidates: {id: number; distanceSquared: number}[] = [];
-    if (latticeValid && (!queryMask || queryMask[query] !== 0) && isInside(x, y, bounds)) {
+    // A planar cross-join query needs only finite coordinates; a self join's queries are its
+    // targets and stay inside the bounds.
+    const queryUsable = crossJoin
+      ? Number.isFinite(x) && Number.isFinite(y)
+      : isInside(x, y, bounds);
+    if (latticeValid && (!queryMask || queryMask[query] !== 0) && queryUsable) {
       for (const target of validTargets) {
         if (!crossJoin && target === query) {
           continue;

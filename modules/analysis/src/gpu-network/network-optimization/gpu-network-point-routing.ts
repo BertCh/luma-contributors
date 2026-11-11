@@ -11,11 +11,12 @@ import type {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /** Largest edge count: each query keeps one private distance array with an entry per edge. */
 const MAXIMUM_EDGE_COUNT = 128;
@@ -65,13 +66,13 @@ export class GPUNetworkPointRouting implements GPUCommandNodeProducer {
       0,
       MAXIMUM_RELAXATIONS
     );
-    validatePackedView(props.turns, ['uint32x2'], this.id);
-    validatePackedView(props.queries, ['uint32x2'], this.id);
-    validatePackedView(props.fractions, ['float32x2'], this.id);
+    validateSinglePackedView(props.turns, ['uint32x2'], this.id);
+    validateSinglePackedView(props.queries, ['uint32x2'], this.id);
+    validateSinglePackedView(props.fractions, ['float32x2'], this.id);
     for (const view of [props.costs, props.output.costs])
-      validatePackedView(view, ['float32'], this.id);
+      validateSinglePackedView(view, ['float32'], this.id);
     for (const view of [props.output.status, props.output.predecessorEdges])
-      validatePackedView(view, ['uint32'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
     validateRequirement(
       id,
       props.fractions.length === props.queries.length,
@@ -132,15 +133,15 @@ export class GPUNetworkPointRouting implements GPUCommandNodeProducer {
           }
         ],
         declarations: `const EDGE_COUNT: u32 = ${props.costs.length}u;
-fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }`,
+${IS_FINITE_VALUE_WGSL}`,
         body: `var infinityBits = 0x7f800000u; let infinity = bitcast<f32>(infinityBits);
 status[statusOffset + index] = 1u; outputCosts[outputCostsOffset + index] = infinity;
 var distances: array<f32, ${props.costs.length}>;
 for (var edge = 0u; edge < EDGE_COUNT; edge++) { distances[edge] = infinity; predecessors[predecessorsOffset + index * EDGE_COUNT + edge] = 0xffffffffu; }
 let source = queries[queriesOffset + 2u * index]; let destination = queries[queriesOffset + 2u * index + 1u];
 let sourceFraction = fractions[fractionsOffset + 2u * index]; let targetFraction = fractions[fractionsOffset + 2u * index + 1u];
-if (source >= EDGE_COUNT || destination >= EDGE_COUNT || !finite(sourceFraction) || !finite(targetFraction) || sourceFraction < 0.0 || sourceFraction > 1.0 || targetFraction < 0.0 || targetFraction > 1.0) { return; }
-for (var edge = 0u; edge < EDGE_COUNT; edge++) { if (!finite(costs[costsOffset + edge]) || costs[costsOffset + edge] < 0.0) { return; } }
+if (source >= EDGE_COUNT || destination >= EDGE_COUNT || !isFiniteValue(sourceFraction) || !isFiniteValue(targetFraction) || sourceFraction < 0.0 || sourceFraction > 1.0 || targetFraction < 0.0 || targetFraction > 1.0) { return; }
+for (var edge = 0u; edge < EDGE_COUNT; edge++) { if (!isFiniteValue(costs[costsOffset + edge]) || costs[costsOffset + edge] < 0.0) { return; } }
 for (var turn = 0u; turn < ${props.turns.length}u; turn++) { if (turns[turnsOffset + 2u * turn] >= EDGE_COUNT || turns[turnsOffset + 2u * turn + 1u] >= EDGE_COUNT) { return; } }
 var best = infinity; var targetPredecessor = 0xffffffffu;
 if (source == destination && targetFraction >= sourceFraction) { best = (targetFraction - sourceFraction) * costs[costsOffset + source]; }
@@ -150,13 +151,13 @@ for (var round = 0u; round < ${props.maximumRelaxations ?? props.costs.length}u;
   var changed = false;
   for (var turn = 0u; turn < ${props.turns.length}u; turn++) {
     let incoming = turns[turnsOffset + 2u * turn]; let outgoing = turns[turnsOffset + 2u * turn + 1u];
-    if (!finite(distances[incoming])) { continue; }
+    if (!isFiniteValue(distances[incoming])) { continue; }
     if (outgoing == destination) {
       let targetCost = distances[incoming] + targetFraction * costs[costsOffset + destination];
       if (targetCost < best) { best = targetCost; targetPredecessor = incoming; }
     }
     let candidate = distances[incoming] + costs[costsOffset + outgoing];
-    if (!finite(candidate)) { return; }
+    if (!isFiniteValue(candidate)) { return; }
     if (candidate < distances[outgoing]) { distances[outgoing] = candidate; predecessors[predecessorsOffset + index * EDGE_COUNT + outgoing] = incoming; changed = true; }
   }
   if (!changed) { converged = true; break; }

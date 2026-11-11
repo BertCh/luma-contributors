@@ -51,7 +51,7 @@ for (const scene of patchCases) {
         new GPURasterPatchMetrics({
           grid: scene.grid,
           labels: rig.input('labels', 'uint32', new Uint32Array(labels)),
-          validity: rig.input('validity', 'uint32', new Uint32Array(validity)),
+          mask: rig.input('validity', 'uint32', new Uint32Array(validity)),
           countRasterBorder: scene.countRasterBorder,
           status: {
             componentCount: componentCount.importToGraph(rig.graph),

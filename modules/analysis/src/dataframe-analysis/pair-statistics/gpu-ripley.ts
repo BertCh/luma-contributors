@@ -17,7 +17,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getPairHistogramNodes, validatePairHistogramShape} from './pair-histogram';
 import {
@@ -210,7 +210,7 @@ export class GPURipley implements GPUCommandNodeProducer {
       ['output.radii', output.radii]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length < radiusCount) {
           throw new Error(`${id} ${name} must hold radiusCount rows`);
         }
@@ -315,6 +315,11 @@ ${getStudyWindowWGSL(getStudyWindowWGSLOptions(studyWindow))}`
 // Angle of the arc of a circle of radius d (centered at distance h from a side line) outside it.
 fn getSideAngle(h: f32, d: f32) -> f32 {
   if (d > h) {
+    // A point on the side line: a quarter turn. h can be -0.0 (a coordinate of -0.0 against a
+    // bound of 0), and atan2(y, -0.0) is -pi / 2 on some adapters.
+    if (h == 0.0) {
+      return HALF_PI;
+    }
     return atan2(sqrt((d - h) * (d + h)), h);
   }
   return 0.0;
@@ -443,7 +448,7 @@ fn getPrefix(channel: u32, last: u32) -> vec2<u32> {
   };
   let mode = u32(parameters[parametersOffset + 5u] + 0.5);
   var kValue = getQuietNaN(index);
-  if (n >= 2.0 && isFiniteFloat(area) && area > 0.0) {
+  if (n >= 2.0 && isFiniteValue(area) && area > 0.0) {
     if (mode == 1u) {
       let numerator = subtract64(getPrefix(0u, index), getPrefix(1u, index));
       let borderCount = n - toFloat64(getPrefix(2u, index));
@@ -495,7 +500,7 @@ ${constantsWGSL}`,
   let maximumDistance = parameters[parametersOffset + 4u];
   let radius = maximumDistance * f32(index + 1u) / f32(RADIUS_COUNT);
   let kValue = k[kOffset + index];
-  let finite = isFiniteFloat(kValue);
+  let finite = isFiniteValue(kValue);
   let lValue = select(nan, sqrt(max(kValue, 0.0) / PI), finite);
   ${output.l ? 'l[lOffset + index] = lValue;' : ''}
   ${output.lMinusR ? 'lMinusR[lMinusROffset + index] = select(nan, lValue - radius, finite);' : ''}
@@ -506,7 +511,7 @@ ${constantsWGSL}`,
   var previousFinite = true;
   if (index > 0u) {
     previousK = k[kOffset + index - 1u];
-    previousFinite = isFiniteFloat(previousK);
+    previousFinite = isFiniteValue(previousK);
   }
   let previousRadius = maximumDistance * f32(index) / f32(RADIUS_COUNT);
   let annulusArea = PI * (radius - previousRadius) * (radius + previousRadius);

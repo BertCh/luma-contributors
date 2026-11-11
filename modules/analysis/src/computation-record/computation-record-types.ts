@@ -228,6 +228,11 @@ export type GPUComputationNode = {
   source?: string;
   /** Workgroup size in x, y and z, for compute nodes. */
   workgroupSize?: readonly [number, number, number];
+  /**
+   * Pipeline-overridable constants this node's pipeline was created with. The source ref is shared
+   * by every node with the same module text, so per-pipeline values live here.
+   */
+  constants?: Readonly<Record<string, number>>;
   /** Dispatch shape, for compute nodes. */
   dispatch?: GPUComputationDispatch;
   /** Named shader bindings, for kernels whose bindings are known. */
@@ -725,6 +730,8 @@ export type GPUComputationNodeAnnotation = {
   source?: GPUComputationSourceRef;
   /** Workgroup size. */
   workgroupSize?: readonly [number, number, number];
+  /** Pipeline override constants of this node's pipeline. */
+  constants?: Readonly<Record<string, number>>;
   /** Dispatch shape. */
   dispatch?: GPUComputationDispatch;
   /**

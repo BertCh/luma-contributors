@@ -23,7 +23,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateGPUStorageBindingByteLength,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -193,10 +193,10 @@ export class GPUPeriodIndex implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one row`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       validateViewLength(id, 'mask', props.mask, this.rowCount);
     }
-    validatePackedView(output.periods, ['uint32'], `${id} output.periods`);
+    validateSinglePackedView(output.periods, ['uint32'], `${id} output.periods`);
     validateRequirement(
       id,
       output.periods.length >= this.rowCount,
@@ -367,7 +367,7 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
       dayOfMonth: ['week', 'day', 'hour'].includes(calendarUnit),
       hour: calendarUnit === 'hour'
     };
-    validatePackedView(columns!.year, ['sint32'], `${id} columns.year`);
+    validateSinglePackedView(columns!.year, ['sint32'], `${id} columns.year`);
     const rowCount = columns!.year.length;
     for (const name of ['month', 'dayOfMonth', 'hour'] as const) {
       const view: GraphDataView | undefined = columns![name];
@@ -377,7 +377,7 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
           view !== undefined,
           `columns.${name} is required for a ${calendarUnit} step`
         );
-        validatePackedView(view!, ['uint32'], `${id} columns.${name}`);
+        validateSinglePackedView(view!, ['uint32'], `${id} columns.${name}`);
         validateViewLength(id, `columns.${name}`, view!, rowCount);
       }
     }
@@ -402,7 +402,7 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
     const {timestamps} = this.props;
     const {width, origin} = periods;
     validateRequirement(id, timestamps !== undefined, 'fixed periods need timestamps');
-    validatePackedView(timestamps!, ['uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(timestamps!, ['uint32x2'], `${id} timestamps`);
     validateRequirement(
       id,
       (typeof width === 'bigint' || Number.isSafeInteger(width)) &&

@@ -83,6 +83,11 @@ export function getSpatialJoinCandidateNodes<Parameters>(
     candidateTruncated?: GraphDataView<'uint32'>;
     /** Optional one-row flag, 1 when the candidate total exceeded `candidateCapacity`. */
     candidateOverflow?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row BVH overflow flag of `tree`. When it is nonzero every left row is flagged
+     * in `candidateTruncated` and `candidateOverflow` is 1.
+     */
+    bvhOverflow?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
   const {id, leftCount, rightCount, candidateCapacity, tree, state, candidatePairs} = props;
@@ -339,7 +344,8 @@ fn siftCandidateDown(start: u32, size: u32, value: u32) {
       candidateCapacity,
       total: state,
       candidateTruncated: props.candidateTruncated,
-      candidateOverflow: props.candidateOverflow
+      candidateOverflow: props.candidateOverflow,
+      bvhOverflow: props.bvhOverflow
     })
   );
   return nodes;

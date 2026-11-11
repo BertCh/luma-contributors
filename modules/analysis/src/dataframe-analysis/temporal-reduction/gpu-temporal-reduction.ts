@@ -25,7 +25,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {TIME_WORDS_WGSL} from '../time-window-filter/time-words';
 import {TEMPORAL_REDUCTION_WORD_DIVISION_WGSL} from './temporal-reduction-word-division';
@@ -176,11 +176,15 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one row`);
     }
     const isWordMode = props.timestamps.format === 'uint32x2';
-    validatePackedView(props.cellIds, ['uint32'], `${id} cellIds`);
-    validatePackedView(props.timestamps, [isWordMode ? 'uint32x2' : 'float32'], `${id} timestamps`);
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.cellIds, ['uint32'], `${id} cellIds`);
+    validateSinglePackedView(
+      props.timestamps,
+      [isWordMode ? 'uint32x2' : 'float32'],
+      `${id} timestamps`
+    );
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
     }
     for (const [name, view] of [
       ['cellIds', props.cellIds],
@@ -192,14 +196,14 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
       }
     }
     if (isWordMode) {
-      validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
       if (props.parameters.length < GPU_TEMPORAL_REDUCTION_WORD_PARAMETER_LENGTH) {
         throw new Error(
           `${id} parameters must hold ${GPU_TEMPORAL_REDUCTION_WORD_PARAMETER_LENGTH} uint32 values`
         );
       }
     } else {
-      validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
       if (props.parameters.length < GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH) {
         throw new Error(
           `${id} parameters must hold ${GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH} float32 values`
@@ -211,9 +215,9 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
         );
       }
     }
-    validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
+    validateSinglePackedView(output.counts, ['uint32'], `${id} output.counts`);
     for (const name of ['minimums', 'maximums', 'first', 'last'] as const) {
-      validatePackedView(output[name], ['float32'], `${id} output.${name}`);
+      validateSinglePackedView(output[name], ['float32'], `${id} output.${name}`);
     }
     for (const name of ['counts', 'minimums', 'maximums', 'first', 'last'] as const) {
       if (output[name].length < this.slotCount) {

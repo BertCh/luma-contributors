@@ -20,20 +20,20 @@ export {
 } from './spatial-clustering-parameters';
 export type {GPUSpatialClusteringSettings} from './spatial-clustering-parameters';
 export {
-  getGPUKMeansParameterValues,
-  getKMeansRestartSeed,
-  GPUKMeans,
-  GPU_KMEANS_MAXIMUM_CLUSTERS,
-  GPU_KMEANS_MAXIMUM_ITERATIONS,
-  GPU_KMEANS_MAXIMUM_RESTARTS,
-  GPU_KMEANS_PARAMETER_LENGTH
-} from './gpu-kmeans';
+  getGPUSpatialKMeansParameterValues,
+  getGPUSpatialKMeansRestartSeed,
+  GPUSpatialKMeans,
+  GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS,
+  GPU_SPATIAL_KMEANS_MAXIMUM_ITERATIONS,
+  GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS,
+  GPU_SPATIAL_KMEANS_PARAMETER_LENGTH
+} from './gpu-spatial-kmeans';
 export type {
-  GPUKMeansInitialization,
-  GPUKMeansOutput,
-  GPUKMeansProps,
-  GPUKMeansSettings
-} from './gpu-kmeans';
+  GPUSpatialKMeansInitialization,
+  GPUSpatialKMeansOutput,
+  GPUSpatialKMeansProps,
+  GPUSpatialKMeansSettings
+} from './gpu-spatial-kmeans';
 export {
   GPUHierarchicalDensityClustering,
   GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT,
@@ -43,3 +43,9 @@ export type {
   GPUHierarchicalDensityClusteringOutput,
   GPUHierarchicalDensityClusteringProps
 } from './gpu-hierarchical-density-clustering';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {computeOPTICSOnCPU, CPUOPTICSOperation} from './cpu-optics-operation';
+export type {CPUOPTICSOptions, CPUOPTICSResult} from './cpu-optics-operation';
+export {GPUOPTICSOperation} from './gpu-optics-operation';
+export type {OPTICSOperationProps} from './gpu-optics-operation';

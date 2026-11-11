@@ -124,9 +124,17 @@ it('Focal synthetic cases exercise empty windows, zero radius, minimum counts an
   const {cases} = await decodeRound4Fixture<{cases: FocalCase[]}>(loadFixture('focal-small'));
   expect(cases).toHaveLength(7);
   const zeroRadius = cases[0];
-  expect(zeroRadius.expected.counts[28]).toBe(1); // +Infinity is a value, unlike NaN.
-  expect(zeroRadius.expected.mean[28]).toBe(Infinity);
+  // Cell 28 holds +Infinity, which is nodata like NaN (every non-finite sample is, since
+  // 2026-11-10; before, the fixture counted it and reported an infinite mean).
+  expect(zeroRadius.values[28]).toBe(Infinity);
+  expect(zeroRadius.expected.counts[28]).toBe(0);
+  expect(zeroRadius.expected.mean[28]).toBeNaN();
   expect(zeroRadius.expected.standardDeviation[28]).toBeNaN();
+  // Radius 1 around the same cell: the finite neighbours are 1021, 1022 and 1029.
+  expect(cases[1].expected.counts[28]).toBe(3);
+  expect(cases[1].expected.sum[28]).toBe(3072);
+  expect(cases[1].expected.mean[28]).toBe(1024);
+  expect(cases[1].expected.range[28]).toBe(8);
   expect(cases[5].expected.counts.every(value => value === 0)).toBe(true);
   expect(cases[5].expected.mean.every(Number.isNaN)).toBe(true);
   expect(cases[1].expected.counts).toEqual(cases[4].expected.counts);

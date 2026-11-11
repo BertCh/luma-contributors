@@ -12,7 +12,7 @@ No float atomics; results are bitwise reproducible.
 
 `output.summary` is laid out by `GPU_GEOGRAPHICAL_DETECTOR_LAYOUT`: `q`, `fStatistic`
 `F = ((N - L) / (L - 1)) q / (1 - q)`, `nonCentrality`, `strataCount` `L`, `observationCount` `N`, the two degrees of freedom and
-`totalSumOfSquares`. Rows labelled `0xffffffff` or at or above `labelCapacity` are left out. A constant response gives NaN.
+`totalSumOfSquares`. Rows labelled `0xffffffff` or at or above `labelCapacity`, and rows whose value is NaN or infinite, are left out. A constant response gives NaN.
 
 The p-value is computed on the host, from the read-back summary: `getGeographicalDetectorPValue(summary)` is the upper tail of the
 non-central F distribution, summed as a Poisson mixture of incomplete beta functions in binary64 (`getNonCentralFUpperTail` is the
@@ -29,8 +29,13 @@ Reference: `geodetector` 0.2.0 (MIT) `q_statistic` and `q_significance_test`, wh
 
 ## REDCAP single linkage: `GPURedcapSingleLinkage`
 
-First-order single-linkage REDCAP (Guo 2008): the contiguity-constrained single-linkage clustering, cut at a region count that is a per-frame
-parameter. The minimum spanning tree of the contiguity graph under squared Euclidean dissimilarity of the standardised attributes holds every
+Contiguity-constrained single-linkage clustering, cut at a region count that is a per-frame parameter. It is the tree of first-order
+single-linkage REDCAP (Guo 2008) with a different partition step, so it does not return the REDCAP regions: REDCAP partitions the tree by removing,
+at each step, the edge whose removal lowers the within-region sum of squared deviations the most, which for this tree is what
+`GPUSpatialWeightsMinimumSpanningTree` followed by `GPUSkaterRegions` computes; this class removes the heaviest edges. On a path with values
+`[0, 1, 2.1, 3.3, 4.6, 6.0]` and two regions it returns `{0..4}, {5}` (within-region sum of squares 13.26) where the SSD partition is
+`{0, 1, 2}, {3, 4, 5}` (5.85). Single linkage chains, so expect single outlying rows to be split off first. Use SKATER when REDCAP regions are
+wanted. The minimum spanning tree of the contiguity graph under squared Euclidean dissimilarity of the standardised attributes holds every
 single-linkage merge, so removing its `k - c` heaviest edges (`c` trees in the forest) leaves `k` contiguous regions. It composes
 `GPUSpatialWeightsMinimumSpanningTree` (edges and dissimilarities), a stable `GPUSort` on `(cost, edge slot)`, a masked copy of the weights and the weak
 components of what remains (`createMaskedWeakComponentNodes`). Region `k` refines region `k - 1`.
@@ -72,8 +77,8 @@ two-component graph, at region counts from 1 to above the row count.
 `GPUCategoryPairCounts` counts, over the links of a weights graph, the ordered category pairs and the rows per category, with exact integer atomics
 (at most 32 categories). `GPUSpatialEntropy` builds on it: the Shannon entropy of the categories, the entropy of the origin and destination category of a link, the
 co-occurrence entropy of the ordered pair (Leibovici 2009), and the spatial mutual information
-`H(origin) + H(destination) - H(pair)` (Altieri, Cocchi and Roli 2018), with its share of the destination entropy. All in nats. Every listed slot is a link
-and weight values are ignored: use contiguity weights, or distance-band weights per distance class for the distance-class form. `output.summary` is laid out by `GPU_SPATIAL_ENTROPY_LAYOUT`.
+`H(origin) + H(destination) - H(pair)` (Altieri, Cocchi and Roli 2018), with its share of the destination entropy. All in nats. Every active slot (positive weight, another row: the shared neighbor rule) is a link;
+self slots and zero-weight slots are not, and the size of a positive weight is not used: use contiguity weights, or distance-band weights per distance class for the distance-class form. `output.summary` is laid out by `GPU_SPATIAL_ENTROPY_LAYOUT`.
 
 Entropies are float32 from exact counts and agree with binary64 to about `2e-6`. Batty's area-weighted entropy and the Altieri conditional terms are not implemented.
 Reference: the R package `spatentropy` (GPL) was not installed, so the reference is a binary64 NumPy evaluation of the definitions above (`stx08-spatial-methods.py`).

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGPUStatusPort} from '../analysis-core/contracts/status';
 import {
   getGraphOutputViews,
   validateCommandNodeBudget,
@@ -45,6 +46,11 @@ export type GPURasterSkeletonProps = {
 };
 /**
  * Zhang–Suen two-subiteration thinning. Foreground is nonzero; the exterior is background.
+ * The conditions are those of Zhang and Suen (1984) unchanged, so the result has the known
+ * properties of that algorithm: an isolated 2 x 2 block is deleted completely (each of its pixels
+ * has three neighbours and one 0-to-1 transition, and each sub-iteration removes two of them),
+ * two-pixel-thick strokes can vanish, and the ends of a thick bar are eroded. Use
+ * `GPURasterMedialAxis` when every component must keep a centre.
  * Iterations after convergence dispatch no work, and the current skeleton is always published;
  * check `status.converged` to know whether thinning finished.
  */
@@ -73,6 +79,7 @@ export class GPURasterSkeleton implements GPUCommandNodeProducer {
       'output.status.iterationLimitReached'
     );
     requireRasterLength(props.output.status.iterationCount, 1, id, 'output.status.iterationCount');
+    validateGPUStatusPort(id, props.output.status);
     const maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
     validateRequirement(
       id,

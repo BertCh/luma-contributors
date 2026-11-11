@@ -29,7 +29,12 @@ function binding(
 ): WGSLKernelBinding {
   return {name, view, access, type};
 }
-/** Pooled complete-panel diagnostic definitions in spreg 1.8.3. @internal */
+/**
+ * Pooled complete-panel diagnostic definitions in spreg 1.8.3. The variance is the OLS summary
+ * `RSS / (n - p)` (spreg `ols.sig2`), not the `RSS / n` of the cross-section LM tests.
+ *
+ * @internal
+ */
 export function getPanelDiagnosticNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   contributor: GPUSpatialPanelErrorMaximumLikelihood

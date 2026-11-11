@@ -4,4 +4,5 @@
 
 import './gpu-polygon-triangulation.spec';
 import './gpu-polygon-triangulation-monotone.spec';
+import './gpu-polygon-triangulation-search.spec';
 import './gpu-polygon-triangulation-monotone-benchmark.spec';

@@ -78,7 +78,7 @@ export type GPURasterEmbeddingZoneMeanProps = {
   zoneCount: number;
   vectors: GraphDataView<'float32'>;
   /** Per-pixel QA; zero excludes the pixel. A pixel with any non-finite component is excluded too. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** One zone id per pixel (`0xffffffff` for none); weight one. Give this or `tuples`. */
   zoneRaster?: GraphDataView<'uint32'>;
   /** Weighted pixel-to-zone tuples. Give this or `zoneRaster`. */
@@ -123,7 +123,7 @@ export class GPURasterEmbeddingZoneMean implements GPUCommandNodeProducer {
       props.vectors,
       pixelCount,
       dimensions,
-      props.validity
+      props.mask
     );
     validateRequirement(
       id,
@@ -173,10 +173,10 @@ export class GPURasterEmbeddingZoneMean implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {vectors, validity, zoneRaster, tuples} = this.props;
+    const {vectors, mask, zoneRaster, tuples} = this.props;
     return [
       vectors,
-      ...(validity ? [validity] : []),
+      ...(mask ? [mask] : []),
       ...(zoneRaster ? [zoneRaster] : []),
       ...(tuples ? [tuples.zoneIds, tuples.cellIds, tuples.fractions, tuples.status.count] : [])
     ];
@@ -202,7 +202,7 @@ export class GPURasterEmbeddingZoneMean implements GPUCommandNodeProducer {
       pixelCount,
       dimensions,
       vectors: props.vectors,
-      validity: props.validity
+      mask: props.mask
     });
     const rawMeans = output.means;
     const termCount = tuples ? tuples.zoneIds.length : pixelCount;

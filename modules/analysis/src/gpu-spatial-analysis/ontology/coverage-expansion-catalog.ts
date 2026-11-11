@@ -264,7 +264,7 @@ const COVERAGE_FAMILIES: readonly CoverageFamily[] = [
       domain: 'regional-analysis',
       stage: 'analyze',
       summary:
-        'Class and landscape summaries, patch core/proximity, grounded small and sparse (Jacobi-PCG) network resistance/current maps and common-support segregation decomposition.',
+        'Class and landscape summaries, patch core/proximity, grounded small and sparse (Jacobi-PCG) network and raster resistance/current maps and common-support segregation decomposition.',
       inputs: ['surface', 'regions', 'network', 'attributes'],
       outputs: ['attributes', 'summary'],
       coordinateModels: ['grid', 'topological'],
@@ -279,7 +279,7 @@ const COVERAGE_FAMILIES: readonly CoverageFamily[] = [
         'addPopulationSupportAlignmentRecipe'
       ],
       limitation:
-        'Global tile IDs and resident halo-free support enable patch reconciliation. Quantile counterfactuals, ID alignment and paired randomization have explicit contracts. Raster conductance adapter is an EC03-R follow-up.',
+        'Global tile IDs and resident halo-free support enable patch reconciliation. Quantile counterfactuals, ID alignment and paired randomization have explicit contracts. The raster adapter builds 4- or 8-neighbour conductances 2 / (R(a) + R(b)) / edgeLength on the GPU for one source and one sink; Circuitscape pairwise, all-to-one and one-to-all modes are not provided.',
       evidence: {
         representativeSourceRows: 65538,
         transientMemory: 'solver-matrix',

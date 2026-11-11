@@ -14,7 +14,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -93,9 +93,9 @@ export class GPUTrajectoryHampel implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {values, trackOffsets, parameters, output, windowSize} = props;
-    validatePackedView(values, ['float32'], `${id} values`);
-    validatePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
-    validatePackedView(parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(values, ['float32'], `${id} values`);
+    validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       trackOffsets.length >= 2,
@@ -113,14 +113,14 @@ export class GPUTrajectoryHampel implements GPUCommandNodeProducer {
     );
     validateMaximumCount(id, 'windowSize', windowSize, GPU_TRAJECTORY_HAMPEL_MAXIMUM_WINDOW_SIZE);
     this.halfWindow = Math.floor(windowSize / 2);
-    validatePackedView(output.filtered, ['float32'], `${id} output.filtered`);
+    validateSinglePackedView(output.filtered, ['float32'], `${id} output.filtered`);
     validateViewLength(id, 'output.filtered', output.filtered, values.length);
     if (output.flags) {
-      validatePackedView(output.flags, ['uint32'], `${id} output.flags`);
+      validateSinglePackedView(output.flags, ['uint32'], `${id} output.flags`);
       validateViewLength(id, 'output.flags', output.flags, values.length);
     }
     if (output.outlierCount) {
-      validatePackedView(output.outlierCount, ['uint32'], `${id} output.outlierCount`);
+      validateSinglePackedView(output.outlierCount, ['uint32'], `${id} output.outlierCount`);
       validateRequirement(
         id,
         output.outlierCount.length >= 1,

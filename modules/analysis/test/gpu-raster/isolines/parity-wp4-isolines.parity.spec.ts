@@ -46,7 +46,7 @@ for (const scene of lineCases) {
       new GPUIsolines({
         grid,
         values: owner.input('values', 'float32', new Float32Array(values)),
-        validity: owner.input('validity', 'uint32', new Uint32Array(validity)),
+        mask: owner.input('validity', 'uint32', new Uint32Array(validity)),
         noDataValue: -9999,
         levels: owner.input('levels', 'float32', new Float32Array(scene.levels)),
         parameters: owner.input(

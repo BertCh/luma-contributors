@@ -1,0 +1,4353 @@
+{
+ "generator": "modules/analysis/test/oracles/statistics-regression-lag-conditioning.py",
+ "versions": {
+  "python": "3.14.8",
+  "numpy": "2.5.4",
+  "scipy": "1.16.3",
+  "libpysal": "4.15.0",
+  "spreg": "1.9.1"
+ },
+ "rowCount": 600,
+ "seriesTermCount": 400,
+ "islandRows": [
+  100,
+  250,
+  477
+ ],
+ "gridPredictorCenter": 4096.0,
+ "scenes": [
+  {
+   "name": "high-fit-slope-200-center-10000-stream-1001",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1001,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6007434.8515625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999992203099889,
+    "slopes": [
+     199.9999992559143
+    ],
+    "intercept": 6000.00797093466,
+    "sigmaSquared": 1.588976106270768e-05,
+    "logLikelihood": 2438.004465678925,
+    "residualRatio": 2.7040572943666546e-09,
+    "standardErrors": [
+     0.008501701504987027,
+     0.00015033434318565195,
+     8.491635765915733e-07
+    ],
+    "spreg": {
+     "parameter": 0.3999992202819633,
+     "intercept": 6000.007971215196,
+     "sigmaSquared": 1.5889761062945697e-05,
+     "logLikelihood": 2438.00446567826
+    }
+   },
+   "twoStage": {
+    "parameter": 0.3999993033280905,
+    "slopes": [
+     199.99999395431055
+    ],
+    "intercept": 6000.0071399220105,
+    "standardErrors": [
+     0.008699496741753413,
+     0.00015079523499046324,
+     8.689268458034543e-07
+    ],
+    "sigmaSquared": 1.5890013555161593e-05,
+    "anselinKelejian": 0.012834564385525644,
+    "spreg": {
+     "parameter": 0.39999930332809025,
+     "intercept": 6000.007139922015,
+     "sigmaSquared": 1.5890013555159865e-05,
+     "anselinKelejian": 0.012834564386880317,
+     "standardErrors": [
+      0.008699496741752936,
+      0.00015079523499045505,
+      8.689268458034037e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-10000-stream-1002",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1002,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6007434.775390625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999999003932866,
+    "slopes": [
+     200.00001338760475
+    ],
+    "intercept": 6000.001084977275,
+    "sigmaSquared": 1.5115096249511238e-05,
+    "logLikelihood": 2452.9986569915477,
+    "residualRatio": 2.5722152536897324e-09,
+    "standardErrors": [
+     0.00829186724806111,
+     0.00014662399374065855,
+     8.282050052379948e-07
+    ],
+    "spreg": {
+     "parameter": 0.39999990306138045,
+     "intercept": 6000.0010582696095,
+     "sigmaSquared": 1.5115096493051408e-05,
+     "logLikelihood": 2452.998651793281
+    }
+   },
+   "twoStage": {
+    "parameter": 0.3999999727390491,
+    "slopes": [
+     200.0000087675372
+    ],
+    "intercept": 6000.000360794937,
+    "standardErrors": [
+     0.008484767482046511,
+     0.00014707327555662266,
+     8.474791771738366e-07
+    ],
+    "sigmaSquared": 1.5115287988744609e-05,
+    "anselinKelejian": 3.42287761443103,
+    "spreg": {
+     "parameter": 0.3999999727390491,
+     "intercept": 6000.000360794937,
+     "sigmaSquared": 1.5115287988754599e-05,
+     "anselinKelejian": 3.422877614450168,
+     "standardErrors": [
+      0.008484767482049318,
+      0.0001470732755566713,
+      8.47479177174114e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-10000-stream-1003",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1003,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6007434.529296875,
+   "lagMaximumLikelihood": {
+    "parameter": 0.40000146722502905,
+    "slopes": [
+     199.99992981288744
+    ],
+    "intercept": 5999.985154258391,
+    "sigmaSquared": 1.3858232106355827e-05,
+    "logLikelihood": 2479.042812124275,
+    "residualRatio": 2.3583051671080365e-09,
+    "standardErrors": [
+     0.007939632980492717,
+     0.00014039566447802311,
+     7.930233142823029e-07
+    ],
+    "spreg": {
+     "parameter": 0.40000147724969193,
+     "intercept": 5999.985053911347,
+     "sigmaSquared": 1.3858235732771614e-05,
+     "logLikelihood": 2479.0427322507053
+    }
+   },
+   "twoStage": {
+    "parameter": 0.4000014970965364,
+    "slopes": [
+     199.9999279052587
+    ],
+    "intercept": 5999.984855244097,
+    "standardErrors": [
+     0.008124296751634088,
+     0.00014082512012863796,
+     8.114745190557004e-07
+    ],
+    "sigmaSquared": 1.3858264686065336e-05,
+    "anselinKelejian": 0.09340969682518464,
+    "spreg": {
+     "parameter": 0.4000014970965363,
+     "intercept": 5999.984855244098,
+     "sigmaSquared": 1.3858264686061143e-05,
+     "anselinKelejian": 0.09340969681237603,
+     "standardErrors": [
+      0.008124296751632858,
+      0.00014082512012861677,
+      8.114745190555747e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-10000-stream-1004",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1004,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6007434.53515625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999997089498256,
+    "slopes": [
+     200.00002757760862
+    ],
+    "intercept": 6000.002761022134,
+    "sigmaSquared": 1.7306051992070405e-05,
+    "logLikelihood": 2412.390002018825,
+    "residualRatio": 2.94506049588333e-09,
+    "standardErrors": [
+     0.00887249799051845,
+     0.00015689119595283646,
+     8.861993708117471e-07
+    ],
+    "spreg": {
+     "parameter": 0.39999971267408485,
+     "intercept": 6000.002723742236,
+     "sigmaSquared": 1.730605247223072e-05,
+     "logLikelihood": 2412.389993186397
+    }
+   },
+   "twoStage": {
+    "parameter": 0.39999947067207686,
+    "slopes": [
+     200.00004279424076
+    ],
+    "intercept": 6000.0051461864405,
+    "standardErrors": [
+     0.009079388421673386,
+     0.00015738041095234408,
+     9.068713963177067e-07
+    ],
+    "sigmaSquared": 1.730813908146931e-05,
+    "anselinKelejian": 0.4536096726170802,
+    "spreg": {
+     "parameter": 0.39999947067207714,
+     "intercept": 6000.005146186439,
+     "sigmaSquared": 1.7308139081472977e-05,
+     "anselinKelejian": 0.45360967263122526,
+     "standardErrors": [
+      0.009079388421674342,
+      0.0001573804109523611,
+      9.068713963177987e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-10000-stream-1005",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1005,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6007434.806640625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999998259272104,
+    "slopes": [
+     200.00016489311466
+    ],
+    "intercept": 6000.0018561787965,
+    "sigmaSquared": 1.7074655599294314e-05,
+    "logLikelihood": 2416.4282953618012,
+    "residualRatio": 2.905677268856195e-09,
+    "standardErrors": [
+     0.00881297539635373,
+     0.00015583878508036237,
+     8.80254118537567e-07
+    ],
+    "spreg": {
+     "parameter": 0.3999998279044526,
+     "intercept": 6000.001836386568,
+     "sigmaSquared": 1.7074655727422877e-05,
+     "logLikelihood": 2416.4282928404373
+    }
+   },
+   "twoStage": {
+    "parameter": 0.39999969446914674,
+    "slopes": [
+     200.00017328815355
+    ],
+    "intercept": 6000.003172076303,
+    "standardErrors": [
+     0.009018104610187542,
+     0.00015631821069777267,
+     9.007501795333916e-07
+    ],
+    "sigmaSquared": 1.707529131308629e-05,
+    "anselinKelejian": 0.03430203222485162,
+    "spreg": {
+     "parameter": 0.39999969446914657,
+     "intercept": 6000.003172076304,
+     "sigmaSquared": 1.7075291313096108e-05,
+     "anselinKelejian": 0.0343020322273899,
+     "standardErrors": [
+      0.009018104610190132,
+      0.00015631821069781777,
+      9.007501795336472e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-10000-stream-1006",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1006,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6007434.490234375,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999997738625338,
+    "slopes": [
+     200.00002562205475
+    ],
+    "intercept": 6000.002066241528,
+    "sigmaSquared": 1.6463439120168756e-05,
+    "logLikelihood": 2427.364239647684,
+    "residualRatio": 2.801671712817003e-09,
+    "standardErrors": [
+     0.008653806207794722,
+     0.00015302410863827267,
+     8.643560902635504e-07
+    ],
+    "spreg": {
+     "parameter": 0.39999977751718435,
+     "intercept": 6000.002029658414,
+     "sigmaSquared": 1.6463439581445664e-05,
+     "logLikelihood": 2427.3642307428563
+    }
+   },
+   "twoStage": {
+    "parameter": 0.3999997946523427,
+    "slopes": [
+     200.00002429439857
+    ],
+    "intercept": 6000.001858135191,
+    "standardErrors": [
+     0.008855073238245742,
+     0.00015349209708849718,
+     8.844662571035214e-07
+    ],
+    "sigmaSquared": 1.6463454827597814e-05,
+    "anselinKelejian": 2.677983925576054,
+    "spreg": {
+     "parameter": 0.3999997946523429,
+     "intercept": 6000.001858135188,
+     "sigmaSquared": 1.646345482759396e-05,
+     "anselinKelejian": 2.6779839255287468,
+     "standardErrors": [
+      0.008855073238244715,
+      0.00015349209708847937,
+      8.844662571034158e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-10000-stream-1007",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1007,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6007434.62109375,
+   "lagMaximumLikelihood": {
+    "parameter": 0.39999909382971066,
+    "slopes": [
+     199.9999784565783
+    ],
+    "intercept": 6000.009007608797,
+    "sigmaSquared": 1.6356882629566376e-05,
+    "logLikelihood": 2429.3123365922315,
+    "residualRatio": 2.7835479215269496e-09,
+    "standardErrors": [
+     0.008625762853694948,
+     0.0001525280712198115,
+     8.615550560316155e-07
+    ],
+    "spreg": {
+     "parameter": 0.3999990935975011,
+     "intercept": 6000.009009933219,
+     "sigmaSquared": 1.6356882633227293e-05,
+     "logLikelihood": 2429.312336556815
+    }
+   },
+   "twoStage": {
+    "parameter": 0.3999988597159705,
+    "slopes": [
+     199.99999340726697
+    ],
+    "intercept": 6000.0113510913425,
+    "standardErrors": [
+     0.008826910709752877,
+     0.00015300387785438358,
+     8.816532956742477e-07
+    ],
+    "sigmaSquared": 1.6358897299298728e-05,
+    "anselinKelejian": 4.023044668155739,
+    "spreg": {
+     "parameter": 0.39999885971597055,
+     "intercept": 6000.0113510913425,
+     "sigmaSquared": 1.63588972992849e-05,
+     "anselinKelejian": 4.0230446681068495,
+     "standardErrors": [
+      0.008826910709749149,
+      0.00015300387785431886,
+      8.816532956738721e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-10000-stream-1008",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1008,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6007434.703125,
+   "lagMaximumLikelihood": {
+    "parameter": 0.40000020256265945,
+    "slopes": [
+     200.00004106421372
+    ],
+    "intercept": 5999.997986244842,
+    "sigmaSquared": 1.760479944399029e-05,
+    "logLikelihood": 2407.255346347275,
+    "residualRatio": 2.995899079196216e-09,
+    "standardErrors": [
+     0.008948747277885524,
+     0.0001582395909502258,
+     8.938152474020873e-07
+    ],
+    "spreg": {
+     "parameter": 0.4000002010455618,
+     "intercept": 5999.998001431016,
+     "sigmaSquared": 1.7604799540553586e-05,
+     "logLikelihood": 2407.255344909046
+    }
+   },
+   "twoStage": {
+    "parameter": 0.40000054829438786,
+    "slopes": [
+     200.00001898544505
+    ],
+    "intercept": 5999.994525464281,
+    "standardErrors": [
+     0.009158018496211496,
+     0.00015874325142787676,
+     9.147251344231737e-07
+    ],
+    "sigmaSquared": 1.760918667388274e-05,
+    "anselinKelejian": 5.95649463248374,
+    "spreg": {
+     "parameter": 0.4000005482943886,
+     "intercept": 5999.9945254642735,
+     "sigmaSquared": 1.760918667391389e-05,
+     "anselinKelejian": 5.95649463215482,
+     "standardErrors": [
+      0.009158018496219597,
+      0.00015874325142801698,
+      9.147251344239798e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-0-stream-1001",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 0.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1001,
+   "roundToGrid": true,
+   "responseShift": 0.0,
+   "responseSum": 7434.8515625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999992203107662,
+    "slopes": [
+     199.99999925586465
+    ],
+    "intercept": 0.0001740345416454403,
+    "sigmaSquared": 1.588976106270915e-05,
+    "logLikelihood": 2438.004465678792,
+    "residualRatio": 2.7040572943669052e-09,
+    "standardErrors": [
+     0.0001630412908871376,
+     0.00015033434318565195,
+     8.491635765915733e-07
+    ],
+    "spreg": {
+     "parameter": 0.3999992202819633,
+     "intercept": 0.000174034830175529,
+     "sigmaSquared": 1.5889761062945697e-05,
+     "logLikelihood": 2438.00446567826
+    }
+   },
+   "twoStage": {
+    "parameter": 0.3999993033280905,
+    "slopes": [
+     199.99999395431055
+    ],
+    "intercept": 0.00017320291615519068,
+    "standardErrors": [
+     0.00016305303181676548,
+     0.0001507952349904444,
+     8.689268458033423e-07
+    ],
+    "sigmaSquared": 1.5890013555157616e-05,
+    "anselinKelejian": 0.012834564386380655,
+    "spreg": {
+     "parameter": 0.39999930332809025,
+     "intercept": 0.00017320291676092836,
+     "sigmaSquared": 1.5890013555159865e-05,
+     "anselinKelejian": 0.012834564386880317,
+     "standardErrors": [
+      0.00016305303181677748,
+      0.00015079523499045505,
+      8.689268458034037e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-0-stream-1002",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 0.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1002,
+   "roundToGrid": true,
+   "responseShift": 0.0,
+   "responseSum": 7434.775390625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999999003831938,
+    "slopes": [
+     200.00001338824936
+    ],
+    "intercept": 8.891024211354903e-05,
+    "sigmaSquared": 1.5115096249590695e-05,
+    "logLikelihood": 2452.9986569913503,
+    "residualRatio": 2.5722152537032543e-09,
+    "standardErrors": [
+     0.00015901729723811516,
+     0.00014662399374065855,
+     8.282050052379948e-07
+    ],
+    "spreg": {
+     "parameter": 0.39999990306138045,
+     "intercept": 8.888341374913011e-05,
+     "sigmaSquared": 1.5115096493051408e-05,
+     "logLikelihood": 2452.998651793281
+    }
+   },
+   "twoStage": {
+    "parameter": 0.3999999727390491,
+    "slopes": [
+     200.00000876753725
+    ],
+    "intercept": 8.818542730537615e-05,
+    "standardErrors": [
+     0.0001590284920235876,
+     0.00014707327555657228,
+     8.474791771735429e-07
+    ],
+    "sigmaSquared": 1.5115287988734245e-05,
+    "anselinKelejian": 3.422877614421552,
+    "spreg": {
+     "parameter": 0.3999999727390491,
+     "intercept": 8.818542712329958e-05,
+     "sigmaSquared": 1.5115287988754599e-05,
+     "anselinKelejian": 3.422877614450168,
+     "standardErrors": [
+      0.00015902849202369514,
+      0.0001470732755566713,
+      8.47479177174114e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-0-stream-1003",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 0.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1003,
+   "roundToGrid": true,
+   "responseShift": 0.0,
+   "responseSum": 7434.529296875,
+   "lagMaximumLikelihood": {
+    "parameter": 0.4000014672184866,
+    "slopes": [
+     199.9999298133052
+    ],
+    "intercept": -0.00017349125237853258,
+    "sigmaSquared": 1.3858232106405583e-05,
+    "logLikelihood": 2479.042812124091,
+    "residualRatio": 2.358305167116504e-09,
+    "standardErrors": [
+     0.00015226245485143355,
+     0.00014039566447802311,
+     7.930233142823029e-07
+    ],
+    "spreg": {
+     "parameter": 0.40000147724969193,
+     "intercept": -0.0001735917344003468,
+     "sigmaSquared": 1.3858235732771614e-05,
+     "logLikelihood": 2479.0427322507053
+    }
+   },
+   "twoStage": {
+    "parameter": 0.4000014970965363,
+    "slopes": [
+     199.9999279052586
+    ],
+    "intercept": -0.00017379053912414122,
+    "standardErrors": [
+     0.0001522723678011731,
+     0.00014082512012863712,
+     8.114745190556913e-07
+    ],
+    "sigmaSquared": 1.3858264686065144e-05,
+    "anselinKelejian": 0.09340969680660727,
+    "spreg": {
+     "parameter": 0.4000014970965363,
+     "intercept": -0.00017379053883903595,
+     "sigmaSquared": 1.3858264686061143e-05,
+     "anselinKelejian": 0.09340969681237603,
+     "standardErrors": [
+      0.00015227236780115152,
+      0.00014082512012861677,
+      8.114745190555747e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-0-stream-1004",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 0.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1004,
+   "roundToGrid": true,
+   "responseShift": 0.0,
+   "responseSum": 7434.53515625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.39999970894669123,
+    "slopes": [
+     200.0000275778088
+    ],
+    "intercept": -0.00014947957843958193,
+    "sigmaSquared": 1.730605199209749e-05,
+    "logLikelihood": 2412.390002018784,
+    "residualRatio": 2.945060495887939e-09,
+    "standardErrors": [
+     0.00017015231673800452,
+     0.00015689119595283646,
+     8.861993708117471e-07
+    ],
+    "spreg": {
+     "parameter": 0.39999971267408485,
+     "intercept": -0.00014951691560316505,
+     "sigmaSquared": 1.730605247223072e-05,
+     "logLikelihood": 2412.389993186397
+    }
+   },
+   "twoStage": {
+    "parameter": 0.39999947067207714,
+    "slopes": [
+     200.00004279424078
+    ],
+    "intercept": -0.0001470927905078412,
+    "standardErrors": [
+     0.0001701734743351183,
+     0.00015738041095237498,
+     9.068713963178784e-07
+    ],
+    "sigmaSquared": 1.730813908147602e-05,
+    "anselinKelejian": 0.45360967263506324,
+    "spreg": {
+     "parameter": 0.39999947067207714,
+     "intercept": -0.00014709279112690155,
+     "sigmaSquared": 1.7308139081472977e-05,
+     "anselinKelejian": 0.45360967263122526,
+     "standardErrors": [
+      0.00017017347433510383,
+      0.0001573804109523611,
+      9.068713963177987e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-0-stream-1005",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 0.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1005,
+   "roundToGrid": true,
+   "responseShift": 0.0,
+   "responseSum": 7434.806640625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999998259255453,
+    "slopes": [
+     200.00016489322098
+    ],
+    "intercept": 0.00011545091728848433,
+    "sigmaSquared": 1.7074655599299386e-05,
+    "logLikelihood": 2416.42829536194,
+    "residualRatio": 2.9056772688570575e-09,
+    "standardErrors": [
+     0.00016901096783180277,
+     0.00015583878508036237,
+     8.80254118537567e-07
+    ],
+    "spreg": {
+     "parameter": 0.3999998279044526,
+     "intercept": 0.00011543109375811156,
+     "sigmaSquared": 1.7074655727422877e-05,
+     "logLikelihood": 2416.4282928404373
+    }
+   },
+   "twoStage": {
+    "parameter": 0.3999996944691468,
+    "slopes": [
+     200.0001732881535
+    ],
+    "intercept": 0.00011676777030800167,
+    "standardErrors": [
+     0.000169024941132147,
+     0.0001563182106978016,
+     9.007501795335535e-07
+    ],
+    "sigmaSquared": 1.707529131309257e-05,
+    "anselinKelejian": 0.0343020322229896,
+    "spreg": {
+     "parameter": 0.39999969446914657,
+     "intercept": 0.00011676777047231468,
+     "sigmaSquared": 1.7075291313096108e-05,
+     "anselinKelejian": 0.0343020322273899,
+     "standardErrors": [
+      0.00016902494113216497,
+      0.00015631821069781777,
+      9.007501795336472e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-0-stream-1006",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 0.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1006,
+   "roundToGrid": true,
+   "responseShift": 0.0,
+   "responseSum": 7434.490234375,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999997738756269,
+    "slopes": [
+     200.00002562121858
+    ],
+    "intercept": -0.00019513326461240155,
+    "sigmaSquared": 1.646343912007138e-05,
+    "logLikelihood": 2427.3642396476694,
+    "residualRatio": 2.8016717128004327e-09,
+    "standardErrors": [
+     0.00016595836087437716,
+     0.00015302410863827267,
+     8.643560902635504e-07
+    ],
+    "spreg": {
+     "parameter": 0.39999977751718435,
+     "intercept": -0.0001951697416853193,
+     "sigmaSquared": 1.6463439581445664e-05,
+     "logLikelihood": 2427.3642307428563
+    }
+   },
+   "twoStage": {
+    "parameter": 0.39999979465234287,
+    "slopes": [
+     200.0000242943986
+    ],
+    "intercept": -0.00019534138264099,
+    "standardErrors": [
+     0.00016596906874488687,
+     0.0001534920970885268,
+     8.844662571036894e-07
+    ],
+    "sigmaSquared": 1.6463454827604132e-05,
+    "anselinKelejian": 2.677983925553815,
+    "spreg": {
+     "parameter": 0.3999997946523429,
+     "intercept": -0.0001953413828346129,
+     "sigmaSquared": 1.646345482759396e-05,
+     "anselinKelejian": 2.6779839255287468,
+     "standardErrors": [
+      0.00016596906874483607,
+      0.00015349209708847937,
+      8.844662571034158e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-0-stream-1007",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 0.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1007,
+   "roundToGrid": true,
+   "responseShift": 0.0,
+   "responseSum": 7434.62109375,
+   "lagMaximumLikelihood": {
+    "parameter": 0.399999093828757,
+    "slopes": [
+     199.99997845663927
+    ],
+    "intercept": -5.4094086147316034e-05,
+    "sigmaSquared": 1.635688262957468e-05,
+    "logLikelihood": 2429.3123365922097,
+    "residualRatio": 2.7835479215283624e-09,
+    "standardErrors": [
+     0.00016542043008906066,
+     0.0001525280712198115,
+     8.615550560316155e-07
+    ],
+    "spreg": {
+     "parameter": 0.3999990935975011,
+     "intercept": -5.409176962967166e-05,
+     "sigmaSquared": 1.6356882633227293e-05,
+     "logLikelihood": 2429.312336556815
+    }
+   },
+   "twoStage": {
+    "parameter": 0.39999885971597055,
+    "slopes": [
+     199.999993407267
+    ],
+    "intercept": -5.174895258441836e-05,
+    "standardErrors": [
+     0.00016544121449488217,
+     0.00015300387785441551,
+     8.816532956744288e-07
+    ],
+    "sigmaSquared": 1.635889729930557e-05,
+    "anselinKelejian": 4.023044668148904,
+    "spreg": {
+     "parameter": 0.39999885971597055,
+     "intercept": -5.174895273807323e-05,
+     "sigmaSquared": 1.63588972992849e-05,
+     "anselinKelejian": 4.0230446681068495,
+     "standardErrors": [
+      0.00016544121449477814,
+      0.00015300387785431886,
+      8.816532956738721e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-200-center-0-stream-1008",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 0.0,
+   "slopes": [
+    200.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1008,
+   "roundToGrid": true,
+   "responseShift": 0.0,
+   "responseSum": 7434.703125,
+   "lagMaximumLikelihood": {
+    "parameter": 0.4000002025560555,
+    "slopes": [
+     200.0000410646354
+    ],
+    "intercept": 1.1871502881177776e-05,
+    "sigmaSquared": 1.7604799444037245e-05,
+    "logLikelihood": 2407.255346347377,
+    "residualRatio": 2.9958990792042068e-09,
+    "standardErrors": [
+     0.00017161467920456737,
+     0.0001582395909502258,
+     8.938152474020873e-07
+    ],
+    "spreg": {
+     "parameter": 0.4000002010455618,
+     "intercept": 1.1886633860314078e-05,
+     "sigmaSquared": 1.7604799540553586e-05,
+     "logLikelihood": 2407.255344909046
+    }
+   },
+   "twoStage": {
+    "parameter": 0.40000054829438814,
+    "slopes": [
+     200.00001898544505
+    ],
+    "intercept": 8.40815914848747e-06,
+    "standardErrors": [
+     0.00017164705705489936,
+     0.00015874325142794819,
+     9.147251344235834e-07
+    ],
+    "sigmaSquared": 1.7609186673898612e-05,
+    "anselinKelejian": 5.956494632361072,
+    "spreg": {
+     "parameter": 0.4000005482943886,
+     "intercept": 8.40815915470472e-06,
+     "sigmaSquared": 1.760918667391389e-05,
+     "anselinKelejian": 5.95649463215482,
+     "standardErrors": [
+      0.0001716470570549743,
+      0.00015874325142801698,
+      9.147251344239798e-07
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-60-center-10000-stream-1001",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    60.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1001,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6002230.572265625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999973505260649,
+    "slopes": [
+     59.99998466746135
+    ],
+    "intercept": 6000.026671259555,
+    "sigmaSquared": 1.5525123770151708e-05,
+    "logLikelihood": 2444.9693241665373,
+    "residualRatio": 2.935598628438488e-08,
+    "standardErrors": [
+     0.027987715503472475,
+     0.00014859934505556855,
+     2.7978843874737283e-06
+    ],
+    "spreg": {
+     "parameter": 0.39999736302470024,
+     "intercept": 6000.0265462356365,
+     "sigmaSquared": 1.552512419875384e-05,
+     "logLikelihood": 2444.9693141767098
+    }
+   },
+   "twoStage": {
+    "parameter": 0.3999973487447029,
+    "slopes": [
+     59.999984701588936
+    ],
+    "intercept": 6000.026689078529,
+    "standardErrors": [
+     0.028638834280957686,
+     0.00014905371970092587,
+     2.862977753833594e-06
+    ],
+    "sigmaSquared": 1.5525123793145505e-05,
+    "anselinKelejian": 0.47425157687267977,
+    "spreg": {
+     "parameter": 0.3999973487447035,
+     "intercept": 6000.026689078522,
+     "sigmaSquared": 1.5525123793149896e-05,
+     "anselinKelejian": 0.4742515768816513,
+     "standardErrors": [
+      0.028638834280961506,
+      0.00014905371970094696,
+      2.8629777538339645e-06
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-60-center-10000-stream-1002",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    60.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1002,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6002230.505859375,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999999647116609,
+    "slopes": [
+     59.99998170935116
+    ],
+    "intercept": 6000.000453388754,
+    "sigmaSquared": 1.53915334685984e-05,
+    "logLikelihood": 2447.561571969552,
+    "residualRatio": 2.9102884041043156e-08,
+    "standardErrors": [
+     0.027866979458364975,
+     0.00014795870910119997,
+     2.785814641967115e-06
+    ],
+    "spreg": {
+     "parameter": 0.3999999640663593,
+     "intercept": 6000.00045984371,
+     "sigmaSquared": 1.5391533474562593e-05,
+     "logLikelihood": 2447.5615719414727
+    }
+   },
+   "twoStage": {
+    "parameter": 0.4000001447413921,
+    "slopes": [
+     59.99997826029216
+    ],
+    "intercept": 5999.998652550394,
+    "standardErrors": [
+     0.028515410217914535,
+     0.0001484116567293372,
+     2.850639283395704e-06
+    ],
+    "sigmaSquared": 1.5391639321743368e-05,
+    "anselinKelejian": 2.191461525732563,
+    "spreg": {
+     "parameter": 0.40000014474139245,
+     "intercept": 5999.99865255039,
+     "sigmaSquared": 1.5391639321746675e-05,
+     "anselinKelejian": 2.1914615257367727,
+     "standardErrors": [
+      0.028515410217917248,
+      0.00014841165672935204,
+      2.8506392833959644e-06
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-60-center-10000-stream-1003",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    60.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1003,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6002230.26953125,
+   "lagMaximumLikelihood": {
+    "parameter": 0.40000446178418547,
+    "slopes": [
+     59.99991516592786
+    ],
+    "intercept": 5999.955232092877,
+    "sigmaSquared": 1.3875492621583059e-05,
+    "logLikelihood": 2478.6689835747557,
+    "residualRatio": 2.6235553364364408e-08,
+    "standardErrors": [
+     0.02645890952787731,
+     0.00014048313762656428,
+     2.6450523865010494e-06
+    ],
+    "spreg": {
+     "parameter": 0.40000446178258564,
+     "intercept": 5999.95523210888,
+     "sigmaSquared": 1.387549262159229e-05,
+     "logLikelihood": 2478.668983574775
+    }
+   },
+   "twoStage": {
+    "parameter": 0.4000044222253369,
+    "slopes": [
+     59.999915923814626
+    ],
+    "intercept": 5999.955627800235,
+    "standardErrors": [
+     0.027074489309473745,
+     0.00014091274917364674,
+     2.7065928668217962e-06
+    ],
+    "sigmaSquared": 1.3875498043780998e-05,
+    "anselinKelejian": 0.6673889644537765,
+    "spreg": {
+     "parameter": 0.4000044222253373,
+     "intercept": 5999.955627800231,
+     "sigmaSquared": 1.3875498043778277e-05,
+     "anselinKelejian": 0.6673889644588221,
+     "standardErrors": [
+      0.027074489309470835,
+      0.00014091274917363245,
+      2.7065928668214947e-06
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-60-center-10000-stream-1004",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    60.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1004,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6002230.23046875,
+   "lagMaximumLikelihood": {
+    "parameter": 0.39999810337409203,
+    "slopes": [
+     60.000086830628774
+    ],
+    "intercept": 6000.018794384769,
+    "sigmaSquared": 1.738443012012887e-05,
+    "logLikelihood": 2411.034605848432,
+    "residualRatio": 3.2871285576574975e-08,
+    "standardErrors": [
+     0.029616184817279585,
+     0.00015724601945960045,
+     2.9606798682621886e-06
+    ],
+    "spreg": {
+     "parameter": 0.3999980873075141,
+     "intercept": 6000.018955098825,
+     "sigmaSquared": 1.73844311008473e-05,
+     "logLikelihood": 2411.0345911195805
+    }
+   },
+   "twoStage": {
+    "parameter": 0.39999743848349717,
+    "slopes": [
+     60.00009956874939
+    ],
+    "intercept": 6000.025445288629,
+    "standardErrors": [
+     0.030306419038328137,
+     0.00015773345212611415,
+     3.0296836668075936e-06
+    ],
+    "sigmaSquared": 1.738589665796141e-05,
+    "anselinKelejian": 0.41848021832402094,
+    "spreg": {
+     "parameter": 0.39999743848349734,
+     "intercept": 6000.025445288628,
+     "sigmaSquared": 1.738589665795685e-05,
+     "anselinKelejian": 0.41848021832654336,
+     "standardErrors": [
+      0.030306419038324026,
+      0.00015773345212609342,
+      3.0296836668071727e-06
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-60-center-10000-stream-1005",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    60.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1005,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6002230.521484375,
+   "lagMaximumLikelihood": {
+    "parameter": 0.3999998928529902,
+    "slopes": [
+     60.00013529936686
+    ],
+    "intercept": 6000.00118215813,
+    "sigmaSquared": 1.675803387014174e-05,
+    "logLikelihood": 2422.0435236328813,
+    "residualRatio": 3.168644075446144e-08,
+    "standardErrors": [
+     0.0290776563553382,
+     0.0001543871369493885,
+     2.906843949341501e-06
+    ],
+    "spreg": {
+     "parameter": 0.3999998930405783,
+     "intercept": 6000.001180281685,
+     "sigmaSquared": 1.675803386884063e-05,
+     "logLikelihood": 2422.0435236305425
+    }
+   },
+   "twoStage": {
+    "parameter": 0.3999993515506275,
+    "slopes": [
+     60.00014566981078
+    ],
+    "intercept": 6000.006596808564,
+    "standardErrors": [
+     0.02975496528638943,
+     0.0001548636872349238,
+     2.974555584341667e-06
+    ],
+    "sigmaSquared": 1.6759006484031614e-05,
+    "anselinKelejian": 0.07944267445335383,
+    "spreg": {
+     "parameter": 0.3999993515506277,
+     "intercept": 6000.006596808562,
+     "sigmaSquared": 1.6759006484032553e-05,
+     "anselinKelejian": 0.07944267445173668,
+     "standardErrors": [
+      0.029754965286389913,
+      0.00015486368723492924,
+      2.974555584341704e-06
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-60-center-10000-stream-1006",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    60.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1006,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6002230.265625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.39999844597714695,
+    "slopes": [
+     60.00005963579818
+    ],
+    "intercept": 6000.015403248013,
+    "sigmaSquared": 1.6457288997537156e-05,
+    "logLikelihood": 2427.47651075385,
+    "residualRatio": 3.1118270678991247e-08,
+    "standardErrors": [
+     0.02881562925950775,
+     0.0001529954851828965,
+     2.8806496673805807e-06
+    ],
+    "spreg": {
+     "parameter": 0.39999842682427506,
+     "intercept": 6000.0155948342845,
+     "sigmaSquared": 1.6457290352982812e-05,
+     "logLikelihood": 2427.4764886623493
+    }
+   },
+   "twoStage": {
+    "parameter": 0.39999837979643654,
+    "slopes": [
+     60.000060903703314
+    ],
+    "intercept": 6000.016065253985,
+    "standardErrors": [
+     0.029486020514150498,
+     0.00015346336949781681,
+     2.9476697369587177e-06
+    ],
+    "sigmaSquared": 1.6457303968706425e-05,
+    "anselinKelejian": 1.7478246079724824,
+    "spreg": {
+     "parameter": 0.3999983797964367,
+     "intercept": 6000.016065253984,
+     "sigmaSquared": 1.6457303968708682e-05,
+     "anselinKelejian": 1.747824607969722,
+     "standardErrors": [
+      0.029486020514152396,
+      0.00015346336949782665,
+      2.9476697369588973e-06
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-60-center-10000-stream-1007",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    60.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1007,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6002230.326171875,
+   "lagMaximumLikelihood": {
+    "parameter": 0.399997690546511,
+    "slopes": [
+     59.9999736947211
+    ],
+    "intercept": 6000.0230241042245,
+    "sigmaSquared": 1.6483189875760566e-05,
+    "logLikelihood": 2427.0048378865877,
+    "residualRatio": 3.1167393849929357e-08,
+    "standardErrors": [
+     0.028838355608961724,
+     0.00015311580590482302,
+     2.882921552499128e-06
+    ],
+    "spreg": {
+     "parameter": 0.3999976750310563,
+     "intercept": 6000.023179305395,
+     "sigmaSquared": 1.64831907882155e-05,
+     "logLikelihood": 2427.0048233995044
+    }
+   },
+   "twoStage": {
+    "parameter": 0.39999720061479693,
+    "slopes": [
+     59.99998308091367
+    ],
+    "intercept": 6000.027924893628,
+    "standardErrors": [
+     0.02950994198066383,
+     0.00015358767870179215,
+     2.9500610968768356e-06
+    ],
+    "sigmaSquared": 1.648398697078415e-05,
+    "anselinKelejian": 2.328900327707741,
+    "spreg": {
+     "parameter": 0.39999720061479704,
+     "intercept": 6000.027924893626,
+     "sigmaSquared": 1.648398697078424e-05,
+     "anselinKelejian": 2.328900327706732,
+     "standardErrors": [
+      0.029509941980663576,
+      0.0001535876787017929,
+      2.9500610968767992e-06
+     ]
+    }
+   }
+  },
+  {
+   "name": "high-fit-slope-60-center-10000-stream-1008",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    60.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 1008,
+   "roundToGrid": true,
+   "responseShift": 10000.0,
+   "responseSum": 6002230.451171875,
+   "lagMaximumLikelihood": {
+    "parameter": 0.40000010802027486,
+    "slopes": [
+     60.00004422495911
+    ],
+    "intercept": 5999.998962758453,
+    "sigmaSquared": 1.7908235204886267e-05,
+    "logLikelihood": 2402.128625122119,
+    "residualRatio": 3.3861627292605526e-08,
+    "standardErrors": [
+     0.030059021312462866,
+     0.00015959746753502397,
+     3.004949373456454e-06
+    ],
+    "spreg": {
+     "parameter": 0.4000001079495257,
+     "intercept": 5999.998963466158,
+     "sigmaSquared": 1.790823520547489e-05,
+     "logLikelihood": 2402.128625121926
+    }
+   },
+   "twoStage": {
+    "parameter": 0.4000011178455162,
+    "slopes": [
+     60.000024878423055
+    ],
+    "intercept": 5999.9888614712745,
+    "standardErrors": [
+     0.030761304315664303,
+     0.0001601005686063382,
+     3.075157700024733e-06
+    ],
+    "sigmaSquared": 1.791159773787746e-05,
+    "anselinKelejian": 6.1391126680830705,
+    "spreg": {
+     "parameter": 0.4000011178455163,
+     "intercept": 5999.988861471273,
+     "sigmaSquared": 1.791159773788358e-05,
+     "anselinKelejian": 6.139112668085911,
+     "standardErrors": [
+      0.030761304315669428,
+      0.00016010056860636446,
+      3.0751577000252324e-06
+     ]
+    }
+   }
+  },
+  {
+   "name": "islands-lag",
+   "weights": "islands",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    2.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 0.0,
+   "responseSum": 5988072.748046875,
+   "lagMaximumLikelihood": {
+    "parameter": 0.39999994824033824,
+    "slopes": [
+     2.0001527543610447
+    ],
+    "intercept": 6000.000410836536,
+    "sigmaSquared": 1.619469209665364e-05,
+    "logLikelihood": 2432.2960891783246,
+    "residualRatio": 2.0387113833419605e-10,
+    "standardErrors": [
+     0.002326070508127626,
+     0.00014170052742412377,
+     2.3316452419732872e-07
+    ],
+    "spreg": {
+     "parameter": 0.3999999547528953,
+     "intercept": 6000.000346029099,
+     "sigmaSquared": 1.6194713099871583e-05,
+     "logLikelihood": 2432.295699212373
+    }
+   },
+   "twoStage": {
+    "parameter": 0.40003549443221054,
+    "slopes": [
+     2.001141062279385
+    ],
+    "intercept": 5999.646685312073,
+    "standardErrors": [
+     1.269708918470592,
+     0.0036580558381478184,
+     0.00012759413355376727
+    ],
+    "sigmaSquared": 0.0006435058802668355,
+    "anselinKelejian": 0.010758006738840885,
+    "spreg": {
+     "parameter": 0.4000354943532187,
+     "intercept": 5999.64668792591,
+     "sigmaSquared": 0.000643503095548933,
+     "anselinKelejian": 0.010787147641917332,
+     "standardErrors": [
+      1.2697061712655975,
+      0.0036580479233841046,
+      0.00012759385748479073
+     ]
+    }
+   }
+  },
+  {
+   "name": "islands-ordinary",
+   "weights": "islands",
+   "parameter": 0.0,
+   "constant": 10000.0,
+   "slopes": [
+    2.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.5,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 0.0,
+   "responseSum": 6000036.595703125,
+   "lagMaximumLikelihood": {
+    "parameter": -5.628138378737711e-06,
+    "slopes": [
+     2.018766732850281
+    ],
+    "intercept": 10000.041948645126,
+    "sigmaSquared": 0.250206130690262,
+    "logLikelihood": -435.72206650025413,
+    "residualRatio": 0.9999371559122169,
+    "standardErrors": [
+     0.2891359167114136,
+     0.017613651913320184,
+     2.8983013583540583e-05
+    ],
+    "spreg": {
+     "parameter": -5.628086397917525e-06,
+     "intercept": 10000.04194812786,
+     "sigmaSquared": 0.2502061306902855,
+     "logLikelihood": -435.72206650028227
+    }
+   },
+   "twoStage": {
+    "parameter": 0.004702400709624336,
+    "slopes": [
+     2.151777520761195
+    ],
+    "intercept": 9953.191844577246,
+    "standardErrors": [
+     172.75826314899416,
+     0.5044676704285672,
+     0.017360700621242117
+    ],
+    "sigmaSquared": 11.253920038033753,
+    "anselinKelejian": 0.010041255876856642,
+    "spreg": {
+     "parameter": 0.004702400826985809,
+     "intercept": 9953.191844771616,
+     "sigmaSquared": 11.25392058663573,
+     "anselinKelejian": 0.01004141311394255,
+     "standardErrors": [
+      172.75826734721068,
+      0.5044676826896728,
+      0.017360701043126224
+     ]
+    }
+   }
+  },
+  {
+   "name": "lag-ring-rho-0.4-deviation-0.004",
+   "weights": "ring",
+   "parameter": 0.4,
+   "constant": 6000.0,
+   "slopes": [
+    2.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 10000.0,
+   "responseSum": 6000074.2451171875,
+   "lagMaximumLikelihood": {
+    "parameter": 0.4001574562918745,
+    "slopes": [
+     2.000050669858048
+    ],
+    "intercept": 5998.425313958764,
+    "sigmaSquared": 1.609686640793139e-05,
+    "logLikelihood": 2434.0979368516864,
+    "residualRatio": 2.7359888867829035e-05,
+    "standardErrors": [
+     0.854547609325111,
+     0.00015131579843718904,
+     8.545390488382134e-05
+    ],
+    "spreg": {
+     "parameter": 0.40015745628519456,
+     "intercept": 5998.425314025564,
+     "sigmaSquared": 1.609686640798036e-05,
+     "logLikelihood": 2434.097936851688
+    }
+   },
+   "twoStage": {
+    "parameter": 0.40014828039457145,
+    "slopes": [
+     2.00005653208314
+    ],
+    "intercept": 5998.517073849318,
+    "standardErrors": [
+     0.8744402111445908,
+     0.00015178047898899366,
+     8.744314521043196e-05
+    ],
+    "sigmaSquared": 1.609724306653448e-05,
+    "anselinKelejian": 1.0835480755171292,
+    "spreg": {
+     "parameter": 0.40014828039457206,
+     "intercept": 5998.5170738493125,
+     "sigmaSquared": 1.609724306653447e-05,
+     "anselinKelejian": 1.0835480755167168,
+     "standardErrors": [
+      0.8744402111442453,
+      0.0001517804789890011,
+      8.74431452103971e-05
+     ]
+    }
+   }
+  },
+  {
+   "name": "lag-ring-rho-0.8-deviation-0.004",
+   "weights": "ring",
+   "parameter": 0.8,
+   "constant": 1999.9999999999995,
+   "slopes": [
+    2.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 10000.0,
+   "responseSum": 6000222.71875,
+   "lagMaximumLikelihood": {
+    "parameter": 0.8000794198296899,
+    "slopes": [
+     2.0000026769583434
+    ],
+    "intercept": 1999.205664834277,
+    "sigmaSquared": 1.594920876565003e-05,
+    "logLikelihood": 2328.5414337230573,
+    "residualRatio": 1.5217254993417596e-06,
+    "standardErrors": [
+     0.402943457611004,
+     0.0001614729753511944,
+     4.029314278248066e-05
+    ],
+    "spreg": {
+     "parameter": 0.8000794198293715,
+     "intercept": 1999.2056648374607,
+     "sigmaSquared": 1.5949208765658456e-05,
+     "logLikelihood": 2328.5414337230563
+    }
+   },
+   "twoStage": {
+    "parameter": 0.8000768102452864,
+    "slopes": [
+     2.0000078339184055
+    ],
+    "intercept": 1999.2317614552821,
+    "standardErrors": [
+     0.46900011367765027,
+     0.0001682941582471545,
+     4.689861218474808e-05
+    ],
+    "sigmaSquared": 1.5949389653587942e-05,
+    "anselinKelejian": 1.040382332052054,
+    "spreg": {
+     "parameter": 0.8000768102452871,
+     "intercept": 1999.2317614552749,
+     "sigmaSquared": 1.5949389653587875e-05,
+     "anselinKelejian": 1.0403823320515695,
+     "standardErrors": [
+      0.46900011367760275,
+      0.00016829415824715153,
+      4.6898612184743176e-05
+     ]
+    }
+   }
+  },
+  {
+   "name": "lag-ring-rho-0.8-deviation-0.002",
+   "weights": "ring",
+   "parameter": 0.8,
+   "constant": 1999.9999999999995,
+   "slopes": [
+    2.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.002,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 10000.0,
+   "responseSum": 6000222.8828125,
+   "lagMaximumLikelihood": {
+    "parameter": 0.800038240498635,
+    "slopes": [
+     2.000014679318406
+    ],
+    "intercept": 1999.6175276613815,
+    "sigmaSquared": 4.111453153584334e-06,
+    "logLikelihood": 2735.2518354441495,
+    "residualRatio": 3.92441745792583e-07,
+    "standardErrors": [
+     0.20461590277658206,
+     8.198364916768726e-05,
+     2.0460978818297303e-05
+    ],
+    "spreg": {
+     "parameter": 0.8000382359812642,
+     "intercept": 1999.617572836436,
+     "sigmaSquared": 4.111453184883696e-06,
+     "logLikelihood": 2735.251835419391
+    }
+   },
+   "twoStage": {
+    "parameter": 0.8000343551446317,
+    "slopes": [
+     2.000022356167041
+    ],
+    "intercept": 1999.6563823593378,
+    "standardErrors": [
+     0.23815814298329263,
+     8.544836985374445e-05,
+     2.3815103114498387e-05
+    ],
+    "sigmaSquared": 4.111726879030301e-06,
+    "anselinKelejian": 0.47644565186340176,
+    "spreg": {
+     "parameter": 0.8000343551446326,
+     "intercept": 1999.656382359329,
+     "sigmaSquared": 4.111726879030146e-06,
+     "anselinKelejian": 0.4764456518617731,
+     "standardErrors": [
+      0.2381581429832543,
+      8.544836985375484e-05,
+      2.3815103114494467e-05
+     ]
+    }
+   }
+  },
+  {
+   "name": "lag-six-rho-0.4-deviation-0.004",
+   "weights": "six",
+   "parameter": 0.4,
+   "constant": 5999.9998807907095,
+   "slopes": [
+    2.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 10000.0,
+   "responseSum": 6000074.234375,
+   "lagMaximumLikelihood": {
+    "parameter": 0.40024069504535564,
+    "slopes": [
+     2.000094353321717
+    ],
+    "intercept": 5997.592784479594,
+    "sigmaSquared": 1.59846871442721e-05,
+    "logLikelihood": 2452.2203085777073,
+    "residualRatio": 5.441743548278768e-05,
+    "standardErrors": [
+     1.2053929332461888,
+     0.00014329572689438574,
+     0.00012053789952790307
+    ],
+    "spreg": {
+     "parameter": 0.4002406938198644,
+     "intercept": 5997.592796734649,
+     "sigmaSquared": 1.598468714777298e-05,
+     "logLikelihood": 2452.220308577648
+    }
+   },
+   "twoStage": {
+    "parameter": 0.4002478848789375,
+    "slopes": [
+     2.000092712722341
+    ],
+    "intercept": 5997.520885313067,
+    "standardErrors": [
+     1.2212283467228155,
+     0.0001433658447578674,
+     0.00012212142259399676
+    ],
+    "sigmaSquared": 1.598476140548679e-05,
+    "anselinKelejian": 0.28842054461744043,
+    "spreg": {
+     "parameter": 0.40024788487893737,
+     "intercept": 5997.520885313066,
+     "sigmaSquared": 1.598476140548662e-05,
+     "anselinKelejian": 0.2884205446174342,
+     "standardErrors": [
+      1.221228346722798,
+      0.00014336584475785634,
+      0.00012212142259399457
+     ]
+    }
+   }
+  },
+  {
+   "name": "lag-six-rho-0.7-deviation-0.004",
+   "weights": "six",
+   "parameter": 0.7,
+   "constant": 2999.9997913837437,
+   "slopes": [
+    2.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 10000.0,
+   "responseSum": 6000148.4775390625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.7001466923791217,
+    "slopes": [
+     2.0000638930189103
+    ],
+    "intercept": 2998.532720765009,
+    "sigmaSquared": 1.589614767397225e-05,
+    "logLikelihood": 2426.242939626688,
+    "residualRatio": 6.5191909017886395e-06,
+    "standardErrors": [
+     0.729808174725875,
+     0.00014646757171563502,
+     7.297916458064842e-05
+    ],
+    "spreg": {
+     "parameter": 0.7001466938732684,
+     "intercept": 2998.5327058232047,
+     "sigmaSquared": 1.5896147662362052e-05,
+     "logLikelihood": 2426.2429396264997
+    }
+   },
+   "twoStage": {
+    "parameter": 0.7001614647053143,
+    "slopes": [
+     2.000055340652576
+    ],
+    "intercept": 2998.384994161004,
+    "standardErrors": [
+     0.7716590343051487,
+     0.0001471888603884496,
+     7.716415595617207e-05
+    ],
+    "sigmaSquared": 1.589711823633685e-05,
+    "anselinKelejian": 0.3357919600669993,
+    "spreg": {
+     "parameter": 0.7001614647053135,
+     "intercept": 2998.384994161013,
+     "sigmaSquared": 1.589711823633675e-05,
+     "anselinKelejian": 0.33579196006744577,
+     "standardErrors": [
+      0.7716590343051469,
+      0.00014718886038843506,
+      7.716415595617161e-05
+     ]
+    }
+   }
+  },
+  {
+   "name": "lag-six-rho-0.7-deviation-0.002",
+   "weights": "six",
+   "parameter": 0.7,
+   "constant": 2999.9997913837437,
+   "slopes": [
+    2.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.002,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 10000.0,
+   "responseSum": 6000148.5791015625,
+   "lagMaximumLikelihood": {
+    "parameter": 0.7000705622687866,
+    "slopes": [
+     2.000036656143667
+    ],
+    "intercept": 2999.2940925121925,
+    "sigmaSquared": 4.139030269475757e-06,
+    "logLikelihood": 2829.9386927743594,
+    "residualRatio": 1.698487419164604e-06,
+    "standardErrors": [
+     0.3724783235837747,
+     7.473812103793158e-05,
+     3.7246988105636675e-05
+    ],
+    "spreg": {
+     "parameter": 0.7000705459618776,
+     "intercept": 2999.294255584976,
+     "sigmaSquared": 4.139030303817796e-06,
+     "logLikelihood": 2829.938692677991
+    }
+   },
+   "twoStage": {
+    "parameter": 0.700078606626482,
+    "slopes": [
+     2.0000320002001972
+    ],
+    "intercept": 2999.2136471138747,
+    "standardErrors": [
+     0.39382851735766866,
+     7.510638799688219e-05,
+     3.938195919438838e-05
+    ],
+    "sigmaSquared": 4.139335742177991e-06,
+    "anselinKelejian": 0.8850046572587533,
+    "spreg": {
+     "parameter": 0.7000786066264821,
+     "intercept": 2999.2136471138783,
+     "sigmaSquared": 4.139335742177935e-06,
+     "anselinKelejian": 0.8850046572589375,
+     "standardErrors": [
+      0.393828517357671,
+      7.510638799687293e-05,
+      3.938195919438846e-05
+     ]
+    }
+   }
+  },
+  {
+   "name": "lag-binary-rho-0.2-deviation-0.004",
+   "weights": "binary",
+   "parameter": 0.2,
+   "constant": 6000.0,
+   "slopes": [
+    2.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 10000.0,
+   "responseSum": 6000074.2451171875,
+   "lagMaximumLikelihood": {
+    "parameter": 0.20007872813810307,
+    "slopes": [
+     2.0000506698680582
+    ],
+    "intercept": 5998.425314115449,
+    "sigmaSquared": 1.6096866408046327e-05,
+    "logLikelihood": 2434.0979368516864,
+    "residualRatio": 2.7359888868024395e-05,
+    "standardErrors": [
+     0.8545476097404776,
+     0.0001513157984391541,
+     4.272695246267866e-05
+    ],
+    "spreg": {
+     "parameter": 0.20007872782667305,
+     "intercept": 5998.425320344113,
+     "sigmaSquared": 1.6096866412616805e-05,
+     "logLikelihood": 2434.0979368516532
+    }
+   },
+   "twoStage": {
+    "parameter": 0.20007414019728578,
+    "slopes": [
+     2.0000565320831396
+    ],
+    "intercept": 5998.517073849317,
+    "standardErrors": [
+     0.8744402111443448,
+     0.00015178047898899722,
+     4.372157260520368e-05
+    ],
+    "sigmaSquared": 1.6097243066534587e-05,
+    "anselinKelejian": 1.0835480755168918,
+    "spreg": {
+     "parameter": 0.20007414019728603,
+     "intercept": 5998.5170738493125,
+     "sigmaSquared": 1.609724306653447e-05,
+     "anselinKelejian": 1.0835480755167168,
+     "standardErrors": [
+      0.8744402111442453,
+      0.0001517804789890011,
+      4.372157260519855e-05
+     ]
+    }
+   }
+  },
+  {
+   "name": "lag-mixed-rho-0.7-deviation-0.002",
+   "weights": "mixed",
+   "parameter": 0.7,
+   "constant": 3000.0,
+   "slopes": [
+    2.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.002,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 0.0,
+   "responseSum": 6000163.4599609375,
+   "lagMaximumLikelihood": {
+    "parameter": 0.700060872768461,
+    "slopes": [
+     2.000009786827631
+    ],
+    "intercept": 2999.3912048448074,
+    "sigmaSquared": 4.0141777028605154e-06,
+    "logLikelihood": 2799.4711077195825,
+    "residualRatio": 9.455435547058248e-07,
+    "standardErrors": [
+     0.27791919284768885,
+     7.765174688625935e-05,
+     2.7791252775480782e-05
+    ],
+    "spreg": {
+     "parameter": 0.7000608674140686,
+     "intercept": 2999.391258390013,
+     "sigmaSquared": 4.014177723828276e-06,
+     "logLikelihood": 2799.4711076949716
+    }
+   },
+   "twoStage": {
+    "parameter": 0.700065505210295,
+    "slopes": [
+     2.0000043516275365
+    ],
+    "intercept": 2999.34487931729,
+    "standardErrors": [
+     0.30748992029008415,
+     7.917258722399844e-05,
+     3.0748254714269734e-05
+    ],
+    "sigmaSquared": 4.014345741305717e-06,
+    "anselinKelejian": 0.92622950724301,
+    "spreg": {
+     "parameter": 0.700065505320481,
+     "intercept": 2999.3448852188885,
+     "sigmaSquared": 4.014394799691256e-06,
+     "anselinKelejian": 0.9252049864120258,
+     "standardErrors": [
+      0.30749179917437963,
+      7.917307099787632e-05,
+      3.074844259819385e-05
+     ]
+    }
+   }
+  },
+  {
+   "name": "lag-unequal-rho-0.15-deviation-0.004",
+   "weights": "unequal",
+   "parameter": 0.15,
+   "constant": 6000.0,
+   "slopes": [
+    2.0
+   ],
+   "predictors": [
+    "uniform"
+   ],
+   "predictorOffsets": [
+    0.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 0.0,
+   "responseSum": 5520840.6201171875,
+   "lagMaximumLikelihood": {
+    "parameter": 0.15000000303957,
+    "slopes": [
+     2.0001633908334564
+    ],
+    "intercept": 5999.99981883663,
+    "sigmaSquared": 1.5905164918975944e-05,
+    "logLikelihood": 2448.574244467118,
+    "residualRatio": 5.410614590051988e-11,
+    "standardErrors": [
+     0.0009752087793877251,
+     0.0001403040035217996,
+     4.50494451556554e-08
+    ],
+    "spreg": {
+     "parameter": 0.1499999862128754,
+     "intercept": 6000.000177973938,
+     "sigmaSquared": 1.590886423047727e-05,
+     "logLikelihood": 2448.5044804325084
+    }
+   },
+   "twoStage": {
+    "parameter": 0.15000268703674416,
+    "slopes": [
+     2.000244851608624
+    ],
+    "intercept": 5999.942533461277,
+    "standardErrors": [
+     0.06623420537284008,
+     0.00038078553721374774,
+     3.103212639022787e-06
+    ],
+    "sigmaSquared": 0.00011002324530655259,
+    "anselinKelejian": 0.18619340775727095,
+    "spreg": {
+     "parameter": 0.150002687036352,
+     "intercept": 5999.9425334715925,
+     "sigmaSquared": 0.00011002321780325152,
+     "anselinKelejian": 0.18619337323975846,
+     "standardErrors": [
+      0.06623419709415557,
+      0.00038078548961983927,
+      3.1032122511488917e-06
+     ]
+    }
+   }
+  },
+  {
+   "name": "two-predictors-six-rho-0.4",
+   "weights": "six",
+   "parameter": 0.4,
+   "constant": 5999.9998807907095,
+   "slopes": [
+    2.0,
+    -1.5
+   ],
+   "predictors": [
+    "uniform",
+    "grid"
+   ],
+   "predictorOffsets": [
+    0.0,
+    4096.0
+   ],
+   "noiseDeviation": 0.004,
+   "noiseSeed": 77003,
+   "roundToGrid": false,
+   "responseShift": 10000.0,
+   "responseSum": 5999965.169921875,
+   "lagMaximumLikelihood": {
+    "parameter": 0.40013727294863166,
+    "slopes": [
+     2.000125749066617,
+     -1.499994582635827
+    ],
+    "intercept": 12142.604850190526,
+    "sigmaSquared": 1.6021052065082295e-05,
+    "logLikelihood": 2451.54412728566,
+    "residualRatio": 3.445448563022044e-05,
+    "standardErrors": [
+     1.1937165172635207,
+     0.00014353875302478082,
+     0.00014513938589475365,
+     9.588889526788186e-05
+    ],
+    "spreg": {
+     "parameter": 0.4001372706638308,
+     "intercept": 12142.604874927034,
+     "sigmaSquared": 1.6021052071631818e-05,
+     "logLikelihood": 2451.544127285363
+    }
+   },
+   "twoStage": {
+    "parameter": 0.40013808073890783,
+    "slopes": [
+     2.000125514505126,
+     -1.4999944196180501
+    ],
+    "intercept": 12142.59610461047,
+    "standardErrors": [
+     1.2058483273802563,
+     0.00014361296319461165,
+     0.00014517323115223612,
+     9.717830794741468e-05
+    ],
+    "sigmaSquared": 1.6021051649891325e-05,
+    "anselinKelejian": 0.29894127824484895,
+    "spreg": {
+     "parameter": 0.40013808073890794,
+     "intercept": 12142.596104610482,
+     "sigmaSquared": 1.6021051649891152e-05,
+     "anselinKelejian": 0.2989412782490441,
+     "standardErrors": [
+      1.2058483273802716,
+      0.0001436129631946095,
+      0.00014517323115219636,
+      9.717830794744479e-05
+     ]
+    }
+   }
+  }
+ ],
+ "edgeCases": {
+  "zeroResidualAtOutsideVertex": {
+   "offsets": [
+    0,
+    2,
+    4,
+    6,
+    8,
+    10,
+    12
+   ],
+   "neighbors": [
+    1,
+    5,
+    0,
+    2,
+    1,
+    3,
+    2,
+    4,
+    3,
+    5,
+    0,
+    4
+   ],
+   "weights": [
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5
+   ],
+   "response": [
+    2.0,
+    1.0,
+    -1.0,
+    -2.0,
+    -1.0,
+    1.0
+   ],
+   "predictor": [
+    1.0,
+    -1.0,
+    1.0,
+    -1.0,
+    1.0,
+    -1.0
+   ],
+   "lagMaximumLikelihood": {
+    "intercept": 0.0,
+    "slopes": [
+     0.0
+    ],
+    "parameter": 0.7807764073459735,
+    "standardErrors": [
+     0.3519595347105724,
+     0.3519595347105724,
+     0.16355740140671016
+    ],
+    "sigmaSquared": 0.7432530844420957,
+    "logLikelihood": -8.894788708577607
+   }
+  },
+  "zeroLagResidual": {
+   "offsets": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+   ],
+   "neighbors": [
+    4,
+    5,
+    6,
+    7,
+    0,
+    1,
+    2,
+    3
+   ],
+   "weights": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "response": [
+    -1.0,
+    1.0,
+    -1.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "predictor": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -1.0,
+    1.0,
+    -1.0,
+    1.0
+   ],
+   "lagMaximumLikelihood": {
+    "intercept": 0.0,
+    "slopes": [
+     0.0
+    ],
+    "parameter": 0.0,
+    "standardErrors": [
+     0.25,
+     0.3535533905932738,
+     0.25
+    ],
+    "sigmaSquared": 0.5,
+    "logLikelihood": -8.5789195433976
+   }
+  },
+  "responseScale": {
+   "predictor": [
+    -0.03140360489487648,
+    1.948146104812622,
+    1.3706392049789429,
+    0.761539876461029,
+    -1.7483956813812256,
+    1.6065969467163086,
+    -0.47353655099868774,
+    -1.4217110872268677,
+    -0.9249224662780762,
+    -0.9215463995933533,
+    -1.822646975517273,
+    0.981281042098999,
+    0.7409347891807556,
+    1.5652259588241577,
+    1.026397705078125,
+    -1.7810941934585571,
+    1.2796471118927002,
+    1.8399146795272827,
+    -0.2577100694179535,
+    0.2618182897567749,
+    -0.24914602935314178,
+    1.3233044147491455,
+    -0.6352713108062744,
+    -1.940061092376709,
+    0.40516066551208496,
+    -0.5468100905418396,
+    -1.3847030401229858,
+    1.161948323249817,
+    1.199399471282959,
+    0.11833853274583817,
+    -1.5728946924209595,
+    1.0637454986572266,
+    0.8411504030227661,
+    0.8318631052970886,
+    1.2998994588851929,
+    -1.414364218711853,
+    -1.408556342124939,
+    -0.07154251635074615,
+    0.09406519681215286,
+    -1.3650546073913574,
+    0.2224654257297516,
+    1.0381299257278442,
+    1.1143401861190796,
+    -0.38793548941612244,
+    0.6840842962265015,
+    -1.3886293172836304,
+    0.33795860409736633,
+    -1.149757742881775,
+    0.9334551692008972,
+    -1.1764744520187378,
+    1.81852388381958,
+    1.2564245462417603,
+    0.8218587040901184,
+    -0.5902959108352661,
+    -1.3268513679504395,
+    -1.7115458250045776,
+    0.5917112231254578,
+    1.8714872598648071,
+    1.6673558950424194,
+    0.5910300612449646,
+    -0.12644511461257935,
+    1.8094234466552734,
+    -1.7226076126098633,
+    1.3062480688095093,
+    -0.7063863277435303,
+    -1.462096095085144,
+    0.28614503145217896,
+    0.18691986799240112,
+    1.3743807077407837,
+    1.419115424156189,
+    1.5859417915344238,
+    0.682212233543396,
+    -0.06214220076799393,
+    1.2972859144210815,
+    -0.1806935966014862,
+    -1.4517945051193237,
+    -1.572873592376709,
+    -0.3859352469444275,
+    -0.9670486450195312,
+    1.2016505002975464,
+    0.27880799770355225,
+    1.4595439434051514,
+    0.4255106747150421,
+    -1.7302607297897339,
+    -0.0970115065574646,
+    -0.4046591818332672,
+    -1.739927887916565,
+    1.5577343702316284,
+    -0.5137794017791748,
+    -1.2496908903121948,
+    -0.44800883531570435,
+    1.9535359144210815,
+    -0.06531907618045807,
+    0.7766098976135254,
+    -1.251901388168335,
+    1.115222454071045,
+    1.3864960670471191,
+    -0.27726665139198303,
+    -0.9707937836647034,
+    -1.427362084388733,
+    0.24609245359897614,
+    -0.4433133006095886,
+    0.476609468460083,
+    -1.0799627304077148,
+    -0.22829511761665344,
+    -1.5278478860855103,
+    -0.8055961728096008,
+    0.05078030750155449,
+    0.10630182176828384,
+    -1.0118368864059448,
+    -0.2709253132343292,
+    -0.4609009921550751,
+    0.9745825529098511,
+    0.7147793769836426,
+    -1.2595078945159912,
+    -0.6753637790679932,
+    0.9207268357276917,
+    -0.013850112445652485,
+    -1.2417889833450317,
+    -1.7769747972488403,
+    -0.7737118601799011,
+    1.4994125366210938,
+    -0.5272219777107239,
+    0.9154335856437683,
+    -0.09478738158941269,
+    0.7159335017204285,
+    -1.380972981452942,
+    -1.6717751026153564,
+    -0.34180304408073425,
+    -1.415942668914795,
+    -0.10562824457883835,
+    1.5002963542938232,
+    1.2485673427581787,
+    -1.5172278881072998,
+    0.7676831483840942,
+    1.8386703729629517,
+    -0.519872784614563,
+    -1.4079844951629639,
+    0.6944958567619324,
+    1.469449520111084,
+    0.16016927361488342,
+    -0.7766146063804626,
+    -1.390344262123108,
+    1.975944995880127,
+    1.8608229160308838,
+    0.29796645045280457,
+    -1.4304076433181763,
+    1.6329237222671509,
+    -1.2396275997161865,
+    0.21100103855133057,
+    -1.3249353170394897,
+    -1.0600175857543945,
+    -1.2614563703536987,
+    -1.9348036050796509,
+    -0.5169863700866699,
+    0.6799005270004272,
+    -1.583177089691162,
+    0.5965970754623413,
+    0.37244585156440735,
+    0.005376647226512432,
+    0.9548189640045166,
+    1.047379732131958,
+    -0.5989237427711487,
+    1.1056662797927856,
+    1.9983224868774414,
+    -1.8329488039016724,
+    -1.95552396774292,
+    -0.9803717136383057,
+    0.8173561096191406,
+    1.4463444948196411,
+    -1.6320078372955322,
+    1.258696436882019,
+    -0.9439827799797058,
+    -0.05252861976623535,
+    -1.6290422677993774,
+    -0.06160327419638634,
+    -0.8744758367538452,
+    0.8518404364585876,
+    -1.414763331413269,
+    0.572510838508606,
+    0.8480386734008789,
+    1.6495909690856934,
+    -0.9242307543754578,
+    1.126321792602539,
+    -1.241795301437378,
+    1.107356309890747,
+    0.3033640384674072,
+    -0.7588703632354736,
+    0.6415302753448486,
+    1.2459893226623535,
+    -0.5638995170593262,
+    1.4953289031982422,
+    -0.15819182991981506,
+    -0.6917743682861328,
+    -1.4222166538238525,
+    -0.10187876969575882,
+    -0.16463641822338104,
+    -1.7595152854919434,
+    -0.3794032037258148,
+    -0.18208566308021545,
+    0.27169862389564514,
+    0.6035836338996887,
+    1.7561748027801514,
+    0.49292299151420593,
+    -1.6602718830108643,
+    -1.0318938493728638,
+    1.920011043548584,
+    -0.3888801634311676,
+    -0.6074821949005127,
+    -0.41740670800209045,
+    1.6198190450668335,
+    -1.7987072467803955,
+    -1.3476516008377075,
+    -0.8488454818725586,
+    -1.0327788591384888,
+    0.21675628423690796,
+    -0.061677124351263046,
+    0.5199057459831238,
+    -1.2830488681793213,
+    0.6751726865768433,
+    1.3644537925720215,
+    -1.1729224920272827,
+    1.30156672000885,
+    -1.8816989660263062,
+    0.1671413779258728,
+    0.14440391957759857,
+    -1.904311180114746,
+    -1.52362859249115,
+    -1.362779974937439,
+    -1.9669855833053589,
+    -0.08007027953863144,
+    -1.095510482788086,
+    1.4119268655776978,
+    0.7572112083435059,
+    -1.7405462265014648,
+    0.4910922050476074,
+    1.1865768432617188,
+    -1.2843431234359741,
+    1.4912313222885132,
+    0.10570529848337173,
+    0.9622692465782166,
+    0.6310892701148987,
+    -0.3969374895095825,
+    -0.43009331822395325,
+    -0.3829345405101776,
+    0.9092140197753906,
+    0.2091609090566635,
+    -0.8325327038764954,
+    -0.5030540227890015,
+    -1.1817222833633423,
+    0.7021456956863403,
+    0.125529482960701,
+    -1.3999956846237183,
+    -1.8369758129119873,
+    -0.8346996307373047,
+    -1.3745015859603882,
+    -0.275364488363266,
+    0.04998844116926193,
+    1.2678333520889282,
+    1.2301747798919678,
+    -1.6109082698822021,
+    -0.49457108974456787,
+    0.041492197662591934,
+    0.3218909502029419,
+    0.35227930545806885,
+    -1.4847172498703003,
+    -1.0474995374679565,
+    -0.9082880616188049,
+    0.3361482620239258,
+    1.1216435432434082,
+    1.4921385049819946,
+    -1.2363512516021729,
+    1.5819276571273804,
+    -1.7736241817474365,
+    0.21600820124149323,
+    1.9605441093444824,
+    0.6152980327606201,
+    0.4397571086883545,
+    -0.6428281664848328,
+    1.8730456829071045,
+    -1.486513376235962,
+    -1.6226286888122559,
+    0.8419523239135742,
+    1.3837355375289917,
+    -1.685097575187683,
+    -0.12929600477218628,
+    -1.4412741661071777,
+    -0.8343865275382996,
+    -1.754501223564148,
+    1.881364345550537,
+    -1.8352018594741821,
+    -1.2736636400222778,
+    -1.7992299795150757,
+    -0.9340440034866333,
+    0.2607986629009247,
+    -1.9388283491134644,
+    -1.4815346002578735,
+    0.46266528964042664,
+    1.0834230184555054,
+    1.1298928260803223,
+    0.9993998408317566,
+    -0.23916542530059814,
+    0.7659222483634949,
+    0.9741227626800537,
+    -0.7036510109901428,
+    -0.13579902052879333,
+    -1.1765271425247192,
+    1.8309705257415771,
+    1.3383328914642334,
+    -1.9399783611297607,
+    -0.02761373110115528,
+    1.9265415668487549,
+    -0.2553855776786804,
+    -1.4126880168914795,
+    -0.15233385562896729,
+    -0.4680366814136505,
+    -0.6444976329803467,
+    -1.141859531402588,
+    -0.5264766812324524,
+    -0.7789702415466309,
+    -0.29679054021835327,
+    0.751000702381134,
+    0.9708436131477356,
+    -0.8233534693717957,
+    1.068947434425354,
+    -1.2003586292266846,
+    1.2718414068222046,
+    1.7965941429138184,
+    -1.9875510931015015,
+    0.5033055543899536,
+    0.03800630941987038,
+    -1.3195301294326782,
+    -0.1687067598104477,
+    1.0113122463226318,
+    1.8493123054504395,
+    0.37951764464378357,
+    0.33503469824790955,
+    -1.5270670652389526,
+    -0.7084473371505737,
+    0.527346670627594,
+    1.5533080101013184,
+    -1.2498914003372192,
+    -0.49934470653533936,
+    0.24913419783115387,
+    -1.6683015823364258,
+    -0.15169285237789154,
+    -1.495123028755188,
+    0.4053804278373718,
+    0.8015518188476562,
+    0.539034366607666,
+    1.4415396451950073,
+    -1.1399158239364624,
+    -0.760581910610199,
+    -1.8256309032440186,
+    -0.9695098996162415,
+    -1.748809576034546,
+    1.5329835414886475,
+    -1.6762160062789917,
+    1.3411213159561157,
+    -1.8999141454696655,
+    -0.4710181653499603,
+    -0.7316129803657532,
+    0.7165423631668091,
+    -1.9133938550949097,
+    1.5670921802520752,
+    1.0544859170913696,
+    1.019514799118042,
+    1.863669514656067,
+    -1.272312045097351,
+    -1.8468010425567627,
+    0.8452819585800171,
+    -0.5110816955566406,
+    -0.12400747835636139,
+    1.7673351764678955,
+    1.0285263061523438,
+    1.7143863439559937,
+    -1.1562477350234985,
+    -0.7629342079162598,
+    1.329656958580017,
+    -1.0668702125549316,
+    1.0821152925491333,
+    -0.6012856960296631,
+    -0.09217149019241333,
+    -0.12185730785131454,
+    -1.3659064769744873,
+    0.8372645378112793,
+    -1.333699345588684,
+    -0.528218686580658,
+    0.66961669921875,
+    0.958413302898407,
+    0.22075645625591278,
+    1.4765827655792236,
+    -0.2106277048587799,
+    -1.7435177564620972,
+    0.2964029312133789,
+    -0.6371111273765564,
+    0.16591891646385193,
+    -0.7552618384361267,
+    0.4350927174091339,
+    -0.23106247186660767,
+    1.754103660583496,
+    0.32980674505233765,
+    -1.859347939491272,
+    0.3324372470378876,
+    1.4666821956634521,
+    0.1597445011138916,
+    0.625845730304718,
+    -1.2554174661636353,
+    0.49084392189979553,
+    1.050263524055481,
+    0.340823769569397,
+    1.9300596714019775,
+    -0.8265185952186584,
+    1.2408117055892944,
+    0.28986823558807373,
+    1.8636316061019897,
+    1.4936717748641968,
+    0.7783330082893372,
+    -0.23180857300758362,
+    -1.1883543729782104,
+    -0.6707873344421387,
+    0.9752317070960999,
+    0.03455610200762749,
+    1.4858852624893188,
+    -1.0759154558181763,
+    1.0044721364974976,
+    -1.9710087776184082,
+    -0.7812836170196533,
+    0.3021395802497864,
+    1.2718465328216553,
+    1.6058528423309326,
+    -1.5260311365127563,
+    -1.2769224643707275,
+    0.1865031123161316,
+    -0.3210969865322113,
+    0.03289154917001724,
+    0.10740549117326736,
+    -1.1881520748138428,
+    1.1616771221160889,
+    -1.2646446228027344,
+    -1.8979822397232056,
+    0.9519712924957275,
+    -1.5490041971206665,
+    1.8288533687591553,
+    -0.5097590088844299,
+    1.7303071022033691,
+    0.6426595449447632,
+    -0.3473219573497772,
+    -0.0136670907959342,
+    -1.0156173706054688,
+    -0.09330583363771439,
+    1.0437501668930054,
+    -1.0462861061096191,
+    1.9540609121322632,
+    -1.7096868753433228,
+    -1.820939302444458,
+    -0.2944137454032898,
+    -0.8645797967910767,
+    0.9056781530380249,
+    1.4504164457321167,
+    -1.06868314743042,
+    1.3162754774093628,
+    -0.22861792147159576,
+    -1.9088720083236694,
+    0.5252465605735779,
+    -1.0171830654144287,
+    -0.6247498393058777,
+    1.0144109725952148,
+    -1.1548758745193481,
+    0.07245627045631409,
+    0.018416155129671097,
+    1.6088371276855469,
+    0.16248144209384918,
+    1.4488152265548706,
+    1.7520668506622314,
+    1.5649738311767578,
+    -1.5984171628952026,
+    -1.958248496055603,
+    0.03303204104304314,
+    -0.31801289319992065,
+    0.5844285488128662,
+    1.1120078563690186,
+    -0.9869338274002075,
+    1.876033067703247,
+    -0.2842707335948944,
+    -0.6854293942451477,
+    -1.7884225845336914,
+    -1.8838765621185303,
+    1.144934892654419,
+    1.542027473449707,
+    0.9359146952629089,
+    0.1213679164648056,
+    1.8016257286071777,
+    1.9331144094467163,
+    0.5123518705368042,
+    -0.44168320298194885,
+    -1.528571605682373,
+    -0.7046546339988708,
+    1.6912866830825806,
+    -0.3333440124988556,
+    -0.7011248469352722,
+    1.997889518737793,
+    0.16575796902179718,
+    -0.21930041909217834,
+    1.433969259262085,
+    -0.6050469279289246,
+    -1.8559421300888062,
+    -0.23369799554347992,
+    1.063653588294983,
+    0.046820711344480515,
+    1.60891854763031,
+    -0.09063126891851425,
+    0.826592743396759,
+    0.7797313332557678,
+    0.6213913559913635,
+    -1.3286058902740479,
+    0.5387197136878967,
+    -0.2107098400592804,
+    1.9717814922332764,
+    0.514092743396759,
+    -0.5149174928665161,
+    -0.30655431747436523,
+    -0.12188657373189926,
+    1.1995656490325928,
+    0.17868168652057648,
+    -0.7649003863334656,
+    -1.0251576900482178,
+    1.4318288564682007,
+    -1.576366901397705,
+    1.7626110315322876,
+    0.06786472350358963,
+    1.7375112771987915,
+    0.648789644241333,
+    0.22882312536239624,
+    -0.12130668014287949,
+    -0.47177016735076904,
+    -0.7022343277931213,
+    0.9053513407707214,
+    0.22003589570522308,
+    -0.7883567214012146,
+    0.9708314538002014,
+    0.04568871110677719,
+    1.3823312520980835,
+    -1.4732048511505127,
+    0.6729933023452759,
+    0.9047712683677673,
+    -1.7144622802734375,
+    0.2799038290977478,
+    -0.8995102047920227,
+    -1.161653995513916,
+    -0.6060439348220825,
+    0.33360642194747925,
+    -1.6754777431488037,
+    1.6019983291625977,
+    0.572961151599884,
+    1.0378332138061523,
+    0.5229764580726624,
+    -0.25275683403015137,
+    1.8728210926055908,
+    0.9757562875747681,
+    1.0479586124420166,
+    -0.35099735856056213,
+    0.8864555954933167,
+    1.6175010204315186,
+    0.6595352292060852,
+    -0.935808002948761,
+    -1.999706745147705,
+    0.604378879070282,
+    1.3047363758087158,
+    -1.3932385444641113,
+    -0.8658966422080994,
+    0.7272340059280396,
+    1.434470295906067,
+    -0.33979037404060364,
+    0.8441567420959473,
+    1.3920025825500488,
+    0.635403573513031,
+    -1.7020611763000488,
+    -1.507076621055603,
+    -1.9719630479812622,
+    -1.5248488187789917,
+    0.5389838218688965,
+    -0.965818464756012,
+    0.3070252239704132,
+    -0.8190556764602661,
+    0.06129979342222214,
+    1.5509551763534546,
+    1.2819079160690308,
+    -0.10868880152702332,
+    -1.6676464080810547,
+    -0.5680779814720154,
+    0.9511158466339111,
+    -1.6293984651565552,
+    -1.0332378149032593,
+    -1.8649989366531372,
+    -0.7279372215270996,
+    -1.1753119230270386,
+    -0.1467699259519577,
+    0.8450434803962708,
+    -1.431241512298584
+   ],
+   "baseResponse": [
+    1.0997073299751725,
+    6.3986656005728895,
+    5.322699818082378,
+    3.4756653227247423,
+    -0.6271489105114487,
+    4.566455689541163,
+    -2.2045534834193927,
+    -2.765924533144171,
+    -1.365752320671973,
+    -0.5096268713364533,
+    -1.4617758281626982,
+    3.7898025534447157,
+    6.007535136945972,
+    6.045083228598071,
+    5.707292151493068,
+    -1.207721296587442,
+    2.1415473667417886,
+    3.9209332937561627,
+    2.276194167651817,
+    3.4315500409743263,
+    3.5500994356000923,
+    4.657813698677366,
+    -0.5920545756933343,
+    -4.739236474719416,
+    1.5624175931790132,
+    -0.560339020117023,
+    -1.2161330170406477,
+    3.789381405151992,
+    4.151161380989256,
+    1.7940236841414388,
+    -1.706456987555718,
+    2.6137572388282613,
+    3.0239383168136023,
+    4.819666254037968,
+    5.194869199256363,
+    -1.9882183404893037,
+    -2.137151385272981,
+    -0.4973155125122972,
+    1.5745922355399402,
+    -1.584156229409469,
+    1.8249118184854074,
+    3.159356939015423,
+    2.685002337403321,
+    0.8166007452393425,
+    2.4723420302919563,
+    1.0982791633482007,
+    1.870086043529126,
+    -0.32509991436745467,
+    0.6144456615749,
+    -0.31499746993486455,
+    6.42731454686769,
+    5.641570857540218,
+    4.077104077699538,
+    -0.05782613313364062,
+    -3.3545056147089687,
+    -3.3758410710035487,
+    3.688327140909182,
+    6.587142672442005,
+    5.469268694046918,
+    2.0298767549954952,
+    3.520956135846939,
+    3.373021919501344,
+    0.5678430177816062,
+    3.716231435588633,
+    -0.6870927637285557,
+    -1.1187309650430262,
+    0.6916778371950645,
+    2.5179483551733166,
+    4.784382391327788,
+    6.381485497827929,
+    6.464775871260796,
+    3.9559181970790753,
+    1.3902093813509044,
+    4.073425087930338,
+    -1.1879465148460335,
+    -2.8346725666595605,
+    -1.1896632268780556,
+    -0.34112636344604763,
+    2.4026866859463403,
+    2.606753005686904,
+    2.4028842249420976,
+    5.028502946446679,
+    2.5094297695765273,
+    -2.9791424384173273,
+    0.5480744718619217,
+    -0.18995894928806373,
+    -0.6957778582100772,
+    5.076870038944464,
+    1.1403478176418702,
+    -0.7144073837261424,
+    2.0018262955219654,
+    5.036451087059236,
+    1.874409714382062,
+    2.9687030906917573,
+    -0.9895377122563205,
+    4.713974434986479,
+    5.911949694746776,
+    1.875561936811057,
+    -1.8643035491474533,
+    -3.615992331702987,
+    -1.0258238722687907,
+    -0.9468604035213516,
+    1.8105781748524616,
+    -0.36115130730554634,
+    0.7573577117250462,
+    0.054195707185964954,
+    0.995308846818304,
+    3.650040892551917,
+    2.41213792151808,
+    -0.005650732378775878,
+    0.8556953537771426,
+    -0.037351700052344936,
+    3.801770300910321,
+    4.251592689367093,
+    0.4120068518463203,
+    2.1434325481054746,
+    4.057891145829797,
+    0.698184397779347,
+    -3.1517321306439556,
+    -1.5894302188839524,
+    -0.2042603353120607,
+    5.096049622912943,
+    3.1661621402149125,
+    5.121158678335568,
+    2.438772348531715,
+    2.8643666756307473,
+    -1.1136196324139191,
+    -3.9350365993084675,
+    -0.9865366135638445,
+    -1.5073907550479249,
+    1.6155019485031676,
+    6.48650205052702,
+    3.4179273123869347,
+    -0.08788001686688389,
+    2.963594501166829,
+    6.2045334242284325,
+    1.6186825695641098,
+    -1.3245655246042947,
+    2.3852172990316194,
+    6.529879038118714,
+    2.3568391531204815,
+    -0.854402233993583,
+    -1.4609499992205979,
+    6.124164898393981,
+    6.065253633379528,
+    3.3357017749543103,
+    -1.9867443652173216,
+    2.2718038588666127,
+    0.44484493739767567,
+    2.139061925190552,
+    -0.025233913644470855,
+    0.010651465952938415,
+    0.06191876797581332,
+    -2.2489285004787787,
+    1.3856254130466577,
+    1.5576811712952583,
+    -3.235601007938698,
+    1.2798626142752298,
+    0.8410358220402192,
+    1.763844592601739,
+    4.734286650043759,
+    5.390507545947514,
+    2.298862785473845,
+    4.4378479172760485,
+    5.5921614414570096,
+    -3.1329361219592293,
+    -5.7345496458862595,
+    -2.2340234712644884,
+    3.377383735143346,
+    3.590109588110904,
+    0.35118184552500364,
+    5.8592736342460165,
+    1.9242783276200566,
+    3.218196414002887,
+    -1.7004234377051095,
+    0.6244919212247322,
+    0.1952228475542516,
+    3.4911546367479227,
+    0.6618798535498657,
+    1.7959899255723282,
+    2.3257615153014597,
+    4.001821018358981,
+    0.3795900812770736,
+    3.8111112002650804,
+    -0.31184618179264356,
+    4.501679118846728,
+    1.8323046236405727,
+    0.5604448499382569,
+    4.152227592104198,
+    4.340753356573483,
+    0.5424955717265417,
+    3.7470069684708163,
+    2.162654157388253,
+    0.7501211402096456,
+    -1.3882514211227395,
+    0.006569226510564613,
+    1.5141133585623805,
+    -1.9980783168487621,
+    0.2367633194609215,
+    0.43762613916710247,
+    1.9723908286565424,
+    5.189368818992166,
+    8.04555779282406,
+    3.8748552247027197,
+    -3.105323944262395,
+    1.11678326798219,
+    6.128692693917609,
+    3.3874435129919616,
+    1.7681271673945862,
+    2.158473164377851,
+    4.003341266036417,
+    -1.5295807897411966,
+    -2.163861551088072,
+    -0.4273050433134708,
+    0.05431965523376124,
+    2.937191245202492,
+    1.8453000296028543,
+    1.7956774523524184,
+    -1.061206892682453,
+    1.4807342123652758,
+    4.004940739657453,
+    0.639588106436859,
+    4.934811932276369,
+    -1.213241176416402,
+    2.2288763394154048,
+    3.423493396946185,
+    -4.312486428496963,
+    -4.612227662500764,
+    -2.030034206318259,
+    -4.828629022777054,
+    -0.7716016845826971,
+    -0.5208423609757021,
+    4.645033317387768,
+    2.1040195975956353,
+    -1.3942427043638168,
+    2.412011546207992,
+    3.710126364747478,
+    1.3945489131266258,
+    5.601808445560334,
+    3.0132930321013376,
+    4.187382910996996,
+    1.90063579628872,
+    -1.1146373220781174,
+    -1.0592814005910496,
+    0.3540779233976197,
+    2.8493074697771763,
+    1.3313360543639936,
+    -0.3339035277129908,
+    -1.348606979290642,
+    0.8980279358786162,
+    3.658033839584297,
+    2.934379318702566,
+    -1.4260052492014277,
+    -2.968543980761569,
+    -1.5484946829496162,
+    -2.0073295553177273,
+    0.709445937392113,
+    1.274375330954745,
+    3.6399346280423557,
+    5.161384177817822,
+    0.37136832300506417,
+    -0.18620815021773285,
+    1.7995424058180758,
+    3.048641201854403,
+    1.2298091117432768,
+    -2.8493333707800783,
+    -2.7881068107135523,
+    -0.6841233107135559,
+    2.5509257568138946,
+    3.4944734969513043,
+    3.933709913558166,
+    0.9262295270506145,
+    4.782153862918814,
+    1.4008805111772231,
+    0.9949485258835611,
+    6.201655519720303,
+    6.537032483939456,
+    2.3352382003309793,
+    0.7726575440139638,
+    6.248792222222971,
+    1.08513902108801,
+    -0.15102792485024202,
+    2.1383558313224618,
+    4.554103401424099,
+    -0.5183163527740476,
+    0.5300385662234545,
+    -0.10147404813001179,
+    -0.5941022415887844,
+    -3.4983069385423953,
+    3.347805495387121,
+    -2.0114317087705027,
+    -2.1812075172994034,
+    -2.6877064433984366,
+    -1.7699529569674066,
+    -1.5360465674946957,
+    -4.7785411581817,
+    -3.0568355816367694,
+    2.1595765964791775,
+    4.825847653626543,
+    4.005095023647099,
+    5.658430641488839,
+    3.3100951405842056,
+    2.1994645999301126,
+    3.52706028418385,
+    1.057581960349565,
+    1.9814081609050402,
+    -0.43072000075310557,
+    5.837386242124934,
+    5.776823753770982,
+    -1.4805031004443974,
+    1.5823851788000265,
+    5.0776774252628485,
+    -0.18139351785977884,
+    -2.744222408093542,
+    -1.9670045216676089,
+    -0.9696946485248366,
+    0.06476204820083523,
+    -0.8265375537464389,
+    0.09221644831622254,
+    -0.5826657752939388,
+    1.240812056557925,
+    3.194271714049368,
+    3.138177210581655,
+    1.4829828162034195,
+    3.934921517995561,
+    1.3940602970459472,
+    3.3021441312051225,
+    4.389307262971363,
+    -1.4602968183853557,
+    1.2715678350890407,
+    1.1240509918850639,
+    -0.529708336209738,
+    2.2289395538671646,
+    4.062511050966778,
+    6.199890475041277,
+    2.9934305236395553,
+    2.155936998388737,
+    -0.6401160918874415,
+    0.011988258497908348,
+    4.41324466169403,
+    4.60163266349763,
+    1.2933478826694214,
+    0.508903789835134,
+    -0.24416418458666198,
+    -4.667547799745448,
+    -1.946985892593641,
+    -0.8106243144468926,
+    2.452228473267503,
+    4.503795242614927,
+    4.035782590404515,
+    2.9152764759157495,
+    -1.4900929073971172,
+    -1.2108743771019272,
+    -3.15135057568866,
+    -1.813576886162787,
+    -0.2648579453676599,
+    5.708102366805871,
+    0.9870470016489044,
+    5.450707518223929,
+    -0.47343813291085246,
+    0.7566710425330878,
+    1.3466689840612465,
+    3.119797027644971,
+    -1.0910012353246117,
+    5.698557325646469,
+    4.309713785950759,
+    5.090329544819305,
+    7.005063509225971,
+    -1.4168942180040258,
+    -2.8848505205527104,
+    3.4144055121826145,
+    1.2818404590139998,
+    2.1959158779744365,
+    7.6553534421096305,
+    6.9901613158271925,
+    6.788814848528406,
+    1.0911166202047298,
+    0.9874217506680042,
+    3.7699097843117433,
+    2.5065944055022222,
+    6.093658690190333,
+    1.9618883498012543,
+    0.7720926396188557,
+    -0.7378223346484131,
+    0.2582130058408236,
+    3.870811554373771,
+    1.298432787783249,
+    -0.018263151193608784,
+    3.2926928100466193,
+    4.040542531693658,
+    3.5600488222394957,
+    4.742228120260045,
+    1.459695736356151,
+    -2.4734855997112843,
+    0.4842468166735796,
+    -0.2752757440524707,
+    2.539345530969493,
+    1.096640704636477,
+    -0.5388372296880476,
+    0.8653780262071904,
+    3.3355222003445895,
+    1.0705642743438837,
+    -2.593629423691241,
+    2.2026098728973893,
+    4.1383330715825375,
+    2.2203816478303935,
+    2.688568217667849,
+    -0.7641641894187834,
+    3.1172203692634257,
+    3.4671711885336105,
+    1.546272351759271,
+    4.864728824046923,
+    1.389924649716186,
+    4.977714216566248,
+    2.703420932054569,
+    5.491724788093651,
+    7.4766247270111,
+    3.7596432565230047,
+    0.598030656107844,
+    -2.145570041949438,
+    -1.1437660263011988,
+    3.8989122899371558,
+    0.8483450378995131,
+    5.196224104673344,
+    0.3067170381062103,
+    2.6878807802456204,
+    -3.499006380858517,
+    -2.3344996939681364,
+    1.3876401036295292,
+    3.695700726623076,
+    2.959077898306042,
+    -1.6456332241523146,
+    -2.775424233234256,
+    -1.103568983355025,
+    0.156627048812341,
+    0.46239349850914485,
+    -0.4254537267654646,
+    -1.1880244142549934,
+    2.482512922036748,
+    -3.392672253236894,
+    -4.6337408759958745,
+    2.585944377583391,
+    -0.8975003064797801,
+    3.959315127367409,
+    4.113201619471917,
+    7.28284508009197,
+    4.900729834721761,
+    2.7453243714938274,
+    0.16295563330111665,
+    0.47169605879079973,
+    2.5539306679427685,
+    5.296465272356184,
+    2.0727385931606594,
+    5.289914222606659,
+    -0.951477239625005,
+    -0.8699112758342229,
+    -1.7871467893874182,
+    -0.5684864026778805,
+    3.64698234828176,
+    3.9312317041958167,
+    0.5237329978583036,
+    5.003494304993162,
+    1.771859938907893,
+    -3.129820980168433,
+    -1.854426416450269,
+    -2.7618020831849024,
+    0.958377841155336,
+    4.542178234590701,
+    0.5261680311237363,
+    1.8830119490660044,
+    2.4406512850433066,
+    4.26127568627502,
+    3.4685366947097855,
+    7.403722347687267,
+    5.918160428095444,
+    4.177013641170997,
+    -0.3151241159706178,
+    -0.43497603506522464,
+    2.8186780741741577,
+    1.3964977529366147,
+    4.717208226786686,
+    3.8445444252701906,
+    0.8649320831294061,
+    3.346847872472176,
+    0.8419672247194501,
+    0.3376422998063332,
+    -1.3653625262439668,
+    -2.8622500836903515,
+    2.77128294233353,
+    6.424807936150849,
+    5.190180539842832,
+    4.018446995400308,
+    8.693281528728162,
+    8.811413440408172,
+    3.8647759448809906,
+    -1.035592553655424,
+    -2.7408263458142077,
+    0.5745981245988818,
+    3.847685448537315,
+    1.9555492699889385,
+    0.512989320520536,
+    5.7949972557475915,
+    3.105287187359134,
+    2.060330509704275,
+    4.2452902524403875,
+    -0.15860450613210844,
+    -3.8639633242127562,
+    0.06878289735165226,
+    4.237592961565729,
+    3.7102701756575778,
+    6.1319420615171,
+    1.2655614717258996,
+    3.531054147872857,
+    4.189089093230426,
+    3.0072276088771908,
+    -1.4736753275329015,
+    1.4047489419730108,
+    1.819179738173102,
+    5.593273900479986,
+    1.8776762019051616,
+    -1.1668597631694475,
+    1.1874222362377738,
+    -0.09016186051228937,
+    3.040916285845822,
+    2.106392791065098,
+    -1.4810901989247198,
+    -0.9761886448119277,
+    2.495463799182059,
+    -0.2723828765125772,
+    7.573040086101162,
+    3.8609393155480536,
+    5.844127554329123,
+    2.601325359512287,
+    2.4349705519405056,
+    1.7239406079000297,
+    -1.0099362375733,
+    -0.19870853244560738,
+    1.7293667304265352,
+    0.8846480767596795,
+    0.2897991334991972,
+    3.858320649198449,
+    2.55515259414817,
+    3.80041571683039,
+    -1.4852630424316362,
+    2.71040411177147,
+    3.342615936001135,
+    -2.2159282811768075,
+    0.7915999512437932,
+    -2.0732377170416725,
+    -1.4276229356754844,
+    -0.18071143589934724,
+    1.9200791427263135,
+    -0.3025864144072252,
+    5.9103622626965135,
+    5.819370402736444,
+    5.649033000115956,
+    4.679707583168197,
+    1.952530018340383,
+    6.350720785930873,
+    4.949439483408899,
+    4.456805263706775,
+    2.562047472813609,
+    3.943796735351962,
+    5.6184817607298765,
+    1.3038014334459644,
+    -2.1637034858264106,
+    -2.949124692579848,
+    2.314013665910607,
+    4.696701689244281,
+    -2.006470767250844,
+    -2.166802944378963,
+    0.15564550897144777,
+    2.519529619485225,
+    1.4401647388376713,
+    3.9732598871478184,
+    5.464005469084363,
+    2.7947074502249816,
+    -2.353801487913183,
+    -2.5144427572191086,
+    -4.069539028624408,
+    -3.2633789206778308,
+    2.3483917172770346,
+    -0.4878164226473836,
+    2.1999524504613883,
+    0.22380821387186786,
+    2.9380620290274977,
+    6.518184925035268,
+    7.159720259541859,
+    0.5160039695673369,
+    -3.2779203666726744,
+    -0.7724058727396699,
+    2.3507199996326507,
+    -4.2425211600419015,
+    -4.368509448905268,
+    -3.641422344745974,
+    -0.10628115216336863,
+    0.6013527507878043,
+    1.4501659159290503,
+    2.548168393655802,
+    -2.610293758433901
+   ],
+   "scales": [
+    {
+     "scale": 1e-10,
+     "responseSum": 9.521368415048434e-08,
+     "parameter": 0.4089126801504843,
+     "slopes": [
+      1.9699879064145567e-10
+     ],
+     "intercept": 9.935232659829297e-11,
+     "sigmaSquared": 9.635059702273668e-21,
+     "logLikelihood": 12948.481943202172,
+     "residualRatio": 0.5401873272148463,
+     "standardErrors": [
+      4.995499866542115e-12,
+      3.644937571189445e-12,
+      0.01863313866786024
+     ]
+    },
+    {
+     "scale": 1.0,
+     "responseSum": 952.1368420599028,
+     "parameter": 0.4089126914321195,
+     "slopes": [
+      1.9699879036486727
+     ],
+     "intercept": 0.9935232485490119,
+     "sigmaSquared": 0.9635059649664413,
+     "logLikelihood": -867.0286147099175,
+     "residualRatio": 0.5401873243530925,
+     "standardErrors": [
+      0.04995499866542115,
+      0.036449375711894445,
+      0.01863313866786024
+     ]
+    },
+    {
+     "scale": 10000000000.0,
+     "responseSum": 9521368417620.0,
+     "parameter": 0.4089126818888803,
+     "slopes": [
+      19699879030.211193
+     ],
+     "intercept": 9935232633.819609,
+     "sigmaSquared": 9.63505968645709e+19,
+     "logLikelihood": -14682.539172478278,
+     "residualRatio": 0.5401873281748674,
+     "standardErrors": [
+      499549986.6542115,
+      364493757.11894447,
+      0.01863313866786024
+     ]
+    }
+   ]
+  },
+  "parameterBelowFloat32Spacing": {
+   "offsets": [
+    0,
+    2,
+    4,
+    6,
+    8,
+    10,
+    12,
+    14,
+    16,
+    18,
+    20,
+    22,
+    24,
+    26,
+    28,
+    30,
+    32,
+    34,
+    36,
+    38,
+    40,
+    42,
+    44,
+    46,
+    48,
+    50,
+    52,
+    54,
+    56,
+    58,
+    60,
+    62,
+    64,
+    66,
+    68,
+    70,
+    72,
+    74,
+    76,
+    78,
+    80,
+    82,
+    84,
+    86,
+    88,
+    90,
+    92,
+    94,
+    96,
+    98,
+    100,
+    102,
+    104,
+    106,
+    108,
+    110,
+    112,
+    114,
+    116,
+    118,
+    120,
+    122,
+    124,
+    126,
+    128
+   ],
+   "neighbors": [
+    1,
+    63,
+    0,
+    2,
+    1,
+    3,
+    2,
+    4,
+    3,
+    5,
+    4,
+    6,
+    5,
+    7,
+    6,
+    8,
+    7,
+    9,
+    8,
+    10,
+    9,
+    11,
+    10,
+    12,
+    11,
+    13,
+    12,
+    14,
+    13,
+    15,
+    14,
+    16,
+    15,
+    17,
+    16,
+    18,
+    17,
+    19,
+    18,
+    20,
+    19,
+    21,
+    20,
+    22,
+    21,
+    23,
+    22,
+    24,
+    23,
+    25,
+    24,
+    26,
+    25,
+    27,
+    26,
+    28,
+    27,
+    29,
+    28,
+    30,
+    29,
+    31,
+    30,
+    32,
+    31,
+    33,
+    32,
+    34,
+    33,
+    35,
+    34,
+    36,
+    35,
+    37,
+    36,
+    38,
+    37,
+    39,
+    38,
+    40,
+    39,
+    41,
+    40,
+    42,
+    41,
+    43,
+    42,
+    44,
+    43,
+    45,
+    44,
+    46,
+    45,
+    47,
+    46,
+    48,
+    47,
+    49,
+    48,
+    50,
+    49,
+    51,
+    50,
+    52,
+    51,
+    53,
+    52,
+    54,
+    53,
+    55,
+    54,
+    56,
+    55,
+    57,
+    56,
+    58,
+    57,
+    59,
+    58,
+    60,
+    59,
+    61,
+    60,
+    62,
+    61,
+    63,
+    0,
+    62
+   ],
+   "weights": [
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5
+   ],
+   "response": [
+    7.0,
+    0.0,
+    6.0,
+    -4.0,
+    -10.0,
+    -5.0,
+    10.0,
+    10.0,
+    4.0,
+    -6.0,
+    0.0,
+    -10.0,
+    -7.0,
+    7.0,
+    4.0,
+    -7.0,
+    7.0,
+    7.0,
+    -6.0,
+    5.0,
+    -6.0,
+    -9.0,
+    -6.0,
+    -8.0,
+    7.0,
+    -1.0,
+    -1.0,
+    5.0,
+    1.0,
+    -8.0,
+    -2.0,
+    -7.0,
+    -7.0,
+    -0.0,
+    -6.0,
+    4.0,
+    10.0,
+    5.0,
+    -10.0,
+    -10.0,
+    -4.0,
+    6.0,
+    -0.0,
+    10.0,
+    7.0,
+    -7.0,
+    -4.0,
+    7.0,
+    -7.0,
+    -7.0,
+    6.0,
+    -5.0,
+    6.0,
+    9.0,
+    6.0,
+    8.0,
+    -7.0,
+    1.0,
+    1.0,
+    -5.0,
+    -1.0,
+    8.0,
+    2.0,
+    7.0
+   ],
+   "predictor": [
+    5.599999904632568,
+    -2.5999999046325684,
+    6.800000190734863,
+    -3.200000047683716,
+    -8.199999809265137,
+    -5.0,
+    9.0,
+    7.199999809265137,
+    3.200000047683716,
+    -6.800000190734863,
+    3.200000047683716,
+    -8.600000381469727,
+    -6.400000095367432,
+    7.599999904632568,
+    4.0,
+    -9.199999809265137,
+    7.0,
+    6.800000190734863,
+    -8.399999618530273,
+    7.400000095367432,
+    -5.199999809265137,
+    -6.599999904632568,
+    -2.5999999046325684,
+    -8.199999809265137,
+    8.800000190734863,
+    -2.200000047683716,
+    -1.7999999523162842,
+    5.0,
+    1.600000023841858,
+    -7.800000190734863,
+    1.0,
+    -5.199999809265137,
+    -5.599999904632568,
+    2.5999999046325684,
+    -6.800000190734863,
+    3.200000047683716,
+    8.199999809265137,
+    5.0,
+    -9.0,
+    -7.199999809265137,
+    -3.200000047683716,
+    6.800000190734863,
+    -3.200000047683716,
+    8.600000381469727,
+    6.400000095367432,
+    -7.599999904632568,
+    -4.0,
+    9.199999809265137,
+    -7.0,
+    -6.800000190734863,
+    8.399999618530273,
+    -7.400000095367432,
+    5.199999809265137,
+    6.599999904632568,
+    2.5999999046325684,
+    8.199999809265137,
+    -8.800000190734863,
+    2.200000047683716,
+    1.7999999523162842,
+    -5.0,
+    -1.600000023841858,
+    7.800000190734863,
+    -1.0,
+    5.199999809265137
+   ],
+   "lagMaximumLikelihood": {
+    "parameter": 0.4000000031769534,
+    "residualSumOfSquares": 1.5179639721732276e-12,
+    "nearestFloat32Parameter": 0.4000000059604645,
+    "standardErrors": [
+     1.9300428033928125e-08,
+     3.1171520438793796e-09,
+     4.638708348761866e-09
+    ],
+    "spreg": {
+     "intercept": 0.0,
+     "slopes": [
+      1.0000000013549473
+     ],
+     "parameter": 0.4000000005197818,
+     "standardErrors": [
+      1.9300428033928125e-08,
+      3.1171520438793796e-09,
+      4.638708348761866e-09
+     ],
+     "sigmaSquared": 2.3840417426741678e-14,
+     "logLikelihood": 910.2156680251645
+    }
+   }
+  },
+  "signedWeightsOfZeroTotal": {
+   "offsets": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+   ],
+   "neighbors": [
+    1,
+    0,
+    3,
+    2,
+    5,
+    4,
+    7,
+    6
+   ],
+   "weights": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    -1.0,
+    -1.0,
+    -1.0,
+    -1.0
+   ],
+   "response": [
+    1.0,
+    3.0,
+    -1.0,
+    2.0,
+    7.0,
+    0.0,
+    -2.0,
+    8.0
+   ],
+   "predictor": [
+    -2.0,
+    -1.0,
+    0.0,
+    1.0,
+    2.0,
+    4.0,
+    -3.0,
+    5.0
+   ],
+   "twoStage": {
+    "intercept": 1.6741472172351888,
+    "slopes": [
+     0.7829642928386196
+    ],
+    "parameter": 0.011370436864153156,
+    "standardErrors": [
+     1.0432578697920305,
+     0.3570240388968773,
+     0.35141219636147125
+    ],
+    "sigmaSquared": 7.038771247419784,
+    "anselinKelejian": 0.9505670553094601
+   }
+  }
+ }
+}

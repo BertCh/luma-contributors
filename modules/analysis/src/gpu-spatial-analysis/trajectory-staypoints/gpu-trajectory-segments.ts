@@ -21,7 +21,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -167,11 +167,11 @@ export class GPUTrajectorySegments implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {positions, timestamps, trackOffsets, staypointIds, parameters, output} = props;
-    validatePackedView(positions, ['float32x2'], `${id} positions`);
-    validatePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
-    validatePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
-    validatePackedView(staypointIds, ['uint32'], `${id} staypointIds`);
-    validatePackedView(parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(staypointIds, ['uint32'], `${id} staypointIds`);
+    validateSinglePackedView(parameters, ['float32'], `${id} parameters`);
     validateViewLength(id, 'timestamps', timestamps, positions.length);
     validateViewLength(id, 'staypointIds', staypointIds, positions.length);
     resolveGPUTrajectoryTemporalContext(id, timestamps, props.temporalContext);
@@ -192,12 +192,12 @@ export class GPUTrajectorySegments implements GPUCommandNodeProducer {
       ['endRows', output.triplegs.endRows]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.triplegs.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.triplegs.${name}`);
         validateViewLength(id, `output.triplegs.${name}`, view, output.triplegs.ids.length);
       }
     }
     if (output.triplegs.rowTriplegIds) {
-      validatePackedView(
+      validateSinglePackedView(
         output.triplegs.rowTriplegIds,
         ['uint32'],
         `${id} output.triplegs.rowTriplegIds`
@@ -221,12 +221,16 @@ export class GPUTrajectorySegments implements GPUCommandNodeProducer {
         ['destinationStaypoints', trips.destinationStaypoints]
       ] as const) {
         if (view) {
-          validatePackedView(view, ['uint32'], `${id} output.trips.${name}`);
+          validateSinglePackedView(view, ['uint32'], `${id} output.trips.${name}`);
           validateViewLength(id, `output.trips.${name}`, view, trips.ids.length);
         }
       }
       if (trips.triplegTripIds) {
-        validatePackedView(trips.triplegTripIds, ['uint32'], `${id} output.trips.triplegTripIds`);
+        validateSinglePackedView(
+          trips.triplegTripIds,
+          ['uint32'],
+          `${id} output.trips.triplegTripIds`
+        );
         validateViewLength(
           id,
           'output.trips.triplegTripIds',

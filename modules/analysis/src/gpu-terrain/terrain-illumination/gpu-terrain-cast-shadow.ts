@@ -46,9 +46,9 @@ import {
   type GPURasterCellSizeMode,
   type GPURasterRowDirection,
   validateRasterCellSizeMode,
-  validateRasterRowDirection,
   writeRasterGridParameterValues
 } from '../../analysis-core/raster-grid';
+import {resolveTerrainRowDirection} from '../terrain-curvature/terrain-geomorphometry-utils';
 
 /** Number of float32 values read from `GPUTerrainCastShadowProps.parameters`. */
 export const GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH = 16;
@@ -180,7 +180,11 @@ export type GPUTerrainCastShadowProps = {
   maximumRadius?: number;
   /** Cell size interpretation. Defaults to `'uniform'`. */
   cellSizeMode?: GPURasterCellSizeMode;
-  /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
+  /**
+   * Direction in which the row index increases. Defaults to the direction the grid states: the
+   * sign of the row term `grid.affine[4]` (negative: `'south'`, a north-up raster; positive:
+   * `'north'`). An explicit value that contradicts the grid throws at construction.
+   */
   rowDirection?: GPURasterRowDirection;
 };
 
@@ -215,6 +219,8 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
   readonly props: GPUTerrainCastShadowProps;
   /** Search radius in pixels. */
   readonly maximumRadius: number;
+  /** Row direction the kernels use: the prop, or the direction the grid affine states. */
+  readonly rowDirection: GPURasterRowDirection;
   /** Receptive field in pixels (`GPURasterHaloStage` contract). */
   readonly requiredHalo: number;
 
@@ -275,7 +281,7 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
     );
     validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
-    validateRasterRowDirection(id, props.rowDirection ?? 'south');
+    this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
     validateRasterBuffersDistinct(
       id,
       [output.sunVisibility, output.horizonAngle, output.outputValidity],
@@ -339,7 +345,7 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
           kind: 'settings',
           index: 10,
           groundDirectionIndex: 14,
-          rowDirection: props.rowDirection ?? 'south'
+          rowDirection: this.rowDirection
         },
         maximumRadius: this.maximumRadius,
         cellSizeMode: props.cellSizeMode ?? 'uniform',
@@ -349,7 +355,7 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
         hull: createTransientView(graph, `${id}-hull`, 'uint32', pixelCount),
         outputBindings,
         outputWGSL: `let isValid = isFiniteValue(horizonAngle);
-      let invalidValue = getNaN(pixel);
+      let invalidValue = getQuietNaN(pixel);
       let altitudeDegrees = settings[settingsOffset + 8u];
       let radiusDegrees = settings[settingsOffset + 9u];
       var visibility = 0.0;

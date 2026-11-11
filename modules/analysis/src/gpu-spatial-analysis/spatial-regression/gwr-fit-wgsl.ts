@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getRingNeighborDistancesWGSL} from './gwr-grid-index';
-import {getSymmetricEigenvalueRangeWGSL, getCholeskyWGSL} from './spatial-regression-solve';
+import {getCholeskyWGSL} from './spatial-regression-solve';
+import {getDesignSingularValueWGSL} from './local-collinearity-wgsl';
 import {
   getCandidateLoopWGSL,
   getEquilibratedCholeskyWGSL,
@@ -11,6 +12,7 @@ import {
   getLocalGridSupportWGSL,
   getLocalKernelWeightWGSL
 } from './local-weighted-least-squares-wgsl';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /** Options of {@link getGWRFitWGSL}. @internal */
 export type GWRFitWGSLOptions = {
@@ -43,7 +45,8 @@ export type GWRFitWGSLOptions = {
  *
  * Declares: `LocalFit`, `getPosition`, `getDistance`, `getWeight`, `selectNeighborDistances`,
  * `getBandwidthForValue`, `fitLocation`, `getLocalR2`, optionally `getLocalConditionNumber`, and
- * the Cholesky and eigenvalue helpers.
+ * the Cholesky and eigenvalue helpers, and `isFiniteValue` (which the shared Cholesky needs; with a
+ * grid it comes from the grid lookup), so the kernel must not include `IS_FINITE_VALUE_WGSL` again.
  *
  * @internal
  */
@@ -58,10 +61,11 @@ export function getGWRFitWGSL(options: GWRFitWGSLOptions): string {
   const gaussianCutoff = options.gaussianCutoff ?? null;
   const hasGrid = Boolean(indexGridSize);
   return /* wgsl */ `
+${hasGrid ? '' : IS_FINITE_VALUE_WGSL}
 ${getCholeskyWGSL(P)}
 ${getEquilibratedCholeskyWGSL(P)}
 ${getLocalKernelWeightWGSL(gaussianCutoff)}
-${hasConditionNumber ? getSymmetricEigenvalueRangeWGSL(P) : ''}
+${hasConditionNumber ? getDesignSingularValueWGSL(P) : ''}
 ${indexGridSize ? getLocalGridSupportWGSL(indexGridSize, gaussianCutoff) : ''}
 struct LocalFit {
   ok: bool,
@@ -229,7 +233,8 @@ fn fitLocation(i: u32, bandwidth: f32) -> LocalFit {
   return fit;
 }
 
-// Weighted R^2 of the local fit over the neighborhood of row i.
+// Weighted R^2 of the local fit over the neighborhood of row i: the residuals are those of local
+// model i evaluated at every neighbor j (not each neighbor's own GWR residual).
 fn getLocalR2(i: u32, bandwidth: f32, fit: LocalFit) -> f32 {
   let origin = getPosition(i);
   let originBase = predictorsOffset + i * PREDICTOR_COUNT;
@@ -260,80 +265,63 @@ ${hasConditionNumber ? getConditionNumberWGSL(P, hasGrid) : ''}
 /**
  * `getLocalConditionNumber`: mgwr `local_collinearity` condition number. With weights `w_j`
  * (kernel weights, not their square roots, exactly as mgwr's `xw = x * wi`) and the raw design
- * `x_j = (1, X_j)`, the singular values of the column-normalized `diag(w) x` are the square roots
- * of the eigenvalues of `C = D^-1/2 (sum_j w_j^2 x_j x_j') D^-1/2`, `D = diag(sum_j w_j^2 x_jc^2)`.
- * The moment is accumulated in coordinates centered on the focal row (as the fit is) and shifted
- * to raw coordinates afterwards; the extreme eigenvalues of the unit-diagonal `C` come from the
- * shared `getSymmetricEigenvalueRange_P` (cyclic Jacobi). A near-singular `C` returns a very large
- * number rather than NaN.
+ * `x_j = (1, X_j)`, it is the ratio of the extreme singular values of the column-normalized
+ * `diag(w) x`.
+ *
+ * The weighted rows are folded into an upper-triangular factor `R` by Givens rotations
+ * (streaming QR, `updateDesignFactor_P` of `GPULocalCollinearity`), so `R'R` is the weighted
+ * moment without ever being formed. Scaling the columns of `R` to unit norm gives a factor of the
+ * column-normalized design, and one-sided Jacobi (`getDesignSingularValues_P`) gives its singular
+ * values to about `epsilon * condition`. The former route (the Gram matrix `C` and its extreme
+ * eigenvalues) needs `1 - cosine` of two columns from float32 values near 1: it was 17% off for
+ * a predictor of 1500 +- 3 and meaningless for a projected northing. A rank-deficient design
+ * returns a very large number rather than NaN.
  */
 function getConditionNumberWGSL(coefficientCount: number, hasGrid: boolean): string {
   const P = coefficientCount;
   return /* wgsl */ `
 fn getLocalConditionNumber(i: u32, bandwidth: f32) -> f32 {
-  var moment: array<f32, ${P * P}>;
-  var z: array<f32, ${P}>;
-  for (var entry = 0u; entry < P * P; entry++) {
-    moment[entry] = 0.0;
-  }
+  var factor: array<f32, ${P * P}>;
+  var designRow: array<f32, ${P}>;
   let origin = getPosition(i);
-  let originBase = predictorsOffset + i * PREDICTOR_COUNT;
-  z[0] = 1.0;
   ${getCandidateLoopWGSL(
     `let weight = getWeight(getDistance(origin, getPosition(row)), bandwidth);
     if (!(weight > 0.0)) {
       continue;
     }
-    let squaredWeight = weight * weight;
     let rowBase = predictorsOffset + row * PREDICTOR_COUNT;
+    designRow[0] = weight;
     for (var column = 0u; column < PREDICTOR_COUNT; column++) {
-      z[column + 1u] = predictors[rowBase + column] - predictors[originBase + column];
+      designRow[column + 1u] = weight * predictors[rowBase + column];
     }
-    for (var r = 0u; r < P; r++) {
-      for (var c = 0u; c <= r; c++) {
-        moment[r * P + c] = moment[r * P + c] + squaredWeight * z[r] * z[c];
-      }
-    }`,
+    updateDesignFactor_${P}(&factor, &designRow);`,
     hasGrid
   )}
-  // Shift the centered moment to raw coordinates: x = (1, x_i + z), so raw = T moment T'.
-  var center: array<f32, ${P}>;
-  center[0] = 0.0;
-  for (var column = 0u; column < PREDICTOR_COUNT; column++) {
-    center[column + 1u] = predictors[originBase + column];
-  }
-  var raw: array<f32, ${P * P}>;
-  for (var r = 0u; r < P; r++) {
-    for (var c = 0u; c <= r; c++) {
-      // T = I + e_r' center, with center[0] = 0 and the intercept row of T equal to e_0.
-      let m00 = moment[0];
-      let mr0 = moment[r * P];
-      let mc0 = moment[c * P];
-      var value = moment[r * P + c];
-      if (r > 0u && c > 0u) {
-        value = value + center[r] * mc0 + center[c] * mr0 + center[r] * center[c] * m00;
-      } else if (r > 0u) {
-        value = value + center[r] * m00;
-      }
-      raw[r * P + c] = value;
-      raw[c * P + r] = value;
+  // Unit column norms: the squared norm of column c of R is the weighted sum of squares of column c.
+  for (var c = 0u; c < P; c++) {
+    var squaredNorm = 0.0;
+    for (var r = 0u; r <= c; r++) {
+      squaredNorm = squaredNorm + factor[r * P + c] * factor[r * P + c];
     }
-  }
-  var scale: array<f32, ${P}>;
-  for (var r = 0u; r < P; r++) {
-    let diagonal = raw[r * P + r];
-    if (!(diagonal > 0.0) || !isFiniteBits(diagonal)) {
+    if (!(squaredNorm > 0.0) || !isFiniteBits(squaredNorm)) {
       return getNaN();
     }
-    scale[r] = 1.0 / sqrt(diagonal);
-  }
-  for (var r = 0u; r < P; r++) {
-    for (var c = 0u; c < P; c++) {
-      raw[r * P + c] = raw[r * P + c] * scale[r] * scale[c];
+    let scale = inverseSqrt(squaredNorm);
+    for (var r = 0u; r <= c; r++) {
+      factor[r * P + c] = factor[r * P + c] * scale;
     }
   }
-  let eigenvalues = getSymmetricEigenvalueRange_${P}(&raw);
-  return sqrt(eigenvalues.y / max(eigenvalues.x, 1.0e-30));
+  var vectors: array<f32, ${P * P}>;
+  var singularValues: array<f32, ${P}>;
+  // The sweeps are bounded; an unconverged result is still the best available estimate.
+  getDesignSingularValues_${P}(&factor, &vectors, &singularValues);
+  var largest = 0.0;
+  var smallest = 3.0e38;
+  for (var c = 0u; c < P; c++) {
+    largest = max(largest, singularValues[c]);
+    smallest = min(smallest, singularValues[c]);
+  }
+  return largest / max(smallest, 1.0e-30);
 }
 `;
 }

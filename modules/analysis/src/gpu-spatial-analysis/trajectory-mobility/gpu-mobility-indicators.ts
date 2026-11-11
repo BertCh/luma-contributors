@@ -26,7 +26,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -160,12 +160,12 @@ export class GPUMobilityIndicators implements GPUCommandNodeProducer {
     );
     const {staypoints, triplegs, output, timestamps} = props;
     validateCapacity(id, 'trackCount', props.trackCount);
-    validatePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
-    validatePackedView(staypoints.tracks, ['uint32'], `${id} staypoints.tracks`);
-    validatePackedView(staypoints.centroids, ['float32x2'], `${id} staypoints.centroids`);
-    validatePackedView(staypoints.startRows, ['uint32'], `${id} staypoints.startRows`);
-    validatePackedView(staypoints.durations, ['float32'], `${id} staypoints.durations`);
-    validatePackedView(staypoints.locationIds, ['uint32'], `${id} staypoints.locationIds`);
+    validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(staypoints.tracks, ['uint32'], `${id} staypoints.tracks`);
+    validateSinglePackedView(staypoints.centroids, ['float32x2'], `${id} staypoints.centroids`);
+    validateSinglePackedView(staypoints.startRows, ['uint32'], `${id} staypoints.startRows`);
+    validateSinglePackedView(staypoints.durations, ['float32'], `${id} staypoints.durations`);
+    validateSinglePackedView(staypoints.locationIds, ['uint32'], `${id} staypoints.locationIds`);
     const capacity = staypoints.tracks.length;
     for (const view of [
       staypoints.centroids,
@@ -185,7 +185,7 @@ export class GPUMobilityIndicators implements GPUCommandNodeProducer {
       ['trackingQuality', output.trackingQuality, 'float32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} output.${name}`);
+        validateSinglePackedView(view, [format], `${id} output.${name}`);
         validateViewLength(id, `output.${name}`, view, props.trackCount);
       }
     }
@@ -194,7 +194,7 @@ export class GPUMobilityIndicators implements GPUCommandNodeProducer {
       ['waitingTimes', output.waitingTimes]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         validateViewLength(id, `output.${name}`, view, capacity);
       }
     }

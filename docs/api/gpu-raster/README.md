@@ -20,7 +20,7 @@ values usually belong in a renderer or shader module instead.
 
 ```ts
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUDistanceField,
   getGPUDistanceFieldParameterValues

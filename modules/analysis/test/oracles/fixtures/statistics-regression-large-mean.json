@@ -1,0 +1,163 @@
+{
+ "generator": "modules/analysis/test/oracles/statistics-regression-large-mean.py",
+ "versions": {
+  "python": "3.14.8",
+  "numpy": "2.5.4",
+  "scipy": "1.16.3",
+  "libpysal": "4.15.0",
+  "spreg": "1.9.1"
+ },
+ "rowCount": 600,
+ "responseCenter": 10000.0,
+ "ordinaryLeastSquares": {
+  "responseSum": 6000044.5830078125,
+  "coefficients": [
+   9999.999955664009,
+   2.0000666293631184
+  ],
+  "standardErrors": [
+   8.259282054760367e-05,
+   7.112546730845533e-05
+  ],
+  "residualSumOfSquares": 0.002445072518995562,
+  "sigmaSquared": 4.088750031765154e-06,
+  "rSquared": 0.9999992437555619,
+  "logLikelihood": 2871.819925554322,
+  "jarqueBera": 3.921255982926879,
+  "koenkerBassett": 5.004276093689919,
+  "breuschPagan": 4.0272172581635095
+ },
+ "references": [
+  {
+   "estimator": "lag-maximum-likelihood",
+   "scene": "plain",
+   "responseSum": 6000044.5830078125,
+   "shiftedIntercept": -5.097162720153876e-05,
+   "slope": 2.000050581721008,
+   "parameter": 9.733099560407002e-05,
+   "standardErrors": [
+    0.5045358454008836,
+    7.127472542182222e-05,
+    5.0453239900636994e-05
+   ],
+   "sigmaSquared": 4.0499994229766036e-06,
+   "residualSumOfSquares": 0.0024299996537859624,
+   "logLikelihood": 2873.675024452423
+  },
+  {
+   "estimator": "lag-maximum-likelihood",
+   "scene": "lag",
+   "responseSum": 6000074.220703125,
+   "shiftedIntercept": -0.00014867511348308493,
+   "slope": 2.0000481266229406,
+   "parameter": 0.4001674764714108,
+   "standardErrors": [
+    0.8540815496173227,
+    0.00015123469925032811,
+    8.540729973214688e-05
+   ],
+   "sigmaSquared": 1.6079549646060928e-05,
+   "residualSumOfSquares": 0.009647729787636556,
+   "logLikelihood": 2434.4194761578415
+  },
+  {
+   "estimator": "two-stage",
+   "scene": "plain",
+   "responseSum": 6000044.5830078125,
+   "shiftedIntercept": -5.0965491120638987e-05,
+   "slope": 2.0000505965605275,
+   "parameter": 9.724099202895742e-05,
+   "standardErrors": [
+    0.5045257437829883,
+    7.127470565959914e-05,
+    5.045222974570464e-05
+   ],
+   "sigmaSquared": 4.049999444400105e-06,
+   "residualSumOfSquares": 0.002429999666640063,
+   "anselinKelejian": 1.9800074481754648
+  },
+  {
+   "estimator": "two-stage",
+   "scene": "lag",
+   "responseSum": 6000074.220703125,
+   "shiftedIntercept": -0.00014775067373259954,
+   "slope": 2.000054035612264,
+   "parameter": 0.4001582275922768,
+   "standardErrors": [
+    0.8739643418571964,
+    0.00015169919143670545,
+    8.739555911880202e-05
+   ],
+   "sigmaSquared": 1.6079931299599084e-05,
+   "residualSumOfSquares": 0.00964795877975945,
+   "anselinKelejian": 0.6706783552522408
+  },
+  {
+   "estimator": "kelejian-prucha",
+   "scene": "plain",
+   "responseSum": 6000044.5830078125,
+   "shiftedIntercept": -4.3910511419576486e-05,
+   "slope": 2.000055183531648,
+   "parameter": 0.059737875110767724,
+   "standardErrors": [
+    8.7452995622417e-05,
+    7.110311431710396e-05,
+    null
+   ],
+   "sigmaSquared": 4.053233475277151e-06,
+   "residualSumOfSquares": 0.002445178404068999,
+   "spregOptimizerLambda": -0.9899958700387546
+  },
+  {
+   "estimator": "kelejian-prucha",
+   "scene": "error",
+   "responseSum": 6000044.4833984375,
+   "shiftedIntercept": -0.0002098414046734885,
+   "slope": 2.000052904168883,
+   "parameter": 0.5326692710271914,
+   "standardErrors": [
+    0.0003466150753113201,
+    0.00013594269581336692,
+    null
+   ],
+   "sigmaSquared": 1.573991922086993e-05,
+   "residualSumOfSquares": 0.015397913441079367,
+   "spregOptimizerLambda": 0.5328535116206742
+  },
+  {
+   "estimator": "homoskedastic",
+   "scene": "plain",
+   "responseSum": 6000044.5830078125,
+   "shiftedIntercept": -4.391052173030596e-05,
+   "slope": 2.0000551838090175,
+   "parameter": 0.06046643308441853,
+   "standardErrors": [
+    8.751881398223169e-05,
+    7.110427675778257e-05,
+    0.04079900101611311
+   ],
+   "sigmaSquared": 4.053053981948821e-06,
+   "residualSumOfSquares": 0.0024451783989371738
+  },
+  {
+   "estimator": "homoskedastic",
+   "scene": "error",
+   "responseSum": 6000044.4833984375,
+   "shiftedIntercept": -0.00020983987111472535,
+   "slope": 2.0000528629147256,
+   "parameter": 0.5365510679861083,
+   "standardErrors": [
+    0.0003490612414215227,
+    0.00013567310148894537,
+    0.03230899205596083
+   ],
+   "sigmaSquared": 1.5698841557123268e-05,
+   "residualSumOfSquares": 0.015397930464366667
+  }
+ ],
+ "unroundedLag": {
+  "responseSum": 6000074.2451171875,
+  "lagMaximumLikelihoodSigmaSquared": 1.609686640798036e-05,
+  "twoStageSigmaSquared": 1.609724306653447e-05
+ }
+}

@@ -34,6 +34,7 @@ import {
   type RasterStretchScene
 } from './raster-stretch-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import stretchReference from '../../oracles/fixtures/raster-stretch-references.json';
 
 type OutputName = 'stretched' | 'colors' | 'lut' | 'lutColors' | 'histogram' | 'statistics';
 const ALL_OUTPUTS: OutputName[] = [
@@ -113,7 +114,7 @@ function createHarness(device: Device, options: HarnessOptions) {
       values: valuesBuffer.importToGraph(graph),
       grid: makeGPURasterMetadata({width, height}),
       noDataValue: scene.noDataValue,
-      validity: validityBuffer
+      mask: validityBuffer
         ? importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', cellCount)
         : undefined,
       regionMask: maskBuffer?.importToGraph(graph),
@@ -393,16 +394,28 @@ it('GPURasterStretch automatic domain is the exact minimum and maximum, percenti
     .sort((left, right) => left - right);
   expect(stats.domainMinimum).toBe(finite[0]);
   expect(stats.domainMaximum).toBe(finite[finite.length - 1]);
-  // lo/hi are within one bin width of the exact percentile of the data.
-  const exactLow = finite[Math.floor(0.02 * finite.length)];
-  const exactHigh = finite[Math.min(Math.ceil(0.98 * finite.length) - 1, finite.length - 1)];
-  expect(Math.abs(result.statistics![2] - exactLow)).toBeLessThanOrEqual(1.5 * stats.binWidth);
-  expect(Math.abs(result.statistics![3] - exactHigh)).toBeLessThanOrEqual(1.5 * stats.binWidth);
+  // lo/hi are the centre of the bin that holds order statistic floor((N - 1) * p) of the sorted
+  // data: half a bin width, plus the float32 rounding of a value that sits on a bin edge.
+  const exactLow = finite[Math.floor(0.02 * (finite.length - 1))];
+  const exactHigh = finite[Math.floor(0.98 * (finite.length - 1))];
+  expect(Math.abs(result.statistics![2] - exactLow)).toBeLessThanOrEqual(0.75 * stats.binWidth);
+  expect(Math.abs(result.statistics![3] - exactHigh)).toBeLessThanOrEqual(0.75 * stats.binWidth);
+  // Equalization is a step function of the bin, so a value on a bin edge (where the float32 bin
+  // arithmetic of GPU and oracle may differ) moves by the share of one bin, plus the cells the
+  // histogram tolerance allows.
+  const equalizeStatistics = computeRasterStretchStatistics(
+    scene,
+    getGPURasterStretchParameterValues({mode: 'equalize'})
+  );
+  const largestBinCount = equalizeStatistics.histogram.reduce(
+    (largest, count) => Math.max(largest, count),
+    0
+  );
   await checkFrame(
     harness,
     scene,
     {mode: 'equalize'},
-    {histogramTolerance: 24, valueTolerance: 2e-3}
+    {histogramTolerance: 24, valueTolerance: (largestBinCount + 24) / equalizeStatistics.total}
   );
   harness.destroy();
 });
@@ -515,4 +528,163 @@ it('GPURasterStretch matches the CPU oracle over many workgroup tiles (privatize
     await checkFrame(harness, scene, frame, {palette: PALETTE});
   }
   harness.destroy();
+});
+
+// ---------------------------------------------------------------------------------------------
+// Hand-computed cases (math correctness review 2026-11-10, raster-imagery-05, -06 and -12).
+// Every expected number below is worked out in the comment next to it, not taken from the oracle.
+
+async function runSmallCase(
+  values: number[],
+  width: number,
+  settings: GPURasterStretchSettings,
+  palette?: Uint32Array,
+  binCount = 1024
+) {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scene: RasterStretchScene = {
+    values: Float32Array.from(values),
+    width,
+    height: values.length / width,
+    binCount,
+    lutSize: 4
+  };
+  const harness = createHarness(device, {scene, palette});
+  const {result} = await harness.run(settings);
+  harness.destroy();
+  return result;
+}
+
+it('GPURasterStretch linear, gamma and sigmoid match hand-computed values', async () => {
+  // Domain [2, 10]: t = (v - 2) / 8.
+  const linear = await runSmallCase([2, 4, 6, 10], 2, {mode: 'linear'});
+  expect(linear.statistics!.slice(0, 5)).toEqual([2, 10, 2, 10, 4]);
+  [0, 0.25, 0.5, 1].forEach((expected, cell) =>
+    expectClose(linear.stretched![cell], expected, 1e-6, `linear[${cell}]`)
+  );
+  // Display gamma 2: t ** (1 / 2).
+  const gamma = await runSmallCase([2, 4, 6, 10], 2, {mode: 'linear', gamma: 2});
+  [0, 0.5, Math.SQRT1_2, 1].forEach((expected, cell) =>
+    expectClose(gamma.stretched![cell], expected, 1e-6, `gamma[${cell}]`)
+  );
+  // Sigmoid, contrast 10, midpoint 0.5 (rio-color): s(t) = 1 / (1 + e^(10 (0.5 - t))).
+  // s(0) = 0.0066929, s(1) = 0.9933071, s(0.25) = 0.0758582, s(0.5) = 0.5.
+  // (s(0.25) - s(0)) / (s(1) - s(0)) = 0.0691653 / 0.9866143 = 0.0701037.
+  const sigmoid = await runSmallCase([2, 4, 6, 10], 2, {mode: 'linear', sigmoidContrast: 10});
+  [0, 0.0701037, 0.5, 1].forEach((expected, cell) =>
+    expectClose(sigmoid.stretched![cell], expected, 2e-6, `sigmoid[${cell}]`)
+  );
+});
+
+it('GPURasterStretch percentile bounds follow the rank rule of GPURasterGlobalPercentile', async () => {
+  const values = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90];
+  // N = 10, 1024 bins of width 90 / 1024 over [0, 90].
+  // p = 0.50: rank floor(9 * 0.50) = 4, the value 40, bin floor(40 * 1024 / 90) = 455,
+  //           centre 455.5 * 90 / 1024 = 40.0342.
+  // p = 0.98: rank floor(9 * 0.98) = 8, the value 80, bin floor(80 * 1024 / 90) = 910,
+  //           centre 910.5 * 90 / 1024 = 80.0244.
+  // (The rule before this pass gave 40.08 and 89.98; NumPy's linear rule gives 45 and 88.2.)
+  const result = await runSmallCase(values, 5, {mode: 'percentile', percentiles: [50, 98]});
+  expectClose(result.statistics![2], 40.0342, 1e-3, 'lo');
+  expectClose(result.statistics![3], 80.0244, 1e-3, 'hi');
+  // Applied: (60 - 40.0342) / (80.0244 - 40.0342) = 0.49927; values at or below lo give 0 and
+  // values at or above hi give 1.
+  const expected = [0, 0, 0, 0, 0, 0.2492, 0.49927, 0.74932, 0.99939, 1];
+  expected.forEach((value, cell) =>
+    expectClose(result.stretched![cell], value, 5e-5, `stretched[${cell}]`)
+  );
+  // p = 0 and p = 1 are the exact extrema.
+  const full = await runSmallCase(values, 5, {mode: 'percentile', percentiles: [0, 100]});
+  expect(full.statistics!.slice(2, 4)).toEqual([0, 90]);
+  // p = 0.10: rank floor(0.9) = 0, the value 0, bin 0, centre 0.5 * 90 / 1024 = 0.043945.
+  // p = 0.90: rank floor(8.1) = 8, as above.
+  const tails = await runSmallCase(values, 5, {mode: 'percentile', percentiles: [10, 90]});
+  expectClose(tails.statistics![2], 0.043945, 1e-5, 'lo at 10 percent');
+  expectClose(tails.statistics![3], 80.0244, 1e-3, 'hi at 90 percent');
+});
+
+it('GPURasterStretch equalization maps the middle of three equally frequent values to 0.5', async () => {
+  // GPURasterContrast and OpenCV equalizeHist: (cdf[bin] - cdfFirst) / (total - cdfFirst).
+  // Four cells of each value: cdf is 4, 8, 12, cdfFirst is 4, so the values map to
+  // (4 - 4) / 8 = 0, (8 - 4) / 8 = 0.5 and (12 - 4) / 8 = 1 wherever the middle value sits.
+  // (The rule before this pass gave 0.523, 0.333 and 0.379 for the three middle values.)
+  for (const middle of [100, 127.5, 200]) {
+    const values = [0, middle, 255, 0, middle, 255, 0, middle, 255, 0, middle, 255];
+    const result = await runSmallCase(values, 4, {mode: 'equalize'});
+    values.forEach((value, cell) =>
+      expect(result.stretched![cell], `middle ${middle} cell ${cell}`).toBe(
+        value === 0 ? 0 : value === 255 ? 1 : 0.5
+      )
+    );
+  }
+  // Counts 1, 2, 3, 4 of the values 1, 2, 3, 4: cdf 1, 3, 6, 10, cdfFirst 1.
+  // (1 - 1) / 9 = 0, (3 - 1) / 9 = 0.2222, (6 - 1) / 9 = 0.5556, (10 - 1) / 9 = 1.
+  const ramp = await runSmallCase([1, 2, 2, 3, 3, 3, 4, 4, 4, 4], 5, {mode: 'equalize'});
+  [0, 2 / 9, 2 / 9, 5 / 9, 5 / 9, 5 / 9, 1, 1, 1, 1].forEach((expected, cell) =>
+    expectClose(ramp.stretched![cell], expected, 1e-6, `ramp[${cell}]`)
+  );
+});
+
+it('GPURasterStretch nearest palette lookup picks floor(t * size)', async () => {
+  // Linear over [0, 8]: t = 0, 0.25, 0.5, 1; four colours: index min(floor(4 t), 3) = 0, 1, 2, 3.
+  const palette = Uint32Array.from([11, 22, 33, 44]);
+  const result = await runSmallCase([0, 2, 4, 8], 2, {mode: 'linear'}, palette);
+  expect(Array.from(result.colors!)).toEqual([11, 22, 33, 44]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Reference-library fixture (`test/oracles/raster-stretch-references.py`: OpenCV and NumPy).
+
+it('GPURasterStretch equalization matches cv2.equalizeHist on an 8-bit raster', async () => {
+  const {width, values, expectedOpenCV} = stretchReference.equalize;
+  // The automatic domain is [0, 255] and 256 bins hold one value each, as in OpenCV.
+  const result = await runSmallCase(values, width, {mode: 'equalize'}, undefined, 256);
+  expect(result.statistics!.slice(0, 2)).toEqual([0, 255]);
+  // OpenCV rounds (cdf - cdfFirst) * 255 / (total - cdfFirst) to 8 bits.
+  let largestDistance = 0;
+  values.forEach((_, cell) => {
+    largestDistance = Math.max(
+      largestDistance,
+      Math.abs(result.stretched![cell] * 255 - expectedOpenCV[cell])
+    );
+  });
+  expect(largestDistance).toBeLessThanOrEqual(0.5 + 1e-3);
+});
+
+it('GPURasterStretch percentile bounds are the bin centre of numpy.percentile(method="lower")', async () => {
+  const {width, values, percentiles} = stretchReference.float;
+  for (const entry of percentiles) {
+    const result = await runSmallCase(values, width, {
+      mode: 'percentile',
+      percentiles: [entry.percentiles[0], entry.percentiles[1]]
+    });
+    const [lo, hi] = result.statistics!.slice(2, 4);
+    if (entry.percentiles[0] === 0 && entry.percentiles[1] === 100) {
+      // Exact extrema with an automatic domain.
+      expect([lo, hi]).toEqual(entry.lower);
+      continue;
+    }
+    // The order statistic lies in the reported bin, so it is within half a bin of its centre.
+    const halfBin = 0.5 * result.statistics![5] * (1 + 1e-3);
+    expect(Math.abs(lo - entry.lower[0]), `lo at ${entry.percentiles[0]}`).toBeLessThanOrEqual(
+      halfBin
+    );
+    expect(Math.abs(hi - entry.lower[1]), `hi at ${entry.percentiles[1]}`).toBeLessThanOrEqual(
+      halfBin
+    );
+  }
+});
+
+it('GPURasterStretch linear stretch, gamma and sigmoid match the NumPy evaluation of the rio-color formula', async () => {
+  const {width, values, curve} = stretchReference.float;
+  const result = await runSmallCase(values, width, {
+    mode: 'linear',
+    gamma: curve.gamma,
+    sigmoidContrast: curve.sigmoidContrast,
+    sigmoidMidpoint: curve.sigmoidMidpoint
+  });
+  curve.expected.forEach((expected, cell) =>
+    expectClose(result.stretched![cell], expected, 2e-5, `curve[${cell}]`)
+  );
 });

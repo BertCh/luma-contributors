@@ -16,14 +16,30 @@ import {
   GPU_POINT_CLOUD_MAXIMUM_IDW_POWER,
   GPU_POINT_CLOUD_MAXIMUM_IDW_REACH_CELLS
 } from './pointcloud-limits';
-import {createPointCloudGridIndex} from './pointcloud-grid-index';
+import {createPointCloudGridIndex, getPointCloudRowDirection} from './pointcloud-grid-index';
 import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 
+/**
+ * Raster grid of the point-cloud contributors. `origin` is the lower-left corner (minimum x and y)
+ * and column `c`, row `r` is cell `r * width + c`.
+ */
 export type PointCloudRasterGrid = {
   origin: readonly [number, number];
   cellSize: number;
   width: number;
   height: number;
+  /**
+   * Which way row indices run. `'south'` (default): row 0 is the top row at the maximum y and rows
+   * run toward decreasing y, the convention of the raster and terrain families (GDAL and image
+   * order, and the one `GPURasterMetadata` and the D8 flow codes assume), so these rasters feed
+   * `GPUTerrainFlow`, the derivatives or the illumination contributors without flipping rows.
+   * `'north'`: row 0 is the bottom row at the minimum y and rows run toward increasing y.
+   *
+   * Unlike the terrain classes, this grid has no affine or signed cell height, so the direction
+   * cannot be read from it and no contradiction can be detected: every contributor that takes the
+   * same grid must be given the same direction.
+   */
+  rowDirection?: 'north' | 'south';
 };
 
 /**
@@ -54,10 +70,31 @@ export function validatePointCloudGrid(grid: PointCloudRasterGrid, id = 'pointcl
     grid.origin.every(value => Number.isFinite(Math.fround(value))),
     'grid.origin must hold finite numbers'
   );
+  validateRequirement(
+    id,
+    grid.rowDirection === undefined ||
+      grid.rowDirection === 'north' ||
+      grid.rowDirection === 'south',
+    "grid.rowDirection must be 'north' or 'south'"
+  );
 }
 
 /** @internal */
 export function getPointCloudCellSource(grid: PointCloudRasterGrid, point = 'position'): string {
+  // `coordinate` is in cell units with y in row units: for 'south' rows count down from the top edge.
+  // Membership is decided on the offset from the origin, exactly as in the north case, so a point
+  // on a cell boundary belongs to the cell above it (half-open) in both directions: the south row
+  // is height - 1 - floor(offset.y) in integers. `height - offset.y` is only the continuous row
+  // coordinate for interpolation; it rounds in float32 (up, when offset.y is just below a small
+  // integer), so it must not decide the row or the edges.
+  if (getPointCloudRowDirection(grid) === 'south') {
+    return `let southOffset = (${point}.xy - vec2f(${grid.origin.map(Math.fround).join(',')})) / ${Math.fround(grid.cellSize)};
+let coordinate = vec2f(southOffset.x, ${grid.height}.0 - southOffset.y);
+let inside = all(southOffset >= vec2f(0.0)) && all(southOffset < vec2f(${grid.width}.0, ${grid.height}.0));
+let northCell = vec2u(clamp(floor(southOffset), vec2f(0.0), vec2f(${grid.width - 1}.0, ${grid.height - 1}.0)));
+let cell = vec2u(northCell.x, ${grid.height - 1}u - northCell.y);
+let cellIndex = cell.y * ${grid.width}u + cell.x;`;
+  }
   return `let coordinate = (${point}.xy - vec2f(${grid.origin.map(Math.fround).join(',')})) / ${Math.fround(grid.cellSize)};
 let inside = all(coordinate >= vec2f(0.0)) && all(coordinate < vec2f(${grid.width}.0, ${grid.height}.0));
 let cell = vec2u(clamp(floor(coordinate), vec2f(0.0), vec2f(${grid.width - 1}.0, ${grid.height - 1}.0)));
@@ -115,7 +152,8 @@ export class GPUPointCloudSurfaces implements GPUCommandNodeProducer {
         dimensions: [grid.width, grid.height, 1],
         cellSize: grid.cellSize
       },
-      true
+      true,
+      getPointCloudRowDirection(grid)
     );
     return [
       ...indexed.nodes,

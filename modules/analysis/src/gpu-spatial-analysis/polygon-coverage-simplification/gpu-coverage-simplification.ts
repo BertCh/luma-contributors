@@ -11,17 +11,14 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  createFillNode,
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {
+  getNextPowerOfTwo,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
@@ -38,7 +35,16 @@ import {
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH,
   type GPULineSimplificationProps
 } from '../line-simplification/index';
-import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {createSegmentTableNode} from '../segment-intersection/segment-table';
+import {getSegmentBVHNodes} from '../segment-intersection/segment-bvh';
+import {SEGMENT_TABLE_STRIDE} from '../segment-intersection/segment-intersection-wgsl';
+import {IS_FINITE_FLOAT_WGSL, NODE_OVERLAPS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
+import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
+import {
+  createCoverageSnapRangeNodes,
+  getCoverageSnapKeyWGSL
+} from '../polygon-coverage-topology/coverage-topology-kernels';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
@@ -65,6 +71,12 @@ const TOPOLOGY_STATS_LENGTH = GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATISTICS_LE
  * it; a shared word keeps the round index out of the classify kernel (one pipeline for all of them).
  */
 const INTERMEDIATE_CROSSING_SLOT = TOPOLOGY_STATS_LENGTH;
+/** Words per vertex of the span links read by the sweep test: edge owner, span end, span reach. */
+const SPAN_LINK_STRIDE = 3;
+/** `badFlag` bit set by the sweep test (bit 0 is set by the crossing test). */
+const SWEPT_BIT = 2;
+/** Vertex count from which the sweep BVH is Morton sorted, as `GPUSegmentIntersection`. */
+const SWEEP_SPATIAL_SORT_MINIMUM_SLOTS = 1024;
 
 /** Caller-owned outputs of {@link GPUCoverageSimplification}. */
 export type GPUCoverageSimplificationOutput = {
@@ -86,7 +98,8 @@ export type GPUCoverageSimplificationOutput = {
    * Optional {@link GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATISTICS_LENGTH} rows describing the
    * topology pass (all zero when `topologyIterationCount` is 0):
    * - `[0]` crossings before any repair: pairs of simplified arc segments that intersect (cross,
-   *   touch in a T-junction or overlap) without sharing a coverage point.
+   *   touch in a T-junction or overlap) without sharing a coverage point, plus simplified spans
+   *   whose shortcut passes over a kept vertex of another part of the coverage (a swept ring).
    * - `[1]` crossings remaining after the last repair iteration.
    * - `[2]` vertices restored by the repair iterations (the ring-minimum step is not counted).
    * - `[3]` 1 when the candidate pair capacity overflowed in some iteration, so the counts are
@@ -102,6 +115,14 @@ export type GPUCoverageSimplificationOutput = {
     overflow: GraphDataView<'uint32'>;
     /** Optional one-row unclamped kept-vertex total. */
     requiredCount?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row count of vertices whose snap cell could not be certified: finite vertices
+     * `2^24 * snapTolerance` or farther from the first vertex on either axis (see `snapTolerance`).
+     * Their point identity comes from an inexact key, so such a vertex may be merged with a vertex
+     * of a neighbouring cell and the shared arcs are not reliable. Always 0 without a snap
+     * tolerance. It is not an `overflow`: no capacity changes it.
+     */
+    uncertainCount?: GraphDataView<'uint32'>;
   };
 };
 
@@ -130,9 +151,15 @@ export type GPUCoverageSimplificationProps = GPUPolygonGeometryFields & {
    * each carry a terminal entry.
    */
   /**
-   * Vertex snap tolerance, with the same meaning as `GPUContiguityWeights.snapTolerance`. Two
-   * vertices that snap to the same point are one point of the coverage. Defaults to `0` (exact f32
-   * equality).
+   * Vertex snap tolerance. Two vertices that snap to the same point are one point of the coverage.
+   * Defaults to `0` (exact f32 equality).
+   *
+   * A vertex snaps to cell `floor((coordinate - origin) / snapTolerance + 0.5)` per axis (round
+   * half up, as `GPUContiguityWeights.snapTolerance`), with the first vertex of `positions` as
+   * `origin`, so the limit is on the extent of the data and not on its distance from zero: every
+   * vertex must be within `2^24 * snapTolerance` of the first vertex on both axes (float32 cannot
+   * tell cells apart beyond that). Vertices outside that range are counted in the optional
+   * `output.status.uncertainCount`; when it is not zero, use a larger tolerance or split the data.
    */
   snapTolerance?: number;
   /**
@@ -152,7 +179,8 @@ export type GPUCoverageSimplificationProps = GPUPolygonGeometryFields & {
   /**
    * Compile-time number of detect-and-repair iterations that make the simplified coverage
    * topology-preserving. Each round finds simplified segments that cross, touch or overlap
-   * without sharing a coverage point and restores the original vertex farthest from each of them.
+   * without sharing a coverage point, and shortcuts that pass over a kept vertex (an island swept
+   * into the neighbouring polygon), and restores the original vertex farthest from each of them.
    * `0` skips detection and repair (the ring minimum still applies). Defaults to `4`.
    */
   topologyIterationCount?: number;
@@ -201,13 +229,22 @@ export type GPUCoverageSimplificationProps = GPUPolygonGeometryFields & {
  * pairs that share a coverage point (a node) or are the same shared edge are ignored, and for every
  * remaining pair the original vertex farthest from each segment's span is restored (one
  * Douglas-Peucker split step; decisions are shared through point IDs, so neighbours still agree).
- * `output.topologyStatistics` reports crossings before, crossings remaining after the last iteration, and
- * restored vertices. Crossings that need more splits than the rounds provide stay in the output
+ * A shortcut can also change the topology without crossing anything: an island, and the hole it
+ * fills, share no junction with the arc beside them, so a shortcut that passes over the island
+ * moves it into the neighbouring polygon. Each round therefore also tests every kept vertex against
+ * the area between each span's original chain and its shortcut (exact point-in-ring signs) and
+ * repairs a span that holds one in the same way. GEOS avoids the same case by refusing to remove
+ * a corner that contains another vertex. `output.topologyStatistics` reports crossings and swept
+ * spans before, those remaining after the last iteration, and restored vertices. Crossings that need more splits than the rounds provide stay in the output
  * and are counted as remaining; an input that is itself self-intersecting cannot be repaired.
  * Non-finite vertices are unsupported (never kept).
  *
  * **Cost.** Arcs are copied by one thread each walking the arc, so a single very long arc costs a
- * serial walk of its length. Intermediate buffers are `O(vertices)`; the simplification rows are
+ * serial walk of its length. The sweep test builds one BVH over the input segments; in every
+ * round each kept vertex walks it along the horizontal line through the vertex and, for every
+ * input edge on that line whose span dropped a vertex and whose chord is within the span's reach
+ * of the vertex, walks that span's original chain once (worst case kept vertices x edges on the
+ * line x span length; a vertex far from a span's chord costs four multiplications). Intermediate buffers are `O(vertices)`; the simplification rows are
  * bounded by `2 * vertices`. The output is bounded by the `output.positions` capacity with a GPU
  * overflow flag; `positions.length` of the input always suffices.
  */
@@ -228,7 +265,7 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
       SPATIAL_CONTEXT_SUPPORT
     );
     this.props = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} positions must hold at least one vertex`);
     }
@@ -259,14 +296,14 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} snapTolerance must be a finite number >= 0`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH} float32 values`
       );
     }
     const {output} = props;
-    validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
     if (output.positions.length < 1) {
       throw new Error(`${id} output.positions must hold at least one row`);
     }
@@ -305,6 +342,12 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
         throw new Error(`${id} output.status.converged must hold one uint32`);
       }
     }
+    if (output.status.uncertainCount) {
+      validatePackedUint32View(output.status.uncertainCount, `${id} output.status.uncertainCount`);
+      if (output.status.uncertainCount.length < 1) {
+        throw new Error(`${id} output.status.uncertainCount must hold one uint32`);
+      }
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -314,7 +357,8 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
         overflow,
         requiredCount,
         output.topologyStatistics,
-        output.status.converged
+        output.status.converged,
+        output.status.uncertainCount
       ],
       [
         props.positions,
@@ -344,6 +388,7 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
       output.outputMask,
       output.status.overflow,
       output.status.requiredCount,
+      output.status.uncertainCount,
       output.topologyStatistics
     ]);
     // Every topology round builds a segment table over the compacted vertices.
@@ -401,17 +446,9 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
         invocationCount: vertexCount,
         declarations: `const RING_COUNT: u32 = ${ringCount}u;
 const FEATURE_COUNT: u32 = ${featureCount}u;
-const SNAP_TOLERANCE: f32 = ${getWGSLFloatLiteral(snapTolerance)};
 
 ${IS_FINITE_FLOAT_WGSL}
-
-fn quantise(value: f32) -> u32 {
-  if (SNAP_TOLERANCE <= 0.0) {
-    return bitcast<u32>(select(value, 0.0, value == 0.0));
-  }
-  let snapped = clamp(floor(value / SNAP_TOLERANCE + 0.5), -2147483520.0, 2147483520.0);
-  return bitcast<u32>(i32(snapped)) ^ 0x80000000u;
-}`,
+${getCoverageSnapKeyWGSL(snapTolerance)}`,
         body: `var ring = 0u;
   var high = RING_COUNT;
   while (ring + 1u < high) {
@@ -441,8 +478,9 @@ fn quantise(value: f32) -> u32 {
     ring >= featureRingStarts[featureRingStartsOffset] && ring < featureRingStarts[featureRingStartsOffset + FEATURE_COUNT] &&
     ring < featureRingStarts[featureRingStartsOffset + polygon + 1u];
   let valid = inRing && isFiniteFloat(x) && isFiniteFloat(y);
-  vertexHigh[vertexHighOffset + index] = select(${INVALID}, quantise(x), valid);
-  vertexLow[vertexLowOffset + index] = select(${INVALID}, quantise(y), valid);
+  let snapOrigin = getSnapOrigin();
+  vertexHigh[vertexHighOffset + index] = select(${INVALID}, quantise(x, snapOrigin.x), valid);
+  vertexLow[vertexLowOffset + index] = select(${INVALID}, quantise(y, snapOrigin.y), valid);
   vertexPolygon[vertexPolygonOffset + index] = select(${INVALID}, polygon, valid);
   vertexNext[vertexNextOffset + index] = select(index + 1u, ringBegin, index + 1u == ringEnd);
   let previous = select(index - 1u, ringEnd - 1u, index == ringBegin);
@@ -882,6 +920,40 @@ const RING_COUNT: u32 = ${ringCount}u;`,
     select(0u, select(0u, 1u, partner == ${INVALID} || polygon < partner), polygon != ${INVALID});`
         })
       );
+      // The sweep test of every round walks one BVH over the input segments (a segment ID is its
+      // start vertex), built once: the input does not change between rounds.
+      const sweepTable = view('sweep-segment-table', vertexCount * SEGMENT_TABLE_STRIDE);
+      const sweepMinima = createTransientView(
+        graph,
+        `${id}-sweep-minima`,
+        'float32x2',
+        vertexCount
+      );
+      const sweepMaxima = createTransientView(
+        graph,
+        `${id}-sweep-maxima`,
+        'float32x2',
+        vertexCount
+      );
+      nodes.push(
+        createSegmentTableNode<Parameters>(graph, {
+          id: `${id}-sweep-segment-table`,
+          operation: OPERATION,
+          geometry: {kind: 'polygons', positions, ringOffsets, polygonOffsets, featureOffsets},
+          table: sweepTable,
+          minima: sweepMinima,
+          maxima: sweepMaxima
+        })
+      );
+      const {bvh: sweepBVH, nodes: sweepBVHNodes} = getSegmentBVHNodes(graph, {
+        id: `${id}-sweep`,
+        operation: OPERATION,
+        minima: sweepMinima,
+        maxima: sweepMaxima,
+        leafCapacity: getNextPowerOfTwo(vertexCount),
+        spatialSort: vertexCount >= SWEEP_SPATIAL_SORT_MINIMUM_SLOTS
+      });
+      nodes.push(...sweepBVHNodes);
       // The last round only measures the remaining crossings, so without `topologyStatistics` it would
       // be a full compaction plus segment intersection whose result nobody reads.
       const lastRound = output.topologyStatistics ? topologyRounds : topologyRounds - 1;
@@ -899,6 +971,12 @@ const RING_COUNT: u32 = ${ringCount}u;`,
             vertexNext,
             ownedVertex,
             keepPoint,
+            sweepBVH: {
+              nodeMinima: sweepBVH.nodeMinima,
+              nodeMaxima: sweepBVH.nodeMaxima,
+              leafIds: sweepBVH.leafIds,
+              internalNodeCount: sweepBVH.internalNodeCount
+            },
             vertexCount,
             ringCount,
             pairCapacity,
@@ -962,6 +1040,20 @@ const RING_COUNT: u32 = ${ringCount}u;`,
         capacity: outputCapacity
       })
     );
+    // A snap key that left its exact range may have merged distinct vertices. That is a vertex
+    // identity that could not be certified, not a dropped row: it has its own count.
+    if (output.status.uncertainCount) {
+      nodes.push(
+        ...createCoverageSnapRangeNodes<Parameters>(graph, {
+          id: `${id}-snap-range`,
+          operation: OPERATION,
+          positions,
+          ringOffsets,
+          snapTolerance,
+          uncertainCount: output.status.uncertainCount
+        })
+      );
+    }
     return nodes;
   }
 }
@@ -1214,6 +1306,13 @@ function getSpanNodes<Parameters>(
     keepRank: GraphDataView<'uint32'>;
     spanEnd: GraphDataView<'uint32'>;
     spanKey: GraphDataView<'uint32'>;
+    /**
+     * {@link SPAN_LINK_STRIDE} words per vertex for the sweep test. Word 0: the kept vertex whose
+     * span holds the input edge that starts at this vertex, when that span dropped a vertex, else
+     * `INVALID`. Word 1: this vertex's span end (`INVALID` for a dropped vertex). Word 2: the f32
+     * bits of the largest distance of a dropped vertex of this vertex's span from its chord.
+     */
+    spanLinks: GraphDataView<'uint32'>;
     vertexCount: number;
     ringCount: number;
   }
@@ -1373,6 +1472,42 @@ ${SPAN_OWNER_WGSL}`,
       atomicMin(&spanKey[spanKeyOffset + owner], select(index + VERTEX_COUNT, index, index > owner));
     }
   }`
+    }),
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-span-links`,
+      operation: OPERATION,
+      variant: 'span-links',
+      bindings: [
+        readOnly('ringOffsets', ringOffsets),
+        readOnly('keepMask', keepMask),
+        readOnly('keepRank', keepRank),
+        readOnly('keptVertex', keptVertex),
+        readOnly('spanEnd', props.spanEnd),
+        readOnly('spanBest', spanBest),
+        {name: 'spanLinks', view: props.spanLinks, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: vertexCount,
+      declarations: `${shared}
+${SPAN_OWNER_WGSL}`,
+      // The input edge that starts at a vertex lies in the span of that vertex when it is kept, and
+      // of the kept vertex before it otherwise. The span dropped a vertex exactly when the vertex
+      // after its owner in the ring is not kept.
+      body: `var owner = index;
+  if (keepMask[keepMaskOffset + index] == 0u) { owner = getSpanOwner(index); }
+  var edgeOwner = ${INVALID};
+  if (owner != ${INVALID}) {
+    let ring = getRing(owner);
+    let ringBegin = ringOffsets[ringOffsetsOffset + ring];
+    let ringEnd = min(ringOffsets[ringOffsetsOffset + ring + 1u], VERTEX_COUNT);
+    if (owner >= ringBegin && owner < ringEnd) {
+      let after = select(owner + 1u, ringBegin, owner + 1u >= ringEnd);
+      if (keepMask[keepMaskOffset + after] == 0u) { edgeOwner = owner; }
+    }
+  }
+  let base = spanLinksOffset + index * ${SPAN_LINK_STRIDE}u;
+  spanLinks[base] = edgeOwner;
+  spanLinks[base + 1u] = spanEnd[spanEndOffset + index];
+  spanLinks[base + 2u] = spanBest[spanBestOffset + index];`
     })
   ];
 }
@@ -1410,6 +1545,13 @@ function getTopologyRoundNodes<Parameters>(
     vertexNext: GraphDataView<'uint32'>;
     ownedVertex: GraphDataView<'uint32'>;
     keepPoint: GraphDataView<'uint32'>;
+    /** BVH over the input segments (leaf IDs are start-vertex rows), for the sweep test. */
+    sweepBVH: {
+      nodeMinima: GraphDataView;
+      nodeMaxima: GraphDataView;
+      leafIds: GraphDataView;
+      internalNodeCount: number;
+    };
     vertexCount: number;
     ringCount: number;
     pairCapacity: number;
@@ -1434,6 +1576,7 @@ function getTopologyRoundNodes<Parameters>(
   const compactOverflow = view('compact-overflow', 1);
   const spanEnd = view('span-end', vertexCount);
   const spanSplit = view('span-split', vertexCount);
+  const spanLinks = view('span-links', vertexCount * SPAN_LINK_STRIDE);
   const rowInfo = view('row-info', vertexCount * 4);
   const badFlag = view('bad', vertexCount);
   const pairLeft = view('pair-left', pairCapacity);
@@ -1484,6 +1627,7 @@ function getTopologyRoundNodes<Parameters>(
       keepRank: rank,
       spanEnd,
       spanKey: spanSplit,
+      spanLinks,
       vertexCount,
       ringCount
     }),
@@ -1573,6 +1717,126 @@ function getTopologyRoundNodes<Parameters>(
         atomicAdd(&stats[statsOffset + SLOT], 1u);
       }
     }
+  }`
+    }),
+    // Sweep test. A shortcut that crosses nothing can still pass over a whole ring (an island and
+    // the hole it fills are tied to the arc network by no junction), which moves that ring into
+    // the neighbouring polygon. Every kept vertex asks whether it lies strictly inside the area
+    // between some span's original chain and its shortcut. Such a vertex is inside a closed
+    // region whose boundary is the chain plus one straight segment, so the horizontal line through
+    // it meets a chain edge on at least one side: the BVH over the input segments finds every
+    // candidate span. A candidate is first rejected when the vertex is farther from the chord than
+    // the span's farthest dropped vertex (the area lies within that distance), and only then is the
+    // chain walked with the exact point-in-ring test. A swept span is repaired like a crossing.
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-sweep`,
+      operation: OPERATION,
+      variant: 'sweep',
+      bindings: [
+        {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+        {name: 'nodeMinima', view: props.sweepBVH.nodeMinima, type: 'f32', access: 'read'},
+        {name: 'nodeMaxima', view: props.sweepBVH.nodeMaxima, type: 'f32', access: 'read'},
+        {name: 'leafIds', view: props.sweepBVH.leafIds, type: 'u32', access: 'read'},
+        {name: 'vertexNext', view: props.vertexNext, type: 'u32', access: 'read'},
+        {name: 'spanLinks', view: spanLinks, type: 'u32', access: 'read'},
+        {name: 'pointIds', view: props.pointIds, type: 'u32', access: 'read'},
+        {name: 'badFlag', view: badFlag, type: 'atomic<u32>', access: 'read_write'}
+      ],
+      invocationCount: vertexCount,
+      declarations: `const VERTEX_COUNT: u32 = ${vertexCount}u;
+const INTERNAL_NODE_COUNT: u32 = ${props.sweepBVH.internalNodeCount}u;
+const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
+${NODE_OVERLAPS_WGSL}
+${EXACT_ORIENTATION_WGSL}
+${EXACT_GEOMETRY_WGSL}
+fn vertexAt(vertex: u32) -> vec2f {
+  return vec2f(positions[positionsOffset + vertex * 2u], positions[positionsOffset + vertex * 2u + 1u]);
+}
+// Whether 'point' can lie in the area between the span's chain and its chord: that area is within
+// the span's reach (its farthest dropped vertex) of the chord's line. f32, with slack.
+fn isWithinSpanReach(point: vec2f, owner: u32, spanEndVertex: u32) -> bool {
+  let reach = bitcast<f32>(spanLinks[spanLinksOffset + owner * ${SPAN_LINK_STRIDE}u + 2u]);
+  if (!(reach > 0.0)) { return false; }
+  let start = vertexAt(owner);
+  let direction = vertexAt(spanEndVertex) - start;
+  let offset = point - start;
+  let chordLength = length(direction);
+  let separation = select(
+    length(offset),
+    abs(direction.x * offset.y - direction.y * offset.x) / max(chordLength, 1e-30),
+    chordLength > 0.0);
+  let slack = 1e-5 * (abs(offset.x) + abs(offset.y) + abs(direction.x) + abs(direction.y));
+  return separation <= reach * 1.001 + slack;
+}`,
+      body: `let spanEndOfVertex = spanLinks[spanLinksOffset + index * ${SPAN_LINK_STRIDE}u + 1u];
+  let pointId = pointIds[pointIdsOffset + index];
+  // Only kept vertices are tested: a dropped vertex is not part of the result.
+  if (spanEndOfVertex == ${INVALID} || pointId == ${INVALID}) { return; }
+  let point = vertexAt(index);
+  let probe = ExactProbe(point, point, point, EXACT_PROBE_POINT);
+  let queryMinimum = vec2f(-FLOAT32_MAXIMUM, point.y);
+  let queryMaximum = vec2f(FLOAT32_MAXIMUM, point.y);
+  var lastOwner = ${INVALID};
+  var node = 0u;
+  loop {
+    if (nodeOverlaps(node, queryMinimum, queryMaximum)) {
+      if (node < INTERNAL_NODE_COUNT) {
+        node = node * 2u + 1u;
+        continue;
+      }
+      let edge = leafIds[leafIdsOffset + node - INTERNAL_NODE_COUNT];
+      var owner = ${INVALID};
+      if (edge < VERTEX_COUNT) { owner = spanLinks[spanLinksOffset + edge * ${SPAN_LINK_STRIDE}u]; }
+      if (owner != ${INVALID} && owner != lastOwner) {
+        lastOwner = owner;
+        let spanEndVertex = spanLinks[spanLinksOffset + owner * ${SPAN_LINK_STRIDE}u + 1u];
+        // The ends of the span are on the area's boundary, not inside it.
+        if (spanEndVertex != ${INVALID} && pointIds[pointIdsOffset + owner] != pointId &&
+            pointIds[pointIdsOffset + spanEndVertex] != pointId &&
+            isWithinSpanReach(point, owner, spanEndVertex)) {
+          // Winding of the closed ring owner -> chain -> span end -> owner about the point.
+          var winding = 0;
+          var flags = 0;
+          var chainVertex = owner;
+          for (var step = 0u; step <= VERTEX_COUNT; step++) {
+            var chainNext = vertexNext[vertexNextOffset + chainVertex];
+            let isClosing = step > 0u && chainVertex == spanEndVertex;
+            if (isClosing) { chainNext = owner; }
+            // The single call site of the exact helpers in this kernel.
+            let crossing = exactProbeCrossing(probe, vertexAt(chainVertex), vertexAt(chainNext));
+            winding += crossing.x;
+            flags = flags | crossing.y;
+            if (isClosing) { break; }
+            chainVertex = chainNext;
+          }
+          if ((winding & 1) != 0 && flags == 0) {
+            atomicOr(&badFlag[badFlagOffset + owner], ${SWEPT_BIT}u);
+          }
+        }
+      }
+    }
+    loop {
+      if (node == 0u || (node & 1u) == 1u) { break; }
+      node = (node - 1u) / 2u;
+    }
+    if (node == 0u) { break; }
+    node = node + 1u;
+  }`
+    }),
+    // A shared arc is swept in both rings that hold it: count the owned copy, as for crossings.
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-sweep-count`,
+      operation: OPERATION,
+      variant: `sweep-count-${crossingSlot}`,
+      bindings: [
+        {name: 'badFlag', view: badFlag, type: 'u32', access: 'read'},
+        {name: 'ownedVertex', view: props.ownedVertex, type: 'u32', access: 'read'},
+        {name: 'stats', view: statsView, type: 'atomic<u32>', access: 'read_write'}
+      ],
+      invocationCount: vertexCount,
+      declarations: `const SLOT: u32 = ${crossingSlot}u;`,
+      body: `if ((badFlag[badFlagOffset + index] & ${SWEPT_BIT}u) != 0u && ownedVertex[ownedVertexOffset + index] != 0u) {
+    atomicAdd(&stats[statsOffset + SLOT], 1u);
   }`
     })
   ];

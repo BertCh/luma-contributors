@@ -132,6 +132,28 @@ it('GPUNearestFeatureWeights builds KNN weights for a self-join (binary and inve
   }
 });
 
+it('GPUNearestFeatureWeights gives coincident points the default-floor weight 1e6', async () => {
+  // Math review cells-joins-04: one inverse-distance rule for the library. With the default
+  // distanceFloor of 1e-6 two coincident points weigh (1e-6)^-1 = 1e6; GPUNeighborSearch pins
+  // the same number in its own spec.
+  const points: Point[] = [
+    [5, 5],
+    [5, 5],
+    [6, 5]
+  ];
+  const result = await runAdapter(points, points, {
+    k: 2,
+    selfJoin: true,
+    weightType: 'inverse-distance'
+  });
+  if (!result) return;
+  expect(Array.from(result.csr.neighbors)).toEqual([1, 2, 0, 2, 0, 1]);
+  const weights = Array.from(result.csr.weights);
+  for (const [slot, expected] of [1e6, 1, 1e6, 1, 1, 1].entries()) {
+    expect(Math.abs(weights[slot] - expected), `slot ${slot}`).toBeLessThanOrEqual(1e-5 * expected);
+  }
+});
+
 it('GPUNearestFeatureWeights shortens rows when fewer than k neighbors exist', async () => {
   const points = randomPoints(40, 5);
   const options = {k: 3, selfJoin: true, maxDistance: 18};

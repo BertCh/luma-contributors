@@ -4,15 +4,19 @@
 
 /**
  * WGSL Poisson draws for the expectation-based scan over `PhiloxStream` (needs
- * `PERMUTATION_RANDOM_WGSL`): `drawPhiloxPoisson(stream, mean)` is exact in distribution below 30
+ * `PERMUTATION_RANDOM_WGSL`, which carries `philoxOpenUnitFloat`; every uniform is in the open
+ * interval `(0, 1)`): `drawPhiloxPoisson(stream, mean)` is exact in distribution below 30
  * (Knuth's product of uniforms) and PTRS (Hormann 1993) above it, in f32 arithmetic. Above 1e7 a
  * rounded normal is used, where f32 cannot resolve the PTRS acceptance test.
  *
  * @internal
  */
 export const EXPECTATION_BASED_SCAN_POISSON_WGSL = /* wgsl */ `
+// Uniform in the open interval (0, 1): the shared 23-bit form of PHILOX_WGSL, which cannot
+// return 0 or 1. (The 24-bit form (word >> 8) + 0.5 rounds to exactly 1.0 for the largest word:
+// 16777215.5 is not an f32. A draw of 1.0 gave the PTRS step a zero headroom to divide by.)
 fn drawPhiloxUniform(stream: ptr<function, PhiloxStream>) -> f32 {
-  return (f32(nextPhiloxUint32(stream) >> 8u) + 0.5) * (1.0 / 16777216.0);
+  return philoxOpenUnitFloat(nextPhiloxUint32(stream));
 }
 fn getLogFactorial(value: f32) -> f32 {
   // Stirling series of ln(value!): exact to f32 for value >= 10; smaller values are summed directly.

@@ -156,11 +156,11 @@ export class GPUTerrainBranchingFlow implements GPUCommandNodeProducer {
           terrainBinding('state', state, 'read_write')
         ],
         declarations,
-        body: `var valid = finite(source[sourceOffset + index]) && source[sourceOffset + index] >= 0.0;
+        body: `var valid = isFiniteValue(source[sourceOffset + index]) && source[sourceOffset + index] >= 0.0;
 var total = 0.0;
 for (var direction = 0u; direction < 8u; direction++) {
  let fraction = fractions[fractionsOffset + index * 8u + direction];
- valid = valid && finite(fraction) && fraction >= 0.0;
+ valid = valid && isFiniteValue(fraction) && fraction >= 0.0;
  if (fraction > 0.0 && getFlowReceiver(index, 1u << direction) == NO_CELL) { valid = false; }
  total += fraction;
 }
@@ -185,7 +185,7 @@ for (var direction = 0u; direction < 8u; direction++) {
  let neighbor = getFlowReceiver(cell, 1u << direction);
  if (neighbor == NO_CELL) { continue; }
  let fraction = fractions[fractionsOffset + ${transport ? 'neighbor * 8u + ((direction + 4u) % 8u)' : 'cell * 8u + direction'}];
- if (!finite(fraction) || fraction < 0.0) { ready = false; continue; }
+ if (!isFiniteValue(fraction) || fraction < 0.0) { ready = false; continue; }
  if (fraction == 0.0) { continue; }
  hasReceiver = true;
  let bits = atomicLoad(&state[stateOffset + neighbor]);
@@ -199,13 +199,13 @@ for (var direction = 0u; direction < 8u; direction++) {
  ${
    transport || props.mode === 'fractional-catchment'
      ? 'value += fraction * downstream;'
-     : `ready = ready && finite(edgeLength) && edgeLength >= 0.0;
+     : `ready = ready && isFiniteValue(edgeLength) && edgeLength >= 0.0;
  ${props.mode === 'minimum-distance' ? 'minimum = min(minimum, downstream + edgeLength);' : props.mode === 'maximum-distance' ? 'value = max(value, downstream + edgeLength);' : 'value += fraction * (downstream + edgeLength);'}`
  }
 }
 ${props.mode === 'minimum-distance' ? 'value = select(0.0, minimum, hasReceiver);' : ''}
 ${props.mode === 'fractional-catchment' ? 'if (!hasReceiver) { value = source[sourceOffset + cell]; }' : ''}
-ready = ready && finite(value);
+ready = ready && isFiniteValue(value);
 if (!ready) { return false; }
  loop {
   let exchange = atomicCompareExchangeWeak(&state[stateOffset + cell], WAITING, bitcast<u32>(value));
@@ -281,7 +281,7 @@ if (published) { ${markChangedWGSL} }`
         body: `let bits = state[stateOffset + index];
 let statusValue = select(select(1u, 0u, bits == 0xfffffffeu), 2u, bits == 0xffffffffu);
 status[statusOffset + index] = statusValue;
-values[valuesOffset + index] = select(missing(), bitcast<f32>(bits), statusValue == 1u);`
+values[valuesOffset + index] = select(getNaN(), bitcast<f32>(bits), statusValue == 1u);`
       }),
       ...createRasterCountNodes(graph, {
         id: `${id}-status`,

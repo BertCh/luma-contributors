@@ -21,6 +21,7 @@ import {
   type WGSLDispatchGate,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /** Workgroup size of every spill fill kernel; gated kernels must match their gate shape. @internal */
 export const SPILL_WORKGROUP_SIZE = 256;
@@ -185,10 +186,7 @@ fn getSpillNeighbor(cell: u32, direction: u32) -> u32 {
   return u32(row) * SPILL_WIDTH + u32(column);
 }
 
-fn isSpillFinite(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u;
-}
-
+${IS_FINITE_VALUE_WGSL}
 fn getSpillKey(value: f32) -> u32 {
   let bits = bitcast<u32>(value);
   return select(bits | 0x80000000u, ~bits, bits >= 0x80000000u);

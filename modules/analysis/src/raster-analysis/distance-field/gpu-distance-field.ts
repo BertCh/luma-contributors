@@ -15,7 +15,7 @@ import {
   captureGraphCommandNodes,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid, validateRasterParameters} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -177,7 +177,7 @@ export class GPUDistanceField implements GPUCommandNodeProducer {
       throw new Error(`${id} requires seedPositions or seedMask`);
     }
     if (props.seedPositions) {
-      validatePackedView(props.seedPositions, ['float32x2'], `${id} seedPositions`);
+      validateSinglePackedView(props.seedPositions, ['float32x2'], `${id} seedPositions`);
     }
     if ((props.seedIds || props.seedCount) && !props.seedPositions) {
       throw new Error(`${id} seedIds and seedCount require seedPositions`);
@@ -191,10 +191,10 @@ export class GPUDistanceField implements GPUCommandNodeProducer {
       ['output.withinDistance', output.withinDistance]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
-    validatePackedView(output.distances, ['float32'], `${id} output.distances`);
+    validateSinglePackedView(output.distances, ['float32'], `${id} output.distances`);
     if (props.seedIds && props.seedIds.length !== props.seedPositions?.length) {
       throw new Error(`${id} seedIds length must equal seedPositions length`);
     }

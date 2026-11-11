@@ -9,16 +9,20 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  GET_NAN_WGSL,
+  IS_FINITE_BITS_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 import {
   getStorageBindingElementLimit,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {getCholeskyWGSL} from './spatial-regression-solve';
+import {getCholeskyWGSL, getPivotLimitedCholeskyWGSL} from './spatial-regression-solve';
 import {getRegimeMomentNodes, getRegimeMomentStride} from './regime-moments';
 import {REGRESSION_TILE_MAXIMUM_ROW_COUNT} from './regression-row-tiles';
 
@@ -51,6 +55,10 @@ export type GPUSpatialRegimeRegressionProps = {
  * then recover the intercept; this avoids cancellation from large coordinate-like predictor means.
  * Equivalent to fully varying spreg.OLS_Regimes point estimates (no spatial lag/error term,
  * covariance estimates, pooled restrictions or Chow test). Empty/singular regimes return NaNs.
+ * A regime is singular (status 2) when a centered predictor has no variance or a Cholesky pivot,
+ * relative to its diagonal, is below `GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE` (`1e-3`): the
+ * limit of `GPUOrdinaryLeastSquares`, a predictor within `1 - 1e-6` (squared correlation) of the
+ * span of the earlier ones.
  *
  * The per-regime moments are accumulated in parallel and in a fixed order: the complete rows are
  * stably sorted by regime (published `GPUSort`), then one workgroup per regime sums its rows with
@@ -82,7 +90,7 @@ export class GPUSpatialRegimeRegression implements GPUCommandNodeProducer {
       ['output.counts', props.output.counts, 'uint32', props.regimeCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], this.id);
+        validateSinglePackedView(view, [format], this.id);
         validateViewLength(this.id, name, view, length);
       }
     }
@@ -152,7 +160,7 @@ fn included(row: u32) -> bool {
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'},
           {name: 'counts', view: props.output.counts, type: 'u32', access: 'read_write'}
         ],
-        declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${getCholeskyWGSL(columns)}
+        declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${getCholeskyWGSL(columns)}\n${getPivotLimitedCholeskyWGSL(columns)}
 const D: u32 = ${dimension}u;
 fn momentAt(base: u32, first: u32, second: u32) -> f32 {
   let low = min(first, second);
@@ -170,7 +178,7 @@ for (var column = 0u; column < ${columns}u; column++) {
   for (var other = 0u; other <= column; other++) { matrix[column * ${columns}u + other] = momentAt(base, column, other); }
 }
 let responseMean = moments[base + ${columns}u];
-status[statusOffset + index] = 2u; if (!choleskyFactor_${columns}(&matrix)) { return; }
+status[statusOffset + index] = 2u; if (!choleskyFactorLimited_${columns}(&matrix)) { return; }
 choleskySolve_${columns}(&matrix, &right); var intercept = responseMean;
 for (var column = 0u; column < ${columns}u; column++) { if (!isFiniteBits(right[column])) { return; } intercept -= moments[base + column] * right[column]; }
 if (!isFiniteBits(intercept)) { return; }

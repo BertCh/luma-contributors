@@ -149,7 +149,14 @@ for (const fixture of nodingTrials) {
           compare(
             'CSR start, end and unused row offsets',
             [offsets[0], ...offsets.slice(nodeCount)],
-            [0, ...new Array(4).fill(2 * pieceCount)]
+            // Two entries per piece, one for a piece that is a loop.
+            [
+              0,
+              ...new Array(4).fill(
+                2 * pieceCount -
+                  fixture.fromNodes.filter((node, edge) => node === fixture.toNodes[edge]).length
+              )
+            ]
           );
           // Canonicalize GPU and reference independently. This changes only node names
           // and CSR row placement; every edge, neighbor and duplicate stays observable.

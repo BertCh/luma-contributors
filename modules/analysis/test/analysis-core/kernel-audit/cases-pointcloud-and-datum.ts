@@ -123,6 +123,28 @@ function buildICP(context: KernelAuditContext, iterations: number, source: numbe
   );
 }
 
+/** Builds a grid-indexed change case with the given cylinder radius and half depth on a 1-unit grid. */
+function buildIndexedChange(context: KernelAuditContext, radius: number, halfDepth: number) {
+  const {graph, view} = context;
+  const cores = 16;
+  graph.add(
+    new GPUPointCloudChange({
+      reference: view('float32x3', 64),
+      comparison: view('float32x3', 64),
+      cores: view('float32x3', cores),
+      normals: view('float32x3', cores),
+      alignment: 'already-aligned',
+      grid: {origin: [0, 0, 0], cellSize: 1, dimensions: [8, 8, 8]},
+      radius,
+      halfDepth,
+      changes: view('float32x3', cores),
+      roughness: view('float32x3', cores),
+      counts: view('uint32', cores * 2),
+      status: view('uint32', cores)
+    })
+  );
+}
+
 /** Cases at and one step above the capacity, iteration, window and unindexed-work limits. */
 function getPointCloudLimitCases(): KernelAuditCase[] {
   return [
@@ -191,7 +213,7 @@ function getPointCloudLimitCases(): KernelAuditCase[] {
             counts: view('uint32', rows),
             capacity,
             meanDistances: view('float32', rows),
-            mask: view('uint32', rows)
+            validity: view('uint32', rows)
           })
         );
       }
@@ -248,6 +270,44 @@ function getPointCloudLimitCases(): KernelAuditCase[] {
           })
         );
       }
+    },
+    {
+      exportName: 'GPUPointCloudHeight',
+      name: 'inverse-distance power one above 8',
+      build: context => {
+        const {graph, view} = context;
+        graph.add(
+          new GPUPointCloudHeight({
+            positions: view('float32x3', 16),
+            grid: {origin: [0, 0], cellSize: 1, width: 8, height: 8},
+            terrain: view('float32', 64),
+            coverage: view('uint32', 64),
+            interpolation: {method: 'idw', radius: 4, power: 9},
+            heights: view('float32', 16),
+            status: view('uint32', 16)
+          })
+        );
+      }
+    },
+    {
+      exportName: 'GPUPointCloudChange',
+      name: 'indexed cylinder visiting 101 cells per axis',
+      // (ceil(2 * hypot(7, 48)) + 3)^3 = 101^3 cells, below the 2^20 limit.
+      build: context => buildIndexedChange(context, 48, 7)
+    },
+    {
+      exportName: 'GPUPointCloudChange',
+      name: 'indexed cylinder visiting 102 cells per axis',
+      // (ceil(2 * hypot(7, 49)) + 3)^3 = 102^3 cells, one axis step above the 2^20 limit.
+      build: context => buildIndexedChange(context, 49, 7)
+    },
+    {
+      exportName: 'GPUPointCloudNeighborhoods',
+      name: 'grid of more than 4294967294 cells',
+      build: context =>
+        buildNeighborhoods(context, 64, 64, {
+          grid: {origin: [0, 0, 0], cellSize: 1, dimensions: [16777216, 256, 1]}
+        })
     }
   ];
 }
@@ -578,7 +638,7 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           capacity: NEIGHBOR_CAPACITY,
           standardDeviations: 3,
           meanDistances: view('float32', rows),
-          mask: view('uint32', rows)
+          validity: view('uint32', rows)
         })
       );
     }
@@ -695,7 +755,7 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
             positions: view('float32x3', points),
             positionsLow: view('float32x3', points),
             samples: view('float32x3', samples),
-            validity: view('uint32', samples),
+            mask: view('uint32', samples),
             grids: Array.from({length: 8}, (_, index) => ({
               width: 2,
               height: Math.floor(gridCells / 2),
@@ -731,7 +791,7 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
         new GPUDatumGridTransform({
           positions: view('float32x3', points),
           samples: view('float32x3', samples),
-          validity: view('uint32', samples),
+          mask: view('uint32', samples),
           grids: [
             {
               width: 2,

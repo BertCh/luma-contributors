@@ -101,23 +101,32 @@ export type CentralityMirrorOptions = {
 
 /**
  * CPU mirror of the arithmetic and schedule of `GPUNetworkCentrality`, in f32 where the kernels
- * are: f32 Dijkstra costs, tight edges `cost[u] < cost[w]` with the f32 sum equal to `cost[w]`,
- * sigma summed over reverse-CSR tight in-edges, delta summed over forward-CSR tight out-edges as
+ * are: f32 Dijkstra costs, tight edges between two different nodes with the f32 sum equal to
+ * `cost[w]` and either a rising cost or a weight of exactly zero (review network-paths-02), sigma
+ * summed over reverse-CSR tight in-edges, delta summed over forward-CSR tight out-edges as
  * `sigma(v) / sigma(w) * (1 + delta(w))`, lane-ordered sums per batch scaled and added in batch
- * order. Nodes are processed in cost order, which is a valid topological order of the tight graph;
- * the kernels' push-ready schedule gives every node the same fixed-order sums. Reached nodes without
- * a tight in-edge are roots with sigma 1.
+ * order. Nodes are processed in a Kahn order of the tight graph; the kernels' push-ready schedule
+ * gives every node the same fixed-order sums. Reached nodes without a tight in-edge are roots with
+ * sigma 1. Nodes on or after a cycle of zero-weight tight edges are left out, as in the kernels.
+ * Sigma is a plain float32 here, so the mirror is only valid while path counts stay in range.
  */
 export function mirrorCentrality(options: CentralityMirrorOptions): CentralityMirrorResult {
   const {nodeCount, pivots, laneCount} = options;
   const radius = options.radius ?? Infinity;
   const scale = Math.fround(options.scale ?? 1);
   const {forward, reverse} = buildCentralityCSRs(nodeCount, options.edges);
-  const isTight = (sourceCost: number, weight: number, targetCost: number) =>
+  const isTight = (
+    source: number,
+    target: number,
+    sourceCost: number,
+    weight: number,
+    targetCost: number
+  ) =>
+    source !== target &&
     weight >= 0 &&
-    sourceCost < targetCost &&
     Number.isFinite(targetCost) &&
-    Math.fround(sourceCost + weight) === targetCost;
+    Math.fround(sourceCost + weight) === targetCost &&
+    (sourceCost < targetCost || weight === 0);
   const betweenness = new Float32Array(nodeCount);
   const reachedCounts = new Uint32Array(pivots.length);
   const closeness = new Float32Array(pivots.length);
@@ -154,24 +163,49 @@ export function mirrorCentrality(options: CentralityMirrorOptions): CentralityMi
       reachedCounts[row] = order.length;
       closeness[row] = costSum > 0 ? Math.fround((order.length - 1) / costSum) : 0;
       harmonicCloseness[row] = Math.fround(harmonicSum);
-      const sigma = new Float32Array(nodeCount);
+      // Kahn order of the tight graph: a node is ready when all its tight predecessors are done.
+      // Nodes on or after a cycle of zero-weight tight edges are never ready and keep sigma 0.
+      const remaining = new Uint32Array(nodeCount);
       for (const node of order) {
+        for (let edge = reverse.offsets[node]; edge < reverse.offsets[node + 1]; edge++) {
+          const source = reverse.neighbors[edge];
+          if (isTight(source, node, costs[source], reverse.weights[edge], costs[node])) {
+            remaining[node]++;
+          }
+        }
+      }
+      const tightOrder = order.filter(node => remaining[node] === 0);
+      const sigma = new Float32Array(nodeCount);
+      for (let position = 0; position < tightOrder.length; position++) {
+        const node = tightOrder[position];
         let tightInCount = 0;
         let total = 0;
         for (let edge = reverse.offsets[node]; edge < reverse.offsets[node + 1]; edge++) {
           const source = reverse.neighbors[edge];
-          if (isTight(costs[source], reverse.weights[edge], costs[node])) {
+          if (isTight(source, node, costs[source], reverse.weights[edge], costs[node])) {
             tightInCount++;
             total = Math.fround(total + sigma[source]);
           }
         }
         sigma[node] = tightInCount > 0 ? total : 1;
+        for (let edge = forward.offsets[node]; edge < forward.offsets[node + 1]; edge++) {
+          const target = forward.neighbors[edge];
+          if (
+            isTight(node, target, costs[node], forward.weights[edge], costs[target]) &&
+            --remaining[target] === 0
+          ) {
+            tightOrder.push(target);
+          }
+        }
       }
-      for (const node of [...order].reverse()) {
+      for (const node of [...tightOrder].reverse()) {
         let total = 0;
         for (let edge = forward.offsets[node]; edge < forward.offsets[node + 1]; edge++) {
           const target = forward.neighbors[edge];
-          if (!isTight(costs[node], forward.weights[edge], costs[target]) || !(sigma[target] > 0)) {
+          if (
+            !isTight(node, target, costs[node], forward.weights[edge], costs[target]) ||
+            !(sigma[target] > 0)
+          ) {
             continue;
           }
           const ratio = Math.fround(sigma[node] / sigma[target]);

@@ -20,12 +20,14 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
+  GPUCandidateStatusPort,
   GPUPackedGeometryPort,
   GPUPolygonGeometryPort,
+  GPUStatusScalar,
   GPUTrajectoryGeometryPort
 } from '../../analysis-core/contracts/index';
 import {
@@ -98,7 +100,14 @@ export type GPUZoneEventOutput = GPUCompactOutput & {
   eventZones?: GraphDataView<'uint32'>;
   /** Optional {@link GPU_ZONE_EVENT_TYPE} code of each event. */
   eventTypes?: GraphDataView<'uint32'>;
-  /** Optional interpolated crossing time relative to the track's first timestamp. */
+  /**
+   * Optional interpolated crossing time relative to the track's first timestamp. A float32: the
+   * start of the crossed segment is measured from the track start (word timestamps are subtracted
+   * exactly, then rounded once), so a time is exact to the unit only while the track spans fewer
+   * than 2^24 timestamp units (4.6 hours of milliseconds) and is rounded to 1 part in 2^24 of the
+   * elapsed time beyond that. `eventRows` with the caller's own timestamps and `eventPositions`
+   * recovers the full resolution.
+   */
   eventTimes?: GraphDataView<'float32'>;
   /**
    * Optional row of the segment's end sample. The crossing lies on the segment between row `r - 1`
@@ -148,18 +157,21 @@ export type GPUZoneVisitTableOutput = GPUCompactOutput & {
  * its causes and report the capacity the candidate scratch needed. Every view is optional and
  * independent.
  */
-export type GPUZoneEventsStatus = {
+export type GPUZoneEventsStatus = GPUCandidateStatusPort & {
   /**
    * Unclamped number of `(row, edge)` bounding-box candidates found (including one ray query per
    * track). `candidateCapacity` must be at least this for exact results, so callers can size it.
    */
-  candidateCount?: GraphDataView<'uint32'>;
-  /** 1 when `candidateCount` exceeded `candidateCapacity`; every result may then miss events. */
-  candidateOverflow?: GraphDataView<'uint32'>;
+  candidateCount?: GPUStatusScalar;
+  /**
+   * 1 when `candidateCount` exceeded `candidateCapacity`; every result may then miss events. The
+   * `candidateOverflow` field of `GPUCandidateStatusPort`.
+   */
+  candidateOverflow?: GPUStatusScalar;
   /** 1 when a track had more events than `trackEventCapacity` (the list is truncated, dwell is exact). */
-  trackOverflow?: GraphDataView<'uint32'>;
+  trackOverflow?: GPUStatusScalar;
   /** 1 when more events were kept than `events.ids.length`. */
-  eventOverflow?: GraphDataView<'uint32'>;
+  eventOverflow?: GPUStatusScalar;
 };
 
 /** Caller-owned outputs of {@link GPUZoneEvents}. */
@@ -336,13 +348,13 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       this.spatialContext
     );
     const {tracks, zones, output} = props;
-    validatePackedView(tracks.positions, ['float32x2'], `${id} tracks.positions`);
-    validatePackedView(tracks.timestamps, ['float32', 'uint32x2'], `${id} tracks.timestamps`);
-    validatePackedView(tracks.trackOffsets, ['uint32'], `${id} tracks.trackOffsets`);
-    validatePackedView(zones.positions, ['float32x2'], `${id} zones.positions`);
-    validatePackedView(zones.featureOffsets, ['uint32'], `${id} zones.featureOffsets`);
-    validatePackedView(zones.polygonOffsets, ['uint32'], `${id} zones.polygonOffsets`);
-    validatePackedView(zones.ringOffsets, ['uint32'], `${id} zones.ringOffsets`);
+    validateSinglePackedView(tracks.positions, ['float32x2'], `${id} tracks.positions`);
+    validateSinglePackedView(tracks.timestamps, ['float32', 'uint32x2'], `${id} tracks.timestamps`);
+    validateSinglePackedView(tracks.trackOffsets, ['uint32'], `${id} tracks.trackOffsets`);
+    validateSinglePackedView(zones.positions, ['float32x2'], `${id} zones.positions`);
+    validateSinglePackedView(zones.featureOffsets, ['uint32'], `${id} zones.featureOffsets`);
+    validateSinglePackedView(zones.polygonOffsets, ['uint32'], `${id} zones.polygonOffsets`);
+    validateSinglePackedView(zones.ringOffsets, ['uint32'], `${id} zones.ringOffsets`);
     if (tracks.timestamps.length !== tracks.positions.length) {
       throw new Error(`${id} timestamps length must equal positions length`);
     }
@@ -350,7 +362,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       throw new Error(`${id} trackOffsets must contain at least two rows`);
     }
     if (props.maximumGap) {
-      validatePackedView(props.maximumGap, ['float32'], `${id} maximumGap`);
+      validateSinglePackedView(props.maximumGap, ['float32'], `${id} maximumGap`);
     }
     resolveGPUTrajectoryTemporalContext(id, tracks.timestamps, tracks.temporalContext);
     if (zones.featureOffsets.length < 2) {
@@ -380,14 +392,14 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       ['visitCounts', output.visitCounts, 'uint32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} ${name}`);
+        validateSinglePackedView(view, [format], `${id} ${name}`);
         if (view.length !== cellCount) {
           throw new Error(`${id} ${name} length must equal trackCount * zoneCount`);
         }
       }
     }
     if (output.trackEventCounts) {
-      validatePackedView(output.trackEventCounts, ['uint32'], `${id} trackEventCounts`);
+      validateSinglePackedView(output.trackEventCounts, ['uint32'], `${id} trackEventCounts`);
       if (output.trackEventCounts.length !== this.trackCount) {
         throw new Error(`${id} trackEventCounts length must equal the track count`);
       }
@@ -402,14 +414,14 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       ['eventRows', events.eventRows, 'uint32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} events.${name}`);
+        validateSinglePackedView(view, [format], `${id} events.${name}`);
         if (view.length !== capacity) {
           throw new Error(`${id} events.${name} length must equal the capacity`);
         }
       }
     }
     if (events.eventPositions) {
-      validatePackedView(events.eventPositions, ['float32x2'], `${id} events.eventPositions`);
+      validateSinglePackedView(events.eventPositions, ['float32x2'], `${id} events.eventPositions`);
       if (events.eventPositions.length !== capacity) {
         throw new Error(`${id} events.eventPositions length must equal the capacity`);
       }
@@ -426,7 +438,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         ['lastExitTimes', visitTable.lastExitTimes, 'float32']
       ] as const) {
         if (view) {
-          validatePackedView(view, [format], `${id} visitTable.${name}`);
+          validateSinglePackedView(view, [format], `${id} visitTable.${name}`);
           if (view.length !== tableCapacity) {
             throw new Error(`${id} visitTable.${name} length must equal the capacity`);
           }
@@ -435,7 +447,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
     }
     for (const [name, view] of Object.entries(output.status ?? {})) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} status.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} status.${name}`);
         if (view.length !== 1) {
           throw new Error(`${id} status.${name} must have one row`);
         }

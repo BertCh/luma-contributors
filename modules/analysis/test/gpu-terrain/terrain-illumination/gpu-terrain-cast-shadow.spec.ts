@@ -58,7 +58,13 @@ function createCastShadowFixture(
     horizonAngle: createOutputBuffer(device, pixelCount),
     validity: createOutputBuffer(device, pixelCount)
   };
-  const defaultGrid = makeGPURasterMetadata({width, height, cellSize: 10});
+  // The contributor takes north from the grid, so the grid states the fixture's row order.
+  const defaultGrid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: 10,
+    rowDirection: options.rowDirection
+  });
   const settings = new GPUParameterBuffer(device, {
     id: 'cast-shadow-parameters',
     format: 'float32',

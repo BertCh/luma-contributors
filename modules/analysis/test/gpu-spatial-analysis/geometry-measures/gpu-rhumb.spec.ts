@@ -32,12 +32,56 @@ function getRhumbPair(a: number[], b: number[]) {
   const deltaPsi = Math.log(Math.tan(Math.PI / 4 + phi2 / 2) / Math.tan(Math.PI / 4 + phi1 / 2));
   const deltaPhi = phi2 - phi1;
   const q = Math.abs(deltaPsi) > 1e-12 ? deltaPhi / deltaPsi : Math.cos(phi1);
+  // Midpoint by distance: latitude is linear in distance along a loxodrome and longitude is linear
+  // in the Mercator latitude psi, so the longitude fraction is (psi(mid) - psi1) / (psi2 - psi1).
+  // An east-west line has the plain mean longitude.
+  const phiMiddle = 0.5 * (phi1 + phi2);
+  const fraction =
+    Math.abs(deltaPsi) > 1e-12
+      ? Math.log(Math.tan(Math.PI / 4 + phiMiddle / 2) / Math.tan(Math.PI / 4 + phi1 / 2)) /
+        deltaPsi
+      : 0.5;
   return {
     distance: Math.hypot(deltaPhi, q * deltaLambda) * EARTH_RADIUS,
     bearing: Math.atan2(deltaLambda, deltaPsi) * R2D,
-    midpoint: [a[0] + 0.5 * (deltaLambda * R2D), 0.5 * (a[1] + b[1])]
+    midpoint: [a[0] + fraction * (deltaLambda * R2D), 0.5 * (a[1] + b[1])]
   };
 }
+
+/**
+ * Rhumb midpoints checked by hand (math correctness review 2026-11-10, geometry-measures-02).
+ * `(0, 0) -> (90, 60)`: psi(30) = ln(tan 60) = ln(sqrt 3) = 0.5493061, psi(60) = ln(tan 75) =
+ * ln(2 + sqrt 3) = 1.3169579, so the longitude is 90 * 0.5493061 / 1.3169579 = 37.5392. The plain
+ * mean longitude 45, which the kernel used to return, is 718 km from the loxodrome's midpoint.
+ * `(-74, 40.7) -> (-0.1, 51.5)` (New York to London): psi = 0.7789409, 0.9087903, 1.0520657, so
+ * the longitude is -74 + 73.9 * (0.9087903 - 0.7789409) / (1.0520657 - 0.7789409) = -38.8664
+ * (the mean longitude -37.05 is 140 km east of it).
+ * `(170, -10) -> (-170, 50)` crosses the antimeridian going east: psi(-10) = -0.1754258, psi(20) =
+ * 0.3563785, psi(50) = 1.0106832, so the longitude is 170 + 20 * 0.5318043 / 1.1861090 = 178.9672.
+ */
+const HAND_MIDPOINTS: [string, number[], number[], number[]][] = [
+  ['quarter turn', [0, 0], [90, 60], [37.5392, 30]],
+  ['New York to London', [-74, 40.7], [-0.1, 51.5], [-38.8664, 46.1]],
+  ['antimeridian', [170, -10], [-170, 50], [178.9672, 20]],
+  ['east-west', [10, 60], [30, 60], [20, 60]],
+  ['north-south', [10, -20], [10, 50], [10, 15]],
+  // Fix review fr-geometry-03: lines that reach very high latitudes, where the kernel used to
+  // divide a half difference of isometric latitude by a whole one clamped at atanh(0.999999) and
+  // returned 10.93 and 18.81. By hand: psi(89.95) = ln(cot 0.025) = ln(2291.83) = 7.7371 and
+  // psi(44.975) = ln(tan 67.4875) = 0.8805, so the longitude is 90 * 0.8805 / 7.7371 = 10.245;
+  // psi(60) = 1.3170, psi(74.995) = ln(tan 82.4975) = 2.0271 and psi(89.99) = ln(cot 0.005) =
+  // 9.3466, so the longitude is 10 + 90 * (2.0271 - 1.3170) / (9.3466 - 1.3170) = 17.96.
+  ['equator to 89.95', [0, 0], [90, 89.95], [10.2453, 44.975]],
+  ['60 to 89.99', [10, 60], [100, 89.99], [17.9616, 74.995]],
+  ['pole to pole', [0, -88], [120, 88], [60, 0]]
+];
+
+/**
+ * Latitudes of rhumb lines that are symmetric across the equator, `(0, -latitude)` to
+ * `(100, latitude)` and back. Their midpoint is on the equator at the mean longitude exactly: the
+ * two halves have the same isometric-latitude difference.
+ */
+const SYMMETRIC_LATITUDES = [20, 60, 80, 85, 88, 89.99];
 
 function getRhumbDestination(origin: number[], bearing: number, distance: number): number[] {
   const delta = distance / EARTH_RADIUS;
@@ -169,6 +213,150 @@ it('GPUGeodesicPairs rhumb matches the f64 closed form (pinned to turf)', async 
   expect(initial[6]).toBeCloseTo(90, 4);
   expect(initial[7]).toBeCloseTo(0, 4);
   console.log(`GPUGeodesicPairs rhumb distance errors vs f64 closed form: ${report.join(', ')}`);
+  compiled.destroy();
+  buffers.forEach(buffer => buffer.destroy());
+});
+
+it('GPUGeodesicPairs rhumb midpoints halve the rhumb distance on the rhumb line', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const symmetricPairs = SYMMETRIC_LATITUDES.flatMap(latitude => [
+    [
+      [0, -latitude],
+      [100, latitude]
+    ],
+    [
+      [100, latitude],
+      [0, -latitude]
+    ]
+  ]);
+  const count = HAND_MIDPOINTS.length + symmetricPairs.length;
+  const origins = new Float32Array([
+    ...HAND_MIDPOINTS.flatMap(([, a]) => a),
+    ...symmetricPairs.flatMap(([a]) => a)
+  ]);
+  const targets = new Float32Array([
+    ...HAND_MIDPOINTS.flatMap(([, , b]) => b),
+    ...symmetricPairs.flatMap(([, b]) => b)
+  ]);
+  const buffers: Buffer[] = [];
+  const track = (buffer: Buffer) => {
+    buffers.push(buffer);
+    return buffer;
+  };
+  const graph = new GPUCommandGraph(device, {id: 'rhumb-midpoints'});
+  const output = track(createOutputBuffer(device, 2 * count));
+  graph.add(
+    new GPUGeodesicPairs({
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb', units: 'meters'},
+      origins: importGraphBuffer(
+        graph,
+        'origins',
+        track(createInputBuffer(device, origins)),
+        'float32x2',
+        count
+      ),
+      targets: importGraphBuffer(
+        graph,
+        'targets',
+        track(createInputBuffer(device, targets)),
+        'float32x2',
+        count
+      ),
+      output: {midpoints: importGraphBuffer(graph, 'o-m', output, 'float32x2', count)}
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const midpoints = await readFloat32(output, 2 * count);
+  HAND_MIDPOINTS.forEach(([name, , , expected], row) => {
+    const a = [origins[2 * row], origins[2 * row + 1]];
+    const b = [targets[2 * row], targets[2 * row + 1]];
+    const midpoint = [midpoints[2 * row], midpoints[2 * row + 1]];
+    expect(Math.abs(midpoint[0] - expected[0]), `${name} longitude`).toBeLessThan(1e-4);
+    expect(Math.abs(midpoint[1] - expected[1]), `${name} latitude`).toBeLessThan(1e-4);
+    // Independent of the midpoint formula: the turf-pinned rhumb distance and bearing put the
+    // point halfway along the line and on it.
+    const whole = getRhumbPair(a, b);
+    const firstHalf = getRhumbPair(a, midpoint);
+    const secondHalf = getRhumbPair(midpoint, b);
+    expect(Math.abs(firstHalf.distance - 0.5 * whole.distance), `${name} first half`).toBeLessThan(
+      10 + 2e-6 * whole.distance
+    );
+    expect(
+      Math.abs(secondHalf.distance - 0.5 * whole.distance),
+      `${name} second half`
+    ).toBeLessThan(10 + 2e-6 * whole.distance);
+    expect(getBearingError(firstHalf.bearing, whole.bearing), `${name} bearing`).toBeLessThan(1e-3);
+  });
+  // Symmetric lines: exactly the mean longitude on the equator, in both directions.
+  symmetricPairs.forEach((pair, index) => {
+    const row = HAND_MIDPOINTS.length + index;
+    expect(midpoints[2 * row], `symmetric ${pair[0]} longitude`).toBe(50);
+    expect(midpoints[2 * row + 1], `symmetric ${pair[0]} latitude`).toBe(0);
+  });
+  // The whole line is pinned too at the highest latitude.
+  expect(midpoints[2 * (HAND_MIDPOINTS.length - 1)]).toBe(60);
+  compiled.destroy();
+  buffers.forEach(buffer => buffer.destroy());
+});
+
+// Math correctness review 2026-11-10, geometry-measures-08. An east-west rhumb line of longitude
+// difference d at latitude phi is R cos(phi) d long; at latitude 60 that is R d / 2. The pair is
+// 0.0547332763671875 degrees apart across the antimeridian: 6086.071 m at the equator. Wrapping
+// after the subtraction, as the kernel used to, loses 1.5e-5 degrees (1.7 m).
+it('GPUGeodesicPairs rhumb keeps a short separation across the antimeridian', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const origins = new Float32Array([179.94722, 0, -179.99805, 60]);
+  const targets = new Float32Array([-179.99805, 0, 179.94722, 60]);
+  const buffers: Buffer[] = [];
+  const track = (buffer: Buffer) => {
+    buffers.push(buffer);
+    return buffer;
+  };
+  const graph = new GPUCommandGraph(device, {id: 'rhumb-seam'});
+  const distanceBuffer = track(createOutputBuffer(device, 2));
+  const bearingBuffer = track(createOutputBuffer(device, 2));
+  const midpointBuffer = track(createOutputBuffer(device, 4));
+  graph.add(
+    new GPUGeodesicPairs({
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb', units: 'meters'},
+      origins: importGraphBuffer(
+        graph,
+        'origins',
+        track(createInputBuffer(device, origins)),
+        'float32x2',
+        2
+      ),
+      targets: importGraphBuffer(
+        graph,
+        'targets',
+        track(createInputBuffer(device, targets)),
+        'float32x2',
+        2
+      ),
+      output: {
+        distances: importGraphBuffer(graph, 'o-d', distanceBuffer, 'float32', 2),
+        initialBearings: importGraphBuffer(graph, 'o-i', bearingBuffer, 'float32', 2),
+        midpoints: importGraphBuffer(graph, 'o-m', midpointBuffer, 'float32x2', 2)
+      }
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const distances = await readFloat32(distanceBuffer, 2);
+  const bearings = await readFloat32(bearingBuffer, 2);
+  const midpoints = await readFloat32(midpointBuffer, 4);
+  const separation = ((360 - origins[0] + targets[0]) * Math.PI) / 180;
+  expect(Math.abs(distances[0] - EARTH_RADIUS * separation)).toBeLessThan(0.01);
+  expect(Math.abs(distances[1] - 0.5 * EARTH_RADIUS * separation)).toBeLessThan(0.01);
+  expect(getBearingError(bearings[0], 90)).toBeLessThan(1e-4);
+  expect(getBearingError(bearings[1], -90)).toBeLessThan(1e-4);
+  // The midpoint is continuous with the origin: half the separation east, then west.
+  const halfSeparationDegrees = 0.5 * (360 - origins[0] + targets[0]);
+  expect(Math.abs(midpoints[0] - (origins[0] + halfSeparationDegrees))).toBeLessThan(2e-5);
+  expect(Math.abs(midpoints[2] - (origins[2] - halfSeparationDegrees))).toBeLessThan(2e-5);
   compiled.destroy();
   buffers.forEach(buffer => buffer.destroy());
 });

@@ -12,7 +12,7 @@ All outputs are caller-owned. Graph scratch is transient and graph-owned.
 | NW02 | `GPUNetworkFlow` | Integral maximum flow, residual source cut, edge-aligned feasible flow and flow/cut equality certificate; unit capacities provide edge-disjoint path capacity | 128 nodes, 1024 original directed edges; total capacity at most 16,777,215. Explicit reverse residuals preserve antiparallel edges. Does not emit a path decomposition. |
 | NW03 | `GPUNetworkFlow` with `costs`, `prepareGPUNetworkFlowDemands` | Minimum-cost requested/maximum flow, reverse cancellation, explicit balanced-demand preparation and optional exact 64-bit integer objective | Nonnegative original costs ≤32767; no negative-cost circulation or lower-bound constraints. Summary cost is f32; `exactCost` preserves the integer objective. |
 | NW04 | `GPUNetworkLouvain` | Weighted directed/undirected modularity, deterministic or seeded Fisher–Yates visitation, quotient coarsening, objective trace and convergence | Dense adjacency, ≤32 vertices. Undirected loop diagonals are twice loop weight; directed arcs/loops occur once. This is a modularity heuristic, never a global optimum certificate. |
-| NW05 | `GPUNetworkFacilityOptimization` | Exhaustive backup coverage, p-dispersion and unsplit capacitated p-median; feasibility and exhaustive completion certificates | At most 16 facilities, 64 demand rows and 1,048,576 candidates. Capacitated enumeration has `facilityCount ** demandCount` candidates. Candidates run independently in GPU batches of at most 65,536, with deterministic hierarchical winner reductions. Exhaustive search can still be expensive within the limit; there is no branch-and-bound or scalable mixed-integer solver. |
+| NW05 | `GPUNetworkFacilityOptimization` | Exhaustive backup coverage, p-dispersion and unsplit capacitated p-median; feasibility and exhaustive completion certificates | At most 16 facilities, 64 demand rows and 1,048,576 (2^20) candidates, checked at construction. Backup coverage and p-dispersion enumerate `2 ** facilityCount` candidates, so 64 rows is their real demand limit. Capacitated p-median enumerates `facilityCount ** demandRows` candidates, so the candidate limit, not the 64-row ceiling, bounds its demand rows: 20 rows at 2 facilities, 10 at 4, 5 at 16. For larger problems use `GPULocationAllocation`. Candidates run independently in GPU batches of at most 65,536, with deterministic hierarchical winner reductions. Exhaustive search can still be expensive within the limit; there is no branch-and-bound or scalable mixed-integer solver. |
 | NW06 | `GPUNetworkTimeRouting`, `prepareGPUNetworkRestrictionStates` | FIFO affine or piecewise-arrival routing, first-sample waiting, reachable forbidden-sequence states and original-edge provenance | ≤256 states,4096 transitions,256 samples/transition. Non-FIFO schedules and arbitrary time windows remain unsupported. CPU topology preparation never solves routes. |
 | NW07 | `GPUNetworkRationalAccess` | Congestion equalization with integral/fractional demand, fractional/absolute shift caps, unserved demand and explicit equilibrium gap | ≤64 origins,32 facilities,4096 cycles; f32 demand total ≤2^24. Integral rounding stalls remain unconverged. Fractional conservation has f32 rounding tolerance. |
 | MV01 | `GPUTrajectoryKalman`, `prepareGPUTrajectoryObservations` | Isotropic or full correlated 4x4 Kalman/Joseph covariance and RTS smoothing; explicit WGS84 local-plane/bigint epoch preparation | Linear planar constant velocity; sequential per track, parallel across tracks. Local tangent projection is explicit and drops height/curvature, not an automatic CRS choice. |
@@ -48,7 +48,8 @@ Louvain reports `[valid, converged, completedLevels, completedSweeps]`; its trac
 singleton objective followed by each completed sweep. Unused trace rows are NaN. Zero-weight
 graphs return singleton labels, objective zero and convergence. Symmetry is an exact input requirement only in undirected mode. Directed modularity uses
 community outgoing-strength times incoming-strength as its null-model penalty. An optional uint32
-`seed` chooses reproducible Fisher–Yates visitation; it does not promise the same random ordering
+`seed` chooses reproducible Fisher–Yates visitation, drawn without bias from the Philox stream
+registered for it (every seed gives a uniform order); it does not promise the same random ordering
 as NetworkX. Compare objective and partition invariants, not label IDs. A budget-limited partition remains a heuristic incumbent.
 
 Facility optimization reports `[valid, feasibleIncumbent, enumerationComplete, examinedCandidates]`.
@@ -110,6 +111,11 @@ near the window. `maximumGap` is always in the timestamps' unit: relative second
 times, the word unit (for example milliseconds) for word times. 0 means no limit in both contributors.
 Kalman and restriction also read the trajectory port (`timestamps`, `trackOffsets`) with an optional
 `temporalContext`; Kalman then takes `timeUnitsPerSecond` from `context.unit`, for float32 times too.
+Both also take an optional `spatialContext` that resolves to planar coordinates (the default); a
+longitude-latitude, grid or topology context throws at construction. Kalman and a restriction with
+a distance predicate additionally need the native metric and reject `local-lambert-equal-area` frames.
+The per-observation `status` words document every bit in `GPU_TRAJECTORY_KALMAN_STATUS` and
+`GPU_TRAJECTORY_RESTRICTION_STATUS`.
 
 Restriction parameters are `[minTime,maxTime,minX,minY,maxX,maxY,maxGap]` (`maxGap` 0 means no limit). Nonstationary segments
 need strictly increasing timestamps; equal-time equal-position rows are singletons. Crossing
@@ -139,9 +145,9 @@ The supplied pair arrays are the candidate index and stable provenance; batching
 ## Evidence and remaining gates
 
 The independent generator is
-[`network-movement-coverage.py`](../../../../modules/analysis/test/oracles/network-movement-coverage.py),
+[`network-movement-coverage.py`](../../../modules/analysis/test/oracles/network-movement-coverage.py),
 with committed
-[`network-movement-coverage.json`](../../../../modules/analysis/test/oracles/fixtures/network-movement-coverage.json).
+[`network-movement-coverage.json`](../../../modules/analysis/test/oracles/fixtures/network-movement-coverage.json).
 It pins NetworkX 3.5 and NumPy 2.2.6. Network flow and modularity fixtures call NetworkX directly;
 Kalman fixtures are independent dense matrix compositions, not MovingPandas calls. Tests also
 check conservation, reverse residual cancellation, self-loops, a greedy-allocation counterexample,
@@ -152,13 +158,13 @@ portable eight-storage-binding limit.
 The selected RAAM source is
 [`access` v1.1.9 `raam.py`](https://github.com/pysal/access/blob/v1.1.9/access/raam.py);
 the implementation here is independent and exposes final-load and convergence semantics explicitly.
-The additional [advanced generator](../../../../modules/analysis/test/oracles/network-movement-advanced.py)
+The additional [advanced generator](../../../modules/analysis/test/oracles/network-movement-advanced.py)
 calls MovingPandas 0.22.4/StoneSoup 1.8 smoothing and polygon clipping, tslearn 0.6.4 Euclidean-cost
 DTW/LCSS, similaritymeasures 1.3.0 Fréchet, access 1.1.9 RAAM, and spopt 0.7.0/PuLP 3.3.0 CBC facility models directly. It also includes an
 independent full-covariance NumPy solve, pyproj ECEF projection, and NetworkX virtual-split/time-expanded
-routing equivalents. A separate [server generator](../../../../modules/analysis/test/oracles/network-movement-postgres.py)
+routing equivalents. A separate [server generator](../../../modules/analysis/test/oracles/network-movement-postgres.py)
 executes PostgreSQL 16.6, PostGIS 3.5.3, pgRouting 3.8.0 and MobilityDB 1.2.1 directly.
-Its [saved results](../../../../modules/analysis/test/oracles/fixtures/network-movement-postgres.json)
+Its [saved results](../../../modules/analysis/test/oracles/fixtures/network-movement-postgres.json)
 cover directed fractional same-edge, parallel-edge and unreachable routes; polygon holes;
 all four time endpoint policies; continuous encounter intervals; and absent common support.
 SQL NULL unreachable costs map to infinity, and NULL temporal relationships map to `0xffffffff`.
@@ -178,7 +184,7 @@ loader. No reference algorithm source was changed. The local socket-only stack p
 505 MB and was removed after fixture capture. Reproduction needs these extensions installed;
 the generator accepts `--psql` and standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` settings.
 
-The [benchmark fixture](../../../../modules/analysis/test/oracles/fixtures/network-movement-benchmark.json)
+The [benchmark fixture](../../../modules/analysis/test/oracles/fixtures/network-movement-benchmark.json)
 records 30 workloads on Apple Metal3 WebGPU, including all nine contributors and 4096 trajectory
 pairs. Upload/preparation, compilation, first execution, three warm executions and readback are
 separate. Full-survivor 4096-pair Fréchet took median 5.2 ms; 205 survivors took 1.1 ms with bounded
@@ -213,10 +219,17 @@ It returns projection/epoch metadata and performs no filtering or GPU readback.
 
 For polygons, append flattened ring coordinates after the seven restriction parameters and set
 `polygonRingVertexCounts`. Rings close implicitly; even-odd parity supports holes regardless of ring
-orientation. Valid simple rings are caller-owned topology. Geometry boundary classification uses an
-f32 cross-product tolerance of `1e-6 * max(1,edgeLengthSquared)` and coordinate bounds expanded by
-1e-6 coordinate units; this is not an exact-topology predicate. Use suitable local units and avoid
-features below this precision. `timeBoundary` selects closed, open, left-closed or right-closed;
+orientation. Valid simple rings are caller-owned topology. A point is on the polygon boundary only
+when its exact orientation against an edge is zero inside the edge's bounding box, the same exact
+predicate `GPUZoneEvents` uses; there is no tolerance band, so a fix 5 cm from a 100 km edge is
+strictly inside or outside. A point where the segment crosses an edge, and a piece of the segment
+that runs along an edge, are on the boundary by construction and follow `geometryBoundary`. Whether
+a segment meets an edge is decided from the exact sides of the two fixes against the edge and of the
+edge's two ends against the segment, so a segment that passes a vertex without touching it reports
+nothing and one that runs through a vertex reports one touch. Only the position of a crossing that
+exists is f32, so interval end times carry f32 rounding. The two
+contributors still differ for a fix exactly on the boundary: here `geometryBoundary` decides,
+while `GPUZoneEvents` breaks the tie by its perturbation rule. `timeBoundary` selects closed, open, left-closed or right-closed;
 `geometryBoundary` selects closed/open. Status adds start-open=64,end-open=128,capacity-exceeded=256.
 `intervalsPerSegment` controls fixed output slots. Absent slots contain NaN/zero status. Relationships
 are computed from all classified support even if interval slots overflow.

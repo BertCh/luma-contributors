@@ -17,7 +17,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPU_EARTH_AUTHALIC_RADIUS_METERS} from '../../analysis-core/contracts/earth';
 import {
@@ -107,8 +107,9 @@ export type GPUCellMeasuresProps = {
  * face (all but the 12 pentagons and the thin set of cells straddling an icosahedron edge) are
  * measured from exact integer lattice offsets and stay within 1e-6 relative error at every
  * resolution 0-15. Pentagons and edge-straddling cells fall back to f32 boundary unit vectors,
- * whose relative error is 6e-7 at resolution 0, 2e-5 at 2, 2.5e-4 at 4 and about 1e-2 at 6,
- * growing about 40x per two resolutions: treat them as unreliable beyond resolution 5. Pentagon
+ * which resolve about 6e-8 radians (0.4 m). Their measured relative error is 6e-7 at resolution
+ * 0, 5e-5 at 3 and 4, at most 5e-4 up to resolution 8 and 2e-2 at 9 and 10 (areas: 2e-5 at 4,
+ * 1.5e-4 at 8, 5e-3 at 9 and 10): treat them as unreliable beyond resolution 10. Pentagon
  * flags and edge counts are exact. Invalid and zero cells produce all-zero rows.
  */
 export class GPUCellMeasures implements GPUCommandNodeProducer {
@@ -161,7 +162,7 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
       ['output.edgeCounts', output.edgeCounts],
       ['output.pentagons', output.pentagons]
     ] as const;
-    validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
+    validateSinglePackedView(props.cells, ['uint32x2'], `${id} cells`);
     const rows = props.cells.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -174,14 +175,14 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
       ['output.perimeters', output.perimeters]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length !== rows) {
           throw new Error(`${id} ${name} length must equal the row count`);
         }
       }
     }
     if (output.edgeLengths) {
-      validatePackedView(output.edgeLengths, ['float32'], `${id} output.edgeLengths`);
+      validateSinglePackedView(output.edgeLengths, ['float32'], `${id} output.edgeLengths`);
       if (output.edgeLengths.length !== rows * this.maximumEdgeCount) {
         throw new Error(
           `${id} output.edgeLengths length must equal rows * maximumEdgeCount (${rows * this.maximumEdgeCount})`
@@ -193,7 +194,7 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
       ['output.pentagons', output.pentagons]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length !== rows) {
           throw new Error(`${id} ${name} length must equal the row count`);
         }

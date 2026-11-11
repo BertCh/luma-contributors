@@ -9,9 +9,10 @@ keys, smallest keys retained at capacity. pandas groupby supplies counts and
 reductions; scipy.stats supplies biased Fisher skew/excess kurtosis, NumPy
 linear quantiles. Sample/population ddof is explicit. Singleton sample
 variance is NaN but z score is zero. Mode ties choose smallest finite value.
-Fixed-point sums follow the public representation: np.rint(f32(value*scale)),
-then pandas integer sum; means use that sum / scale / count. Moments use the
-original f32-rounded values in f64. Empty tails and dense gaps are explicit.
+The fixed-point `sums` words follow the public representation:
+np.rint(f32(value*scale)), then pandas integer sum. `sumValues`, `means` and
+the z-score centre are pandas' float sum and mean of the values (not of the
+words). Moments use the original f32-rounded values in f64. Empty tails and dense gaps are explicit.
 No spatial CRS, RNG, or temporal grouping is involved in this class.
 
 Temporal: full 77,231 USGS showcase events, original f32 magnitude, category
@@ -139,11 +140,14 @@ def group_case(name, keys, columns, mask, capacity, dense=0, bits=32, scale=6553
                 series = value_groups.get_group(key)['value'] if exists else pd.Series([], dtype=float)
                 count = len(series)
                 sum_integer = int(aggregate.loc[key, 'sumInteger']) if exists else 0
-                mean = sum_integer / scale / count if count else np.nan
+                # The float sum and mean are pandas' own, of the values, not of the fixed-point
+                # words: a value below 1 / scale must not vanish from them (math review 2026-11-10,
+                # dataframe-02 and dataframe-03). Only the `sums` words are in units of 1 / scale.
+                mean = float(series.mean()) if count else np.nan
                 deviation = series.std(ddof=1 if variance == 'sample' else 0)
                 output['counts'].append(count)
                 output['sums'].extend([sum_integer & 0xffffffff, (sum_integer >> 32) & 0xffffffff])
-                output['sumValues'].append(sum_integer / scale)
+                output['sumValues'].append(float(series.sum()) if count else 0.0)
                 output['means'].append(mean)
                 for field in ['minimums', 'maximums', 'medians', 'uniqueCounts']:
                     output[field].append(aggregate.loc[key, field] if exists else (0 if field == 'uniqueCounts' else np.nan))

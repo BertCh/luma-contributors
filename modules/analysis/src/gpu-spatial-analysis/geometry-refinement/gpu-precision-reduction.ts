@@ -11,7 +11,7 @@ import type {
 import {createTransientView, GPUScan} from '@luma.gl/graph/gpu-core';
 import {GPUMakeValid, type GPUMakeValidProps} from '../geometry-topology/gpu-make-valid';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   getGraphOutputViews,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -60,7 +60,7 @@ export class GPUPolygonPrecisionReduction implements GPUCommandNodeProducer {
     if (!(Number.isFinite(Math.fround(props.gridSize)) && Math.fround(props.gridSize) > 0)) {
       throw new Error('Precision grid must be finite and positive');
     }
-    validatePackedView(props.lattice, ['float32'], this.id);
+    validateSinglePackedView(props.lattice, ['float32'], this.id);
     if (props.lattice.length !== 4) {
       throw new Error('Precision lattice needs four scalars');
     }
@@ -240,10 +240,10 @@ export class GPULinePrecisionReduction implements GPUCommandNodeProducer {
       throw new Error('Invalid precision grid');
     }
     for (const view of [props.positions, props.output.positions]) {
-      validatePackedView(view, ['float32x2'], this.id);
+      validateSinglePackedView(view, ['float32x2'], this.id);
     }
     for (const view of [props.lineOffsets, props.output.lineOffsets, props.output.status]) {
-      validatePackedView(view, ['uint32'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
     }
     if (
       props.output.positions.length < props.positions.length ||
@@ -300,7 +300,11 @@ var kept = 0u; var previous = vec2f(0.0); var invalid = false;
 for (var vertex = first; vertex < last; vertex++) {
   let value = point(vertex);
   if (any((bitcast<vec2u>(value) & vec2u(0x7f800000u)) == vec2u(0x7f800000u))) { invalid = true; }
-  let rounded = floor(value / GRID + vec2f(0.5)) * GRID;
+  // Round half up from the exact fraction. floor(scaled + 0.5) is wrong in f32 wherever the sum
+  // is inexact: odd integers from 2^23 move to the even neighbour, and 0.49999997 rounds to 1.
+  let scaled = value / GRID;
+  let lower = floor(scaled);
+  let rounded = (lower + step(vec2f(0.5), scaled - lower)) * GRID;
   if (any((bitcast<vec2u>(rounded) & vec2u(0x7f800000u)) == vec2u(0x7f800000u))) { invalid = true; }
   if (kept == 0u || any(rounded != previous)) { writePoint(first + kept, rounded); previous = rounded; kept++; }
 }

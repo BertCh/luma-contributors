@@ -16,7 +16,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -72,9 +72,9 @@ export class GPUVectorStraightSkeleton implements GPUCommandNodeProducer {
       )
     )
       throw new Error('Invalid skeleton event parameters');
-    validatePackedView(props.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.positions, ['float32x2'], this.id);
     for (const view of [props.ringOffsets, props.polygonOffsets, props.featureOffsets])
-      validatePackedView(view, ['uint32'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
     const polygons = props.polygonOffsets.length - 1;
     const slots = this.maximumVertices + 2 * this.maximumEvents;
     for (const [name, format, length] of [
@@ -84,7 +84,7 @@ export class GPUVectorStraightSkeleton implements GPUCommandNodeProducer {
       ['offsetLinks', 'uint32x2', polygons * slots],
       ['status', 'uint32x4', polygons]
     ] as const) {
-      validatePackedView(props.output[name], [format], this.id);
+      validateSinglePackedView(props.output[name], [format], this.id);
       if (props.output[name].length !== length) throw new Error('Skeleton output size mismatch');
     }
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [

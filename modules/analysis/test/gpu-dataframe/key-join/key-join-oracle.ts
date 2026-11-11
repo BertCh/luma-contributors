@@ -159,10 +159,13 @@ export function joinOnCPU(input: OracleJoinInput): OracleJoinResult {
         ? rows.map(rightRow => aggregate.values![rightRow]).filter(Number.isFinite)
         : [];
       let sum = 0n;
+      // The float sum is that of the values (float64), not of the `1 / sumScale` words.
+      let floatSum = 0;
       let minimum = NaN;
       let maximum = NaN;
       for (const [position, value] of finite.entries()) {
         sum = BigInt.asIntN(64, sum + getScaledValue(value, input.sumScale));
+        floatSum += value;
         if (position === 0 || isLess(value, minimum)) {
           minimum = value;
         }
@@ -171,7 +174,7 @@ export function joinOnCPU(input: OracleJoinInput): OracleJoinResult {
         }
       }
       out.sums.push(sum);
-      const decoded = decodeFixedPointSum(sum, input.sumScale);
+      const decoded = f(floatSum);
       switch (aggregate.operation) {
         case 'count':
           out.values.push(aggregate.values ? finite.length : rows.length);

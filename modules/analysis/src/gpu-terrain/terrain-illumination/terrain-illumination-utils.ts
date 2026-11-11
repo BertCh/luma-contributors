@@ -3,14 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
-import {validatePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateSinglePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getRasterGridGeoreference,
   RASTER_DEGREES_TO_RADIANS_WGSL,
   type RasterGridAffine
 } from '../../analysis-core/raster-grid';
-import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  GET_QUIET_NAN_SEEDED_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 
 /** WGSL constants shared by terrain-illumination kernels. @internal */
 export const TERRAIN_ILLUMINATION_WGSL_CONSTANTS = /* wgsl */ `
@@ -18,8 +21,8 @@ const PI: f32 = 3.141592653589793;
 ${RASTER_DEGREES_TO_RADIANS_WGSL}
 const RADIANS_TO_DEGREES: f32 = 57.29577951308232;
 ${IS_FINITE_VALUE_WGSL}
-// Takes a runtime operand (unlike the shared getNaN) so the NaN is not constant-folded away.
-fn getNaN(index: u32) -> f32 { return bitcast<f32>(0x7fc00000u | (index & 0u)); }`;
+// getQuietNaN(seed) takes a runtime operand (unlike getNaN()) so the NaN is not constant-folded away.
+${GET_QUIET_NAN_SEEDED_WGSL}`;
 
 /**
  * Throws unless the cell size of `grid` is finite and positive; packers call it before they write
@@ -47,7 +50,7 @@ export function validateTerrainIlluminationView(
   if (!view) {
     return;
   }
-  validatePackedView(view, [format], `${id} ${name}`);
+  validateSinglePackedView(view, [format], `${id} ${name}`);
   if (view.length !== length) {
     throw new Error(`${id} ${name} must contain ${length} ${format} values`);
   }
@@ -133,7 +136,7 @@ export function validateTerrainHorizonView(
  *
  * `'float32'` bindings are `array<f32>`; `'unorm16'` bindings are `array<u32>` holding two codes
  * per word (low half for even elements). Code 0 reads as NaN. The generated source needs
- * `getNaN` from {@link TERRAIN_ILLUMINATION_WGSL_CONSTANTS} and the `${bindingName}Offset`
+ * `getQuietNaN(seed)` from {@link TERRAIN_ILLUMINATION_WGSL_CONSTANTS} and the `${bindingName}Offset`
  * constant that `createWGSLKernelNode` declares.
  *
  * @internal
@@ -150,7 +153,7 @@ export function getTerrainHorizonReadWGSL(
   return `fn readHorizonAngle(element: u32) -> f32 {
   let word = ${bindingName}[${bindingName}Offset + (element >> 1u)];
   let code = (word >> ((element & 1u) * 16u)) & 0xffffu;
-  if (code == 0u) { return getNaN(element); }
+  if (code == 0u) { return getQuietNaN(element); }
   return f32(code - 1u) * ${getWGSLFloatLiteral(TERRAIN_HORIZON_UNORM16_STEP_DEGREES)} - 90.0;
 }`;
 }

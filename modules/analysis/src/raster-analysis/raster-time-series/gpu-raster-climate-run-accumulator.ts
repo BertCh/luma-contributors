@@ -73,7 +73,7 @@ export type GPURasterClimateRunAccumulatorProps = {
   /** Cell-major chunk; nonfinite samples are missing. */
   values: GraphDataView<'float32'>;
   /** Per-observation QA; zero makes the sample missing. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Float32, see {@link getGPURasterClimateRunAccumulatorParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Run condition against the threshold. Defaults to `'at-or-above'`. */
@@ -131,8 +131,8 @@ export class GPURasterClimateRunAccumulator implements GPUCommandNodeProducer {
     validateRequirement(
       id,
       props.values.length >= observationCount &&
-        (!props.validity || props.validity.length >= observationCount),
-      'values and validity must hold cellCount times chunkSliceCount entries'
+        (!props.mask || props.mask.length >= observationCount),
+      'values and mask must hold cellCount times chunkSliceCount entries'
     );
     validateRequirement(
       id,
@@ -149,8 +149,8 @@ export class GPURasterClimateRunAccumulator implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, parameters} = this.props;
-    return [values, parameters, ...(validity ? [validity] : [])];
+    const {values, mask, parameters} = this.props;
+    return [values, parameters, ...(mask ? [mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -162,7 +162,7 @@ export class GPURasterClimateRunAccumulator implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, condition, minimumSpellLength} = this;
-    const {chunkSliceCount: chunk, values, validity, parameters, state} = props;
+    const {chunkSliceCount: chunk, values, mask, parameters, state} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const conditionOperator = {
       above: '>',
@@ -182,7 +182,7 @@ export class GPURasterClimateRunAccumulator implements GPUCommandNodeProducer {
         bindings: [
           rasterBinding('values', values),
           rasterBinding('parameters', parameters),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           ...(state.runs ? [rasterBinding('runs', state.runs, true)] : []),
           ...(state.degreeDays ? [rasterBinding('degreeDays', state.degreeDays, true)] : [])
         ],
@@ -197,7 +197,7 @@ let degreeDayUnit = i32(parameters[parametersOffset + 3u]);
 for (var slice = 0u; slice < activeSliceCount; slice++) {
   let source = index * ${chunk}u + slice;
   let value = values[valuesOffset + source];
-  let present = finite(value) ${validity ? '&& validity[validityOffset + source] != 0u' : ''};
+  let present = finite(value) ${mask ? '&& mask[maskOffset + source] != 0u' : ''};
   ${
     state.runs
       ? `let runWord = runsOffset + 6u * index;

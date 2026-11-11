@@ -91,7 +91,9 @@ it('GPULineChunk splits lines into chunks like the f64 oracle, per-frame chunk l
   for (const chunkLength of [3.3, 7.77, 50, 0, 1.01]) {
     const actual = await fixture.run(getGPULineChunkParameterValues({chunkLength}));
     const expected = chunkLines(lines, {mode: 'chunk', chunkLength, lineCapacity});
-    expect(actual.lineCount).toBe(Math.min(expected.pieceTotal, lineCapacity));
+    // `count` counts pieces (output lines); the oracle caps each line at lineCapacity + 1 pieces as the kernel does.
+    expect(actual.count).toBe(Math.min(expected.pieceTotal, lineCapacity));
+    expect(actual.requiredCount).toBe(expected.pieceTotal);
     expect(actual.sourceLineIndices).toEqual(expected.sourceLineIndices);
     expectLineLineParity(actual, expected, capacity, 2e-5 * 60, 2e-5);
     expect(actual.overflow).toBe(0);
@@ -112,12 +114,15 @@ it('GPULineChunk reports line and vertex capacity overflow with valid offsets', 
   const expected = chunkLines(lines, {mode: 'chunk', chunkLength, lineCapacity});
   expect(expected.pieceTotal).toBeGreaterThan(lineCapacity);
   expect(actual.overflow).toBe(1);
-  expect(actual.lineCount).toBe(lineCapacity);
+  expect(actual.count).toBe(lineCapacity);
+  expect(actual.requiredCount).toBe(expected.pieceTotal);
   expectLineLineParity(actual, expected, capacity, 2e-3, 2e-5, undefined, 1);
   // A tiny chunk length is capped instead of wrapping counts.
   const tiny = await fixture.run(getGPULineChunkParameterValues({chunkLength: 1e-30}));
   expect(tiny.overflow).toBe(1);
-  expect(tiny.lineCount).toBe(lineCapacity);
+  expect(tiny.count).toBe(lineCapacity);
+  // Each line is capped at lineCapacity + 1 pieces, so the requirement is a lower bound past the capacity.
+  expect(tiny.requiredCount).toBeGreaterThan(lineCapacity);
   fixture.destroy();
 });
 

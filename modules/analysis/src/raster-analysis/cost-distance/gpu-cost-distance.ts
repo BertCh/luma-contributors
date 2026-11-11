@@ -18,7 +18,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateRasterCellSizeMode,
@@ -32,6 +32,7 @@ import {
   validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../raster-band-utils';
 import {
@@ -90,6 +91,8 @@ export type GPUCostDistanceSettings = {
  * Packs settings into the 8-float layout read by {@link GPUCostDistance}:
  * `[cellSizeX, cellSizeY, northEdge, southEdge, costLimit, 0, 0, 0]`, with the cell size and the
  * row-edge world y taken from `grid`.
+ *
+ * @throws If the pixel axes of `grid.affine` are not orthogonal (a sheared grid); rotated grids pass.
  */
 export function getGPUCostDistanceParameterValues(
   settings: GPUCostDistanceSettings,
@@ -101,13 +104,14 @@ export function getGPUCostDistanceParameterValues(
     target,
     GPU_COST_DISTANCE_PARAMETER_LENGTH
   );
+  validateRasterGridOrthogonal('getGPUCostDistanceParameterValues', grid);
   target.fill(0, 0, GPU_COST_DISTANCE_PARAMETER_LENGTH);
   writeRasterGridPrefix(target, grid);
   target[4] = settings.costLimit ?? Infinity;
   return target;
 }
 
-/** One-row status words of {@link GPUCostDistance}. */
+/** One-row status words of {@link GPUCostDistance}, named as in `GPUIterationStatusPort`. */
 export type GPUCostDistanceStatus = {
   /**
    * One row: 1 when relaxation reached a fixpoint, 0 when `maximumIterations` stopped it. With
@@ -117,6 +121,11 @@ export type GPUCostDistanceStatus = {
   converged?: GraphDataView<'uint32'>;
   /** One row: number of relaxation iterations executed. */
   iterationCount?: GraphDataView<'uint32'>;
+  /**
+   * One row: 1 when an iteration limit (`maximumIterations`, or `maximumTieIterations` with
+   * `output.backLinks`) stopped the run before a fixpoint, else 0; always `1 - converged`.
+   */
+  iterationLimitReached?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -282,7 +291,9 @@ export type GPUCostDistanceProps = {
  * optional back-links, isochrone bands, per-cell settling stamps, and a GPU convergence flag.
  *
  * The edge cost of a D8 move is the ground length of the move times the mean friction of its two
- * cells. Relaxation is tiled min-relaxation: each 16x16 workgroup tile repeats the update in
+ * cells. The ground lengths are `hypot(a, d)` along a row, `hypot(b, e)` along a column and the
+ * root of the sum of their squares on a diagonal, so the grid affine must have orthogonal pixel
+ * axes: axis-aligned and rotated grids are accepted, a sheared one throws at construction. Relaxation is tiled min-relaxation: each 16x16 workgroup tile repeats the update in
  * workgroup memory, and a GPU-written indirect dispatch switches the remaining unrolled
  * iterations off once nothing changes, so nothing is read back. Diagonal moves are allowed
  * whenever both endpoints are passable (no corner-cutting restriction). Every encoding recomputes
@@ -314,6 +325,8 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     const cellCount = validateRasterGrid(id, props.grid);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // The diagonal D8 length is sqrt(cellSizeX^2 + cellSizeY^2), which needs perpendicular axes.
+    validateRasterGridOrthogonal(id, props.grid);
     validateRasterIterations(id, 'maximumIterations', this.maximumIterations);
     this.maximumTieIterations = props.maximumTieIterations ?? this.maximumIterations;
     validateRasterIterations(id, 'maximumTieIterations', this.maximumTieIterations);
@@ -327,10 +340,11 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
       ['output.bands', output.bands],
       ['output.bandCounts', output.bandCounts],
       ['output.status.converged', output.status?.converged],
-      ['output.status.iterationCount', output.status?.iterationCount]
+      ['output.status.iterationCount', output.status?.iterationCount],
+      ['output.status.iterationLimitReached', output.status?.iterationLimitReached]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     for (const [name, view] of [
@@ -341,11 +355,11 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
       ['continuation.values', props.continuation?.values]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
     if (props.continuation) {
-      validatePackedView(props.continuation.state, ['uint32'], `${id} continuation.state`);
+      validateSinglePackedView(props.continuation.state, ['uint32'], `${id} continuation.state`);
       if (output.settledAt) {
         throw new Error(`${id} continuation does not support output.settledAt`);
       }
@@ -394,7 +408,8 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['sourceCount', props.sourceCount],
       ['output.status.converged', output.status?.converged],
-      ['output.status.iterationCount', output.status?.iterationCount]
+      ['output.status.iterationCount', output.status?.iterationCount],
+      ['output.status.iterationLimitReached', output.status?.iterationLimitReached]
     ] as const) {
       if (view && view.length !== 1) {
         throw new Error(`${id} ${name} must contain exactly one row`);
@@ -425,6 +440,7 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
         output.bandCounts,
         output.status?.converged,
         output.status?.iterationCount,
+        output.status?.iterationLimitReached,
         props.continuation?.state,
         props.continuation?.values
       ],
@@ -465,6 +481,7 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
       output.bandCounts,
       output.status?.converged,
       output.status?.iterationCount,
+      output.status?.iterationLimitReached,
       props.continuation?.state,
       props.continuation?.values
     ]);
@@ -616,14 +633,19 @@ fn getRelaxationLimit() -> f32 { return settings[settingsOffset + 4u]; }`
         sweepAfterIteration,
         costState: relaxation.state
       });
-    } else if (output.status?.converged || output.status?.iterationCount) {
+    } else if (
+      output.status?.converged ||
+      output.status?.iterationCount ||
+      output.status?.iterationLimitReached
+    ) {
       nodes.push(
         createRasterIterationFinalizeNode<Parameters>(graph, {
           id: `${id}-finalize`,
           operation: OPERATION,
           state: relaxation.state,
           converged: output.status?.converged,
-          iterationCount: output.status?.iterationCount
+          iterationCount: output.status?.iterationCount,
+          iterationLimitReached: output.status?.iterationLimitReached
         })
       );
     }
@@ -995,7 +1017,19 @@ fn getRelaxationLimit() -> f32 { return getInfinity(); }`
         access: 'read_write'
       });
     }
-    if (output.status?.converged || output.status?.iterationCount) {
+    if (output.status?.iterationLimitReached) {
+      bindings.push({
+        name: 'iterationLimitReached',
+        view: output.status.iterationLimitReached,
+        type: 'u32',
+        access: 'read_write'
+      });
+    }
+    if (
+      output.status?.converged ||
+      output.status?.iterationCount ||
+      output.status?.iterationLimitReached
+    ) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-finalize`,
@@ -1004,7 +1038,8 @@ fn getRelaxationLimit() -> f32 { return getInfinity(); }`
           bindings,
           invocationCount: 1,
           body: `${output.status?.converged ? 'converged[convergedOffset] = costStatus[costStatusOffset + 3u] & tieStatus[tieStatusOffset + 3u];' : ''}
-  ${output.status?.iterationCount ? 'iterationCount[iterationCountOffset] = costStatus[costStatusOffset + 2u];' : ''}`
+  ${output.status?.iterationCount ? 'iterationCount[iterationCountOffset] = costStatus[costStatusOffset + 2u];' : ''}
+  ${output.status?.iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = 1u - (costStatus[costStatusOffset + 3u] & tieStatus[tieStatusOffset + 3u]);' : ''}`
         })
       );
     }

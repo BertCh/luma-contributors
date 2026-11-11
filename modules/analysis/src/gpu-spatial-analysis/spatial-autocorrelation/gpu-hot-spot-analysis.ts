@@ -69,7 +69,11 @@ export type GPUHotSpotAnalysisOutput = {
    * most `0.01`, `0.05` or `0.10`, whatever the correction method; the sign is the sign of z.
    */
   bins?: GraphDataView<'sint32'>;
-  /** Optional caller-owned unadjusted two-sided normal p-value per row; quiet NaN where z is NaN. */
+  /**
+   * Optional caller-owned unadjusted two-sided normal p-value per row; quiet NaN where z is NaN.
+   * Never exactly 0: floored at the smallest normal float32 (1.17549435e-38), the rule shared by
+   * every analytic p-value of the spatial statistics.
+   */
   pValues?: GraphDataView<'float32'>;
   /**
    * Optional caller-owned p-value adjusted by `multipleTesting` (equal to `pValues` for `'none'`);
@@ -166,7 +170,8 @@ export type GPUHotSpotAnalysisProps = {
  * - Included rows are mask-selected rows with a finite value. Islands (included rows without a
  *   positive-weight neighbor among the included rows) are removed by default. `n`, the mean `X`
  *   and the population standard deviation `S = sqrt(sum (x - X)^2 / n)` are computed over the
- *   analysis rows (or taken from fixed moments), with a second-pass mean correction.
+ *   analysis rows (or taken from fixed moments), with a second-pass mean correction; the centered
+ *   values are the stored first-pass deviations minus the mean of those deviations.
  * - Weights `w_ij` are the CSR entries of row `i` with a positive weight pointing at analysis rows
  *   other than `i`. They are used as given, or divided by their sum when the weights are
  *   row-standardized (`weights.information.transform === 'row'`), plus the focal weight
@@ -198,8 +203,9 @@ export type GPUHotSpotAnalysisProps = {
  * kernel per focus row over its CSR row, an optional multiple-testing adjustment, and a classify
  * kernel.
  *
- * Non-goals: permutation (pseudo) p-values, building the weights, geodesic distances, chunked
- * inputs, space-time neighborhoods (see `GPUEmergingHotSpots`).
+ * Non-goals: permutation (pseudo) p-values, building the weights, geodesic distances,
+ * space-time neighborhoods (see `GPUEmergingHotSpots`). Chunked weights are accepted (one gather
+ * dispatch per chunk).
  */
 export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

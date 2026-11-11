@@ -203,10 +203,18 @@ it('Region boundaries, empty and constant selections are explicit independent re
   expect(testCase.queries[5].expected.statistics).toEqual([0, 0, 0, 0]);
   const real = await decodeRound4Fixture<RegionCase>(loadFixture('region-real'));
   expect(real.queries[3].expected.counts[0]).toBe(43557);
-  // Half-open lasso: these exact top/right-boundary rows are excluded.
-  expect(real.queries[1].expected.mask[29299]).toBe(0);
-  expect(real.queries[1].expected.mask[34963]).toBe(0);
-  expect(real.queries[1].expected.counts[0]).toBe(2833);
+  // Inclusive lasso (math review cells-joins-03, `shapely.covers`): row 29299 at
+  // (12.529296875, 15) is exactly on the top edge and row 34963 at (5, 32.6123046875) on a right
+  // edge. Both are selected, as a point on a rectangle edge is. Under the old half-open rule they
+  // were excluded and the count was 2833.
+  expect(real.queries[1].expected.mask[29299]).toBe(1);
+  expect(real.queries[1].expected.mask[34963]).toBe(1);
+  expect(real.queries[1].expected.counts[0]).toBe(2835);
+  // The small lasso (0,0) (3,0) (3,1) (1,1) (1,3) (0,3): rows 0, 1, 3, 4, 5, 6 and 12 are on its
+  // boundary and selected; (2, 2) is in the notch.
+  expect(testCase.queries[1].expected.mask.slice(0, 7)).toEqual([1, 1, 0, 1, 1, 1, 1]);
+  expect(testCase.queries[1].expected.mask[12]).toBe(1);
+  expect(testCase.queries[1].expected.counts).toEqual([7, 5, 0]);
 });
 
 it('Neighborhood mode resolves an exact rational tie to the smallest category', async () => {

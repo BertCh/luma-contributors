@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGPUStatusPort} from '../analysis-core/contracts/status';
 import {
   getGraphOutputViews,
   validateCommandNodeBudget,
@@ -36,6 +37,13 @@ export type GPURasterReconstructionProps = {
   marker: GraphDataView<'float32'>;
   mask: GraphDataView<'float32'>;
   method?: 'dilation' | 'erosion';
+  /**
+   * Neighbours a value spreads to in one round: `8` is the 3 x 3 square (edge and corner
+   * neighbours), `4` the cross (edge neighbours only). Defaults to `8`, the default footprint of
+   * `skimage.morphology.reconstruction` and of the published `GPURasterDilation` (`'square'`).
+   * With `4`, a marker and a mask region that touch only at a corner stay unconnected. (The
+   * default was `4` before 2026-11-10.)
+   */
   connectivity?: 4 | 8;
   /** Rounds before the run stops unconverged. Default 64; at most 26,209 (the command node budget). */
   maximumIterations?: number;
@@ -51,7 +59,9 @@ export type GPURasterReconstructionProps = {
 };
 
 /**
- * Geodesic reconstruction under an explicit mask, using synchronous bounded GPU rounds. Rounds
+ * Geodesic reconstruction under an explicit mask, using synchronous bounded GPU rounds. One
+ * round is a grey dilation (or erosion) over `connectivity` neighbours, 8 by default, clipped by
+ * the mask; the fixed point is the reconstruction of `skimage.morphology.reconstruction`. Rounds
  * after convergence dispatch no work, and the current values are always published; check
  * `status.converged` to know whether they are final.
  */
@@ -82,6 +92,7 @@ export class GPURasterReconstruction implements GPUCommandNodeProducer {
       'output.status.iterationLimitReached'
     );
     requireRasterLength(props.output.status.iterationCount, 1, id, 'output.status.iterationCount');
+    validateGPUStatusPort(id, props.output.status);
     const maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
     validateRequirement(
       id,
@@ -126,8 +137,9 @@ export class GPURasterReconstruction implements GPUCommandNodeProducer {
     ];
     let previous = first;
     let next = second;
+    // 8-connected (the 3 x 3 square) unless the cross is asked for.
     const connectivityWGSL =
-      props.connectivity === 8 ? '' : 'if (abs(rowOffset) + abs(columnOffset) > 1) { continue; }';
+      props.connectivity === 4 ? 'if (abs(rowOffset) + abs(columnOffset) > 1) { continue; }' : '';
     // One extra round tests whether the final iterate is a true fixed point.
     nodes.push(
       ...createRasterJacobiLoopNodes(graph, {
@@ -206,6 +218,11 @@ export type GPURasterFillHolesProps = {
   id?: string;
   grid: GPURasterMetadata;
   input: GraphDataView<'uint32'>;
+  /**
+   * Connectivity of the background that is flooded from the boundary. Defaults to `4`, the rule
+   * of `scipy.ndimage.binary_fill_holes`: background that reaches the boundary only through a
+   * diagonal gap is a hole. With `8` a diagonal gap lets the flood through.
+   */
   connectivity?: 4 | 8;
   /** Reconstruction rounds before the run stops unconverged. Default 64; at most 26,207 (the command node budget). */
   maximumIterations?: number;
@@ -241,6 +258,7 @@ export class GPURasterFillHoles implements GPUCommandNodeProducer {
       'output.status.iterationLimitReached'
     );
     requireRasterLength(props.output.status.iterationCount, 1, id, 'output.status.iterationCount');
+    validateGPUStatusPort(id, props.output.status);
     const maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
     validateRequirement(
       id,
@@ -278,7 +296,8 @@ export class GPURasterFillHoles implements GPUCommandNodeProducer {
         grid: props.grid,
         marker,
         mask,
-        connectivity: props.connectivity,
+        // Hole filling keeps the 4-connected background of scipy.ndimage.binary_fill_holes.
+        connectivity: props.connectivity ?? 4,
         maximumIterations: props.maximumIterations,
         output: {
           values: reconstructed,

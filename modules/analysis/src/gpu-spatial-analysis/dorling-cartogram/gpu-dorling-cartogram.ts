@@ -17,7 +17,7 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -157,7 +157,7 @@ export class GPUDorlingCartogram implements GPUCommandNodeProducer {
     ] as const;
     for (const [view, format, length] of entries) {
       if (view) {
-        validatePackedView(view, [format], this.id);
+        validateSinglePackedView(view, [format], this.id);
         if (view.length !== length) {
           throw new Error(`${this.id} view length mismatch`);
         }

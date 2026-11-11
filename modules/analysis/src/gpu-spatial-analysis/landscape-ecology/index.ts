@@ -31,3 +31,15 @@ export type {
   GPUSegregationCounterfactualProps,
   GPUPopulationSupportAlignmentProps
 } from './segregation-counterfactual';
+export {
+  addRasterResistanceConnectivityRecipe,
+  getRasterResistanceConnectivityParameterValues,
+  GPU_RASTER_RESISTANCE_CONNECTIVITY_PARAMETER_LENGTH,
+  RASTER_RESISTANCE_CONNECTIVITY_MAXIMUM_CELL_COUNT,
+  RASTER_RESISTANCE_CONNECTIVITY_MAXIMUM_EDGE_SLOT_COUNT
+} from './raster-resistance-connectivity';
+export type {
+  GPURasterResistanceConnectivityOutput,
+  GPURasterResistanceConnectivityProps,
+  GPURasterResistanceConnectivityRecipeResult
+} from './raster-resistance-connectivity';

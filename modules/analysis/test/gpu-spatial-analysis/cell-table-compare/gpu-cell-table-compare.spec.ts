@@ -460,6 +460,48 @@ for (const [measure, zScore] of [
   });
 }
 
+it('GPUCellTableCompare Poisson z-score of sums is NaN where before + after is not positive', async () => {
+  // Math review cells-joins-05. The statistic delta / sqrt(before + after) is a count statistic.
+  // Expected values are worked by hand, not taken from the CPU oracle.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new Fixture(device);
+  const compare = createCompareFixture(fixture, {
+    beforeCapacity: 8,
+    afterCapacity: 8,
+    capacity: 8,
+    measure: 'sum',
+    zScore: 'poisson'
+  });
+  const scaled = (value: number) => BigInt(value * SUM_SCALE);
+  const sums: [before: number, after: number, zScore: number][] = [
+    // 7 / sqrt(25).
+    [9, 16, 1.4],
+    // sqrt(-2) has no value.
+    [-3, 1, Number.NaN],
+    // The denominator is 0 while the sums differ by 10: the old kernel wrote 0.
+    [-5, 5, Number.NaN],
+    // Both zero: defined as 0.
+    [0, 0, 0],
+    // Equal negative sums: the denominator is negative.
+    [-7, -7, Number.NaN],
+    // -4 / sqrt(4).
+    [4, 0, -2]
+  ];
+  const actual = await compare.run(
+    sums.map(([before], row) => cell(BigInt(row + 1), 1, scaled(before))),
+    sums.map(([, after], row) => cell(BigInt(row + 1), 1, scaled(after)))
+  );
+  expect(actual.count).toBe(sums.length);
+  for (const [row, [before, after, zScore]] of sums.entries()) {
+    expect(actual.columns.before[row], `before ${row}`).toBe(before);
+    expect(actual.columns.after[row], `after ${row}`).toBe(after);
+    expectClose(actual.columns.zScore[row], zScore, DIVISION_TOLERANCE, `z ${row}`);
+  }
+  compare.compiled.destroy();
+  fixture.destroy();
+});
+
 it('GPUCellTableCompare bounds the union, keeps the smallest keys, and ORs input overflow', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

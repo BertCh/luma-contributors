@@ -55,7 +55,7 @@ export type GPURasterStandardizedIndexProps = {
   zeroInflated?: boolean;
   /** Chunk to evaluate, cell-major; nonfinite samples are missing. */
   values: GraphDataView<'float32'>;
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   slotIndices?: GraphDataView<'uint32'>;
   /** `[shape, scale, zeroProbability]` per slot, from {@link GPURasterStandardizedIndexCalibration}. */
   fit: GraphDataView<'float32'>;
@@ -105,10 +105,10 @@ export class GPURasterStandardizedIndex implements GPUCommandNodeProducer {
     validateRequirement(
       id,
       props.values.length >= observationCount &&
-        (!props.validity || props.validity.length >= observationCount) &&
+        (!props.mask || props.mask.length >= observationCount) &&
         props.output.index.length >= observationCount &&
         props.output.status.length >= observationCount,
-      'values, validity, output.index and output.status must hold cellCount times chunkSliceCount entries'
+      'values, mask, output.index and output.status must hold cellCount times chunkSliceCount entries'
     );
     validateRequirement(
       id,
@@ -129,12 +129,12 @@ export class GPURasterStandardizedIndex implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, slotIndices, fit, parameters} = this.props;
+    const {values, mask, slotIndices, fit, parameters} = this.props;
     return [
       values,
       fit,
       parameters,
-      ...(validity ? [validity] : []),
+      ...(mask ? [mask] : []),
       ...(slotIndices ? [slotIndices] : [])
     ];
   }
@@ -147,7 +147,7 @@ export class GPURasterStandardizedIndex implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, slotCount} = this;
-    const {chunkSliceCount: chunk, values, validity, slotIndices, fit, parameters, output} = props;
+    const {chunkSliceCount: chunk, values, mask, slotIndices, fit, parameters, output} = props;
     const zeroInflated = props.zeroInflated ?? false;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const tails =
@@ -164,7 +164,7 @@ export class GPURasterStandardizedIndex implements GPUCommandNodeProducer {
           rasterBinding('values', values),
           rasterBinding('fit', fit),
           rasterBinding('parameters', parameters),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           ...(slotCount > 1 && slotIndices ? [rasterBinding('slotIndices', slotIndices)] : []),
           rasterBinding('indexOut', output.index, true),
           rasterBinding('statusOut', output.status, true)
@@ -184,7 +184,7 @@ var result = missing();
 var code = 1u;
 let activeSliceCount = u32(clamp(parameters[parametersOffset], 0.0, ${chunk}.0));
 let value = values[valuesOffset + source];
-if (slice < activeSliceCount && finite(value) ${validity ? '&& validity[validityOffset + source] != 0u' : ''}) {
+if (slice < activeSliceCount && finite(value) ${mask ? '&& mask[maskOffset + source] != 0u' : ''}) {
   let slot = ${slotCount > 1 ? 'slotIndices[slotIndicesOffset + slice]' : '0u'};
   code = 2u;
   if (slot < ${slotCount}u) {

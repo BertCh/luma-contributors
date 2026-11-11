@@ -22,7 +22,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPURasterExtremaPyramidLayout,
@@ -197,19 +197,19 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
     const pixelCount = validateRasterGrid(id, props.grid);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
-    validatePackedView(props.observers, ['float32x2'], `${id} observers`);
+    validateSinglePackedView(props.observers, ['float32x2'], `${id} observers`);
     if (props.observerHeights) {
-      validatePackedView(props.observerHeights, ['float32'], `${id} observerHeights`);
+      validateSinglePackedView(props.observerHeights, ['float32'], `${id} observerHeights`);
       if (props.observerHeights.length !== props.observers.length) {
         throw new Error(`${id} observerHeights must contain one value per observer`);
       }
     }
-    validatePackedView(output.visibleCount, ['uint32'], `${id} output.visibleCount`);
+    validateSinglePackedView(output.visibleCount, ['uint32'], `${id} output.visibleCount`);
     if (output.visibleCount.length !== pixelCount) {
       throw new Error(`${id} output.visibleCount must contain one value per pixel`);
     }
     if (output.marginalCount) {
-      validatePackedView(output.marginalCount, ['uint32'], `${id} output.marginalCount`);
+      validateSinglePackedView(output.marginalCount, ['uint32'], `${id} output.marginalCount`);
       if (output.marginalCount.length !== pixelCount) {
         throw new Error(`${id} output.marginalCount must contain one value per pixel`);
       }

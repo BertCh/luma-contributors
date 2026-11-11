@@ -17,7 +17,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {COLOR_SCALE_WGSL} from './color-scale-wgsl';
@@ -120,17 +120,17 @@ export class GPUBivariateClassification implements GPUCommandNodeProducer {
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
-    validatePackedView(props.valuesX, ['float32'], `${id} valuesX`);
-    validatePackedView(props.valuesY, ['float32'], `${id} valuesY`);
-    validatePackedView(props.breaksX, ['float32'], `${id} breaksX`);
-    validatePackedView(props.breaksY, ['float32'], `${id} breaksY`);
-    validatePackedView(props.palette, ['uint32'], `${id} palette`);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.valuesX, ['float32'], `${id} valuesX`);
+    validateSinglePackedView(props.valuesY, ['float32'], `${id} valuesY`);
+    validateSinglePackedView(props.breaksX, ['float32'], `${id} breaksX`);
+    validateSinglePackedView(props.breaksY, ['float32'], `${id} breaksY`);
+    validateSinglePackedView(props.palette, ['uint32'], `${id} palette`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.alphaValues) {
-      validatePackedView(props.alphaValues, ['float32'], `${id} alphaValues`);
+      validateSinglePackedView(props.alphaValues, ['float32'], `${id} alphaValues`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
     }
     for (const [name, view] of [
       ['valuesY', props.valuesY],
@@ -161,14 +161,14 @@ export class GPUBivariateClassification implements GPUCommandNodeProducer {
     for (const name of ['classIds', 'colors'] as const) {
       const view = output[name];
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < rows) {
           throw new Error(`${id} output.${name} must hold one row per value`);
         }
       }
     }
     if (output.classCounts) {
-      validatePackedView(output.classCounts, ['uint32'], `${id} output.classCounts`);
+      validateSinglePackedView(output.classCounts, ['uint32'], `${id} output.classCounts`);
       if (output.classCounts.length < jointCount) {
         throw new Error(`${id} output.classCounts must hold maximumClassCount ** 2 rows`);
       }

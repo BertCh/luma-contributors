@@ -7,7 +7,10 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {validatePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateSinglePackedView,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -16,22 +19,102 @@ import {
   createRasterIterationFinalizeNode,
   createRasterGatedLoopNodes,
   createRasterIterationResetNode,
-  createRasterIterationState
+  createRasterIterationState,
+  type RasterIterationState
 } from '../../raster-analysis/cost-distance/raster-relaxation';
 
 /**
- * WGSL constants and helpers shared by the D8 tracing kernels: `GRID_WIDTH`, `GRID_HEIGHT`,
- * `NO_CELL`, `UNRESOLVED_DIRECTION`, and `getFlowReceiver(cell, code)`.
+ * How a caller-supplied D8 direction grid numbers its eight directions. Compile-time.
  *
- * A code has a receiver only when it is a single bit in `1..128` (ESRI D8: `1 << direction`, east
- * first, clockwise) and the neighbor lies inside the grid. Terminal (0), invalid
- * (`0xffffffff`), unresolved (`0xfffffffe`), multi-bit, and out-of-grid codes have no receiver; a
- * path that stops at an unresolved cell is itself unresolved, which the callers report. The helpers do not read the
- * grid `settings`, so kernels that use them need no settings binding.
+ * **The codes are raster offsets, not compass bearings.** In the tables below "south" means the
+ * next row (`row + 1`), "north" the previous row and "east" the next column, whatever the grid
+ * affine says: no hydrology class reads the row sign `grid.affine[4]`. On a north-up raster (rows
+ * advance south, `grid.affine[4] < 0`), which is how ArcGIS, WhiteboxTools and TauDEM write their
+ * grids, the names are true compass directions. `GPUTerrainFlow` writes its `flowDirections` by
+ * the same rule, so its output round-trips on any grid. If you hold a tool's direction grid with
+ * its rows flipped (rows advancing north, `grid.affine[4] > 0`), its codes still name the tool's
+ * compass directions and would be followed mirrored north to south with no error: flip the rows
+ * back, or exchange the north and south codes, before passing it in.
+ *
+ * - `'esri'` (default): powers of two clockwise from east: 1 east, 2 south-east, 4 south, 8
+ *   south-west, 16 west, 32 north-west, 64 north, 128 north-east. The encoding of
+ *   `GPUTerrainFlow.flowDirections`, of ArcGIS and pysheds, and of WhiteboxTools with `--esri_pntr`.
+ * - `'whitebox'`: the WhiteboxTools default pointer, powers of two clockwise from north-east: 1
+ *   north-east, 2 east, 4 south-east, 8 south, 16 south-west, 32 west, 64 north-west, 128 north.
+ * - `'taudem'`: the TauDEM D8 grid, 1 to 8 counter-clockwise from east: 1 east, 2 north-east, 3
+ *   north, 4 north-west, 5 west, 6 south-west, 7 south, 8 south-east.
+ *
+ * In every encoding 0 is a terminal cell, `0xffffffff` an invalid cell and `0xfffffffe` an
+ * unresolved direction, so map the tool's own no-data value to `0xffffffff` when you import the
+ * grid as `uint32`. A word outside the encoding has no receiver, as an invalid ESRI code has none.
+ */
+export type GPUTerrainFlowDirectionEncoding = 'esri' | 'whitebox' | 'taudem';
+
+const TERRAIN_FLOW_DIRECTION_ENCODINGS: readonly GPUTerrainFlowDirectionEncoding[] = [
+  'esri',
+  'whitebox',
+  'taudem'
+];
+
+/** Throws unless `directionEncoding` is undefined or one of the three encodings. @internal */
+export function validateTerrainFlowDirectionEncoding(
+  id: string,
+  directionEncoding: GPUTerrainFlowDirectionEncoding | undefined
+): void {
+  validateRequirement(
+    id,
+    directionEncoding === undefined || TERRAIN_FLOW_DIRECTION_ENCODINGS.includes(directionEncoding),
+    `directionEncoding must be 'esri', 'whitebox' or 'taudem' (got ${String(directionEncoding)})`
+  );
+}
+
+/**
+ * WGSL `getFlowDirectionCode(word)`: the ESRI code of one word of a caller-supplied direction
+ * grid. The single decoder of every terrain contributor that takes `directionEncoding`. Zero and
+ * the two sentinels pass through; a word outside the encoding becomes `INVALID_DIRECTION_CODE`
+ * (nonzero, no receiver), which every consumer treats as it treats a multi-bit ESRI code.
+ */
+function getFlowDirectionCodeWGSL(directionEncoding: GPUTerrainFlowDirectionEncoding): string {
+  switch (directionEncoding) {
+    case 'esri':
+      return 'fn getFlowDirectionCode(word: u32) -> u32 { return word; }';
+    case 'whitebox':
+      // One step clockwise ahead of ESRI: north-east is bit 0, so rotate the eight bits right by one.
+      return `fn getFlowDirectionCode(word: u32) -> u32 {
+  if (word == 0u || word >= UNRESOLVED_DIRECTION) { return word; }
+  if (word > 128u || (word & (word - 1u)) != 0u) { return INVALID_DIRECTION_CODE; }
+  return select(word >> 1u, 128u, word == 1u);
+}`;
+    case 'taudem':
+      // Counter-clockwise from east, so direction index (east first, clockwise) = (9 - word) mod 8.
+      return `fn getFlowDirectionCode(word: u32) -> u32 {
+  if (word == 0u || word >= UNRESOLVED_DIRECTION) { return word; }
+  if (word > 8u) { return INVALID_DIRECTION_CODE; }
+  return 1u << ((9u - word) % 8u);
+}`;
+  }
+}
+
+/**
+ * WGSL constants and helpers shared by the D8 tracing kernels: `GRID_WIDTH`, `GRID_HEIGHT`,
+ * `NO_CELL`, `UNRESOLVED_DIRECTION`, `getFlowDirectionCode(word)` and `getFlowReceiver(cell, code)`.
+ *
+ * `getFlowReceiver` takes an ESRI code. A code has a receiver only when it is a single bit in
+ * `1..128` (ESRI D8: `1 << direction`, east first, clockwise) and the neighbor lies inside the
+ * grid. Terminal (0), invalid (`0xffffffff`), unresolved (`0xfffffffe`), multi-bit, and
+ * out-of-grid codes have no receiver; a path that stops at an unresolved cell is itself
+ * unresolved, which the callers report. A kernel that reads a caller-supplied direction grid
+ * passes each word through `getFlowDirectionCode` first, which turns `directionEncoding` into
+ * ESRI codes (the identity for `'esri'`). The helpers do not read the grid `settings`, so kernels
+ * that use them need no settings binding.
  *
  * @internal
  */
-export function getTerrainFlowTracingWGSL(width: number, height: number): string {
+export function getTerrainFlowTracingWGSL(
+  width: number,
+  height: number,
+  directionEncoding: GPUTerrainFlowDirectionEncoding = 'esri'
+): string {
   return /* wgsl */ `
 const GRID_WIDTH: u32 = ${width}u;
 const GRID_HEIGHT: u32 = ${height}u;
@@ -39,6 +122,10 @@ const NO_CELL: u32 = 0xffffffffu;
 // GPU_TERRAIN_FLOW_UNRESOLVED: a valid cell whose direction is unknown. It has no receiver but is
 // not a terminal cell, so consumers must not read it as an outlet or a sink.
 const UNRESOLVED_DIRECTION: u32 = 0xfffffffeu;
+// A direction word outside the contributor's encoding: nonzero and without a receiver.
+const INVALID_DIRECTION_CODE: u32 = 0x100u;
+
+${getFlowDirectionCodeWGSL(directionEncoding)}
 
 fn getFlowReceiver(cell: u32, code: u32) -> u32 {
   if (code == 0u || code > 128u || (code & (code - 1u)) != 0u) { return NO_CELL; }
@@ -117,9 +204,12 @@ export function createTerrainFlowPointerNodes<Parameters>(
     height: number;
     maxIterations: number;
     flowDirections: GraphDataView<'uint32'>;
+    /** Encoding of `flowDirections`. Defaults to `'esri'`. */
+    directionEncoding?: GPUTerrainFlowDirectionEncoding;
     pointer: GraphDataView<'uint32'>;
     stops: TerrainFlowStopRule;
     converged?: GraphDataView<'uint32'>;
+    iterationLimitReached?: GraphDataView<'uint32'>;
     iterationCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
@@ -132,7 +222,7 @@ export function createTerrainFlowPointerNodes<Parameters>(
     props.contributorId
   );
   const stopRule = getStopRuleSource(props.stops);
-  const tracing = getTerrainFlowTracingWGSL(props.width, props.height);
+  const tracing = getTerrainFlowTracingWGSL(props.width, props.height, props.directionEncoding);
   const initBindings: WGSLKernelBinding[] = [
     {name: 'flowDirections', view: props.flowDirections, type: 'u32', access: 'read'},
     ...(stopRule.binding ? [stopRule.binding] : []),
@@ -146,7 +236,7 @@ export function createTerrainFlowPointerNodes<Parameters>(
       bindings: initBindings,
       invocationCount: cellCount,
       declarations: `${tracing}\n${stopRule.declarations}`,
-      body: `let code = flowDirections[flowDirectionsOffset + index];
+      body: `let code = getFlowDirectionCode(flowDirections[flowDirectionsOffset + index]);
   var jumpTarget = index;
   if (!isStopCell(index, code)) {
     let receiver = getFlowReceiver(index, code);
@@ -203,7 +293,48 @@ export function createTerrainFlowPointerNodes<Parameters>(
       })
     );
   }
+  if (props.iterationLimitReached) {
+    nodes.push(
+      createTerrainIterationLimitNode(graph, {
+        id: `${props.id}-pointer-limit`,
+        operation: props.operation,
+        state,
+        iterationLimitReached: props.iterationLimitReached
+      })
+    );
+  }
   return nodes;
+}
+
+/**
+ * Publishes `iterationLimitReached`, one when the gated loop of `state` ran out of iterations
+ * before it converged. It sits beside `converged` and `iterationCount`. @internal
+ */
+export function createTerrainIterationLimitNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    state: RasterIterationState<Parameters>;
+    iterationLimitReached: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: 'iteration-limit',
+    bindings: [
+      {name: 'status', view: props.state.status, type: 'u32', access: 'read'},
+      {
+        name: 'iterationLimitReached',
+        view: props.iterationLimitReached,
+        type: 'u32',
+        access: 'read_write'
+      }
+    ],
+    invocationCount: 1,
+    body: 'iterationLimitReached[iterationLimitReachedOffset] = 1u - status[statusOffset + 3u];'
+  });
 }
 
 /** Throws unless `view` is a packed view of `format` with one value per cell. @internal */
@@ -214,7 +345,7 @@ export function validateTerrainTracingCellView(
   format: 'uint32' | 'float32',
   cellCount: number
 ): void {
-  validatePackedView(view, [format], `${id} ${name}`);
+  validateSinglePackedView(view, [format], `${id} ${name}`);
   if (view.length !== cellCount) {
     throw new Error(`${id} ${name} must contain one value per cell`);
   }
@@ -224,6 +355,8 @@ export function validateTerrainTracingCellView(
 export type TerrainFlowTracingStatus = {
   /** One row set to 1 when pointer jumping reached its fixpoint. */
   converged?: GraphDataView<'uint32'>;
+  /** One row set to 1 when the iteration budget ran out before pointer jumping converged. */
+  iterationLimitReached?: GraphDataView<'uint32'>;
   /** One row: gated pointer-jumping rounds executed. */
   iterationCount?: GraphDataView<'uint32'>;
 };
@@ -235,12 +368,13 @@ export function validateTerrainTracingStatus(
 ): void {
   for (const [name, view] of [
     ['converged', status?.converged],
+    ['iterationLimitReached', status?.iterationLimitReached],
     ['iterationCount', status?.iterationCount]
   ] as const) {
     if (!view) {
       continue;
     }
-    validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+    validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
     if (view.length !== 1) {
       throw new Error(`${id} output.status.${name} must contain one row`);
     }

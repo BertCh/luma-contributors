@@ -62,18 +62,57 @@ it('probit row passes take the row count as a pipeline override and no single in
   }
 });
 
-it('probit fit sums the likelihood with compensation and damps overshoot before flagging separation', () => {
+it('probit fit merges the likelihood pairwise and damps overshoot before flagging separation', () => {
   const source = getProbitKernels(40)
     .map(kernel => kernel.source)
     .join('\n');
-  // Compensated (Neumaier) merges of the log-likelihood and score tile sums.
-  expect(source).toContain('compensation');
+  // Pairwise merges of the log-likelihood and score tile sums. The former Neumaier compensation
+  // is folded to a plain sum by the shader compiler of the test GPU
+  // (math-review-tile-merge-sums.spec.ts), so no float compensation may come back.
+  expect(source).toContain('sumLevels');
+  expect(source).not.toContain('compensation');
+  // The likelihood, score and information go through the tail probabilities: no 1 - p of a
+  // probability floored at 1e-7, which gave a row beyond float32 rounding a flat likelihood.
+  expect(source).toContain('log(tailProbability(signedLinear))');
+  expect(source).not.toContain('log(1.0 - fitted)');
+  // Only rows on the wrong side of the fit count towards the bound of the line search.
+  expect(source).toContain('signedLinear < 0.0');
+  // Separation is not decided by a threshold on the linear predictor: a few rows separated by
+  // an indicator never pass it before the fit stops, and a legitimate unfinished fit does
+  // (frc-regression-03 and -05 of the fix review; the behaviour is pinned on the GPU by
+  // math-review-probit-bound.spec.ts). The flag of a separating direction decides instead.
+  expect(source).not.toContain('S_LARGEST) > 8.0');
+  expect(source).not.toContain('largestLinear > 8.0');
+  expect(source).toContain('S_SEPARATING');
+  // A certificate has no tolerance (frc2-regression-03): the moves of a row are flags decided
+  // against the float32 evaluation error bound, or exact comparisons with a threshold; the
+  // ratios that accepted moves towards the wrong side up to 1e-3 are gone.
+  expect(source).not.toContain('wrongSideMove');
+  expect(source).not.toContain('rightSideMove');
+  expect(source).toContain('signedMove < -errorBound');
+  expect(source).toContain('value > thresholdValue');
+  expect(source).toContain('S_UNDECIDED');
+  // A step shortened by the bound, not by the likelihood, cannot report convergence.
+  expect(source).toContain('limitedByBound');
   // The line search rejects unbounded trial steps by halving, instead of aborting on the first.
   expect(source).toContain('lastLargestLinear <= 12.0');
   expect(source).not.toContain('abs(linear) > 12.0');
   // Absolute 1e-6 acceptance tolerance is replaced by a likelihood-relative one.
   expect(source).not.toContain('current - 1e-6');
   expect(source).toContain('noiseScale * (abs(current) + 1.0)');
-  // Separation is flagged only for unconverged fits pinned against the bound.
-  expect(source).toContain('code != 0u && largestLinear > 8.0');
+});
+
+it('probit predictions, marginal effects and diagnostic residuals use the centered design, not the published raw coefficients', () => {
+  // frc2-regression-04: the raw intercept of a predictor with a large offset is a float32
+  // difference of large numbers; a linear predictor rebuilt from it loses the fit.
+  const kernels = getProbitKernels(40);
+  for (const suffix of ['-predict', '-effects-tiles']) {
+    const kernel = kernels.find(candidate => candidate.id.endsWith(suffix))!;
+    expect(kernel.source, kernel.id).toContain('getDesign(');
+    expect(kernel.source, kernel.id).toContain('S_ESTIMATE');
+    expect(kernel.source, kernel.id).not.toContain('coefficients[');
+  }
+  // The raw slopes still scale the mean density into the published marginal effects.
+  const effects = kernels.find(candidate => candidate.id.endsWith('-effects'))!;
+  expect(effects.source).toContain('coefficients[coefficientsOffset + index + 1u]');
 });

@@ -23,10 +23,11 @@ for (const fixture of rectangleFixtures)
           const output = rig.output('output', capacity, 'float32x2');
           const offsets = rig.output('offsets', lineCapacity + 1, 'uint32');
           const owners = rig.output('owners', lineCapacity, 'uint32');
-          const count = rig.output('count', 1, 'uint32');
-          const required = rig.output('required', 1, 'uint32');
-          const overflow = rig.output('overflow', 1, 'uint32');
           const lineCount = rig.output('line-count', 1, 'uint32');
+          const requiredLineCount = rig.output('required-line-count', 1, 'uint32');
+          const overflow = rig.output('overflow', 1, 'uint32');
+          const vertexCount = rig.output('vertex-count', 1, 'uint32');
+          const requiredVertexCount = rig.output('required-vertex-count', 1, 'uint32');
           const parameters = rig.input('parameters', [0, 0, 0, 0], 'float32');
           rig.graph.add(
             new GPURectangleClip({
@@ -39,10 +40,11 @@ for (const fixture of rectangleFixtures)
                 lineOffsets: offsets.view,
                 sourceLineIndices: owners.view,
                 status: {
-                  count: count.view,
-                  requiredCount: required.view,
+                  count: lineCount.view,
+                  requiredCount: requiredLineCount.view,
                   overflow: overflow.view,
-                  lineCount: lineCount.view
+                  vertexCount: vertexCount.view,
+                  requiredVertexCount: requiredVertexCount.view
                 }
               }
             })
@@ -70,14 +72,21 @@ for (const fixture of rectangleFixtures)
                   absolute
                 );
               compare(
-                'count/required/overflow/lineCount',
+                'vertexCount/requiredVertexCount/overflow/count/requiredCount',
                 [
-                  ...(await readUint32(count.buffer, 1)),
-                  ...(await readUint32(required.buffer, 1)),
+                  ...(await readUint32(vertexCount.buffer, 1)),
+                  ...(await readUint32(requiredVertexCount.buffer, 1)),
                   ...(await readUint32(overflow.buffer, 1)),
-                  ...(await readUint32(lineCount.buffer, 1))
+                  ...(await readUint32(lineCount.buffer, 1)),
+                  ...(await readUint32(requiredLineCount.buffer, 1))
                 ],
-                [used, total, Number(total > capacity), frame.sourceLineIndices.length]
+                [
+                  used,
+                  total,
+                  Number(total > capacity),
+                  frame.sourceLineIndices.length,
+                  frame.sourceLineIndices.length
+                ]
               );
               compare(
                 'every clipped coordinate',

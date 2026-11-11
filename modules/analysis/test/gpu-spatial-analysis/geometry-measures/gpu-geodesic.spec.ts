@@ -387,3 +387,29 @@ it('GPUGeodesicPairs honors a custom ellipsoid in meters and kilometers', async 
     }
   }
 });
+
+// Math correctness review 2026-11-10, geometry-measures-08. An equatorial geodesic shorter than
+// (1 - f) pi radians follows the equator, so its WGS84 length is exactly the semi-major axis times
+// the longitude difference (hand-checkable: 0.0547332763671875 degrees is 6092.880 m). Subtracting
+// the two longitudes before wrapping, as the Vincenty kernel used to, loses 1.5e-5 degrees (1.7 m).
+it('GPUGeodesicPairs WGS84 keeps a short separation across the antimeridian', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const origins = new Float32Array([179.94722, 0, -179.99805, 0]);
+  const targets = new Float32Array([-179.99805, 0, 179.94722, 0]);
+  const fixture = createPairsFixture(device, 'wgs84', 2);
+  try {
+    const actual = await fixture.run(origins, targets);
+    const separationDegrees = 360 - origins[0] + targets[0];
+    const expected = 6378137 * ((separationDegrees * Math.PI) / 180);
+    expect(separationDegrees).toBeCloseTo(0.05473, 5);
+    for (const row of [0, 1]) {
+      expect(actual.converged[row]).toBe(1);
+      expect(Math.abs(actual.distances[row] - expected), `row ${row}`).toBeLessThan(0.02);
+    }
+    expect(getBearingError(actual.initialBearings[0], 90)).toBeLessThan(1e-3);
+    expect(getBearingError(actual.initialBearings[1], -90)).toBeLessThan(1e-3);
+  } finally {
+    fixture.destroy();
+  }
+});

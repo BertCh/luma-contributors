@@ -24,7 +24,7 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -75,7 +75,8 @@ export type GPUSnapRoundedSegmentPort = GPUNodedSegmentPort & {
   latticeEndpoints: GraphDataView<'float32x4'>;
   /**
    * Four rows `(originX, originY, cell, 0)`: the world position of lattice point `(i, j)` is
-   * `(originX + i * cell, originY + j * cell)`. `cell` is a power of two.
+   * `(originX + i * cell, originY + j * cell)`, exactly a `float32` value for every lattice point
+   * inside the bounds of the input. `cell` is a power of two, the step in effect (see `gridSize`).
    */
   lattice: GraphDataView<'float32'>;
 };
@@ -97,8 +98,14 @@ export type GPUSnapRoundedNodingProps = {
   };
   /**
    * Snap grid, finite and positive, in coordinate units. The lattice step is the smallest power of
-   * two that is at least `gridSize` and at least `2^-22` of the extent of the input, so a
-   * power-of-two `gridSize` reproduces GEOS fixed precision (`grid_size`) exactly.
+   * two that is at least `gridSize`, at least `2^-22` of the extent of the input and at least
+   * `2^-24` of its largest coordinate magnitude (one `float32` step there), so a power-of-two
+   * `gridSize` reproduces GEOS fixed precision (`grid_size`) exactly whenever `float32` can store
+   * that grid at the coordinates of the data. The last bound matters only for data farther from
+   * zero than about four times its extent: there the grid asked for cannot be stored (projected
+   * coordinates of 4,000,000 have a `float32` step of 0.25 to 0.5), and the lattice is the
+   * `float32` grid of the largest coordinate. `output.lattice` reports the step in effect. Work in
+   * coordinates relative to a local origin to keep a finer grid.
    */
   gridSize: number;
   /**
@@ -189,7 +196,7 @@ export class GPUSnapRoundedNoding implements GPUCommandNodeProducer {
     if (lines.kind !== 'lines') {
       throw new Error(`${id} lines must be linestring geometry`);
     }
-    validatePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
+    validateSinglePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
     validatePackedUint32View(lines.lineOffsets, `${id} lines.lineOffsets`);
     if (lines.lineOffsets.length < 2 || lines.positions.length < 1) {
       throw new Error(`${id} lines require at least one line and one vertex`);
@@ -206,12 +213,16 @@ export class GPUSnapRoundedNoding implements GPUCommandNodeProducer {
       validatePowerOfTwo(id, 'leafCapacity', props.leafCapacity);
     }
     const capacity = output.endpoints.length;
-    validatePackedView(output.endpoints, ['float32x4'], `${id} output.endpoints`);
-    validatePackedView(output.latticeEndpoints, ['float32x4'], `${id} output.latticeEndpoints`);
+    validateSinglePackedView(output.endpoints, ['float32x4'], `${id} output.endpoints`);
+    validateSinglePackedView(
+      output.latticeEndpoints,
+      ['float32x4'],
+      `${id} output.latticeEndpoints`
+    );
     if (output.latticeEndpoints.length !== capacity) {
       throw new Error(`${id} output.latticeEndpoints length must equal output.endpoints length`);
     }
-    validatePackedView(output.lattice, ['float32'], `${id} output.lattice`);
+    validateSinglePackedView(output.lattice, ['float32'], `${id} output.lattice`);
     if (output.lattice.length !== 4) {
       throw new Error(`${id} output.lattice must contain four rows`);
     }
@@ -229,7 +240,7 @@ export class GPUSnapRoundedNoding implements GPUCommandNodeProducer {
       ['sourceStartParameters', output.sourceStartParameters],
       ['sourceEndParameters', output.sourceEndParameters]
     ] as const) {
-      validatePackedView(view, ['float32'], `${id} output.${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
       if (view.length !== capacity) {
         throw new Error(`${id} output.${name} length must equal output.endpoints length`);
       }
@@ -302,6 +313,18 @@ export class GPUSnapRoundedNoding implements GPUCommandNodeProducer {
       type: 'f32',
       access: 'read'
     };
+    const lineOffsetsBinding: WGSLKernelBinding = {
+      name: 'lineOffsets',
+      view: lines.lineOffsets,
+      type: 'u32',
+      access: 'read'
+    };
+    // Only rows inside a line's range are vertices. Rows before the first offset or after the last
+    // are padding whose contents nothing promises (unwritten capacity, a reused transient), so the
+    // lattice frame and the non-finite check must not see them.
+    const lineRowWGSL = `fn isLineRow(row: u32) -> bool {
+  return row >= lineOffsets[lineOffsetsOffset] && row < min(lineOffsets[lineOffsetsOffset + ${lineCount}u], ${vertexCount}u);
+}`;
 
     // State words: [0] invalid input (non-finite vertex or unrepresentable range), [1] number of
     // usable (finite, non-collapsed) rounded segments.
@@ -324,11 +347,12 @@ export class GPUSnapRoundedNoding implements GPUCommandNodeProducer {
         id,
         operation: OPERATION,
         variant: 'bounds',
-        bindings: [positionsBinding],
+        bindings: [positionsBinding, lineOffsetsBinding],
         declarations: `${IS_FINITE_BITS_WGSL}
+${lineRowWGSL}
 fn readItem(row: u32) -> vec4f {
   let point = vec2f(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]);
-  let valid = isFiniteBits(point.x) && isFiniteBits(point.y);
+  let valid = isLineRow(row) && isFiniteBits(point.x) && isFiniteBits(point.y);
   return vec4f(point, select(0.0, 1.0, valid), 0.0);
 }`,
         itemCount: vertexCount,
@@ -362,8 +386,20 @@ fn ceilPowerOfTwo(value: f32) -> f32 {
   var usable = isFiniteBits(extent);
   let extentPower = ceilPowerOfTwo(select(0.0, extent, usable));
   usable = usable && isFiniteBits(extentPower);
-  // Both operands are powers of two: so is the larger one (2^-22 of the extent, or the grid).
-  let cell = select(1.0, max(GRID_CELL, extentPower * 2.384185791015625e-7), usable);
+  // The cell is also at least 2^-24 of the largest coordinate magnitude (one f32 step there, or
+  // of the binade below when the magnitude is a power of two), so every lattice point of the data
+  // is a multiple of the cell below 2^24 and therefore an f32 value. Sized from the extent alone,
+  // a lattice far from zero is finer than f32: distinct lattice vertices were then written as one
+  // world vertex and the output held zero-area rings.
+  let magnitude = max(max(abs(minimum.x), abs(minimum.y)), max(abs(maximum.x), abs(maximum.y)));
+  // Half the magnitude, so its power of two stays finite up to the largest f32.
+  let halfMagnitudePower = ceilPowerOfTwo(select(0.0, 0.5 * magnitude, usable));
+  // All operands are powers of two: so is the largest (the grid, 2^-22 of the extent, or 2^-24
+  // of the magnitude, written as 2^-23 of its half).
+  let cell = select(
+    1.0,
+    max(max(GRID_CELL, extentPower * 2.384185791015625e-7), halfMagnitudePower * 1.1920928955078125e-7),
+    usable);
   let scaled = minimum / cell;
   usable = usable && isFiniteBits(scaled.x) && isFiniteBits(scaled.y);
   // The origin is a multiple of the cell, so the origin (and every lattice offset) is exact.
@@ -385,6 +421,7 @@ fn ceilPowerOfTwo(value: f32) -> f32 {
         variant: 'snap-vertices',
         bindings: [
           positionsBinding,
+          lineOffsetsBinding,
           {name: 'lattice', view: output.lattice, type: 'f32', access: 'read'},
           {name: 'latPos', view: latticePositions, type: 'f32', access: 'read_write'},
           {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'}
@@ -392,6 +429,7 @@ fn ceilPowerOfTwo(value: f32) -> f32 {
         invocationCount: vertexCount,
         declarations: `${IS_FINITE_BITS_WGSL}
 ${GET_NAN_WGSL}
+${lineRowWGSL}
 const MAXIMUM_COORDINATE: f32 = ${LATTICE_MAXIMUM_COORDINATE}.0;
 // floor((value - origin) / cell + 1/2) without a rounding step: the scaled value, its floor and
 // the origin multiple are exact, and only the fraction decides the half.
@@ -404,7 +442,9 @@ fn snapAxis(value: f32, originMultiple: f32, cell: f32) -> f32 {
         body: `let cell = lattice[latticeOffset + 2u];
   let point = vec2f(positions[positionsOffset + index * 2u], positions[positionsOffset + index * 2u + 1u]);
   var snapped = vec2f(getNaN());
-  if (isFiniteBits(point.x) && isFiniteBits(point.y)) {
+  // A padding row (outside every line) stays NaN: no segment uses it, and it is no invalid input.
+  let lineRow = isLineRow(index);
+  if (lineRow && isFiniteBits(point.x) && isFiniteBits(point.y)) {
     let x = snapAxis(point.x, lattice[latticeOffset] / cell, cell);
     let y = snapAxis(point.y, lattice[latticeOffset + 1u] / cell, cell);
     if (isFiniteBits(x) && isFiniteBits(y) && x >= 0.0 && y >= 0.0 && x <= MAXIMUM_COORDINATE && y <= MAXIMUM_COORDINATE) {
@@ -412,7 +452,7 @@ fn snapAxis(value: f32, originMultiple: f32, cell: f32) -> f32 {
     } else {
       atomicOr(&state[stateOffset], 1u);
     }
-  } else {
+  } else if (lineRow) {
     atomicOr(&state[stateOffset], 1u);
   }
   latPos[latPosOffset + index * 2u] = snapped.x;

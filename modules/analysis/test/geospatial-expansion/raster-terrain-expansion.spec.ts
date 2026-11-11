@@ -95,7 +95,7 @@ it('raster gap fill preserves donors, limits search and exposes provenance', asy
         values: values.view,
         validity: validity.view,
         filled: filled.view,
-        unresolvedCount: unresolvedCount.view
+        status: {invalidCount: unresolvedCount.view}
       }
     })
   );
@@ -238,10 +238,21 @@ it('alpha hull retains square boundary and constrained Delaunay preserves polygo
 
 import {
   GPURasterFractionalCoverage,
-  GPURasterFractionalZonalStatistics
+  GPURasterFractionalZonalStatistics,
+  getGPURasterFractionalCoverageParameterValues
 } from '../../src/raster-analysis/gpu-raster-fractional-coverage';
 import {GPURasterReprojection} from '../../src/raster-analysis/gpu-raster-reprojection';
-import {GPURasterWalkingCost} from '../../src/raster-analysis/gpu-raster-walking-cost';
+import {
+  GPURasterWalkingCost,
+  getGPURasterWalkingCostParameterValues,
+  type GPURasterWalkingCostModel
+} from '../../src/raster-analysis/gpu-raster-walking-cost';
+
+const GRASS_MODEL: GPURasterWalkingCostModel = {
+  kind: 'grass',
+  coefficients: [1, 2, -1, -1],
+  downhillSlopeThreshold: -0.5
+};
 import {GPURasterWatershedSegmentation} from '../../src/raster-analysis/gpu-raster-watershed-segmentation';
 import {
   GPURasterSkeleton,
@@ -280,6 +291,10 @@ it('fractional coverage preserves polygon area and intensive/extensive quantity 
         polygonOffsets: input([0, 1], 'uint32'),
         ringOffsets: input([0, 4], 'uint32')
       },
+      parameters: input(
+        Array.from(getGPURasterFractionalCoverageParameterValues(grid(2, 1))),
+        'float32'
+      ),
       output: coverageViews
     })
   );
@@ -365,7 +380,11 @@ it('walking cost treats uphill/downhill as directed edges', async () => {
         elevation,
         friction,
         sources: input(source === 0 ? [1, 0] : [0, 1], 'uint32'),
-        model: {kind: 'grass', coefficients: [1, 2, -1, -1], downhillSlopeThreshold: -0.5},
+        parameters: input(
+          Array.from(getGPURasterWalkingCostParameterValues({model: GRASS_MODEL}, grid(2, 1))),
+          'float32'
+        ),
+        model: GRASS_MODEL,
         maximumIterations: 3,
         output: {costs: costs.view, validity: validity.view, status: {converged: converged.view}}
       })
@@ -502,6 +521,8 @@ it('raster and terrain expansion agrees with SciPy, scikit-image and NetworkX re
       grid: grid(3, 3),
       marker: input(reference.reconstruction.marker, 'float32'),
       mask: input(reference.reconstruction.mask, 'float32'),
+      // The committed scikit-image fixture was generated with the cross footprint.
+      connectivity: 4,
       maximumIterations: 12,
       output: {
         values: reconstructed.view,
@@ -566,6 +587,10 @@ it('Shapely fractional intersections preserve holes and required capacity eviden
           polygonOffsets: input([0, 2], 'uint32'),
           ringOffsets: input(reference.fractional.ringOffsets, 'uint32')
         },
+        parameters: input(
+          Array.from(getGPURasterFractionalCoverageParameterValues(grid(3, 3))),
+          'float32'
+        ),
         output: {
           zoneIds: zoneIds.view,
           cellIds: cellIds.view,
@@ -742,6 +767,10 @@ it('walking cost publishes partial costs with converged = 0 when the iteration l
       elevation,
       friction,
       sources,
+      parameters: input(
+        Array.from(getGPURasterWalkingCostParameterValues({}, grid(6, 1))),
+        'float32'
+      ),
       maximumIterations,
       output: {
         costs: result.costs.view,
@@ -830,5 +859,239 @@ it('skeleton and fill holes publish their current values when the iteration limi
   // Corridor cells beside the border are reached (not holes); the middle one is not reached.
   expect(filled[11 + 1]).toBe(0);
   expect(filled[11 + 5]).toBe(1);
+  destroy();
+});
+
+it('reconstruction spreads through corner neighbours by default, as scikit-image does (raster-fields-08)', async () => {
+  const {graph, input, output, run} = await setup();
+  // A diagonal ridge of height 5 in the mask and a marker on its first cell. The ridge cells touch
+  // only at corners. With the 3 x 3 square (the default of skimage.morphology.reconstruction and
+  // of the published GPURasterDilation) the marker floods the whole ridge; with the cross it
+  // stays where it is.
+  const mask = [5, 0, 0, 0, 5, 0, 0, 0, 5];
+  const marker = [5, 0, 0, 0, 0, 0, 0, 0, 0];
+  const results = (['default', 8, 4] as const).map(connectivity => {
+    const values = output(9, 'float32'),
+      validity = output(9, 'uint32'),
+      converged = output(1, 'uint32');
+    graph.add(
+      new GPURasterReconstruction({
+        id: `reconstruction-${connectivity}`,
+        grid: grid(3, 3),
+        marker: input(marker, 'float32'),
+        mask: input(mask, 'float32'),
+        connectivity: connectivity === 'default' ? undefined : connectivity,
+        maximumIterations: 8,
+        output: {values: values.view, validity: validity.view, status: {converged: converged.view}}
+      })
+    );
+    return {values, converged};
+  });
+  const destroy = run();
+  const [byDefault, square, cross] = results;
+  expect(Array.from(await readFloat32(byDefault.values.buffer, 9))).toEqual(mask);
+  expect(Array.from(await readFloat32(square.values.buffer, 9))).toEqual(mask);
+  expect(Array.from(await readFloat32(cross.values.buffer, 9))).toEqual(marker);
+  for (const result of results) {
+    expect(Array.from(await readUint32(result.converged.buffer, 1))).toEqual([1]);
+  }
+  destroy();
+});
+
+it('hole filling keeps a 4-connected background by default (scipy.ndimage.binary_fill_holes)', async () => {
+  const {graph, input, output, run} = await setup();
+  // Five inner background cells that touch each other and the four background corners only
+  // diagonally:
+  //   0 1 1 1 0
+  //   1 0 1 0 1
+  //   1 1 0 1 1
+  //   1 0 1 0 1
+  //   0 1 1 1 0
+  // With a 4-connected background none of the inner cells reaches the boundary, so all five are
+  // holes (as binary_fill_holes reports); with 8 they all leak out through the corners.
+  const ring = [0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0];
+  const filled = [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0];
+  const results = (['default', 4, 8] as const).map(connectivity => {
+    const values = output(25, 'uint32'),
+      converged = output(1, 'uint32');
+    graph.add(
+      new GPURasterFillHoles({
+        id: `fill-holes-${connectivity}`,
+        grid: grid(5, 5),
+        input: input(ring, 'uint32'),
+        connectivity: connectivity === 'default' ? undefined : connectivity,
+        maximumIterations: 12,
+        output: {values: values.view, status: {converged: converged.view}}
+      })
+    );
+    return values;
+  });
+  const destroy = run();
+  const [byDefault, cross, square] = results;
+  expect(Array.from(await readUint32(byDefault.buffer, 25))).toEqual(filled);
+  expect(Array.from(await readUint32(cross.buffer, 25))).toEqual(filled);
+  expect(Array.from(await readUint32(square.buffer, 25))).toEqual(ring);
+  destroy();
+});
+
+it('FIFO watershed orders the flood by the path maximum, not by the cell value (documented rule)', async () => {
+  const {graph, input, output, run} = await setup();
+  // Seven cells 5, 2, 2, 2, 2, 2, 5 with markers on the two ends. Every cell is reached over a
+  // path whose highest point is its marker (5), so all priorities tie and the two fronts advance
+  // in discovery order, one cell each in turn: marker 1 takes cells 1, 2, 3 and marker 2 takes
+  // cells 5, 4. A flood ordered by the cell's own value (the scikit-image queue) would let the
+  // first marker run through all five cells of value 2 before the second marker is popped,
+  // giving 1 1 1 1 1 1 2. This spec pins the documented rule; it is not a scikit-image fixture.
+  const labels = output(7, 'uint32'),
+    converged = output(1, 'uint32');
+  graph.add(
+    new GPURasterWatershedSegmentation({
+      id: 'path-maximum-order',
+      grid: grid(7, 1),
+      input: {
+        id: 'surface',
+        format: 'float32',
+        storage: {kind: 'buffer', values: input([5, 2, 2, 2, 2, 2, 5], 'float32')}
+      },
+      markers: input([1, 0, 0, 0, 0, 0, 2], 'uint32'),
+      output: {labels: labels.view, status: {converged: converged.view}}
+    })
+  );
+  const destroy = run();
+  expect(Array.from(await readUint32(labels.buffer, 7))).toEqual([1, 1, 1, 1, 2, 2, 2]);
+  expect(Array.from(await readUint32(converged.buffer, 1))).toEqual([1]);
+  destroy();
+});
+
+it('Tobler walking cost reproduces the published speeds: 6 km/h at -5 percent, 5.037 km/h on the flat', async () => {
+  const {graph, input, output, run} = await setup();
+  // Tobler (1993): W = 6 exp(-3.5 |S + 0.05|) km/h, S the slope in the direction of travel.
+  // Three cells 1000 m apart at elevations 0, 0, -50 m, no friction.
+  // From cell 0: 1000 m on the flat at 6 exp(-0.175) = 5.0366 km/h is 714.75 s, then 1000 m
+  // down a 5 percent grade at exactly 6 km/h is 600 s.
+  // From cell 2: 1000 m up a 5 percent grade at 6 exp(-0.35) = 4.2281 km/h is 851.44 s, then
+  // the flat kilometre.
+  const flatSeconds = 3600 / (6 * Math.exp(-0.175));
+  const downhillSeconds = 600;
+  const uphillSeconds = 3600 / (6 * Math.exp(-0.35));
+  const kilometreGrid = {...grid(3, 1), affine: [1000, 0, 0, 0, 1000, 0] as const};
+  const elevation = {
+    id: 'tobler-elevation',
+    format: 'float32' as const,
+    storage: {kind: 'buffer' as const, values: input([0, 0, -50], 'float32')}
+  };
+  const friction = {
+    id: 'tobler-friction',
+    format: 'float32' as const,
+    storage: {kind: 'buffer' as const, values: input([0, 0, 0], 'float32')}
+  };
+  const results = [];
+  for (const sources of [
+    [1, 0, 0],
+    [0, 0, 1]
+  ]) {
+    const costs = output(3, 'float32'),
+      validity = output(3, 'uint32'),
+      converged = output(1, 'uint32');
+    results.push({costs, converged});
+    graph.add(
+      new GPURasterWalkingCost({
+        id: `tobler-${results.length}`,
+        grid: kilometreGrid,
+        elevation,
+        friction,
+        sources: input(sources, 'uint32'),
+        parameters: input(
+          Array.from(getGPURasterWalkingCostParameterValues({}, kilometreGrid)),
+          'float32'
+        ),
+        maximumIterations: 4,
+        output: {costs: costs.view, validity: validity.view, status: {converged: converged.view}}
+      })
+    );
+  }
+  const destroy = run();
+  const fromWest = await readFloat32(results[0].costs.buffer, 3);
+  const fromEast = await readFloat32(results[1].costs.buffer, 3);
+  expect(fromWest[0]).toBe(0);
+  expect(fromWest[1]).toBeCloseTo(flatSeconds, 2);
+  expect(fromWest[2]).toBeCloseTo(flatSeconds + downhillSeconds, 2);
+  expect(fromEast[2]).toBe(0);
+  expect(fromEast[1]).toBeCloseTo(uphillSeconds, 2);
+  expect(fromEast[0]).toBeCloseTo(uphillSeconds + flatSeconds, 2);
+  // The numbers themselves, so a change of the constants cannot hide behind the expressions.
+  expect(flatSeconds).toBeCloseTo(714.75, 2);
+  expect(uphillSeconds).toBeCloseTo(851.44, 2);
+  for (const result of results) {
+    expect(Array.from(await readUint32(result.converged.buffer, 1))).toEqual([1]);
+  }
+  destroy();
+});
+
+it('Zhang-Suen thinning matches an independent implementation of the 1984 paper on small shapes', async () => {
+  const {graph, input, output, run} = await setup();
+  // Expected skeletons come from a pure Python implementation written from the conditions of
+  // Zhang and Suen (1984): 2 <= B <= 6, A = 1, P2 P4 P6 = 0 and P4 P6 P8 = 0 in the first
+  // sub-iteration, P2 P4 P8 = 0 and P2 P6 P8 = 0 in the second, both as parallel passes.
+  const parse = (rows: string[]) =>
+    rows.flatMap(row => [...row].map(cell => (cell === '#' ? 1 : 0)));
+  const cases = [
+    {
+      // An isolated 2 x 2 block is deleted completely. This is the original algorithm, not a
+      // defect of the kernel: each pixel has B = 3 and A = 1, and each sub-iteration removes two.
+      name: 'block',
+      width: 4,
+      height: 4,
+      shape: ['....', '.##.', '.##.', '....'],
+      skeleton: ['....', '....', '....', '....']
+    },
+    {
+      // A 3 x 7 bar thins to four pixels of its middle row (the algorithm erodes the ends, and
+      // not symmetrically).
+      name: 'bar',
+      width: 9,
+      height: 5,
+      shape: ['.........', '.#######.', '.#######.', '.#######.', '.........'],
+      skeleton: ['.........', '.........', '..####...', '.........', '.........']
+    },
+    {
+      // A line that is already one pixel thick is a fixed point.
+      name: 'line',
+      width: 7,
+      height: 3,
+      shape: ['.......', '.#####.', '.......'],
+      skeleton: ['.......', '.#####.', '.......']
+    },
+    {
+      // A T: the two-pixel-thick bar is eaten and the stem survives, extended through the bar.
+      name: 'letter',
+      width: 7,
+      height: 7,
+      shape: ['.......', '.#####.', '.#####.', '...#...', '...#...', '...#...', '.......'],
+      skeleton: ['.......', '...#...', '...#...', '...#...', '...#...', '...#...', '.......']
+    }
+  ];
+  const results = cases.map(entry => {
+    const count = entry.width * entry.height;
+    const skeleton = output(count, 'uint32'),
+      converged = output(1, 'uint32');
+    graph.add(
+      new GPURasterSkeleton({
+        id: `skeleton-${entry.name}`,
+        grid: grid(entry.width, entry.height),
+        input: input(parse(entry.shape), 'uint32'),
+        maximumIterations: 8,
+        output: {skeleton: skeleton.view, status: {converged: converged.view}}
+      })
+    );
+    return {entry, count, skeleton, converged};
+  });
+  const destroy = run();
+  for (const {entry, count, skeleton, converged} of results) {
+    expect(Array.from(await readUint32(skeleton.buffer, count)), entry.name).toEqual(
+      parse(entry.skeleton)
+    );
+    expect(Array.from(await readUint32(converged.buffer, 1)), entry.name).toEqual([1]);
+  }
   destroy();
 });

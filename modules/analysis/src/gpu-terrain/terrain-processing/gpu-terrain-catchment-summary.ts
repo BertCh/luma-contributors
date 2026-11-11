@@ -28,7 +28,15 @@ import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
+import {
+  FIXED_POINT_WGSL,
+  getFixedPointHeadroomBits
+} from '../../analysis-core/kernels/fixed-point-accumulator';
+import {
+  getTerrainFlowTracingWGSL,
+  validateTerrainFlowDirectionEncoding,
+  type GPUTerrainFlowDirectionEncoding
+} from '../hydrology/terrain-flow-tracing';
 import {
   checkTerrainViews,
   checkTerrainGraph,
@@ -60,9 +68,22 @@ export type GPUTerrainCatchmentSummaryProps = {
   /** Dense zero-based basin IDs; 0xffffffff excludes a cell. */
   basinIds: GraphDataView<'uint32'>;
   basinCount: number;
-  /** Resolved boolean stream mask (0/1); existing flow unresolved sentinels are excluded. */
+  /**
+   * Stream mask: a nonzero word is a stream cell (so a mask of Strahler orders works), 0 is not.
+   * The unresolved sentinels `0xffffffff` and `0xfffffffe` are not stream cells: they add no
+   * stream length and their profile status is 2.
+   */
   streams: GraphDataView<'uint32'>;
+  /**
+   * D8 codes, one per cell, ESRI by default (1 east, clockwise powers of two; 0 terminal). A
+   * code without a receiver ends the stream there.
+   */
   flowDirections: GraphDataView<'uint32'>;
+  /**
+   * Numbering of `flowDirections`: `'esri'` (default), `'whitebox'` (the WhiteboxTools default
+   * pointer) or `'taudem'`, see `GPUTerrainFlowDirectionEncoding`. Compile-time.
+   */
+  directionEncoding?: GPUTerrainFlowDirectionEncoding;
   histogramBins: number;
   maximumSteps?: number;
   output: {
@@ -77,13 +98,23 @@ export type GPUTerrainCatchmentSummaryProps = {
   };
 };
 
-/** Composes sorted basin reductions and pointer-jumped stream profiles. Each edge belongs to its source cell's basin. */
+/**
+ * Composes sorted basin reductions and pointer-jumped stream profiles. Each edge belongs to its
+ * source cell's basin.
+ *
+ * The per-basin sums (elevation for the mean, ground area and hypsometry areas under
+ * `cellSizeMode`, stream length) are fixed-point sums (`fixed-point-accumulator.ts`): every term
+ * is added as an integer in units set by the largest term of the basin, so the sum does not depend
+ * on the number of cells and the result is the float32 nearest the exact sum of the float32 terms.
+ * A serial float32 sum would be 0.8 % off for a million cells at a constant 2000.
+ */
 export class GPUTerrainCatchmentSummary implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUTerrainCatchmentSummaryProps) {
     this.id = props.id ?? 'terrain-catchment-summary';
     const count = validateRasterGrid(this.id, props.grid);
     validateRasterCellSizeMode(this.id, props.cellSizeMode);
+    validateTerrainFlowDirectionEncoding(this.id, props.directionEncoding);
     validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);
     validateCapacity(this.id, 'basinCount', props.basinCount);
     validateCapacity(this.id, 'histogramBins', props.histogramBins);
@@ -147,9 +178,21 @@ export class GPUTerrainCatchmentSummary implements GPUCommandNodeProducer {
         props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3]
       )
     );
-    const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}
+    // A stream cell is any nonzero word except the two unresolved sentinels, the test of stream
+    // order, stream network, flow distance and height above drainage.
+    const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height, props.directionEncoding)}\n${TERRAIN_FINITE_WGSL}
 ${getTerrainGroundMeasureWGSL(props.grid, props.cellSizeMode)}
-fn edgeLength(cell: u32, receiver: u32) -> f32 { return getGroundEdgeLength(cell, receiver); }`;
+fn edgeLength(cell: u32, receiver: u32) -> f32 { return getGroundEdgeLength(cell, receiver); }
+fn isStreamWord(word: u32) -> bool { return word != 0u && word < UNRESOLVED_DIRECTION; }
+fn getCellReceiver(cell: u32) -> u32 { return getFlowReceiver(cell, getFlowDirectionCode(directions[directionsOffset + cell])); }
+// Length of the stream edge leaving 'cell', 0 when the cell or its receiver is not a stream cell.
+fn getStreamEdgeLength(cell: u32) -> f32 {
+ let receiver = getCellReceiver(cell);
+ if (isStreamWord(streams[streamsOffset + cell]) && receiver != NO_CELL && isStreamWord(streams[streamsOffset + receiver]) && isFiniteValue(elevation[elevationOffset + receiver])) { return edgeLength(cell, receiver); }
+ return 0.0;
+}`;
+    // At most one term per cell enters any sum of a basin.
+    const headroomBits = getFixedPointHeadroomBits(count);
     const inputs = [
       terrainBinding('elevation', elevation),
       terrainBinding('basins', props.basinIds),
@@ -177,7 +220,7 @@ fn edgeLength(cell: u32, receiver: u32) -> f32 { return getGroundEdgeLength(cell
           terrainBinding('keys', keys, 'read_write'),
           terrainBinding('cells', cells, 'read_write')
         ],
-        body: `let basin = basins[basinsOffset + index]; keys[keysOffset + index] = select(0xffffffffu, basin, basin < ${props.basinCount}u && finite(elevation[elevationOffset + index])); cells[cellsOffset + index] = index;`
+        body: `let basin = basins[basinsOffset + index]; keys[keysOffset + index] = select(0xffffffffu, basin, basin < ${props.basinCount}u && isFiniteValue(elevation[elevationOffset + index])); cells[cellsOffset + index] = index;`
       }),
       ...new GPUSort({
         id: `${id}-basin-sort`,
@@ -209,7 +252,7 @@ if (index + 1u == ${count}u || keys[keysOffset + index + 1u] != basin) { ranges[
         id: `${id}-statistics`,
         operation: 'GPUTerrainCatchmentSummary',
         invocationCount: props.basinCount,
-        declarations,
+        declarations: `${declarations}\n${FIXED_POINT_WGSL}`,
         bindings: [
           ...inputs,
           terrainBinding('order', order),
@@ -217,29 +260,48 @@ if (index + 1u == ${count}u || keys[keysOffset + index + 1u] != basin) { ranges[
           terrainBinding('statistics', props.output.statistics, 'read_write'),
           terrainBinding('hypsometry', props.output.hypsometry, 'read_write')
         ],
-        body: `var sampleCount = 0u; var sum = 0.0; var lower = infinity(); var upper = -lower; var streamLength = 0.0; var areaSum = 0.0;
+        // Two walks over the basin's cells: the first finds the count, the extrema and the largest
+        // exponent of each kind of term, which sets the fixed-point unit; the second adds the terms
+        // as integers in that unit. No float32 partial sum exists, so nothing rounds per cell.
+        body: `var sampleCount = 0u; var lower = infinity(); var upper = -lower;
+var elevationExponent = 0u; var areaExponent = 0u; var lengthExponent = 0u;
 for (var entry = ranges[rangesOffset + index * 2u]; entry < ranges[rangesOffset + index * 2u + 1u]; entry++) {
  let cell = order[orderOffset + entry];
  let value = elevation[elevationOffset + cell];
- if (basins[basinsOffset + cell] != index || !finite(value)) { continue; }
- sampleCount++; areaSum += getGroundCellArea(cell); sum += value; lower = min(lower, value); upper = max(upper, value);
- let receiver = getFlowReceiver(cell, directions[directionsOffset + cell]);
- if (streams[streamsOffset + cell] == 1u && receiver != NO_CELL && streams[streamsOffset + receiver] == 1u && finite(elevation[elevationOffset + receiver])) { streamLength += edgeLength(cell, receiver); }
+ if (basins[basinsOffset + cell] != index || !isFiniteValue(value)) { continue; }
+ sampleCount++; lower = min(lower, value); upper = max(upper, value);
+ elevationExponent = max(elevationExponent, getFixedPointExponentBits(value));
+ ${isUniform ? '' : 'areaExponent = max(areaExponent, getFixedPointExponentBits(getGroundCellArea(cell)));'}
+ lengthExponent = max(lengthExponent, getFixedPointExponentBits(getStreamEdgeLength(cell)));
 }
-let area = ${isUniform ? `f32(sampleCount) * ${area}` : 'areaSum'};
+let elevationUnit = getFixedPointUnitExponent(elevationExponent, ${headroomBits}u);
+let areaUnit = getFixedPointUnitExponent(areaExponent, ${headroomBits}u);
+let lengthUnit = getFixedPointUnitExponent(lengthExponent, ${headroomBits}u);
+var elevationSum = vec3<u32>(0u); var areaSum = vec3<u32>(0u); var lengthSum = vec3<u32>(0u);
+for (var entry = ranges[rangesOffset + index * 2u]; entry < ranges[rangesOffset + index * 2u + 1u]; entry++) {
+ let cell = order[orderOffset + entry];
+ let value = elevation[elevationOffset + cell];
+ if (basins[basinsOffset + cell] != index || !isFiniteValue(value)) { continue; }
+ elevationSum = addFixedPoint(elevationSum, quantizeFixedPoint(value, elevationUnit));
+ ${isUniform ? '' : 'areaSum = addFixedPoint(areaSum, quantizeFixedPoint(getGroundCellArea(cell), areaUnit));'}
+ lengthSum = addFixedPoint(lengthSum, quantizeFixedPoint(getStreamEdgeLength(cell), lengthUnit));
+}
+let sum = getFixedPointFloat(elevationSum, elevationUnit);
+let streamLength = getFixedPointFloat(lengthSum, lengthUnit);
+let area = ${isUniform ? `f32(sampleCount) * ${area}` : 'getFixedPointFloat(areaSum, areaUnit)'};
 let offset = statisticsOffset + index * 6u;
-statistics[offset] = area; statistics[offset + 1u] = select(missing(), sum / f32(max(sampleCount, 1u)), sampleCount > 0u);
-statistics[offset + 2u] = select(missing(), lower, sampleCount > 0u); statistics[offset + 3u] = select(missing(), upper, sampleCount > 0u);
-statistics[offset + 4u] = streamLength; statistics[offset + 5u] = select(missing(), streamLength / max(area, 1e-30), area > 0.0);
+statistics[offset] = area; statistics[offset + 1u] = select(getNaN(), sum / f32(max(sampleCount, 1u)), sampleCount > 0u);
+statistics[offset + 2u] = select(getNaN(), lower, sampleCount > 0u); statistics[offset + 3u] = select(getNaN(), upper, sampleCount > 0u);
+statistics[offset + 4u] = streamLength; statistics[offset + 5u] = select(getNaN(), streamLength / max(area, 1e-30), area > 0.0);
 for (var bin = 0u; bin < ${props.histogramBins}u; bin++) {
  let threshold = lower + (upper - lower) * f32(bin + 1u) / ${getWGSLFloatLiteral(props.histogramBins)};
- var belowCount = 0u; var belowArea = 0.0;
+ var belowCount = 0u; var belowArea = vec3<u32>(0u);
  for (var entry = ranges[rangesOffset + index * 2u]; entry < ranges[rangesOffset + index * 2u + 1u]; entry++) {
   let cell = order[orderOffset + entry];
   let value = elevation[elevationOffset + cell];
-  if (basins[basinsOffset + cell] == index && finite(value) && (value <= threshold || bin + 1u == ${props.histogramBins}u)) { belowCount++; belowArea += getGroundCellArea(cell); }
+  if (basins[basinsOffset + cell] == index && isFiniteValue(value) && (value <= threshold || bin + 1u == ${props.histogramBins}u)) { belowCount++; ${isUniform ? '' : 'belowArea = addFixedPoint(belowArea, quantizeFixedPoint(getGroundCellArea(cell), areaUnit));'} }
  }
- hypsometry[hypsometryOffset + index * ${props.histogramBins}u + bin] = ${isUniform ? `f32(belowCount) * ${area}` : 'belowArea'};
+ hypsometry[hypsometryOffset + index * ${props.histogramBins}u + bin] = ${isUniform ? `f32(belowCount) * ${area}` : 'getFixedPointFloat(belowArea, areaUnit)'};
 }`
       }),
       createWGSLKernelNode(graph, {
@@ -249,11 +311,11 @@ for (var bin = 0u; bin < ${props.histogramBins}u; bin++) {
         declarations,
         bindings: [...inputs, terrainBinding('state', states[0], 'read_write')],
         body: `var parent = NO_CELL; var distance = 0.0; var steps = 0u; var result = 2u;
-let code = directions[directionsOffset + index];
-if (finite(elevation[elevationOffset + index]) && streams[streamsOffset + index] == 1u) {
+let code = getFlowDirectionCode(directions[directionsOffset + index]);
+if (isFiniteValue(elevation[elevationOffset + index]) && isStreamWord(streams[streamsOffset + index])) {
  if (code == 0u) { result = 1u; } else {
   let receiver = getFlowReceiver(index, code);
-  if (receiver != NO_CELL && finite(elevation[elevationOffset + receiver]) && streams[streamsOffset + receiver] <= 1u) {
+  if (receiver != NO_CELL && isFiniteValue(elevation[elevationOffset + receiver]) && streams[streamsOffset + receiver] < UNRESOLVED_DIRECTION) {
    if (streams[streamsOffset + receiver] == 0u) { result = 1u; }
    else { parent = receiver; distance = edgeLength(index, receiver); steps = 1u; }
   }
@@ -300,14 +362,14 @@ if (parent != 0xffffffffu) {
         ],
         body: `let center = elevation[elevationOffset + index]; let offset = stateOffset + index * 4u;
 let distance = bitcast<f32>(state[offset + 1u]); var gradient = 0.0;
-var result = select(2u, 1u, state[offset] == NO_CELL && state[offset + 3u] == 1u && state[offset + 2u] < ${props.maximumSteps ?? count}u && finite(distance));
-if (!finite(center) || basins[basinsOffset + index] >= ${props.basinCount}u || streams[streamsOffset + index] != 1u) { result = select(0u, 2u, streams[streamsOffset + index] > 1u); }
-let receiver = getFlowReceiver(index, directions[directionsOffset + index]);
-if (receiver != NO_CELL && streams[streamsOffset + receiver] == 1u) { gradient = (center - elevation[elevationOffset + receiver]) / edgeLength(index, receiver); }
+var result = select(2u, 1u, state[offset] == NO_CELL && state[offset + 3u] == 1u && state[offset + 2u] < ${props.maximumSteps ?? count}u && isFiniteValue(distance));
+if (!isFiniteValue(center) || basins[basinsOffset + index] >= ${props.basinCount}u || !isStreamWord(streams[streamsOffset + index])) { result = select(0u, 2u, streams[streamsOffset + index] >= UNRESOLVED_DIRECTION); }
+let receiver = getCellReceiver(index);
+if (receiver != NO_CELL && isStreamWord(streams[streamsOffset + receiver])) { gradient = (center - elevation[elevationOffset + receiver]) / edgeLength(index, receiver); }
 status[statusOffset + index] = result;
-profiles[profilesOffset + index * 3u] = select(missing(), distance, result == 1u);
+profiles[profilesOffset + index * 3u] = select(getNaN(), distance, result == 1u);
 profiles[profilesOffset + index * 3u + 1u] = center;
-profiles[profilesOffset + index * 3u + 2u] = select(missing(), gradient, result == 1u);`
+profiles[profilesOffset + index * 3u + 2u] = select(getNaN(), gradient, result == 1u);`
       })
     );
     return nodes;

@@ -6,7 +6,7 @@ between years, clustering, classification, principal components and per-polygon 
 overviews that average vectors correctly. Import from `@luma-contributors/analysis/raster-analysis`.
 
 Layout. A raster is `pixelCount` pixels, row-major, each with `dimensions` (1 to 128) float32 components:
-`vectors[pixel * dimensions + band]`. An invalid pixel is marked by `validity` (zero) or by a non-finite
+`vectors[pixel * dimensions + band]`. An invalid pixel is marked by `mask` (zero) or by a non-finite
 component; the decoder writes NaN for every component of a NoData pixel. int8 data is `uint32` words of four
 little-endian signed bytes, pixel-major, as an `Int8Array` uploaded unchanged. Band-sequential files are
 interleaved by the host adapter. The element count `pixelCount * dimensions` must stay below 2^32, and a
@@ -68,7 +68,9 @@ query-by-pixel matrix is never stored.
 ## `GPURasterEmbeddingChange`
 
 The use Google recommends for AlphaEarth: the dot product between two years. Outputs are the cosine
-similarity, its angle (`acos`), the length of the change vector `|after - before|` and a mask where the
+similarity, the angle between the vectors (computed as `2 atan2(|u - v|, |u + v|)` of the two unit
+vectors, not `acos` of the float32 cosine, so angles far below 5e-4 rad are resolved), the length of the
+change vector `|after - before|` and a mask where the
 cosine is below a per-frame threshold. A pixel invalid in either year is NaN. Combine the similarity with
 `GPURasterFalseDiscoveryRateMask` or a percentile threshold when a map must show only significant change.
 
@@ -92,7 +94,7 @@ Unsupervised clustering with the published `GPUKMeans` of `@luma.gl/graph/gpu-ve
 evenly spaced valid rows as seeds (not k-means++), up to 64 Lloyd iterations encoded and skipped once the
 labels stop changing, Euclidean centres and an optional `[iterations, changedLabels, converged]` status.
 Normalize the vectors first to cluster by direction. This is a different contract from the planar
-`GPUKMeans` of `gpu-spatial-analysis`. The check compares a converged run on separated blobs with NumPy's
+`GPUSpatialKMeans` of `gpu-spatial-analysis`. The check compares a converged run on separated blobs with NumPy's
 blob means; it does not reproduce scikit-learn's seeding.
 
 ## `GPURasterEmbeddingKNearestClassifier`
@@ -100,7 +102,8 @@ blob means; it does not reproduce scikit-learn's seeding.
 Brute-force k-nearest-neighbour classification against a labelled set of up to 4096 vectors, with
 scikit-learn's `KNeighborsClassifier` semantics: uniform votes among the `neighborCount` (at most 16)
 nearest, the smallest class on a vote tie, the lower sample on equal distances. `metric` is `'euclidean'`
-or `'cosine'` (distance `1 - cosine`). Outputs are the label, the vote share of the winner and the share of
+or `'cosine'` (distance `1 - cosine`; two zero vectors have similarity 1 and exactly one zero vector gives
+0, as in the published `GPUSimilaritySearch`). Outputs are the label, the vote share of the winner and the share of
 every class. The cost is `pixelCount x trainingCount x dimensions`.
 
 ## `GPURasterEmbeddingLinearProbe`

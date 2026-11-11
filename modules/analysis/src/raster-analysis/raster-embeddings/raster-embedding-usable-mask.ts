@@ -13,7 +13,7 @@ import {RASTER_FINITE_WGSL, rasterBinding} from '../remote-sensing/raster-kernel
 
 /**
  * Builds the per-pixel mask the reductions of {@link GPURasterEmbeddingCovariance} and
- * {@link GPURasterEmbeddingZoneMean} share: 1 where `validity` is nonzero (when given) and every
+ * {@link GPURasterEmbeddingZoneMean} share: 1 where `mask` is nonzero (when given) and every
  * component of the vector is finite. A reduction that read each component separately would
  * weight the bands differently when only some of a pixel's bands are missing.
  *
@@ -27,7 +27,7 @@ export function createRasterEmbeddingUsableMask<Parameters>(
     pixelCount: number;
     dimensions: number;
     vectors: GraphDataView<'float32'>;
-    validity?: GraphDataView<'uint32'>;
+    mask?: GraphDataView<'uint32'>;
   }
 ): {usable: GraphDataView<'uint32'>; node: GPUCommandNode<Parameters>} {
   const usable = createTransientView(graph, `${props.id}-usable`, 'uint32', props.pixelCount);
@@ -39,11 +39,11 @@ export function createRasterEmbeddingUsableMask<Parameters>(
     workgroupSize: 64,
     bindings: [
       rasterBinding('vectors', props.vectors),
-      ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+      ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
       rasterBinding('usable', usable, true)
     ],
     declarations: RASTER_FINITE_WGSL,
-    body: `var isUsable = ${props.validity ? 'validity[validityOffset + index] != 0u' : 'true'};
+    body: `var isUsable = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
 for (var band = 0u; band < ${props.dimensions}u; band++) {
   if (!finite(vectors[vectorsOffset + index * ${props.dimensions}u + band])) { isUsable = false; }
 }

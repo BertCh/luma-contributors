@@ -441,3 +441,41 @@ it('GPUPointHorizonProfile pyramid omits samples without changing the result', a
   expect(total(pyramid.samples)).toBeLessThan(0.7 * total(march.samples));
   expect(total(pyramid.samples)).toBeGreaterThan(0);
 });
+
+it('GPUPointHorizonProfile takes north from the grid affine on a rows-north planar grid', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Flat ground with a 50 m plateau on rows 84 and above, 200 m from the observer on row 64.
+  // Rays are compass azimuths 0, 90, 180, 270. The plateau top is 48 m above the 2 m eye, so the
+  // skyline toward it is atan(48 / 200) = 13.5 degrees; the other three rays cross flat ground
+  // below the eye and stay negative. `rowDirection` is left out in both runs.
+  const size = 129;
+  const values = Float32Array.from({length: size * size}, (_, pixel) =>
+    Math.floor(pixel / size) >= 84 ? 50 : 0
+  );
+  const run = (grid: GPURasterMetadata) =>
+    runProfile(device, {
+      grid,
+      values,
+      observers: [[64, 64, 2]],
+      settings: {},
+      model: {projection: 'planar', azimuthCount: 4, maximumDistance: 600, cellSize: 10}
+    });
+  const plateauAngle = (Math.atan(48 / 200) * 180) / Math.PI;
+  // Rows advance north (affine[4] = +10): the plateau is north of the observer.
+  const northRows = await run(
+    makeGPURasterMetadata({width: size, height: size, cellSize: 10, rowDirection: 'north'})
+  );
+  expect(northRows.skylineAngle[0]).toBeGreaterThan(plateauAngle - 1);
+  expect(northRows.skylineAngle[0]).toBeLessThan(plateauAngle + 0.01);
+  for (const azimuthIndex of [1, 2, 3]) {
+    expect(northRows.skylineAngle[azimuthIndex], `azimuth ${azimuthIndex}`).toBeLessThan(0);
+  }
+  // The same samples as a north-up raster: the plateau is south of the observer.
+  const southRows = await run(makeGPURasterMetadata({width: size, height: size, cellSize: 10}));
+  expect(southRows.skylineAngle[2]).toBeGreaterThan(plateauAngle - 1);
+  expect(southRows.skylineAngle[2]).toBeLessThan(plateauAngle + 0.01);
+  for (const azimuthIndex of [0, 1, 3]) {
+    expect(southRows.skylineAngle[azimuthIndex], `azimuth ${azimuthIndex}`).toBeLessThan(0);
+  }
+});

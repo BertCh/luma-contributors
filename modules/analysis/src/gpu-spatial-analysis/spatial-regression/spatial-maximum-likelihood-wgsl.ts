@@ -2,21 +2,31 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_BISECTION_STEPS,
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SCAN_STEPS
 } from './spatial-maximum-likelihood-parameters';
 import {GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER} from './spatial-weights-traces-parameters';
+import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
 
 function validateSeriesArguments(maximumPower: number, bindingName: string): void {
   // Internal helper: the estimators validate maximumPower in their constructors and pass fixed
   // binding names, so a violation here is a library bug.
-  assert(
-    Number.isInteger(maximumPower) &&
-      maximumPower >= 2 &&
-      maximumPower <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER &&
-      /^[A-Za-z_][A-Za-z0-9_]*$/.test(bindingName)
+  validateCapacity(
+    'spatial-maximum-likelihood-series',
+    'maximumPower',
+    maximumPower,
+    2,
+    GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER
+  );
+  validateRequirement(
+    'spatial-maximum-likelihood-series',
+    /^[A-Za-z_][A-Za-z0-9_]*$/.test(bindingName),
+    'bindingName must be a WGSL identifier'
   );
 }
 
@@ -154,8 +164,11 @@ fn searchParameter(bound: f32) -> SearchResult {
 }
 
 /**
- * Kahan-compensated sum of `source[source_offset + base + item * stride]` over
- * `item in [0, count)`, as WGSL statements declaring the variable `name` (and `${name}Compensation`).
+ * Sum of `source[source_offset + base + item * stride]` over `item in [0, count)`, as WGSL
+ * statements declaring the variable `name`. The sum is a fixed pairwise (cascade) sum, see
+ * `getPairwiseSumWGSL`: the Kahan compensation this helper is named after is folded to zero by
+ * the shader compiler of the test GPU, where it returned the plain serial sum. The name is kept
+ * until the exported-symbol pass (roadmap 12.4).
  */
 export function getKahanSumWGSL(
   source: string,
@@ -164,14 +177,11 @@ export function getKahanSumWGSL(
   count: string,
   name = 'sum'
 ): string {
-  return `var ${name} = 0.0;
-  var ${name}Compensation = 0.0;
-  for (var item = 0u; item < ${count}; item++) {
-    let term = ${source}[${source}Offset + ${base} + item * ${stride}] - ${name}Compensation;
-    let next = ${name} + term;
-    ${name}Compensation = (next - ${name}) - term;
-    ${name} = next;
-  }`;
+  return getPairwiseSumWGSL({
+    count,
+    name,
+    term: `${source}[${source}Offset + ${base} + ${name}Item * ${stride}]`
+  });
 }
 
 /**

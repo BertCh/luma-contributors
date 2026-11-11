@@ -18,7 +18,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUBoundedResultStatusPort} from '../../analysis-core/contracts/index';
 import {
@@ -187,7 +187,7 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
       if (validateFloat32OrUint32Values(props.values, `${id} values`) !== rows) {
         throw new Error(`${id} values needs one row per weights row`);
       }
-      validatePackedView(output.table, ['float32'], `${id} output.table`);
+      validateSinglePackedView(output.table, ['float32'], `${id} output.table`);
       if (output.table.length !== rows * statistics.length) {
         throw new Error(`${id} output.table needs rows * statistics.length values`);
       }
@@ -199,7 +199,7 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
       if (!overflow) {
         throw new Error(`${id} median requires output.status.overflow`);
       }
-      validatePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
+      validateSinglePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
       if (overflow.length < 1) {
         throw new Error(`${id} output.status.overflow needs one row`);
       }
@@ -215,31 +215,31 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
       if (!props.categories) {
         throw new Error(`${id} modes and entropy require categories`);
       }
-      validatePackedView(props.categories, ['uint32'], `${id} categories`);
+      validateSinglePackedView(props.categories, ['uint32'], `${id} categories`);
       if (props.categories.length !== rows) {
         throw new Error(`${id} categories needs one row per weights row`);
       }
     }
     if (output.modes) {
-      validatePackedView(output.modes, ['uint32'], `${id} output.modes`);
+      validateSinglePackedView(output.modes, ['uint32'], `${id} output.modes`);
       if (output.modes.length !== rows) {
         throw new Error(`${id} output.modes needs one row per weights row`);
       }
     }
     if (output.entropy) {
-      validatePackedView(output.entropy, ['float32'], `${id} output.entropy`);
+      validateSinglePackedView(output.entropy, ['float32'], `${id} output.entropy`);
       if (output.entropy.length !== rows) {
         throw new Error(`${id} output.entropy needs one row per weights row`);
       }
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask needs one row per weights row`);
       }
     }
     if (props.weights.status?.overflow) {
-      validatePackedView(
+      validateSinglePackedView(
         props.weights.status.overflow,
         ['uint32'],
         `${id} weights.status.overflow`

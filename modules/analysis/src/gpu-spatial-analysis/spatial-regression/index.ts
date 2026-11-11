@@ -393,3 +393,146 @@ export type {
   GPUMultiscaleGeographicallyTemporallyWeightedRegressionOutput,
   GPUMultiscaleGeographicallyTemporallyWeightedRegressionProps
 } from './gpu-multiscale-geographically-temporally-weighted-regression';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeOrdinaryLeastSquaresOnCPU,
+  CPUOrdinaryLeastSquaresOperation
+} from './cpu-ordinary-least-squares-operation';
+export type {
+  CPUOrdinaryLeastSquaresInput,
+  CPUOrdinaryLeastSquaresResult
+} from './cpu-ordinary-least-squares-operation';
+export {
+  computeRestrictedRegimeRegressionOnCPU,
+  CPURestrictedRegimeRegressionOperation
+} from './cpu-restricted-regime-regression-operation';
+export type {
+  CPURestrictedRegimeRegressionInput,
+  CPURestrictedRegimeRegressionOptions,
+  CPURestrictedRegimeRegressionResult
+} from './cpu-restricted-regime-regression-operation';
+export {
+  computeSeeminglyUnrelatedRegressionOnCPU,
+  CPUSeeminglyUnrelatedRegressionOperation
+} from './cpu-seemingly-unrelated-regression-operation';
+export type {
+  CPUSeeminglyUnrelatedRegressionInput,
+  CPUSeeminglyUnrelatedRegressionOptions,
+  CPUSeeminglyUnrelatedRegressionResult
+} from './cpu-seemingly-unrelated-regression-operation';
+export {
+  computeSpatialLagImpactsOnCPU,
+  CPUSpatialLagImpactsOperation
+} from './cpu-spatial-lag-impacts-operation';
+export type {
+  CPUSpatialLagImpactsInput,
+  CPUSpatialLagImpactsOptions
+} from './cpu-spatial-lag-impacts-operation';
+export {
+  computeSpatialRegressionDiagnosticsOnCPU,
+  CPUSpatialRegressionDiagnosticsOperation
+} from './cpu-spatial-regression-diagnostics-operation';
+export type {
+  CPUSpatialRegressionDiagnosticsInput,
+  CPUSpatialRegressionDiagnosticsOptions,
+  CPUSpatialRegressionDiagnosticsResult
+} from './cpu-spatial-regression-diagnostics-operation';
+export {
+  computeSpatialWeightsTracesOnCPU,
+  CPUSpatialWeightsTracesOperation
+} from './cpu-spatial-weights-traces-operation';
+export type {
+  CPUSpatialWeightsTracesInput,
+  CPUSpatialWeightsTracesOptions,
+  CPUSpatialWeightsTracesResult
+} from './cpu-spatial-weights-traces-operation';
+export {GPUOrdinaryLeastSquaresOperation} from './gpu-ordinary-least-squares-operation';
+export type {OrdinaryLeastSquaresOperationProps} from './gpu-ordinary-least-squares-operation';
+export {GPURestrictedRegimeRegressionOperation} from './gpu-restricted-regime-regression-operation';
+export type {RestrictedRegimeRegressionOperationProps} from './gpu-restricted-regime-regression-operation';
+export {GPUSeeminglyUnrelatedRegressionOperation} from './gpu-seemingly-unrelated-regression-operation';
+export type {SeeminglyUnrelatedRegressionOperationProps} from './gpu-seemingly-unrelated-regression-operation';
+export {GPUSpatialLagImpactsOperation} from './gpu-spatial-lag-impacts-operation';
+export type {SpatialLagImpactsOperationProps} from './gpu-spatial-lag-impacts-operation';
+export {GPUSpatialRegressionDiagnosticsOperation} from './gpu-spatial-regression-diagnostics-operation';
+export type {SpatialRegressionDiagnosticsOperationProps} from './gpu-spatial-regression-diagnostics-operation';
+export {GPUSpatialWeightsTracesOperation} from './gpu-spatial-weights-traces-operation';
+export type {SpatialWeightsTracesOperationProps} from './gpu-spatial-weights-traces-operation';
+export {
+  computeMultiscaleGeographicallyWeightedRegressionOnCPU,
+  CPUMultiscaleGeographicallyWeightedRegressionOperation
+} from './cpu-multiscale-geographically-weighted-regression-operation';
+export type {
+  CPUMultiscaleGeographicallyWeightedRegressionInput,
+  CPUMultiscaleGeographicallyWeightedRegressionOptions,
+  CPUMultiscaleGeographicallyWeightedRegressionResult
+} from './cpu-multiscale-geographically-weighted-regression-operation';
+export {
+  computeSpatialErrorGMOnCPU,
+  CPUSpatialErrorGMOperation
+} from './cpu-spatial-error-gm-operation';
+export type {
+  CPUSpatialErrorGMInput,
+  CPUSpatialErrorGMOptions,
+  CPUSpatialErrorGMResult
+} from './cpu-spatial-error-gm-operation';
+export {GPUMultiscaleGeographicallyWeightedRegressionOperation} from './gpu-multiscale-geographically-weighted-regression-operation';
+export type {MultiscaleGeographicallyWeightedRegressionOperationProps} from './gpu-multiscale-geographically-weighted-regression-operation';
+export {GPUSpatialErrorGMOperation} from './gpu-spatial-error-gm-operation';
+export type {SpatialErrorGMOperationProps} from './gpu-spatial-error-gm-operation';
+export {
+  computeProbitRegressionOnCPU,
+  CPUProbitRegressionOperation
+} from './cpu-probit-regression-operation';
+export type {
+  CPUProbitRegressionInput,
+  CPUProbitRegressionOptions,
+  CPUProbitRegressionResult
+} from './cpu-probit-regression-operation';
+export {
+  computeSpatialTwoStageLeastSquaresOnCPU,
+  CPUSpatialTwoStageLeastSquaresOperation
+} from './cpu-spatial-two-stage-least-squares-operation';
+export type {
+  CPUSpatialTwoStageLeastSquaresInput,
+  CPUSpatialTwoStageLeastSquaresOptions,
+  CPUSpatialTwoStageLeastSquaresResult
+} from './cpu-spatial-two-stage-least-squares-operation';
+export {GPUProbitRegressionOperation} from './gpu-probit-regression-operation';
+export type {ProbitRegressionOperationProps} from './gpu-probit-regression-operation';
+export {GPUSpatialTwoStageLeastSquaresOperation} from './gpu-spatial-two-stage-least-squares-operation';
+export type {SpatialTwoStageLeastSquaresOperationProps} from './gpu-spatial-two-stage-least-squares-operation';
+export {
+  computeSpatialErrorMaximumLikelihoodOnCPU,
+  CPUSpatialErrorMaximumLikelihoodOperation
+} from './cpu-spatial-error-maximum-likelihood-operation';
+export type {
+  CPUSpatialErrorMaximumLikelihoodInput,
+  CPUSpatialErrorMaximumLikelihoodOptions,
+  CPUSpatialErrorMaximumLikelihoodResult
+} from './cpu-spatial-error-maximum-likelihood-operation';
+export {GPUSpatialErrorMaximumLikelihoodOperation} from './gpu-spatial-error-maximum-likelihood-operation';
+export type {SpatialErrorMaximumLikelihoodOperationProps} from './gpu-spatial-error-maximum-likelihood-operation';
+export {
+  computeSpatialLagMaximumLikelihoodOnCPU,
+  CPUSpatialLagMaximumLikelihoodOperation
+} from './cpu-spatial-lag-maximum-likelihood-operation';
+export type {
+  CPUSpatialLagMaximumLikelihoodInput,
+  CPUSpatialLagMaximumLikelihoodOptions,
+  CPUSpatialLagMaximumLikelihoodResult
+} from './cpu-spatial-lag-maximum-likelihood-operation';
+export {GPUSpatialLagMaximumLikelihoodOperation} from './gpu-spatial-lag-maximum-likelihood-operation';
+export type {SpatialLagMaximumLikelihoodOperationProps} from './gpu-spatial-lag-maximum-likelihood-operation';
+export {
+  computeSpatialPanelLagMaximumLikelihoodOnCPU,
+  CPUSpatialPanelLagMaximumLikelihoodOperation
+} from './cpu-spatial-panel-lag-maximum-likelihood-operation';
+export type {
+  CPUSpatialPanelLagMaximumLikelihoodInput,
+  CPUSpatialPanelLagMaximumLikelihoodOptions,
+  CPUSpatialPanelLagMaximumLikelihoodResult
+} from './cpu-spatial-panel-lag-maximum-likelihood-operation';
+export {GPUSpatialPanelLagMaximumLikelihoodOperation} from './gpu-spatial-panel-lag-maximum-likelihood-operation';
+export type {SpatialPanelLagMaximumLikelihoodOperationProps} from './gpu-spatial-panel-lag-maximum-likelihood-operation';

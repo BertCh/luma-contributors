@@ -20,7 +20,7 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {
@@ -206,15 +206,15 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
     if (polygons.kind !== 'polygons') {
       throw new Error(`${id} polygons must be polygon geometry`);
     }
-    validatePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
-    validatePackedView(lines.lineOffsets, ['uint32'], `${id} lines.lineOffsets`);
-    validatePackedView(polygons.positions, ['float32x2'], `${id} polygons.positions`);
+    validateSinglePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
+    validateSinglePackedView(lines.lineOffsets, ['uint32'], `${id} lines.lineOffsets`);
+    validateSinglePackedView(polygons.positions, ['float32x2'], `${id} polygons.positions`);
     for (const [name, view] of [
       ['featureOffsets', polygons.featureOffsets],
       ['polygonOffsets', polygons.polygonOffsets],
       ['ringOffsets', polygons.ringOffsets]
     ] as const) {
-      validatePackedView(view, ['uint32'], `${id} polygons.${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} polygons.${name}`);
       if (view.length < 1) {
         throw new Error(`${id} polygons.${name} requires a terminal entry`);
       }
@@ -236,13 +236,13 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
     this.keepInside = props.mode !== 'outside';
     this.vertexCount = lines.positions.length;
     this.lineCount = lines.lineOffsets.length - 1;
-    validatePackedView(pieces.sourceIds, ['uint32'], `${id} output.pieces.sourceIds`);
-    validatePackedView(
+    validateSinglePackedView(pieces.sourceIds, ['uint32'], `${id} output.pieces.sourceIds`);
+    validateSinglePackedView(
       pieces.geometry.lineOffsets,
       ['uint32'],
       `${id} output.pieces.geometry.lineOffsets`
     );
-    validatePackedView(
+    validateSinglePackedView(
       pieces.geometry.positions,
       ['float32x2'],
       `${id} output.pieces.geometry.positions`
@@ -265,7 +265,7 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
       ['uncertainCount', props.output.status?.uncertainCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < 1) {
           throw new Error(`${id} output.${name} needs one row`);
         }
@@ -409,10 +409,14 @@ fn lowerBound(value: u32) -> u32 {
   }
   return low;
 }`,
+        // A row before lineOffsets[0] resolves to line 0 but belongs to no line (padding: unwritten
+        // capacity or reused scratch), so it starts no segment; rows from lineOffsets[last] on
+        // fail the lineEnd test.
         body: `let line = lineOfVertex(index);
+  let lineStart = lineOffsets[lineOffsetsOffset + line];
   let lineEnd = lineOffsets[lineOffsetsOffset + line + 1u];
   let a = vertexAt(index);
-  var valid = index + 1u < lineEnd && index + 1u < VERTEX_COUNT;
+  var valid = index >= lineStart && index + 1u < lineEnd && index + 1u < VERTEX_COUNT;
   var b = a;
   if (valid) { b = vertexAt(index + 1u); }
   valid = valid && isFiniteValue(a.x) && isFiniteValue(a.y) && isFiniteValue(b.x) && isFiniteValue(b.y) &&

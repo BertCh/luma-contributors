@@ -11,7 +11,7 @@ import {
 import {
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -26,7 +26,7 @@ export function getRecipeView<Format extends VertexFormat, Parameters>(
   provided?: GraphDataView<Format>
 ): GraphDataView<Format> {
   if (provided) {
-    validatePackedView(provided, [format], id);
+    validateSinglePackedView(provided, [format], id);
     // The provided view must have the exact row count promised by the recipe output.
     validateViewLength(id, 'provided output', provided, length);
     validateGraphViewsBelongToGraph(id, graph, [provided]);
@@ -44,7 +44,7 @@ export function createRecipeKernelNode<Parameters>(
     props.bindings.map(binding => binding.view)
   );
   for (const binding of props.bindings)
-    validatePackedView(binding.view, [binding.view.format], props.id);
+    validateSinglePackedView(binding.view, [binding.view.format], props.id);
   validateGraphOutputsDisjointFromInputs(
     props.id,
     props.bindings.filter(binding => binding.access !== 'read').map(binding => binding.view),

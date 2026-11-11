@@ -20,7 +20,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
@@ -34,6 +34,7 @@ import {
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 import {
+  resolveTerrainRowDirection,
   TERRAIN_GEOMORPHOMETRY_CELL_SLOTS,
   writeTerrainGeomorphometryCellSettings,
   type TerrainGeomorphometryCellSettings
@@ -43,8 +44,7 @@ import {
   getRasterRowNorthSignWGSL,
   type GPURasterCellSizeMode,
   type GPURasterRowDirection,
-  validateRasterCellSizeMode,
-  validateRasterRowDirection
+  validateRasterCellSizeMode
 } from '../../analysis-core/raster-grid';
 
 /** Window radius from which the window sum runs as two separable passes instead of one square loop. */
@@ -141,7 +141,11 @@ export type GPUTerrainVectorRuggednessProps = {
   output: GPUTerrainVectorRuggednessOutput;
   /** Cell size interpretation. Defaults to `'uniform'`. */
   cellSizeMode?: GPURasterCellSizeMode;
-  /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
+  /**
+   * Direction in which the row index increases. Defaults to the direction the grid states: the
+   * sign of the row term `grid.affine[4]` (negative: `'south'`, a north-up raster; positive:
+   * `'north'`). An explicit value that contradicts the grid throws at construction.
+   */
   rowDirection?: GPURasterRowDirection;
   /**
    * Treatment of the raster border when computing Horn normals: `'clamp'` repeats edge samples
@@ -169,6 +173,8 @@ export class GPUTerrainVectorRuggedness implements GPUCommandNodeProducer {
   readonly props: GPUTerrainVectorRuggednessProps;
   /** Receptive field in pixels (`GPURasterHaloStage` contract): `maximumRadius + 1`. */
   readonly requiredHalo: number;
+  /** Row direction the kernels use: the prop, or the direction the grid affine states. */
+  readonly rowDirection: GPURasterRowDirection;
 
   constructor(props: GPUTerrainVectorRuggednessProps) {
     this.id = props.id ?? 'terrain-vector-ruggedness';
@@ -185,13 +191,17 @@ export class GPUTerrainVectorRuggedness implements GPUCommandNodeProducer {
       throw new Error(`${id} requires at least one output`);
     }
     if (output.vectorRuggedness) {
-      validatePackedView(output.vectorRuggedness, ['float32'], `${id} output.vectorRuggedness`);
+      validateSinglePackedView(
+        output.vectorRuggedness,
+        ['float32'],
+        `${id} output.vectorRuggedness`
+      );
       if (output.vectorRuggedness.length !== pixelCount) {
         throw new Error(`${id} output.vectorRuggedness must contain one value per pixel`);
       }
     }
     if (output.outputValidity) {
-      validatePackedView(output.outputValidity, ['uint32'], `${id} output.outputValidity`);
+      validateSinglePackedView(output.outputValidity, ['uint32'], `${id} output.outputValidity`);
       if (output.outputValidity.length !== pixelCount) {
         throw new Error(`${id} output.outputValidity must contain one value per pixel`);
       }
@@ -199,7 +209,7 @@ export class GPUTerrainVectorRuggedness implements GPUCommandNodeProducer {
     validateRasterParameters(id, props.parameters, GPU_TERRAIN_VECTOR_RUGGEDNESS_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
-    validateRasterRowDirection(id, props.rowDirection);
+    this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
     if (!['clamp', 'nodata'].includes(props.borderMode ?? 'clamp')) {
       throw new Error(`${id} borderMode must be clamp or nodata`);
     }
@@ -248,7 +258,7 @@ export class GPUTerrainVectorRuggedness implements GPUCommandNodeProducer {
       invocationCount: pixelCount,
       declarations: `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
-${getRasterRowNorthSignWGSL(props.rowDirection ?? 'south')}
+${getRasterRowNorthSignWGSL(this.rowDirection)}
 ${RASTER_WGSL_HELPERS}
 ${getRasterGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}`,
       body: `let row = i32(index / WIDTH);

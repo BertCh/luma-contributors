@@ -8,6 +8,7 @@
 // streams. The `scanstatistics` R package (GPL, R-only) was not run; the external fixture is pending.
 
 import {PhiloxStream} from '../../../src/analysis-core/kernels/permutation-random';
+import {getPhiloxOpenUnitFloat} from '../../../src/analysis-core/kernels/philox-random';
 
 /** Philox purpose tag of the scan's replicate streams, equal to the contributor's (`'EBCS'`). */
 const SCAN_STREAM = 0x45424353;
@@ -107,16 +108,17 @@ export function computeExpectationBasedScanReference(
   return {best, centerScores};
 }
 
-/** Knuth's Poisson draw with the kernel's uniforms and f32 rounding, for means below 30. */
+/**
+ * Knuth's Poisson draw with f32 rounding, for means below 30. The uniforms are the library's
+ * open-interval Philox uniform `(0, 1)` (the CPU mirror of `philoxOpenUnitFloat`).
+ */
 function drawPoissonReference(stream: PhiloxStream, mean: number): number {
   if (!(mean > 0)) return 0;
   const limit = Math.fround(Math.exp(-mean));
   let product = 1;
   let count = 0;
   for (;;) {
-    product = Math.fround(
-      product * Math.fround((Math.fround(stream.nextUint32() >>> 8) + 0.5) / 16777216)
-    );
+    product = Math.fround(product * getPhiloxOpenUnitFloat(stream.nextUint32()));
     if (product <= limit) break;
     count++;
     if (count >= 1024) break;

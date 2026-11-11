@@ -179,10 +179,13 @@ it('GPUSphericalPolygonOverlay validates its spatial context before its chart', 
           positions: view('float32x3', 32),
           ringOffsets: view('uint32', 9),
           polygonOffsets: view('uint32', 9),
-          featureOffsets: view('uint32', 9),
-          sourceIds: view('uint32', 8)
+          featureOffsets: view('uint32', 9)
         },
-        status: status(),
+        status: {
+          count: view('uint32', 1),
+          overflow: view('uint32', 1),
+          candidateOverflow: view('uint32', 1)
+        },
         complement: view('uint32', 1),
         boundary: {
           endpoints: view('float32x4', 32),

@@ -20,8 +20,10 @@ parity; dividing a disk into four symmetric sectors gives different answers.
 Input validity, raw nodata, non-finite values and calibration use the standard raster-band
 canonicalization. Original valid calibrated values are preserved. Filled values never become
 donors, including on repeated graph submissions. An unresolved cell returns NaN, validity 0 and
-filled 0; a newly filled cell returns validity 1 and filled 1. `unresolvedCount` counts all remaining
-invalid cells. GDAL preserves unresolved input values instead, so reference tests compare masks
+filled 0; a newly filled cell returns validity 1 and filled 1. `output.status` is required (an object);
+its optional `invalidCount` (one `uint32` row) counts the cells of the result that are still invalid
+(`validity` 0: no valid source within the search distance). It is the status vocabulary's
+`invalidCount` over output cells, not over input rows rejected by validation. GDAL preserves unresolved input values instead, so reference tests compare masks
 and normalize that sentinel difference. GPU float32 arithmetic can differ from GDAL's double
 accumulation; parity uses numerical tolerances.
 

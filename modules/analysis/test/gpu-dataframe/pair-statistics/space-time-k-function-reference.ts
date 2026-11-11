@@ -4,7 +4,9 @@
 
 /**
  * Binary64 CPU reference of the space-time K family (stpp 2.0-8 `STIKhat`, `PCFhat`, `LISTAhat`;
- * splancs / Diggle 1995 `D`). stpp and stopp are R-only (GPL) and R is not installed here, so the
+ * splancs / Diggle 1995 `D`, with `tieRule: 'splancs'` for the splancs rules at exact ties, which
+ * `space-time-diggle-splancs.node.spec.ts` checks against a port of the splancs source).
+ * stpp and stopp are R-only (GPL) and R is not installed here, so the
  * R fixtures are pending: this brute-force double loop, written from the definitions in the
  * `GPUSpaceTimeKFunction` documentation, is the oracle. The circle fraction of the spatial
  * isotropic weight is computed here from the crossing angles of the four side lines, not with the
@@ -27,10 +29,30 @@ export type SpaceTimeKReferenceOptions = {
   distanceClassCount: number;
   timeClassCount: number;
   edgeCorrection: 'none' | 'isotropic';
+  /**
+   * Rule at exact ties. `'stpp'` (default; stpp 2.0-8 `stikfunction.f`, `GPUSpaceTimeKFunction`):
+   * a lag that exactly reaches a time limit has temporal weight 1 and a pair at exactly the
+   * largest distance or lag is counted. `'splancs'` (splancs 2.01-45 `stkhat.f`,
+   * `GPUSpaceTimeDiggleTest`): that lag has weight 2, such a pair is dropped, and the class is
+   * the first break `maximum (k + 1) / count` at or above the value, decided by products.
+   */
+  tieRule?: 'stpp' | 'splancs';
   pairCorrelationKernel?: 'box' | 'epanechnikov';
   spatialBandwidth?: number;
   temporalBandwidth?: number;
 };
+
+/** splancs class of a value: the first break at or above it; `count` when it is dropped. */
+function getSplancsClass(value: number, maximum: number, count: number): number {
+  if (!(value < maximum)) {
+    return count;
+  }
+  let classIndex = 0;
+  while (value * count > maximum * (classIndex + 1)) {
+    classIndex++;
+  }
+  return classIndex;
+}
 
 export type SpaceTimeKReference = {
   included: number[];
@@ -146,6 +168,7 @@ export function getSpaceTimeKReference(options: SpaceTimeKReferenceOptions): Spa
   const kernel = options.pairCorrelationKernel ?? 'box';
   const spatialBandwidth = options.spatialBandwidth ?? 0;
   const temporalBandwidth = options.temporalBandwidth ?? 0;
+  const splancs = options.tieRule === 'splancs';
   for (const first of included) {
     const x = scene.positions[2 * first];
     const y = scene.positions[2 * first + 1];
@@ -163,7 +186,8 @@ export function getSpaceTimeKReference(options: SpaceTimeKReferenceOptions): Spa
       const spatialWeight = isotropic
         ? Math.min(1 / Math.max(getCircleFractionInside(x, y, distance, bounds), 0.01), 100)
         : 1;
-      const temporalWeight = isotropic ? (lag <= radius ? 1 : 2) : 1;
+      const isInsideWindow = splancs ? lag < radius : lag <= radius;
+      const temporalWeight = isotropic ? (isInsideWindow ? 1 : 2) : 1;
       const intensityFactor = inverseIntensity(first) * inverseIntensity(second);
       const weight = spatialWeight * temporalWeight * intensityFactor;
       const scaledDistance = (distance / maximumDistance) * U;
@@ -179,10 +203,16 @@ export function getSpaceTimeKReference(options: SpaceTimeKReferenceOptions): Spa
           );
         }
       }
-      const inDistance = scaledDistance <= U;
-      const inLag = scaledLag <= V;
-      const distanceClass = Math.min(Math.max(Math.ceil(scaledDistance) - 1, 0), U - 1);
-      const lagClass = Math.min(Math.max(Math.ceil(scaledLag) - 1, 0), V - 1);
+      let inDistance = scaledDistance <= U;
+      let inLag = scaledLag <= V;
+      let distanceClass = Math.min(Math.max(Math.ceil(scaledDistance) - 1, 0), U - 1);
+      let lagClass = Math.min(Math.max(Math.ceil(scaledLag) - 1, 0), V - 1);
+      if (splancs) {
+        distanceClass = getSplancsClass(distance, maximumDistance, U);
+        lagClass = getSplancsClass(lag, maximumTimeLag, V);
+        inDistance = distanceClass < U;
+        inLag = lagClass < V;
+      }
       if (inDistance) {
         spatialClass[distanceClass] += spatialWeight;
       }
@@ -194,7 +224,7 @@ export function getSpaceTimeKReference(options: SpaceTimeKReferenceOptions): Spa
       }
       // Cumulative temporal marginal over every pair, regardless of distance.
       for (let index = 0; index < V; index++) {
-        if (scaledLag <= index + 1) {
+        if (splancs ? lagClass <= index : scaledLag <= index + 1) {
           temporalCumulative[index] += temporalWeight;
         }
       }

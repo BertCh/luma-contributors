@@ -50,7 +50,7 @@ function whittaker(
       reweightPassCount: passes,
       reweightFunction,
       values: view('float32', CELLS * sliceCount),
-      validity: view('uint32', CELLS * sliceCount),
+      mask: view('uint32', CELLS * sliceCount),
       qualityWeights: view('float32', CELLS * sliceCount),
       parameters: view('float32', 2),
       dateAxis: withAxis ? makeAxis(context, sliceCount) : undefined,
@@ -74,7 +74,7 @@ function hants(
       rejectionPassCount: passes,
       rejectionSide: 'both',
       values: view('float32', CELLS * slices),
-      validity: view('uint32', CELLS * slices),
+      mask: view('uint32', CELLS * slices),
       parameters: view('float32', 3),
       dateAxis: makeAxis(context, slices),
       output: {
@@ -100,7 +100,7 @@ function streamingAccumulator(
       chunkSliceCount,
       slotCount,
       values: view('float32', CELLS * chunkSliceCount),
-      validity: view('uint32', CELLS * chunkSliceCount),
+      mask: view('uint32', CELLS * chunkSliceCount),
       slotIndices: view('uint32', chunkSliceCount),
       parameters: view('float32', 5),
       state: {
@@ -178,7 +178,7 @@ function runAccumulator(
       condition,
       minimumSpellLength: 3,
       values: view('float32', CELLS * chunkSliceCount),
-      validity: view('uint32', CELLS * chunkSliceCount),
+      mask: view('uint32', CELLS * chunkSliceCount),
       parameters: view('float32', 4),
       state: {runs: view('uint32', CELLS * 6), degreeDays: view('uint32', CELLS * 3)}
     })
@@ -419,7 +419,7 @@ export const RTS_TIME_SERIES_AUDIT_CASES: KernelAuditCase[] = [
           minimumSegmentLength: 12,
           dateAxis: makeAxis(context, 256),
           values: view('float32', CELLS * 256),
-          validity: view('uint32', CELLS * 256),
+          mask: view('uint32', CELLS * 256),
           output: {
             coefficients: view('float32', CELLS * 5),
             components: view('float32', CELLS * 256 * 3),

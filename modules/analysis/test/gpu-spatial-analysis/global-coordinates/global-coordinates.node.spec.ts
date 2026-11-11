@@ -32,7 +32,7 @@ it('global-coordinate contributors parse within baseline WebGPU bindings', () =>
       const contributor = new GPUDatumGridTransform({
         positions: view('float32x3', 4),
         samples: view('float32x3', 4),
-        validity: view('uint32', 4),
+        mask: view('uint32', 4),
         grids: [{width: 2, height: 2, sampleOffset: 0, origin: [0, 0], spacing: [1, 1]}],
         operation,
         direction,
@@ -178,7 +178,8 @@ it('spherical chart composition rejects original-input aliases and complement/st
   });
   const left = operand();
   const right = operand();
-  const resultStatus = status();
+  // The overlay result has no `requiredCount` (rule 8); its boundary has one.
+  const {requiredCount: _boundaryOnly, ...resultStatus} = status();
   const props = {
     left,
     right,
@@ -192,8 +193,7 @@ it('spherical chart composition rejects original-input aliases and complement/st
         positions: view('float32x3', 32),
         ringOffsets: view('uint32', 9),
         polygonOffsets: view('uint32', 9),
-        featureOffsets: view('uint32', 9),
-        sourceIds: view('uint32', 8)
+        featureOffsets: view('uint32', 9)
       },
       status: resultStatus,
       complement: view('uint32', 1),

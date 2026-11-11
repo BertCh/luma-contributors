@@ -18,7 +18,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCompactOutput
@@ -204,21 +204,21 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       ['output.edgeMask', props.output.edgeMask, slotCount, 'neighbor slot']
     ];
     for (const [index, column] of vertexColumns.entries()) {
-      validatePackedView(column, ['float32'], `${id} nodeColumns[${index}]`);
+      validateSinglePackedView(column, ['float32'], `${id} nodeColumns[${index}]`);
       lengthChecks.push([`nodeColumns[${index}]`, column, nodeCount, 'node']);
     }
     for (const [index, column] of edgeColumns.entries()) {
-      validatePackedView(column, ['float32'], `${id} edgeColumns[${index}]`);
+      validateSinglePackedView(column, ['float32'], `${id} edgeColumns[${index}]`);
       lengthChecks.push([`edgeColumns[${index}]`, column, slotCount, 'neighbor slot']);
     }
     for (const [name, view, length, unit] of lengthChecks) {
       if (!view) continue;
       if (name === 'edgeTimeWords') {
-        validatePackedView(view, ['uint32x2'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32x2'], `${id} ${name}`);
       } else if (name === 'edgeTimes') {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       } else if (!name.startsWith('nodeColumns') && !name.startsWith('edgeColumns')) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
       if (view.length !== length) {
         throw new Error(`${id} ${name} must contain one row per ${unit}`);
@@ -233,7 +233,7 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       if (!props.parameters) {
         throw new Error(`${id} parameters are required with columns or edgeTimes`);
       }
-      validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
       if (props.parameters.length < parameterLength) {
         throw new Error(`${id} parameters must contain at least ${parameterLength} float32 rows`);
       }
@@ -242,14 +242,14 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       if (!props.uint32Parameters) {
         throw new Error(`${id} uint32Parameters are required with edgeTimeWords`);
       }
-      validatePackedView(props.uint32Parameters, ['uint32'], `${id} uint32Parameters`);
+      validateSinglePackedView(props.uint32Parameters, ['uint32'], `${id} uint32Parameters`);
       if (props.uint32Parameters.length < TIME_WORD_PARAMETER_LENGTH) {
         throw new Error(`${id} uint32Parameters must contain at least 8 uint32 rows`);
       }
     }
     const {output} = props;
     if (output.counts) {
-      validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
+      validateSinglePackedView(output.counts, ['uint32'], `${id} output.counts`);
       if (output.counts.length < GPU_NETWORK_SUBGRAPH_FILTER_COUNT_LENGTH) {
         throw new Error(`${id} output.counts must contain at least 4 uint32 rows`);
       }
@@ -264,9 +264,9 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
     }
     const csr = output.inducedTopology;
     if (csr) {
-      validatePackedView(csr.offsets, ['uint32'], `${id} output.inducedTopology.offsets`);
-      validatePackedView(csr.neighbors, ['uint32'], `${id} output.inducedTopology.neighbors`);
-      validatePackedView(
+      validateSinglePackedView(csr.offsets, ['uint32'], `${id} output.inducedTopology.offsets`);
+      validateSinglePackedView(csr.neighbors, ['uint32'], `${id} output.inducedTopology.neighbors`);
+      validateSinglePackedView(
         csr.status.overflow,
         ['uint32'],
         `${id} output.inducedTopology.status.overflow`
@@ -278,7 +278,11 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
         throw new Error(`${id} output.inducedTopology.status.overflow must contain one uint32 row`);
       }
       if (csr.sourceSlots) {
-        validatePackedView(csr.sourceSlots, ['uint32'], `${id} output.inducedTopology.sourceSlots`);
+        validateSinglePackedView(
+          csr.sourceSlots,
+          ['uint32'],
+          `${id} output.inducedTopology.sourceSlots`
+        );
         if (csr.sourceSlots.length !== csr.neighbors.length) {
           throw new Error(
             `${id} output.inducedTopology.sourceSlots must match neighbors in length`

@@ -49,7 +49,7 @@ for (const scene of ringCases) {
           'float32',
           new Float32Array(await decodePackedNumbers(scene.values))
         ),
-        validity: owner.input(
+        mask: owner.input(
           'validity',
           'uint32',
           new Uint32Array(await decodePackedNumbers(scene.validity))

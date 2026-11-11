@@ -15,7 +15,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUNetworkTopologyViews,
@@ -51,6 +51,7 @@ import {
   createIsochronesBandParametersNode,
   createIsochronesCellFacilityNodes,
   createIsochronesDecodeNode,
+  createIsochronesInclusiveBreaksNode,
   createIsochronesNodeMaskNode,
   createIsochronesSplatNode,
   createIsochronesTriangleFacilityNode,
@@ -81,6 +82,15 @@ export type GPUNetworkIsochronesRaster = {
    * `'min'` (default) keeps the smallest cost that lands on a pixel, the usual isochrone: a pixel
    * is as close as the closest street sample. `'max'` keeps the largest, a conservative surface
    * where a pixel is within a cost only when every street sample touching it is.
+   *
+   * In `'max'` mode the cost of a street sample is its network cost, the cheaper of the two
+   * directions of its road: `min(cost[u] + t * weight, cost[v] + (1 - t) * reverseWeight)` when a
+   * slot `v -> u` exists and `v` is reached, the forward term alone on a one-way road. The maximum
+   * is then taken over the samples and roads within the buffer of the pixel, so a pixel on the
+   * start node holds the cost of the costliest street sample within the radius (the cost of
+   * travelling up to one buffer radius, plus the walk), not 0. A slot
+   * `v -> u` is taken as the other direction of the same road; among parallel slots the costliest
+   * is used, which is exact when every parallel road lists both directions with one weight.
    */
   mode?: GPUNetworkIsochronesMode;
   /**
@@ -101,7 +111,8 @@ export type GPUNetworkIsochronesRaster = {
   unreachedCost?: number;
   /**
    * Caller-owned outputs of {@link GPUIsobands} (band classes or triangles), plus the optional
-   * `values` raster. Band `k` holds cost in `[costBreaks[k - 1], costBreaks[k])`.
+   * `values` raster. Band `k` holds cost in `(costBreaks[k - 1], costBreaks[k]]`: `GPUIsobands`
+   * reads each break moved to the next float32 above it, so a cost exactly on a break is within it.
    */
   output: GPUIsobandsOutput & {
     /** Optional `width * height` float32 cost raster, row 0 at `minY`. */
@@ -260,8 +271,10 @@ export type GPUNetworkIsochronesProps = {
   maximumIterations?: number;
   /**
    * Compile-time hops one workgroup chains per round of the search (with `startNodes`), forwarded
-   * to `GPUNetworkReachability` (default 32) or `GPUNetworkServiceAreas` (default 16). A network
-   * whose longest shortest path has `h` hops needs about `ceil(h / localIterations)` rounds.
+   * to `GPUNetworkReachability` (default 32) or `GPUNetworkServiceAreas` (default 16). A round
+   * covers about 0.7 of `localIterations` hops in practice, so a network whose longest shortest
+   * path has `h` hops needs about `ceil(h / (0.7 * localIterations)) + 4` rounds: size
+   * `maximumIterations` with `recommendReachabilityIterations`.
    */
   localIterations?: number;
   /**
@@ -292,8 +305,11 @@ export type GPUNetworkIsochronesProps = {
  * cut short by `maximumIterations` (truncated costs, too-small polygons). A splat kernel then samples every edge at a
  * bounded number of points, interpolates the cost linearly from the source node along the edge
  * weight, and writes the minimum (or maximum) cost to the pixels within the walking buffer using
- * integer atomics on order-preserving float bits. Results do not depend on thread order. The
- * raster feeds `GPUIsobands`, so band boundaries are the isochrone polygons as triangles per band.
+ * integer atomics on order-preserving float bits. Results do not depend on thread order. In
+ * `'max'` mode a sample's cost is first reduced to the cheaper of the two directions of its road,
+ * so the maximum never compares a road with its own reverse direction. The raster feeds
+ * `GPUIsobands`, so band boundaries are the isochrone polygons as triangles per band. Bands are
+ * upper-inclusive, `(a, b]`.
  *
  * The raster path is planar in the units of `nodePositions`; the pixel grid has resolution
  * `(maxX - minX) / width`, so the polygons are accurate to about a pixel and thinner than a pixel
@@ -359,9 +375,9 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       props.topology,
       {weights: true, nodePositions: true}
     );
-    validatePackedView(props.costs, ['float32'], `${id} costs`);
-    validatePackedView(props.costBreaks, ['float32'], `${id} costBreaks`);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.costs, ['float32'], `${id} costs`);
+    validateSinglePackedView(props.costBreaks, ['float32'], `${id} costBreaks`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     this.nodeCount = props.costs.length;
     if (this.nodeCount < 1) {
       throw new Error(`${id} costs must contain at least one node`);
@@ -393,13 +409,13 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
         }
       }
     } else {
-      validatePackedView(props.startNodes, ['uint32'], `${id} startNodes`);
+      validateSinglePackedView(props.startNodes, ['uint32'], `${id} startNodes`);
       if (typeof props.startCount === 'number') {
         validateCapacity(id, 'startCount', props.startCount, 0, props.startNodes.length);
       }
     }
     if (props.output?.status?.converged) {
-      validatePackedView(
+      validateSinglePackedView(
         props.output.status.converged,
         ['uint32'],
         `${id} output.status.converged`
@@ -409,7 +425,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       }
     }
     if (props.assignments) {
-      validatePackedView(props.assignments, ['uint32'], `${id} assignments`);
+      validateSinglePackedView(props.assignments, ['uint32'], `${id} assignments`);
       if (props.assignments.length !== this.nodeCount) {
         throw new Error(`${id} assignments length must equal the node count`);
       }
@@ -463,7 +479,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
             `${id} raster.output.pixelFacilities supports at most ${GPU_NETWORK_ISOCHRONES_MAXIMUM_RASTER_FACILITIES} startNodes`
           );
         }
-        validatePackedView(
+        validateSinglePackedView(
           raster.output.pixelFacilities,
           ['uint32'],
           `${id} raster.output.pixelFacilities`
@@ -478,7 +494,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
             `${id} raster.output.triangleFacilities needs pixelFacilities and the triangle output`
           );
         }
-        validatePackedView(
+        validateSinglePackedView(
           raster.output.triangleFacilities,
           ['uint32'],
           `${id} raster.output.triangleFacilities`
@@ -493,7 +509,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
         validateCapacity(id, 'raster.rings.edgeCapacity', raster.rings.edgeCapacity);
       }
       if (raster.output.values) {
-        validatePackedView(raster.output.values, ['float32'], `${id} raster.output.values`);
+        validateSinglePackedView(raster.output.values, ['float32'], `${id} raster.output.values`);
         if (raster.output.values.length < pixelCount) {
           throw new Error(`${id} raster.output.values must hold width * height rows`);
         }
@@ -625,7 +641,19 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
         'float32',
         GPU_ISOBANDS_PARAMETER_LENGTH
       );
+      // Upper-inclusive bands: GPUIsobands reads each break moved to the next float32 above it.
+      const inclusiveBreaks = createTransientView(
+        graph,
+        `${id}-inclusive-breaks`,
+        'float32',
+        props.costBreaks.length
+      );
       nodes.push(
+        createIsochronesInclusiveBreaksNode<Parameters>(graph, {
+          id: `${id}-inclusive-breaks`,
+          costBreaks: props.costBreaks,
+          inclusiveBreaks
+        }),
         createIsochronesBandParametersNode<Parameters>(graph, {
           id: `${id}-band-parameters`,
           width,
@@ -670,7 +698,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           id: `${id}-isobands`,
           grid,
           values,
-          breaks: props.costBreaks,
+          breaks: inclusiveBreaks,
           parameters: bandParameters,
           output: {
             bandClasses: raster.output.bandClasses,
@@ -702,7 +730,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
             id: `${id}-rings`,
             grid,
             values,
-            breaks: props.costBreaks,
+            breaks: inclusiveBreaks,
             parameters: bandParameters,
             edgeCapacity: raster.rings.edgeCapacity,
             vertexTolerance: raster.rings.vertexTolerance,

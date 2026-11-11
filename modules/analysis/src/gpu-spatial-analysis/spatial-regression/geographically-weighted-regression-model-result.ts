@@ -49,7 +49,10 @@ export type GPUGeographicallyWeightedRegressionModelResult = GPURegressionModelR
  *   errors use: `standardErrorSigmaSquared` is `'degrees-of-freedom'`) and
  *   `sigmaSquaredMaximumLikelihood` is `RSS / n`;
  * - `logLikelihood` is mgwr `llf` and `akaikeInformationCriterion` mgwr `aic`
- *   (`-2 llf + 2 (tr(S) + 1)`);
+ *   (`-2 llf + 2 (tr(S) + 1)`): the count is the effective parameters plus the error variance.
+ *   `GPUOrdinaryLeastSquares` and the spatial maximum-likelihood estimators do not count the
+ *   variance (and the error model does not count `lambda`), so add 2 per uncounted parameter
+ *   before comparing an AIC from this result with theirs;
  * - `correctedAkaikeInformationCriterion` is the selected AICc (mgwr `aicc`);
  * - `rSquared` is the global `1 - RSS / TSS` (mgwr `R2`).
  *

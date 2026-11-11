@@ -21,7 +21,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {GPUSpatialWeightsTranspose} from '../spatial-weights/gpu-spatial-weights-transpose';
@@ -39,6 +39,7 @@ import {
   GET_NAN_WGSL,
   IS_FINITE_VALUE_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
+import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
 
 const OPERATION = 'GPUSpatialRegressionDiagnostics';
 const TILE_WORKGROUP_SIZE = 64;
@@ -153,7 +154,12 @@ export type GPUSpatialRegressionDiagnosticsProps = {
  *
  * With `n` rows, `p = predictorCount + 1` regressors (including the intercept), `Z = [1, X]`,
  * `M = I - Z (Z'Z)^-1 Z'`, residuals `e`, `sigma2 = e'e / n`, `T = tr(W'W + WW)`, the fitted
- * values `Zb = y - e` and `J = (W Zb)' M (W Zb) / sigma2 + T`:
+ * values `Zb = y - e` and `J = (W Zb)' M (W Zb) / sigma2 + T`. The variance divisor is `n`
+ * (spreg `LMtests` uses `sig2n`). The pooled-panel LM tests of
+ * `GPUSpatialPanelErrorMaximumLikelihood` divide by `n - p` instead (spreg `panel_LMerror` uses
+ * `ols.sig2`), so on the same residuals and block-diagonal weights a panel LM-error is
+ * `((n - p) / n)^2` times the cross-section one: compare each with its own reference, not with
+ * each other.
  *
  * - `LM-error = (e'We / sigma2)^2 / T`, `LM-lag = (e'Wy / sigma2)^2 / J` (df 1 each)
  * - robust LM-error `= (d_e - T d_l / J)^2 / (T - T^2 / J)` and robust LM-lag
@@ -165,7 +171,7 @@ export type GPUSpatialRegressionDiagnosticsProps = {
  *
  * Every sum is a fixed-order reduction with no atomics: a tile pass (one invocation per
  * `tileRowCount` rows, rows in order) accumulates the Gram matrices and scalar moments for its
- * tile in f32, a merge pass sums the tiles in order with Kahan compensation, and a single
+ * tile in f32, a merge pass sums the tiles in a fixed pairwise order, and a single
  * invocation finishes the small arithmetic and p-values (chi-square via the closed forms for df 1
  * and 2, normal via a 1e-7 accurate `erfc`). Columns are centered before accumulation and the
  * Gram matrices are scaled to unit diagonal before the Cholesky solve. Nothing is read back.
@@ -189,7 +195,10 @@ export type GPUSpatialRegressionDiagnosticsProps = {
  * `GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT` (a count in the summary rather
  * than a status port, because `status` is a single result code of this operator). `NON_FINITE`
  * is now reported only for non-finite moments or an exactly zero residual sum of squares, and
- * `TOO_FEW_ROWS` when no more than `predictorCount + 1` rows are fitted.
+ * `TOO_FEW_ROWS` when no more than `predictorCount + 2` rows are fitted (the kernel needs
+ * `n > p + 1` with `p = predictorCount + 1`). `GPUOrdinaryLeastSquares` itself fits
+ * `n = predictorCount + 2` rows, so on exactly that many rows the fit succeeds and the
+ * diagnostics report `TOO_FEW_ROWS`.
  *
  * Not included: the Anselin-Kelejian test, which is defined on two-stage least squares residuals
  * and belongs with the spatial 2SLS contributor.
@@ -219,9 +228,9 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT - 1
     );
     const rows = validateGPUSpatialWeights(id, props.weights);
-    validatePackedView(props.predictors, ['float32'], `${id} predictors`);
-    validatePackedView(props.response, ['float32'], `${id} response`);
-    validatePackedView(props.residuals, ['float32'], `${id} residuals`);
+    validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
+    validateSinglePackedView(props.response, ['float32'], `${id} response`);
+    validateSinglePackedView(props.residuals, ['float32'], `${id} residuals`);
     if (props.response.length !== rows) {
       throw new Error(`${id} response length must equal the weights row count`);
     }
@@ -232,24 +241,24 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       throw new Error(`${id} predictors length must equal the weights row count * predictorCount`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal the weights row count`);
       }
     }
-    validatePackedView(output.tests, ['float32'], `${id} output.tests`);
+    validateSinglePackedView(output.tests, ['float32'], `${id} output.tests`);
     if (output.tests.length < GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH) {
       throw new Error(
         `${id} output.tests must hold ${GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH} float32 values`
       );
     }
-    validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
     if (output.summary.length < GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH) {
       throw new Error(
         `${id} output.summary must hold ${GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH} float32 values`
       );
     }
-    validatePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
+    validateSinglePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
     if (output.status.code.length < 1) {
       throw new Error(`${id} output.status.code must hold one uint32 row`);
     }
@@ -376,14 +385,11 @@ fn isFittedRow(row: u32) -> bool {
     const rowScaleWGSL = rowScale
       ? 'fn getRowScale(row: u32) -> f32 {\n  return rowScale[rowScaleOffset + row];\n}'
       : 'fn getRowScale(row: u32) -> f32 {\n  return 1.0;\n}';
-    const mergeLoop = (stride: number) => `var sum = 0.0;
-  var compensation = 0.0;
-  for (var tile = 0u; tile < TILE_COUNT; tile++) {
-    let term = partial[partialOffset + tile * ${stride}u + index] - compensation;
-    let next = sum + term;
-    compensation = (next - sum) - term;
-    sum = next;
-  }`;
+    const mergeLoop = (stride: number) =>
+      getPairwiseSumWGSL({
+        count: 'TILE_COUNT',
+        term: `partial[partialOffset + sumItem * ${stride}u + index]`
+      });
     const weightBindings: WGSLKernelBinding[] = [
       {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
       {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
@@ -693,11 +699,17 @@ ${IS_FINITE_VALUE_WGSL}
 // Complementary error function, fractional error below 1.2e-7 (Numerical Recipes erfcc).
 ${ERFC_VALUE_WGSL}
 
+// Chi-square survival for the two degrees of freedom the LM tests use, in closed form:
+// erfc(sqrt(x / 2)) for 1 and exp(-x / 2) for 2. Any other value is NaN, never the 2-degree
+// form: a general caller uses getChiSquareSurvivalValue of analysis-core/kernels/incomplete-gamma-wgsl.
 fn chiSquareSurvival(value: f32, degreesOfFreedom: u32) -> f32 {
   if (degreesOfFreedom == 1u) {
     return erfcValue(sqrt(max(value, 0.0) * 0.5));
   }
-  return exp(-max(value, 0.0) * 0.5);
+  if (degreesOfFreedom == 2u) {
+    return exp(-max(value, 0.0) * 0.5);
+  }
+  return getNaN();
 }
 
 // Scaled (unit-diagonal Gram) entry of the p x p matrix stored at \`base\`.

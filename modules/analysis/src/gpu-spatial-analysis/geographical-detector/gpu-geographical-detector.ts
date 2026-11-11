@@ -12,10 +12,10 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {GET_NAN_WGSL, IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
   GPURegionPartitionEvaluation
@@ -46,7 +46,7 @@ export const GPU_GEOGRAPHICAL_DETECTOR_LAYOUT = {
   nonCentrality: 2,
   /** Number of non-empty strata `L`. */
   strataCount: 3,
-  /** Number of labelled rows `N`. */
+  /** Number of labelled rows with a finite value `N`. */
   observationCount: 4,
   /** `L - 1`. */
   numeratorDegreesOfFreedom: 5,
@@ -66,7 +66,10 @@ export const GPU_GEOGRAPHICAL_DETECTOR_LAYOUT = {
 export type GPUGeographicalDetectorProps = {
   /** Prefix for generated node IDs. Defaults to `'geographical-detector'`. */
   id?: string;
-  /** Response variable `Y`, one value per row. */
+  /**
+   * Response variable `Y`, one value per row. A row whose value is not finite (NaN or infinite) is
+   * left out of every statistic, like an unlabelled row.
+   */
   values: GraphDataView<'float32'>;
   /**
    * Stratum per row: the explanatory variable `X` already stratified (a classification, an
@@ -98,6 +101,9 @@ export type GPUGeographicalDetectorOutput = {
  * `O(rows)` plus the sort and `O(labelCapacity)`; no float atomics are used, so results are
  * bitwise reproducible.
  *
+ * **Missing values.** A row whose value is NaN or infinite is left out of every statistic (it is
+ * given no stratum before the partition evaluation), so it does not count in `N`.
+ *
  * **P-value.** The p-value `1 - F_ncf(F; L - 1, N - L, lambda)` needs a non-central F
  * distribution function and is computed on the host from the read-back summary with
  * `getGeographicalDetectorPValue`. It is not computed on the GPU.
@@ -123,14 +129,14 @@ export class GPUGeographicalDetector implements GPUCommandNodeProducer {
     const id = props.id ?? 'geographical-detector';
     this.id = id;
     this.props = props;
-    validatePackedView(props.values, ['float32'], `${id} values`);
-    validatePackedView(props.labels, ['uint32'], `${id} labels`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.labels, ['uint32'], `${id} labels`);
     validateRequirement(
       id,
       props.values.length === props.labels.length && props.labels.length > 0,
       'values and labels must have the same positive length'
     );
-    validatePackedView(props.output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(props.output.summary, ['float32'], `${id} output.summary`);
     validateRequirement(
       id,
       props.output.summary.length >= GPU_GEOGRAPHICAL_DETECTOR_LAYOUT.length,
@@ -155,14 +161,39 @@ export class GPUGeographicalDetector implements GPUCommandNodeProducer {
     const sizes = createTransientView(graph, `${id}-sizes`, 'uint32', labelCapacity);
     const means = createTransientView(graph, `${id}-means`, 'float32', labelCapacity);
     const tiles = createTransientView(graph, `${id}-tiles`, 'float32', tileCount * 2);
+    // Labels of the analysis rows: a row with a non-finite value is unlabelled, so one NaN cannot
+    // reach the sums of the partition evaluation, which has no finiteness test of its own.
+    const analysisLabels = createTransientView(
+      graph,
+      `${id}-analysis-labels`,
+      'uint32',
+      props.labels.length
+    );
     const declarations = `const LABELS: u32 = ${labelCapacity}u;
 const TILES: u32 = ${tileCount}u;
 const LABEL_TILE: u32 = ${LABEL_TILE}u;`;
     return [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-analysis-labels`,
+        operation: OPERATION,
+        variant: 'analysis-labels',
+        bindings: [
+          {name: 'values', view: props.values, type: 'f32', access: 'read'},
+          {name: 'labels', view: props.labels, type: 'u32', access: 'read'},
+          {name: 'analysisLabels', view: analysisLabels, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: props.labels.length,
+        declarations: IS_FINITE_FLOAT_WGSL,
+        body: `analysisLabels[analysisLabelsOffset + index] = select(
+    0xffffffffu,
+    labels[labelsOffset + index],
+    isFiniteFloat(values[valuesOffset + index])
+  );`
+      }),
       ...new GPURegionPartitionEvaluation({
         id: `${id}-evaluation`,
         values: props.values,
-        labels: props.labels,
+        labels: analysisLabels,
         labelCapacity,
         output: {summary: evaluationSummary, regionSizes: sizes, regionMeans: means}
       }).getCommandNodes(graph),

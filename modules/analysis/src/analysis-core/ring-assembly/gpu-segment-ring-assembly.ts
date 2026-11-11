@@ -20,7 +20,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../kernels/gpu-contributor-utils';
 import type {
   GPUCardinalityPort,
@@ -52,18 +52,50 @@ const RING_LANES = 64;
  * Exact turn classification for the planar successor choice (`match` kernel).
  *
  * `ringExactTurnClass(origin, vertex, end)` places the turn from `vertex - origin` to
- * `end - vertex` in the order of its angle in (-pi, pi]: 0 for a right turn, 1 for straight on
- * (also a zero-length incoming or outgoing segment), 2 for a left turn or a u-turn, and -1 when the
- * exact orientation cannot be certified. It agrees with the sign classes of `ringTurnKey`, so the
- * exact order (class, then `orientSign` between two candidates of one open half-plane) is the f32
- * key order without its rounding. The collinear case compares coordinates only.
+ * `end - vertex` in the order of its angle toward the interior side, in (-pi, pi]: 0 for a turn
+ * away from the interior side, 1 for straight on (also a zero-length incoming or outgoing
+ * segment), 2 for a turn toward the interior side or a u-turn, and -1 when the exact orientation
+ * cannot be certified. It agrees with the sign classes of `ringTurnKey`, so the exact order
+ * (class, then `orientSign` between two candidates of one open half-plane) is the f32 key order
+ * without its rounding. The collinear case compares coordinates only.
+ *
+ * The two interior sides are mirror images: the orientation signs are multiplied by `SIDE_ORDER`
+ * (1 for `'left'`, -1 for `'right'`) before they are classed or compared, so the kernel for
+ * `'right'` decides as the kernel for `'left'` does on the mirror image of the input. In
+ * particular an exact u-turn is the last class for both: the face rule takes the first edge met
+ * when turning from the reversed incoming direction toward the interior side, and an edge that
+ * exactly reverses the incoming one is met first whichever way that turn goes. (Until the
+ * re-review of 2026-11-11 the turn was classed left or right and the order reversed for
+ * `'right'`, which put the u-turn first for `'left'` and last for `'right'`.)
+ *
+ * `ringSegmentTurnClass(origin, vertex, start, end)` gives the same classes for the turn from the
+ * segment `origin -> vertex` to the segment `start -> end`, which need not start at `vertex`. It
+ * is used when a candidate starts within the tolerance of the end vertex but not on it, so that
+ * there is no common vertex to measure the turn at. The order is that of the directions
+ * `vertex - origin` and `end - start` as real vectors, not of their f32 differences:
+ * `ringCrossSign(a, b, c, d)` is the exact sign of `cross(b - a, d - c)` for four f32 points
+ * (`-1`, `0`, `1`, or `2` when it cannot be certified). The eight products of raw coordinates of
+ *
+ *     bx dy - bx cy - ax dy + ax cy - by dx + by cx + ay dx - ay cx
+ *
+ * are summed exactly with the integer machinery of `orientSign` (`multiply24`,
+ * `accumulateShifted`: 48-bit products aligned to the smallest exponent in two 256-bit
+ * accumulators), behind a float filter on the rounded differences. With `c == b` it is
+ * `orientSign(a, b, d)`. The float filter and the exact sum hold no table: the terms are
+ * recomputed instead of stored in a local array (contributor contract, section 11).
+ *
+ * None of these signs changes when one axis is scaled by a positive factor, so the same order
+ * holds for longitude/latitude input, whose turns are measured with longitude differences scaled
+ * by the cosine of the latitude.
  */
 const RING_EXACT_TURN_WGSL = /* wgsl */ `${EXACT_ORIENTATION_WGSL}
 fn ringExactTurnClass(origin: vec2f, vertex: vec2f, end: vec2f) -> i32 {
   let side = orientSign(origin, vertex, end);
   if (side == 2) { return -1; }
-  if (side < 0) { return 0; }
-  if (side > 0) { return 2; }
+  // Positive toward the interior side.
+  let toward = side * SIDE_ORDER;
+  if (toward < 0) { return 0; }
+  if (toward > 0) { return 2; }
   // Collinear: behind the vertex (dot product negative) is the u-turn.
   var behind = false;
   if (vertex.x != origin.x) {
@@ -73,13 +105,139 @@ fn ringExactTurnClass(origin: vec2f, vertex: vec2f, end: vec2f) -> i32 {
   }
   return select(1, 2, behind);
 }
+// Bit patterns of the two factors of term 'term' of
+// cross(b - a, d - c) = bx dy - bx cy - ax dy + ax cy - by dx + by cx + ay dx - ay cx.
+// The sign of the term is folded into the first factor.
+fn ringCrossFactors(term: u32, a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> vec2u {
+  let negate = 0x80000000u;
+  switch (term) {
+    case 0u: { return vec2u(bitcast<u32>(b.x), bitcast<u32>(d.y)); }
+    case 1u: { return vec2u(bitcast<u32>(b.x) ^ negate, bitcast<u32>(c.y)); }
+    case 2u: { return vec2u(bitcast<u32>(a.x) ^ negate, bitcast<u32>(d.y)); }
+    case 3u: { return vec2u(bitcast<u32>(a.x), bitcast<u32>(c.y)); }
+    case 4u: { return vec2u(bitcast<u32>(b.y) ^ negate, bitcast<u32>(d.x)); }
+    case 5u: { return vec2u(bitcast<u32>(b.y), bitcast<u32>(c.x)); }
+    case 6u: { return vec2u(bitcast<u32>(a.y), bitcast<u32>(d.x)); }
+    default: { return vec2u(bitcast<u32>(a.y) ^ negate, bitcast<u32>(c.x)); }
+  }
+}
+
+// One term as an exact 48-bit product times 2^exponent; 'present' is false for a zero term.
+struct RingCrossTerm {
+  low: u32,
+  high: u32,
+  exponent: i32,
+  negative: bool,
+  present: bool,
+}
+
+fn ringCrossTerm(term: u32, a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> RingCrossTerm {
+  let factors = ringCrossFactors(term, a, b, c, d);
+  var result = RingCrossTerm(0u, 0u, 0, false, false);
+  let firstMagnitude = factors.x & 0x7fffffffu;
+  let secondMagnitude = factors.y & 0x7fffffffu;
+  if (firstMagnitude == 0u || secondMagnitude == 0u) { return result; }
+  let firstExponentBits = firstMagnitude >> 23u;
+  let secondExponentBits = secondMagnitude >> 23u;
+  let firstFraction = firstMagnitude & 0x7fffffu;
+  let secondFraction = secondMagnitude & 0x7fffffu;
+  let firstSignificand = select(0x800000u | firstFraction, firstFraction, firstExponentBits == 0u);
+  let secondSignificand = select(0x800000u | secondFraction, secondFraction, secondExponentBits == 0u);
+  let firstExponent = select(i32(firstExponentBits) - 150, -149, firstExponentBits == 0u);
+  let secondExponent = select(i32(secondExponentBits) - 150, -149, secondExponentBits == 0u);
+  let product = multiply24(firstSignificand, secondSignificand);
+  result.low = product.x;
+  result.high = product.y;
+  result.exponent = firstExponent + secondExponent;
+  result.negative = ((factors.x ^ factors.y) >> 31u) == 1u;
+  result.present = true;
+  return result;
+}
+
+fn ringCrossExact(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> i32 {
+  var minimumExponent = 100000;
+  var maximumExponent = -100000;
+  for (var term = 0u; term < 8u; term++) {
+    let value = ringCrossTerm(term, a, b, c, d);
+    if (!value.present) { continue; }
+    minimumExponent = min(minimumExponent, value.exponent);
+    maximumExponent = max(maximumExponent, value.exponent);
+  }
+  if (minimumExponent > maximumExponent) { return 0; }
+  if (maximumExponent - minimumExponent > ORIENT_MAXIMUM_SPAN) { return 2; }
+  var positive: array<u32, 8>;
+  var negative: array<u32, 8>;
+  for (var term = 0u; term < 8u; term++) {
+    let value = ringCrossTerm(term, a, b, c, d);
+    if (!value.present) { continue; }
+    let shift = u32(value.exponent - minimumExponent);
+    if (value.negative) {
+      accumulateShifted(&negative, value.low, value.high, shift);
+    } else {
+      accumulateShifted(&positive, value.low, value.high, shift);
+    }
+  }
+  for (var slot = 8u; slot > 0u; slot--) {
+    let plus = positive[slot - 1u];
+    let minus = negative[slot - 1u];
+    if (plus != minus) { return select(-1, 1, plus > minus); }
+  }
+  return 0;
+}
+
+// Exact sign of cross(b - a, d - c) for four f32 points: -1, 0, 1, or 2 when it cannot be
+// certified (non-finite coordinates, or terms that span more than 200 binary orders).
+fn ringCrossSign(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> i32 {
+  if (!(orientIsFinite(a.x) && orientIsFinite(a.y) && orientIsFinite(b.x) && orientIsFinite(b.y) &&
+        orientIsFinite(c.x) && orientIsFinite(c.y) && orientIsFinite(d.x) && orientIsFinite(d.y))) {
+    return 2;
+  }
+  // Each difference is rounded once and each product once, so the float determinant is within
+  // 2.5e-7 of the magnitude sum of the exact one; the bound keeps a factor of two. Products near
+  // the smallest f32 values lose more than that and go to the exact sum.
+  let first = b - a;
+  let second = d - c;
+  let detLeft = first.x * second.y;
+  let detRight = first.y * second.x;
+  let det = detLeft - detRight;
+  let magnitude = abs(detLeft) + abs(detRight);
+  let bound = 5.0e-7 * magnitude;
+  if (magnitude > 1.0e-30) {
+    if (det > bound) { return 1; }
+    if (-det > bound) { return -1; }
+  }
+  return ringCrossExact(a, b, c, d);
+}
+
+// The same classes for the turn from segment origin -> vertex to segment start -> end (neither
+// of zero length), by the exact sign of the cross product of their directions.
+fn ringSegmentTurnClass(origin: vec2f, vertex: vec2f, start: vec2f, end: vec2f) -> i32 {
+  let side = ringCrossSign(origin, vertex, start, end);
+  if (side == 2) { return -1; }
+  // Positive toward the interior side.
+  let toward = side * SIDE_ORDER;
+  if (toward < 0) { return 0; }
+  if (toward > 0) { return 2; }
+  // Parallel: opposite signs of a non-zero component are the u-turn. A component of one
+  // direction is zero exactly when it is zero in the other.
+  var behind = false;
+  if (vertex.x != origin.x) {
+    behind = (vertex.x > origin.x) != (end.x > start.x);
+  } else {
+    behind = (vertex.y > origin.y) != (end.y > start.y);
+  }
+  return select(1, 2, behind);
+}
 `;
 
 /** Sentinel for "no ring", "no segment" and "no shell" in uint32 outputs (`0xffffffff`). */
 export const GPU_SEGMENT_RING_ASSEMBLY_NONE = 0xffffffff;
 /** `segmentFlags` bit: more than one segment starts at this segment's end vertex. */
 export const GPU_SEGMENT_RING_ASSEMBLY_FLAG_TOUCHING = 1;
-/** `segmentFlags` bit: no segment starts at this segment's end vertex (open chain). */
+/**
+ * `segmentFlags` bit: no segment starts at this segment's end vertex (open chain), or the segment
+ * has zero length (identical start and end), which is on no ring.
+ */
 export const GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING = 2;
 /** `segmentFlags` bit: the chosen continuation was already taken by a lower-index segment. */
 export const GPU_SEGMENT_RING_ASSEMBLY_FLAG_CONFLICT = 4;
@@ -137,7 +295,11 @@ export type GPUSegmentRingAssemblyOutput = {
   /**
    * Optional signed shoelace measure per ring in input units squared; counter-clockwise positive.
    * For longitude/latitude input this is an orientation-only measure in degrees², not an area.
-   * Use it for winding/sign only and measure areas with `GPUGeometryMeasures`.
+   * Use it for winding/sign only and measure areas with `GPUGeometryMeasures`. Zero means an
+   * empty walk (out and back along one path), and such rings are left out of `polygons`. A ring
+   * whose float32 sum is exactly 0 although it encloses area (a face thinner than one float32
+   * step; it has an exact non-zero turn at a lowest vertex it passes once) reports the smallest
+   * normal float, `1.17549435e-38`, with the sign of that turn, so it is never taken for empty.
    */
   ringAreas?: GraphDataView<'float32'>;
   /**
@@ -148,10 +310,14 @@ export type GPUSegmentRingAssemblyOutput = {
   ringIsHole?: GraphDataView<'uint32'>;
   /**
    * Optional owning shell per ring: a shell's own ring index; a hole's innermost enclosing shell
-   * (smallest area, lowest index on ties, same group when `groups` is set), or
-   * {@link GPU_SEGMENT_RING_ASSEMBLY_NONE} when no shell contains it. Each hole tests every shell's
-   * bounding box (four comparisons) and walks the vertices only of shells whose box contains its
-   * probe point.
+   * (same group when `groups` is set), or {@link GPU_SEGMENT_RING_ASSEMBLY_NONE} when no shell
+   * contains it. Containment is the exact ray test of a point beside the hole's first edge. Of two
+   * shells that contain it, the inner one is the one whose bounding box lies inside the other's
+   * (exact for a planar boundary, whose rings do not cross); only shells whose boxes are equal or
+   * do not nest are ordered by float32 area (smaller first, lowest index on ties). Float32 areas
+   * are not otherwise used: a thin shell and its hole can have areas that round to the same value
+   * or the wrong order. Each hole tests every shell's bounding box against its own box and its
+   * probe point (eight comparisons) and walks the vertices only of shells that pass.
    */
   ringShells?: GraphDataView<'uint32'>;
   /** Optional group label per ring (needs the `groups` input). */
@@ -226,7 +392,10 @@ export type GPUSegmentRingAssemblyProps = {
    * Coordinate context of the segment endpoints, default native planar. A `longitude-latitude`
    * context (metric `'none'`) scales x differences by `cos(y)` when comparing turn angles at
    * shared vertices (degrees), so a turn is judged on the ground and not in stretched degrees;
-   * the factor is clamped at 0.01 near the poles. This replaces the former `geographic` flag,
+   * the factor is clamped at 0.01 near the poles. The order of the turns at a vertex does not
+   * depend on that scale (it is positive), so the continuation is chosen by the same exact
+   * orientation tests as for planar input and the scale only enters the f32 pseudo-angle that
+   * orders non-finite coordinates. This replaces the former `geographic` flag,
    * which defaulted to true: omitting the context is now planar. The output context preserves the
    * input `edgeModel` for longitude/latitude; an omitted model stays omitted. Prepare global or
    * antimeridian-crossing rings with `GPULonLatPolygonPreparation` before polygon consumers.
@@ -265,11 +434,23 @@ export type GPUSegmentRingAssemblyProps = {
  * distance against `vertexTolerance`. Only non-finite coordinates set `output.status.overflow`. At a vertex shared by several rings (cells touching at a corner) the continuation is
  * the outgoing segment that turns tightest toward the interior side (the face-traversal rule, a
  * bijection on planar boundaries), which keeps regions that touch only at a point as separate
- * rings. For planar input whose candidates all start exactly at the segment's end vertex (lattice
- * input such as `GPUPolygonOverlay`'s), turns are ordered exactly: by half-plane against the incoming
- * direction, then by the exact orientation of the two candidates, so edges whose directions differ
- * by less than f32 resolution are still told apart. Otherwise (tolerance matches, longitude/latitude
- * input) an f32 pseudo-angle orders them. Where a choice is still taken twice the lowest segment
+ * rings. A candidate that exactly reverses the incoming segment is the tightest turn for either
+ * interior side, so a scene and its mirror image with the interior on the other side give the
+ * same rings (until 2026-11-11 such a candidate was the first choice for `'left'` and the last
+ * for `'right'`). Turns are ordered exactly. Where the candidates all start exactly at the segment's end
+ * vertex (lattice input such as `GPUPolygonOverlay`'s), the order is by half-plane against the
+ * incoming direction, then by the exact orientation of the two candidates about that vertex, so
+ * edges whose directions differ by less than f32 resolution are still told apart. When a
+ * candidate starts within the tolerance of the end vertex but not on it (a tolerance match),
+ * there is no common vertex, and the same order is taken from the directions of the segments
+ * themselves: the exact sign of the cross product of `end - start` of one segment with
+ * `end - start` of the other, computed from the four endpoints and not from the f32 differences,
+ * which round when the two ends of a segment differ in magnitude. Candidates whose directions
+ * are exactly parallel go to the lowest index. The same order holds for longitude/latitude
+ * input: its turns are measured with longitude differences scaled by the cosine of the latitude,
+ * a positive scale of one axis that changes no orientation sign, so the exact tests run on the
+ * degrees as they are. Only non-finite coordinates are ordered by an f32 pseudo-angle (of the
+ * scaled differences for longitude/latitude). Where a choice is still taken twice the lowest segment
  * index wins, the loser is marked
  * {@link GPU_SEGMENT_RING_ASSEMBLY_FLAG_CONFLICT} and left open. That rule makes holes that touch at a
  * corner (or a hole pinched to its shell) one self-touching ring, so a second tracing pass
@@ -282,7 +463,9 @@ export type GPUSegmentRingAssemblyProps = {
  * then ranks every segment from the leader. Scans of ring and vertex counts place each ring; a
  * ring starts at its leader segment and follows the segment direction (or is reversed by
  * `normalizeWinding`). Chains that never close (dangling ends, truncated input) are reported
- * through `openSegmentCount` and `segmentFlags` and emit no ring.
+ * through `openSegmentCount` and `segmentFlags` and emit no ring. A zero-length segment (identical
+ * start and end) has no direction: it is never a continuation, takes none, and is reported the same
+ * way, so it cannot break the ring through its vertex.
  *
  * Rings are written as GeoArrow-style `ringOffsets` plus `positions`. The exact orientation at each
  * ring's lowest vertex identifies shells and holes (library rule 1); `ringShells` assigns each hole to its innermost enclosing shell by
@@ -294,7 +477,8 @@ export type GPUSegmentRingAssemblyProps = {
  * Limits: matching is geometric, so shared vertices must agree within the tolerance (exact for
  * Quadbin, within f32 round-off for H3); rings that span the antimeridian keep the longitudes of
  * the input. Prepare global or antimeridian-crossing rings with `GPULonLatPolygonPreparation`
- * before polygon consumers. Area uses f32 arithmetic relative to each ring's first vertex.
+ * before polygon consumers. Area uses f32 arithmetic relative to each ring's first vertex; it is
+ * reported, and decides nothing except the order of two shells with equal bounding boxes.
  */
 export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -317,7 +501,7 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {output} = props;
-    validatePackedView(props.endpoints, ['float32x4'], `${id} endpoints`);
+    validateSinglePackedView(props.endpoints, ['float32x4'], `${id} endpoints`);
     const segments = props.endpoints.length;
     if (segments < 1) {
       throw new Error(`${id} needs at least one segment row`);
@@ -356,7 +540,7 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
     if (output.ringOffsets.length < 2) {
       throw new Error(`${id} output.ringOffsets needs at least two rows (one ring)`);
     }
-    validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
     if (output.positions.length < 1) {
       throw new Error(`${id} output.positions must not be empty`);
     }
@@ -374,14 +558,18 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
       }
     }
     if (output.ringAreas) {
-      validatePackedView(output.ringAreas, ['float32'], `${id} output.ringAreas`);
+      validateSinglePackedView(output.ringAreas, ['float32'], `${id} output.ringAreas`);
       if (output.ringAreas.length !== ringCapacity) {
         throw new Error(`${id} output.ringAreas length must equal the ring capacity`);
       }
     }
     if (output.polygons) {
       const {polygons} = output;
-      validatePackedView(polygons.positions, ['float32x2'], `${id} output.polygons.positions`);
+      validateSinglePackedView(
+        polygons.positions,
+        ['float32x2'],
+        `${id} output.polygons.positions`
+      );
       if (polygons.positions.length !== output.positions.length) {
         throw new Error(`${id} output.polygons.positions must match output.positions length`);
       }
@@ -569,7 +757,8 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
           write('keys', keys),
           write('ids', ids),
           write('claim', claim),
-          write('counters', counters)
+          // Read only: the quantizer reads the frame extent in counters[4].
+          read('counters', counters)
         ],
         segments,
         `ids[idsOffset + index] = index;
@@ -788,6 +977,13 @@ fn findReverse(index: u32) -> u32 {
   if (index >= valid) { return; }
   let origin = ringStart(index);
   let vertex = ringEnd(index);
+  // A zero-length segment has no direction, so no turn can be ordered against it: it takes no
+  // continuation here and is no candidate below. Left in, it reads as straight on, and with a
+  // lower index than the real segment into its vertex it takes that segment's continuation.
+  if (all(origin == vertex)) {
+    atomicStore(&flags[flagsOffset + index], ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING}u);
+    return;
+  }
   let group = ${groupOf('index')};
   let incoming = ringScaled(vertex - origin, vertex.y);
   let cellOrigin = ringOrigin();
@@ -800,15 +996,18 @@ fn findReverse(index: u32) -> u32 {
   var matches = 0u;
   var first = ${none};
   var second = ${none};
-  ${
-    geographic
-      ? ''
-      : `// Exact choice, used when every candidate starts exactly at this segment's end vertex.
+  // Exact choice, used when every candidate starts exactly at this segment's end vertex.
   var exactUsable = true;
   var exactBest = ${none};
   var exactBestClass = 0;
-  var exactBestEnd = vec2f(0.0);`
-  }
+  var exactBestEnd = vec2f(0.0);
+  // The same choice on the exact directions of the segments, used when a candidate starts
+  // within the tolerance of this segment's end vertex but not on it.
+  var directionUsable = true;
+  var directionBest = ${none};
+  var directionBestClass = 0;
+  var directionBestStart = vec2f(0.0);
+  var directionBestEnd = vec2f(0.0);
   for (var dy = -1; dy <= 1; dy++) {
     for (var dx = -1; dx <= 1; dx++) {
       let hash = ringHash(qx + bitcast<u32>(dx), qy + bitcast<u32>(dy), group);
@@ -832,6 +1031,7 @@ fn findReverse(index: u32) -> u32 {
         ${cancelOpposing ? `if ((atomicLoad(&flags[flagsOffset + candidate]) & ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED}u) != 0u) { continue; }` : ''}
         let candidateStart = ringStart(candidate);
         if (abs(candidateStart.x - vertex.x) > ringTolerance() || abs(candidateStart.y - vertex.y) > ringTolerance()) { continue; }
+        if (all(ringEnd(candidate) == candidateStart)) { continue; }
         ${
           props.pairedOpposites
             ? `let candidateEnd = ringEnd(candidate);
@@ -842,44 +1042,73 @@ fn findReverse(index: u32) -> u32 {
         matches++;
         if (first == ${none}) { first = candidate; } else if (second == ${none}) { second = candidate; }
         let outgoing = ringScaled(ringEnd(candidate) - candidateStart, vertex.y);
-        let turn = SIDE * ringTurnKey(incoming.x * outgoing.y - incoming.y * outgoing.x, dot(incoming, outgoing));
+        let turn = ringTurnKey(SIDE * (incoming.x * outgoing.y - incoming.y * outgoing.x), dot(incoming, outgoing));
         if (best == ${none} || turn > bestTurn || (turn == bestTurn && candidate < best)) {
           best = candidate;
           bestTurn = turn;
         }
-        ${
-          geographic
-            ? ''
-            : `if (exactUsable) {
-          let candidateEnd = ringEnd(candidate);
-          let turnClass = ringExactTurnClass(origin, vertex, candidateEnd);
+        let turnEnd = ringEnd(candidate);
+        if (exactUsable) {
+          let turnClass = ringExactTurnClass(origin, vertex, turnEnd);
           if (any(candidateStart != vertex) || turnClass < 0) {
             exactUsable = false;
           } else if (exactBest == ${none}) {
             exactBest = candidate;
             exactBestClass = turnClass;
-            exactBestEnd = candidateEnd;
+            exactBestEnd = turnEnd;
           } else {
             var order = turnClass - exactBestClass;
             if (order == 0 && turnClass != 1) {
-              // Same open half-plane: the counter-clockwise direction turns further left.
-              let side = orientSign(vertex, candidateEnd, exactBestEnd);
+              // Same half-plane: the direction further round toward the interior side turns
+              // further (counter-clockwise for the interior on the left).
+              let side = orientSign(vertex, turnEnd, exactBestEnd);
               if (side == 2) { exactUsable = false; }
-              order = -side;
+              order = -side * SIDE_ORDER;
             }
-            order = order * SIDE_ORDER;
             if (order > 0 || (order == 0 && candidate < exactBest)) {
               exactBest = candidate;
               exactBestClass = turnClass;
-              exactBestEnd = candidateEnd;
+              exactBestEnd = turnEnd;
             }
           }
-        }`
+        }
+        if (directionUsable) {
+          let turnClass = ringSegmentTurnClass(origin, vertex, candidateStart, turnEnd);
+          if (turnClass < 0) {
+            directionUsable = false;
+          } else if (directionBest == ${none}) {
+            directionBest = candidate;
+            directionBestClass = turnClass;
+            directionBestStart = candidateStart;
+            directionBestEnd = turnEnd;
+          } else {
+            var order = turnClass - directionBestClass;
+            if (order == 0 && turnClass != 1) {
+              // Same half-plane: the direction further round toward the interior side turns
+              // further (counter-clockwise for the interior on the left).
+              let side = ringCrossSign(candidateStart, turnEnd, directionBestStart, directionBestEnd);
+              if (side == 2) { directionUsable = false; }
+              order = -side * SIDE_ORDER;
+            }
+            if (order > 0 || (order == 0 && candidate < directionBest)) {
+              directionBest = candidate;
+              directionBestClass = turnClass;
+              directionBestStart = candidateStart;
+              directionBestEnd = turnEnd;
+            }
+          }
         }
       }
     }
   }
-  ${geographic ? '' : `if (exactUsable && exactBest != ${none}) { best = exactBest; }`}
+  // The f32 pseudo-angle decides only where an exact sign cannot be certified (non-finite
+  // coordinates). The exact orders hold for longitude/latitude input too: the cos(latitude)
+  // scale of the longitude differences is positive and changes no orientation sign.
+  if (exactUsable && exactBest != ${none}) {
+    best = exactBest;
+  } else if (directionUsable && directionBest != ${none}) {
+    best = directionBest;
+  }
   next[nextOffset + index] = best;
   if (matches == 2u) { alt[altOffset + index] = select(first, second, best == first); }
   var flagBits = 0u;
@@ -890,8 +1119,10 @@ fn findReverse(index: u32) -> u32 {
 ${toleranceWGSL}
 const SIDE: f32 = ${sideSign};
 const SIDE_ORDER: i32 = ${interiorSide === 'left' ? 1 : -1};
-// Monotone in the turn angle from the incoming to the outgoing direction (counter-clockwise
-// positive, u-turn at +2). atan2 is avoided: it misbehaves on signed zeros under fast math.
+// Monotone in the turn angle from the incoming to the outgoing direction, positive toward the
+// interior side: 'cross' is the cross product times SIDE, so the key of a scene with the interior
+// on the right is the key of its mirror image with the interior on the left, and the u-turn is
+// at +2 for both. atan2 is avoided: it misbehaves on signed zeros under fast math.
 fn ringTurnKey(cross: f32, dot: f32) -> f32 {
   let denominator = abs(cross) + abs(dot);
   if (denominator == 0.0) { return 0.0; }
@@ -908,7 +1139,7 @@ fn ringEnd(row: u32) -> vec2f {
 fn ringScaled(delta: vec2f, latitude: f32) -> vec2f {
   ${geographic ? 'return vec2f(delta.x * max(cos(radians(latitude)), 0.01), delta.y);' : 'return delta;'}
 }
-${geographic ? '' : RING_EXACT_TURN_WGSL}`
+${RING_EXACT_TURN_WGSL}`
       )
     );
 
@@ -1375,7 +1606,7 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f, lowest: u32)
           read('ringOffsets', output.ringOffsets),
           read('positions', output.positions, 'f32'),
           read('ringCount', ringCount),
-          read('areas', ringAreas, 'f32'),
+          write('areas', ringAreas, 'f32'),
           read('lowestVertices', ringLowestVertices),
           write('isHole', ringIsHole)
         ],
@@ -1409,6 +1640,21 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f, lowest: u32)
       array<vec2f, 4>(getRingVertex(next), vec2f(0.0), vec2f(0.0), vec2f(0.0))
     ).signs.x;
     if (turn != 0) { orientation = turn; }
+    // A ring that turns at a lowest vertex it passes once encloses area, whatever the f32 sum
+    // says: a face thinner than one f32 step can sum to exactly 0, and a ring of area 0 is
+    // read downstream as an empty walk and left out of the polygons. Such a ring gets the smallest
+    // normal float with the sign of its exact turn. (A walk out and back along one path has no
+    // turn at a tip, and passes any other lowest vertex twice: it stays 0.)
+    if (area == 0.0 && turn != 0) {
+      var passes = 0u;
+      var before = getRingVertex(last - 2u);
+      for (var row = first; row + 1u < last; row++) {
+        let current = getRingVertex(row);
+        if (all(current == vertex) && any(before != vertex)) { passes++; }
+        before = current;
+      }
+      if (passes == 1u) { areas[areasOffset + index] = f32(turn) * 1.17549435e-38; }
+    }
   }
   isHole[isHoleOffset + index] = select(0u, 1u, orientation * ${shellSign} < 0);`,
         `${EXACT_ORIENTATION_WGSL}
@@ -1473,20 +1719,29 @@ fn getRingVertex(row: u32) -> vec2f {
   let probe = ExactProbe(0.5 * (a + b), a, b, ${shellSign > 0 ? 1 : -1});
   var best = ${none};
   var bestArea = 0.0;
-  let holeArea = abs(areas[areasOffset + index]);
+  var bestBounds = vec4f(0.0);
+  let holeBounds = getRingBounds(index);
   for (var shell = 0u; shell < rings; shell++) {
     if (isHole[isHoleOffset + shell] != 0u) { continue; }
     ${ringGroups ? 'if (ringGroups[ringGroupsOffset + shell] != ringGroups[ringGroupsOffset + index]) { continue; }' : ''}
+    // A shell around the hole is around the hole's bounding box. The boxes are exact (minima and
+    // maxima of stored vertices), where the f32 areas of a thin shell and its hole can come out
+    // equal or in the wrong order. A bidirected boundary produces a reverse walk of the same box
+    // for the unbounded side: the probe, which lies outside that walk, keeps it from owning itself.
+    let shellBounds = getRingBounds(shell);
+    if (!boundsContain(shellBounds, holeBounds)) { continue; }
     let area = abs(areas[areasOffset + shell]);
-    // A bidirected boundary produces an equal-area reverse walk for the unbounded side. It cannot
-    // own itself as a hole; a containing shell must have strictly larger area.
-    if (area <= holeArea) { continue; }
-    if (best != ${none} && area >= bestArea) { continue; }
+    if (best != ${none}) {
+      // Two shells around one point of a planar boundary are nested, and the inner one has its box
+      // inside the other's. Only shells whose boxes are equal or do not nest are ordered by their
+      // f32 areas (smaller first, lowest index on ties).
+      let insideBest = boundsContain(bestBounds, shellBounds);
+      let aroundBest = boundsContain(shellBounds, bestBounds);
+      if (aroundBest && !insideBest) { continue; }
+      if (insideBest == aroundBest && area >= bestArea) { continue; }
+    }
     // A probe outside the shell's bounding box (or left of it, where a closed ring crosses the ray
     // an even number of times) cannot be inside: skip the vertex walk.
-    let shellBounds = vec4f(
-      ringBounds[ringBoundsOffset + 4u * shell], ringBounds[ringBoundsOffset + 4u * shell + 1u],
-      ringBounds[ringBoundsOffset + 4u * shell + 2u], ringBounds[ringBoundsOffset + 4u * shell + 3u]);
     let point = probe.point;
     if (point.y < shellBounds.y || point.y > shellBounds.w || point.x < shellBounds.x || point.x > shellBounds.z) { continue; }
     let shellFirst = ringOffsets[ringOffsetsOffset + shell];
@@ -1495,6 +1750,7 @@ fn getRingVertex(row: u32) -> vec2f {
     if (inside) {
       best = shell;
       bestArea = area;
+      bestBounds = shellBounds;
     }
   }
   shells[shellsOffset + index] = best;`,
@@ -1502,6 +1758,16 @@ fn getRingVertex(row: u32) -> vec2f {
 ${EXACT_GEOMETRY_WGSL}
 fn getRingVertex(row: u32) -> vec2f {
   return vec2f(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
+}
+// (minimum x, minimum y, maximum x, maximum y) of a ring's vertices.
+fn getRingBounds(ring: u32) -> vec4f {
+  return vec4f(
+    ringBounds[ringBoundsOffset + 4u * ring], ringBounds[ringBoundsOffset + 4u * ring + 1u],
+    ringBounds[ringBoundsOffset + 4u * ring + 2u], ringBounds[ringBoundsOffset + 4u * ring + 3u]);
+}
+// Whether box 'outer' contains box 'inner' (edges may coincide).
+fn boundsContain(outer: vec4f, inner: vec4f) -> bool {
+  return outer.x <= inner.x && outer.y <= inner.y && outer.z >= inner.z && outer.w >= inner.w;
 }
 ${getExactRingWindingWGSL('getShellWinding', 'getRingVertex')}`
         )

@@ -22,7 +22,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSphereRadius,
@@ -254,8 +254,12 @@ export type GPUSpatialScanStatisticProps = {
  * the absolute LLR error is about `|c - e|` times the relative rounding of `e`.
  *
  * Clusters: the most likely cluster is the window with the largest LLR. Secondary clusters are
- * found greedily: the best window sharing no zone with any earlier cluster (time is ignored for
- * overlap), until `maximumClusters` or no positive LLR remains. Ties pick the lowest center zone.
+ * found greedily among one candidate per center, that center's single best window (as SaTScan
+ * does): the candidate with the largest LLR that shares no zone with any earlier cluster (time is
+ * ignored for overlap), until `maximumClusters` or no positive LLR remains. A center whose best
+ * window overlaps an earlier cluster is dropped; its smaller windows are not reconsidered, even
+ * if one of them is disjoint and scores higher than another center's best. Ties pick the lowest
+ * center zone.
  *
  * Inference: `P` Monte Carlo replicates redistribute the cases and record the largest LLR of
  * each replicate (Philox 4x32-10 streams from `permutation-inference`). Poisson: a multinomial over
@@ -328,26 +332,30 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
       props.spatialContext,
       SCAN_SPATIAL_CONTEXT_SUPPORT
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.cases, ['uint32'], `${id} cases`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.cases, ['uint32'], `${id} cases`);
     this.model = props.model ?? 'poisson';
     if (!['poisson', 'bernoulli', 'space-time-permutation'].includes(this.model)) {
       throw new Error(`${id} model must be 'poisson', 'bernoulli' or 'space-time-permutation'`);
     }
     if (this.model === 'poisson') {
       if (!props.baseline) throw new Error(`${id} the poisson model needs a baseline`);
-      validatePackedView(props.baseline, ['float32'], `${id} baseline`);
+      validateSinglePackedView(props.baseline, ['float32'], `${id} baseline`);
     }
     if (this.model === 'bernoulli') {
       if (!props.controls) throw new Error(`${id} the bernoulli model needs controls`);
-      validatePackedView(props.controls, ['uint32'], `${id} controls`);
+      validateSinglePackedView(props.controls, ['uint32'], `${id} controls`);
     }
-    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     const {output} = props;
-    validatePackedView(output.clusterIndices, ['uint32'], `${id} output.clusterIndices`);
-    validatePackedView(output.clusterStatistics, ['float32'], `${id} output.clusterStatistics`);
-    validatePackedView(output.statistics, ['float32'], `${id} output.statistics`);
-    validatePackedView(output.summary, ['uint32'], `${id} output.summary`);
+    validateSinglePackedView(output.clusterIndices, ['uint32'], `${id} output.clusterIndices`);
+    validateSinglePackedView(
+      output.clusterStatistics,
+      ['float32'],
+      `${id} output.clusterStatistics`
+    );
+    validateSinglePackedView(output.statistics, ['float32'], `${id} output.statistics`);
+    validateSinglePackedView(output.summary, ['uint32'], `${id} output.summary`);
     this.zones = props.positions.length;
     this.timeBuckets = props.timeBuckets ?? 1;
     this.maximumClusters = props.maximumClusters ?? 8;
@@ -441,7 +449,7 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
       );
     }
     if (output.zoneStatistics) {
-      validatePackedView(output.zoneStatistics, ['float32'], `${id} output.zoneStatistics`);
+      validateSinglePackedView(output.zoneStatistics, ['float32'], `${id} output.zoneStatistics`);
       if (output.zoneStatistics.length < this.zones) {
         throw new Error(`${id} output.zoneStatistics needs one row per zone`);
       }

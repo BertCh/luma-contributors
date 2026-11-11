@@ -79,6 +79,37 @@ export const COVERAGE_INTERPOLATION_KERNEL_CASES: KernelAuditCase[] = [
         }
       }) satisfies KernelAuditCase
   ),
+  ...(['simple', 'external-drift', 'co-kriging'] as const).map(
+    mode =>
+      ({
+        exportName: 'GPULocalKriging',
+        name: `grid-sample-index-${mode}`,
+        build({graph, view}) {
+          graph.add(
+            new GPULocalKriging({
+              positions: view('float32x2', 16),
+              observations: view('float32x4', 16),
+              supports: view('float32x4', 64),
+              neighborCount: 32,
+              supportCount: 4,
+              sampleIndex: 'grid',
+              mode,
+              covariance: COVARIANCE,
+              sampleDrift: view('float32', 16 * 8),
+              queryDrift: view('float32', 16 * 8),
+              driftCount: 8,
+              coregionalization: [1, 0, 0.4, 0.8],
+              // External drift with weights would need a ninth storage binding.
+              output: {
+                values: view('float32x4', 16),
+                status: view('uint32', 16),
+                ...(mode === 'external-drift' ? {} : {weights: view('float32', 16 * 32)})
+              }
+            })
+          );
+        }
+      }) satisfies KernelAuditCase
+  ),
   ...(['metric', 'octant', 'staged'] as const).flatMap(neighborSearch =>
     (['simple', 'ordinary'] as const).map(
       mode =>

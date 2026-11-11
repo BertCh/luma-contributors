@@ -12,7 +12,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -58,7 +58,10 @@ export const GPU_SPATIAL_ENTROPY_LAYOUT = {
 export type GPUSpatialEntropyProps = {
   /** Prefix for generated node IDs. Defaults to `'spatial-entropy'`. */
   id?: string;
-  /** Square weights; each listed slot is one ordered link (weight values are ignored). */
+  /**
+   * Square weights; each active slot (positive weight, another row: the shared neighbor rule) is
+   * one ordered link. Self slots and zero-weight slots are not links.
+   */
   weights: GPUSpatialWeights;
   /** Category per row, `0xffffffff` for none. */
   categories: GraphDataView<'uint32'>;
@@ -102,7 +105,7 @@ export class GPUSpatialEntropy implements GPUCommandNodeProducer {
     const id = props.id ?? 'spatial-entropy';
     this.id = id;
     this.props = props;
-    validatePackedView(props.output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(props.output.summary, ['float32'], `${id} output.summary`);
     validateRequirement(
       id,
       props.output.summary.length >= GPU_SPATIAL_ENTROPY_LAYOUT.length,

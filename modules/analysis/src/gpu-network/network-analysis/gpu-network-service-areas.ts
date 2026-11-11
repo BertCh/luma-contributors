@@ -13,7 +13,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUNetworkTopologyViews,
@@ -95,8 +95,10 @@ export type GPUNetworkServiceAreasProps = {
    */
   maximumLabelIterations?: number;
   /**
-   * Hops one workgroup chains per round in both phases, 1 to 64. Defaults to 16. A network whose
-   * longest shortest path has `h` hops needs about `ceil(h / localIterations) + 1` rounds.
+   * Hops one workgroup chains per round in both phases, 1 to 64. Defaults to 16. A round covers
+   * about 0.7 of `localIterations` hops in practice, so a network whose longest shortest path has
+   * `h` hops needs about `ceil(h / (0.7 * localIterations)) + 4` rounds, the same budget as
+   * `GPUNetworkReachability`: size `maximumIterations` with `recommendReachabilityIterations`.
    */
   localIterations?: number;
   /**
@@ -214,11 +216,11 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
       ['output.status.converged', output.status?.converged]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     if (typeof props.facilityCount === 'object') {
-      validatePackedView(props.facilityCount, ['uint32'], `${id} facilityCount`);
+      validateSinglePackedView(props.facilityCount, ['uint32'], `${id} facilityCount`);
     }
     for (const [name, view] of [
       ['facilityCosts', props.facilityCosts],
@@ -227,7 +229,7 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
       ['output.facilityCostSums', output.facilityCostSums]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
     const nodeCount = output.assignments.length;

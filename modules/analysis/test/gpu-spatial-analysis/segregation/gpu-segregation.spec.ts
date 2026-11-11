@@ -316,3 +316,44 @@ it('GPUSegregation writes NaN, not 0, for undefined indices', async () => {
   expectSegregationClose(mixed.indices, expected.indices, 'mixed indices', 2e-4, 1e-5);
   expectSegregationClose(mixed.theil, expected.theil, 'mixed theil', 1e-3, 1e-6);
 });
+
+// spatial-statistics-05: the environment reads the active slots of the shared neighbor rule
+// (positive weight, another unit). A self slot in the weights used to be added on top of
+// `selfWeight`, so the unit was counted twice.
+it('GPUSegregation counts a unit once when the weights list a self slot', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Two units, two groups: unit 0 holds (10, 0), unit 1 holds (0, 30). Each lists itself and the
+  // other with weight 1, and selfWeight is 1 (default). Both environments are
+  // (10, 0) + (0, 30) = (10, 30): composition (0.25, 0.75), the global shares, so H and D are 0 and
+  // the isolation of each group is its share. Counting the self slot too gave (20, 30) and (10, 60).
+  const layout = getGPUSegregationLayout(2);
+  const rig = new GraphRig(device);
+  const indices = rig.output('float32', layout.stride);
+  const environment = rig.output('float32', 4);
+  rig.run(
+    new GPUSegregation({
+      groupCount: 2,
+      groupCounts: rig.input(new Float32Array([10, 0, 0, 30]), 'float32'),
+      scales: [
+        {
+          offsets: rig.input(new Uint32Array([0, 2, 4]), 'uint32'),
+          neighbors: rig.input(new Uint32Array([0, 1, 0, 1]), 'uint32'),
+          weights: rig.input(new Float32Array([1, 1, 1, 1]), 'float32')
+        }
+      ],
+      output: {indices: indices.view, localEnvironment: environment.view}
+    })
+  );
+  const result = await indices.readFloat32();
+  const composition = await environment.readFloat32();
+  rig.destroy();
+  expect(composition[0]).toBeCloseTo(0.25, 6);
+  expect(composition[1]).toBeCloseTo(0.75, 6);
+  expect(composition[2]).toBeCloseTo(0.25, 6);
+  expect(composition[3]).toBeCloseTo(0.75, 6);
+  expect(result[layout.entropy]).toBeCloseTo(0, 5);
+  expect(result[layout.multiGroupDissimilarity]).toBeCloseTo(0, 5);
+  expect(result[layout.isolation]).toBeCloseTo(0.25, 5);
+  expect(result[layout.isolation + 1]).toBeCloseTo(0.75, 5);
+});

@@ -35,8 +35,8 @@ export type GPUPointCloudFeaturesProps = {
    * Per-row bit set, zero when clean. Bit 1 (`GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE`): fewer
    * than three neighbors, or collinear or coincident neighbors (middle eigenvalue at most 1e-6 of the
    * largest, or largest at most 1e-30); normals and shapes are zero. Bit 2 (`..._TRUNCATED`): `counts` exceeded `capacity`, so only the nearest
-   * `capacity` neighbors were used. Bit 4 (`..._NOT_CONVERGED`): the 24-sweep Jacobi eigensolve did
-   * not reach its tolerance; the outputs are the last iterate. Bits above 4 are zero.
+   * `capacity` neighbors were used. Bit 4 (`..._NOT_CONVERGED`): the Jacobi eigensolve did
+   * not reach its tolerance within 24 rotations (one pivot each); the outputs are the last iterate. Bits above 4 are zero.
    */
   status: GraphDataView<'uint32'>;
 };

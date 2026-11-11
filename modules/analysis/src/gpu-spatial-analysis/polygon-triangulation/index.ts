@@ -22,3 +22,27 @@ export type {
 } from './gpu-polygon-triangulation';
 export {GPUConstrainedDelaunayTriangulation} from './gpu-constrained-delaunay-triangulation';
 export type {GPUConstrainedDelaunayTriangulationProps} from './gpu-constrained-delaunay-triangulation';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeConstrainedDelaunayTriangulationOnCPU,
+  CPUConstrainedDelaunayTriangulationOperation
+} from './cpu-constrained-delaunay-triangulation-operation';
+export type {
+  CPUConstrainedDelaunayTriangulationInput,
+  CPUConstrainedDelaunayTriangulationOptions,
+  CPUConstrainedDelaunayTriangulationResult
+} from './cpu-constrained-delaunay-triangulation-operation';
+export {GPUConstrainedDelaunayTriangulationOperation} from './gpu-constrained-delaunay-triangulation-operation';
+export type {ConstrainedDelaunayTriangulationOperationProps} from './gpu-constrained-delaunay-triangulation-operation';
+export {
+  computePolygonTriangulationOnCPU,
+  CPUPolygonTriangulationOperation
+} from '../../analysis-core/polygon-triangulation/cpu-polygon-triangulation-operation';
+export type {
+  CPUPolygonTriangulationInput,
+  CPUPolygonTriangulationOptions,
+  CPUPolygonTriangulationResult
+} from '../../analysis-core/polygon-triangulation/cpu-polygon-triangulation-operation';
+export {GPUPolygonTriangulationOperation} from '../../analysis-core/polygon-triangulation/gpu-polygon-triangulation-operation';
+export type {PolygonTriangulationOperationProps} from '../../analysis-core/polygon-triangulation/gpu-polygon-triangulation-operation';

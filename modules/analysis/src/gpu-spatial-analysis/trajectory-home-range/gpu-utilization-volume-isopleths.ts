@@ -16,7 +16,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -79,9 +79,12 @@ export type GPUUtilizationVolumeIsoplethsProps = {
   output: {
     /**
      * Cumulative share of the grid's total mass held by the cells at least as dense as this one,
-     * including this cell: the volume of `getVolumeUD` in `move`. 0 for a cell of zero density.
-     * Cells of equal density are ordered by cell index (the sort is stable), so a tie spreads
-     * across consecutive volumes.
+     * including this cell, so the densest cell holds its own share and the least dense positive
+     * cell holds 1. A cell of zero density (also negative or NaN) holds 1: it is outside every
+     * isopleth below the full one, and `volume <= level` selects the cells of `inside` other than
+     * the one whose own mass crosses the level. Cells of equal density are ordered by cell index (the sort
+     * is stable), so a tie spreads across consecutive volumes. R `move::getVolumeUD` is the same
+     * idea; its exact convention (whether a cell's own mass is counted) was not checked here.
      */
     volume: GraphDataView<'float32'>;
     /**
@@ -97,8 +100,9 @@ export type GPUUtilizationVolumeIsoplethsProps = {
 
 /**
  * Volume isopleths of a utilization distribution: the cumulative probability volume of every cell
- * when cells are taken from the densest down (`getVolumeUD` of `move`), and the mask of the
- * `level` isopleth (the home range at that level).
+ * when cells are taken from the densest down, each cell's own mass included, and the mask of the
+ * `level` isopleth (the home range at that level). The volume raster of R `move` (`getVolumeUD`)
+ * serves the same purpose; no parity with it is claimed.
  *
  * Method: a stable radix sort of the cells by density (descending), then an exclusive prefix sum of
  * the sorted densities by three levels of 256-row block sums, each level one bounded invocation per
@@ -118,7 +122,7 @@ export class GPUUtilizationVolumeIsopleths implements GPUCommandNodeProducer {
 
   constructor(props: GPUUtilizationVolumeIsoplethsProps) {
     const id = props.id ?? 'utilization-volume-isopleths';
-    validatePackedView(props.density, ['float32'], `${id} density`);
+    validateSinglePackedView(props.density, ['float32'], `${id} density`);
     this.cellCount = props.density.length;
     validateCapacity(id, 'cellCount', this.cellCount, 2);
     validateMaximumCount(
@@ -127,21 +131,21 @@ export class GPUUtilizationVolumeIsopleths implements GPUCommandNodeProducer {
       this.cellCount,
       GPU_UTILIZATION_VOLUME_ISOPLETHS_MAXIMUM_CELLS
     );
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       props.parameters.length >= GPU_UTILIZATION_VOLUME_ISOPLETHS_PARAMETER_LENGTH,
       `parameters must contain ${GPU_UTILIZATION_VOLUME_ISOPLETHS_PARAMETER_LENGTH} float32 rows`
     );
     const {output} = props;
-    validatePackedView(output.volume, ['float32'], `${id} output.volume`);
+    validateSinglePackedView(output.volume, ['float32'], `${id} output.volume`);
     validateViewLength(id, 'output.volume', output.volume, this.cellCount);
     if (output.inside) {
-      validatePackedView(output.inside, ['uint32'], `${id} output.inside`);
+      validateSinglePackedView(output.inside, ['uint32'], `${id} output.inside`);
       validateViewLength(id, 'output.inside', output.inside, this.cellCount);
     }
     if (output.totalMass) {
-      validatePackedView(output.totalMass, ['float32'], `${id} output.totalMass`);
+      validateSinglePackedView(output.totalMass, ['float32'], `${id} output.totalMass`);
       validateRequirement(
         id,
         output.totalMass.length >= 1,
@@ -316,7 +320,8 @@ export class GPUUtilizationVolumeIsopleths implements GPUCommandNodeProducer {
   let mass = total[totalOffset];
   let cell = sortedCells[sortedCellsOffset + index];
   let hasMass = mass > 0.0;
-  volume[volumeOffset + cell] = select(0.0, min((preceding + value) / mass, 1.0), hasMass && value > 0.0);
+  // A cell without mass is the last any isopleth reaches: volume 1, so 'volume <= level' leaves it out.
+  volume[volumeOffset + cell] = select(1.0, min((preceding + value) / mass, 1.0), hasMass && value > 0.0);
 ${
   output.inside
     ? `  inside[insideOffset + cell] = select(0u, 1u, hasMass && value > 0.0 && preceding / mass < parameters[parametersOffset]);`

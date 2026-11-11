@@ -18,13 +18,16 @@ graph-owned transient view, as before. The `outputs` of the result are the views
 | `addPatchProximityRecipe` | `core`, `distances`, `metrics`, `horizontal`, `fields`, and with `reconcilePatches` `reconciledPatches`, `patchParents` |
 | `addResistanceConnectivityRecipe` | `potentials`, `currents`, `diagnostics`, `status` |
 | `addSparseResistanceConnectivityRecipe` | `potentials`, `currents`, `vertexCurrents`, `diagnostics`, `status` |
+| `addRasterResistanceConnectivityRecipe` | required `potentials`, `vertexCurrents`, `diagnostics`, `solverStatus`; optional `currents`, `edges`, `conductances` and the `status` scalars |
 | `addSegregationDecompositionRecipe` | `indices`, `validity`, `decomposition`, and with `randomization` `distribution`, `inference` |
 | `addSegregationCounterfactualRecipe` | the decomposition entries, `compositionOnly`, `spatialOnly` |
 | `addPopulationSupportAlignmentRecipe` | `populations`, `validity`, `status` |
 
 Limits are named constants and are rejected with a message that starts with the recipe ID and names
 the prop: 256 classes (landscape metrics), 256 vertices, 65,536 edges and 4,096 iterations (dense
-resistance), 65,536 replicates (decomposition) and 2,048 units (counterfactual). Patch proximity
+resistance), 1,048,576 vertices and 2,097,152 edges (sparse resistance), 1,048,576 cells and
+2,097,152 edge slots (raster resistance), 65,536 replicates (decomposition) and 2,048 units
+(counterfactual). Patch proximity
 checks its patches-times-cells distance fields against the device storage binding size.
 
 The landscape and segregation totals are reductions (`GPUReduction`) over per-patch or per-unit
@@ -142,7 +145,8 @@ undefined currents because their potentials are ungrounded. Iteration exhaustion
 an impossible network. Float32 conditioning remains a limit even with tight tolerances; independent
 SciPy series/parallel network fixtures check potentials, currents and resistance. The solver is
 compact and serial and is limited to 256 vertices and 65,536 edges. For larger systems use
-`addSparseResistanceConnectivityRecipe` below. A raster conductance adapter is the EC03-R follow-up.
+`addSparseResistanceConnectivityRecipe` below, and `addRasterResistanceConnectivityRecipe` for a
+resistance raster.
 
 ## `addSparseResistanceConnectivityRecipe` — EC03
 
@@ -211,6 +215,91 @@ trigger a GPU watchdog device loss (about 2 s on Windows and Chrome). Keep large
 iterations or smaller grids. About 20,000 dispatches are encoded per execution even after
 convergence (gated dispatches run zero workgroups), so expect several to tens of milliseconds of
 encoding. No multigrid or stronger preconditioner is provided.
+
+## `addRasterResistanceConnectivityRecipe` — EC03-R
+
+Circuit connectivity across a resistance raster between one source cell and one sink cell. Each cell
+is a vertex. Each pair of neighbouring cells with data is an edge with conductance
+
+`g(a, b) = 2 / (R(a) + R(b)) / edgeLength(a, b)`,
+
+the inverse of the mean resistance of the two cells per unit of ground distance between their
+centres. Diagonal neighbours use the diagonal length. Resistance is per unit ground length: an edge
+is a resistor of `mean(R) * edgeLength`.
+
+This is not Circuitscape's convention. Circuitscape's raster pairwise mode uses `1 / mean(R)` for
+cardinal neighbours and `1 / (sqrt(2) * mean(R))` for diagonal ones and never divides by the cell
+size. On a planar grid of square cells of size `s` (`cellSizeMode: 'uniform'`) every conductance here
+is Circuitscape's divided by `s`, so the current map is the same and potentials and effective
+resistance are `s` times Circuitscape's (two cells with `R = 1` and `s = 30` give 30; Circuitscape
+gives 1). With rectangular cells, and in `'geographic'` and `'web-mercator'` mode where the edge
+length changes with the row, the conductance ratios differ and the current map differs too. The spec
+pins the convention with two-cell, three-cell and 2 x 2 circuits solved by hand; no Circuitscape
+raster output is used. The edge list and the conductances are built on
+the GPU, one invocation per edge slot, and solved by `addSparseResistanceConnectivityRecipe` with
+unit current injected at `source` and the `sink` held at potential zero. The recipe composes its
+stages through the recipe builder and returns `contributors`, `outputs`, `intermediates`, `status`
+(per stage) and `provenance`.
+
+Props: `grid` (the raster grid), `resistance` (a published raster band: buffer or texture; scale,
+offset and the no-data value are resolved first), `parameters` (at least 8 float32 values packed by
+`getRasterResistanceConnectivityParameterValues(grid)`: the affine and the row georeference, so a
+new georeference does not recompile), `neighborhood` (4 or 8, default 8), `cellSizeMode` (default
+`'uniform'`), `source` and `sink` (cell indices `row * width + column`), and the sparse solve's
+`maximumIterations` (1 to 4,096, default 1,024), `tolerance` (default 1e-4) and
+`connectivityIterations` (1 to 1,024, default 128). Compile-time: the grid size, `neighborhood`,
+`cellSizeMode`, `source`, `sink`, `tolerance` and the iteration budgets; per-frame: `parameters` and
+the resistance values.
+
+Edge length: in `'uniform'` mode the affine maps the pixel step to a world step, so rotated and
+sheared grids are exact (lengths are in affine units; geographic degrees are not meters).
+`'web-mercator'` and `'geographic'` measure WGS84 ground meters with the row scale at the midpoint
+row of the edge, the rule of the terrain flow measures, and need an axis-aligned grid.
+
+Edge slots have a fixed layout, `cell * slotsPerCell + direction`: east and south for four
+neighbours (two slots per cell), plus south-east and south-west for eight (four slots per cell).
+A slot whose neighbour is off the grid is the self edge `(cell, cell)`; a slot touching a no-data
+cell has zero conductance. `currents`, `edges` and `conductances` follow this layout.
+
+No-data, zero and negative resistance:
+
+- No-data (zero validity, the band's no-data value, or a non-finite resistance including
+  `+Infinity`) removes the cell from the circuit, like an absolute barrier: its edges have zero
+  conductance and its potential and current are NaN.
+- A cell with data and a zero or negative resistance is invalid. It cannot be represented in a
+  conductance Laplacian (zero resistance is an infinite conductance), so it is not silently treated
+  as a barrier or a short circuit: such cells are counted in stage `resistance` (`invalidCount`),
+  every edge they share with a cell with data gets a NaN conductance, and the sparse solve counts
+  those edges (`solverStatus.w`, stage `solve` `invalidCount`) and publishes no potentials. Clamp
+  resistances to a positive minimum, or mark them no-data, before calling.
+- Two neighbouring positive resistances so small that `2 / (R(a) + R(b)) / edgeLength` exceeds the
+  float32 maximum (about 3.4e38; for example `R = 1e-35` on both sides of a `1e-4` cell) are
+  invalid in the same way: the edge gets a NaN conductance and both cells are counted in stage
+  `resistance`, so that count is nonzero whenever the solve reports invalid edges.
+
+Outputs (caller-owned): `potentials` and `vertexCurrents` (one per cell, the current map; NaN outside
+the sink's component), `diagnostics` and `solverStatus` as in the sparse recipe (`solverStatus` is
+its `status`), and optionally `currents` (one per edge slot), `edges` and `conductances`. The status
+stages are `resistance` (`invalidCount`) and `solve` (`converged`, `iterationCount`,
+`iterationLimitReached`, `invalidCount`); pass `output.status` views to read them, otherwise they
+are graph-owned.
+
+Limits: at most 1,048,576 cells (the vertex limit of the sparse solve) and at most 2,097,152 edge
+slots (its edge limit): 1024 × 1024 cells with four neighbours, 524,288 cells (for example
+1024 × 512) with eight. Both are rejected at construction with a message that names the limit. The
+command node count is the sparse recipe's plus an allowance of 16 for the adapter stages, reported
+as `estimatedCommandNodeCount`. The precision and watchdog notes of the sparse recipe apply; with
+ground meters as edge lengths the conductances are small, which the solve tolerates but does not
+rescale.
+
+Validation: a binary64 dense circuit solve of the same edge list on small grids (uniform resistance,
+a no-data wall with a one-cell gap that carries the whole current, no-data holes including NaN and
+`+Infinity`, both neighbourhoods, a sheared affine and a geographic grid) checks every conductance,
+potential and node current and the effective resistance; a closed wall reports the sink unreachable;
+zero and negative resistances, and positive resistances whose conductance overflows float32, are
+counted and block the solve. The edge list is checked against an adjacency built by comparing
+every pair of cells (each neighbouring pair exactly once, no other edges) on non-square grids, one-row
+and one-column grids and non-square cells, with four and eight neighbours.
 
 ## `addSegregationDecompositionRecipe` — EC04
 

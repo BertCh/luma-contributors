@@ -51,6 +51,7 @@ type PeakRun = {
   mask: number[];
   compactIds: number[];
   converged: number;
+  iterationLimitReached: number;
   overflow: number;
 };
 
@@ -81,6 +82,7 @@ async function createPeakRunner(
   const countBuffer = createOutputBuffer(device, 1);
   const overflowBuffer = createOutputBuffer(device, 1);
   const convergedBuffer = createOutputBuffer(device, 1);
+  const limitBuffer = createOutputBuffer(device, 1);
   graph.add(
     new GPUProfilePeaks({
       values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', sampleCount),
@@ -124,7 +126,10 @@ async function createPeakRunner(
             overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
           }
         },
-        status: {converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1)}
+        status: {
+          converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1),
+          iterationLimitReached: importGraphBuffer(graph, 'limit', limitBuffer, 'uint32', 1)
+        }
       }
     })
   );
@@ -143,7 +148,8 @@ async function createPeakRunner(
         refinedValue: await readFloat32(refinedValueBuffer, sampleCount),
         mask: await readUint32(maskBuffer, sampleCount),
         compactIds: await readCompactIds(idsBuffer, countBuffer),
-        converged: (await readUint32(convergedBuffer, 1))[0]
+        converged: (await readUint32(convergedBuffer, 1))[0],
+        iterationLimitReached: (await readUint32(limitBuffer, 1))[0]
       };
     },
     destroy() {
@@ -160,7 +166,8 @@ async function createPeakRunner(
         idsBuffer,
         countBuffer,
         overflowBuffer,
-        convergedBuffer
+        convergedBuffer,
+        limitBuffer
       ]) {
         buffer?.destroy();
       }
@@ -194,6 +201,7 @@ function expectMatchesOracle(
   tolerance: number = 2e-3
 ): void {
   expect(run.converged).toBe(1);
+  expect(run.iterationLimitReached).toBe(0);
   expect(run.mask).toEqual(Array.from(oracle.mask));
   expect(run.compactIds).toEqual(getRows(oracle));
   // Prominence is a single correctly rounded f32 subtraction: bit exact, NaN where not a peak.
@@ -447,6 +455,7 @@ it('GPUProfilePeaks reports converged 0 and nothing undecided when maximumSuppre
     maximumSuppressionIterations: 0
   });
   expect(none.converged).toBe(0);
+  expect(none.iterationLimitReached).toBe(1);
   expect(none.overflow).toBe(GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED);
   expect(none.compactIds).toEqual([]);
   // Review C-09: undecided candidates carry the unresolved markers, never "not a peak".

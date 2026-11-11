@@ -17,7 +17,6 @@ import {
   type GPURasterExtremaPyramidLayout,
   type GPURasterExtremaPyramidOutput
 } from '../../raster-analysis/raster-pyramid/gpu-raster-extrema-pyramid';
-import {assert} from '@luma.gl/core';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -28,7 +27,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
-  validatePackedView
+  validateMaximumCount,
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterGridGeoreference,
@@ -253,13 +253,13 @@ export class GPUTerrainSummits implements GPUCommandNodeProducer {
       });
     }
     if (output.summitMask) {
-      validatePackedView(output.summitMask, ['uint32'], `${id} output.summitMask`);
+      validateSinglePackedView(output.summitMask, ['uint32'], `${id} output.summitMask`);
       if (output.summitMask.length !== pixelCount) {
         throw new Error(`${id} output.summitMask must contain one value per pixel`);
       }
     }
     if (output.drop) {
-      validatePackedView(output.drop, ['float32'], `${id} output.drop`);
+      validateSinglePackedView(output.drop, ['float32'], `${id} output.drop`);
       if (output.drop.length !== pixelCount) {
         throw new Error(`${id} output.drop must contain one value per pixel`);
       }
@@ -271,13 +271,13 @@ export class GPUTerrainSummits implements GPUCommandNodeProducer {
       if (!output.summits) {
         throw new Error(`${id} output.summitDrop requires output.summits`);
       }
-      validatePackedView(output.summitDrop, ['float32'], `${id} output.summitDrop`);
+      validateSinglePackedView(output.summitDrop, ['float32'], `${id} output.summitDrop`);
       if (output.summitDrop.length < output.summits.ids.length) {
         throw new Error(`${id} output.summitDrop must contain at least summits.ids.length rows`);
       }
     }
     if (radiusClamped) {
-      validatePackedView(radiusClamped, ['uint32'], `${id} output.status.radiusClamped`);
+      validateSinglePackedView(radiusClamped, ['uint32'], `${id} output.status.radiusClamped`);
       if (radiusClamped.length < 1) {
         throw new Error(`${id} output.status.radiusClamped must contain one row`);
       }
@@ -455,10 +455,10 @@ export class GPUTerrainSummits implements GPUCommandNodeProducer {
         }),
         body: `let column = i32(index % WIDTH);
   let row = i32(index / WIDTH);
-  summitDrop = getNan(index);
+  summitDrop = getQuietNaN(index);
   let isSummit = evaluateSummit(column, row, index);
   ${mask ? 'maskValues[maskValuesOffset + index] = select(0u, 1u, isSummit);' : ''}
-  ${drop ? 'dropValues[dropValuesOffset + index] = select(getNan(index), summitDrop, isSummit);' : ''}`
+  ${drop ? 'dropValues[dropValuesOffset + index] = select(getQuietNaN(index), summitDrop, isSummit);' : ''}`
       })
     );
     if (summits && mask) {
@@ -543,7 +543,7 @@ function validateSummitsPyramid(
   if (!top || top.width !== 1 || top.height !== 1) {
     throw new Error(`${id} pyramid must reach a single top cell`);
   }
-  validatePackedView(combined, ['float32'], `${id} pyramid combined`);
+  validateSinglePackedView(combined, ['float32'], `${id} pyramid combined`);
   if (combined.length !== 2 * layout.length) {
     throw new Error(`${id} pyramid combined must contain ${2 * layout.length} values`);
   }
@@ -602,7 +602,12 @@ export function getTerrainSummitsKernelWGSL(options: TerrainSummitsKernelWGSLOpt
   const {width, height, maximumRadiusPixels, cellSizeMode, layout} = options;
   const stackSize = 3 * layout.levels.length + 4;
   // The stack must leave room for the kernel's other private words.
-  assert(getTerrainSummitsStackBytes(layout) + 256 < 8192);
+  validateMaximumCount(
+    'GPUTerrainSummits',
+    'pyramid stack bytes plus 256 bytes of private words',
+    getTerrainSummitsStackBytes(layout) + 256,
+    8191
+  );
   const top = layout.levels.length - 1;
   return `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;

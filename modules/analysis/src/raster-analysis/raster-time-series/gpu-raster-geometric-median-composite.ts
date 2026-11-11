@@ -70,7 +70,7 @@ export type GPURasterGeometricMedianCompositeProps = {
   /** Observations `(cell * sliceCount + slice) * bandCount + band`; an observation with any non-finite band is missing. */
   values: GraphDataView<'float32'>;
   /** Per-observation QA `cell * sliceCount + slice`; zero rejects the observation. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Float32, see {@link getGPURasterGeometricMedianCompositeParameterValues}. */
   parameters: GraphDataView<'float32'>;
   output: {
@@ -116,8 +116,8 @@ export class GPURasterGeometricMedianComposite implements GPUCommandNodeProducer
     validateRequirement(
       id,
       props.values.length >= observationCount * props.bandCount &&
-        (!props.validity || props.validity.length >= observationCount),
-      'values must hold cellCount times sliceCount times bandCount entries and validity cellCount times sliceCount'
+        (!props.mask || props.mask.length >= observationCount),
+      'values must hold cellCount times sliceCount times bandCount entries and mask cellCount times sliceCount'
     );
     validateRequirement(
       id,
@@ -135,8 +135,8 @@ export class GPURasterGeometricMedianComposite implements GPUCommandNodeProducer
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, parameters} = this.props;
-    return [values, parameters, ...(validity ? [validity] : [])];
+    const {values, mask, parameters} = this.props;
+    return [values, parameters, ...(mask ? [mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -153,7 +153,7 @@ export class GPURasterGeometricMedianComposite implements GPUCommandNodeProducer
       bandCount: bands,
       iterationCount,
       values,
-      validity,
+      mask,
       parameters,
       output
     } = props;
@@ -167,7 +167,7 @@ export class GPURasterGeometricMedianComposite implements GPUCommandNodeProducer
         bindings: [
           rasterBinding('values', values),
           rasterBinding('parameters', parameters),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           rasterBinding('composite', output.composite, true),
           rasterBinding('status', output.status, true),
           ...(output.lastStep ? [rasterBinding('lastStep', output.lastStep, true)] : [])
@@ -175,7 +175,7 @@ export class GPURasterGeometricMedianComposite implements GPUCommandNodeProducer
         declarations: `${RASTER_FINITE_WGSL}
 fn isObservationValid(cell: u32, slice: u32) -> bool {
   let source = cell * ${slices}u + slice;
-  ${validity ? `if (validity[validityOffset + source] == 0u) { return false; }` : ''}
+  ${mask ? `if (mask[maskOffset + source] == 0u) { return false; }` : ''}
   for (var band = 0u; band < ${bands}u; band++) {
     if (!finite(values[valuesOffset + source * ${bands}u + band])) { return false; }
   }

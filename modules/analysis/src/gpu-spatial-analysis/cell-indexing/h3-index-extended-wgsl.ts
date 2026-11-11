@@ -7,13 +7,43 @@
 
 import {dggs} from '@luma.gl/shaders';
 
-/** Parses a `vec2f(...)` / `vec3f(...)` constant table out of the shared `dggs` shader source. */
-function parseDggsTable(functionName: string): number[][] {
-  const start = dggs.source.indexOf(`fn ${functionName}`);
-  const end = dggs.source.indexOf('return values', start);
-  return [...dggs.source.slice(start, end).matchAll(/vec[23]f\(([^)]*)\)/g)].map(match =>
-    match[1].split(',').map(Number)
-  );
+/** Rows of each H3 face table in the `dggs` shader source: one per icosahedron face. */
+const H3_FACE_COUNT = 20;
+
+/**
+ * Parses a per-face `vec2f(...)` / `vec3f(...)` constant table out of the shared `dggs` shader
+ * source.
+ *
+ * The text layout of the published shader is not a public contract (its WGSL functions are), so
+ * the result is checked: the function must be found and hold exactly 20 rows of `columnCount`
+ * finite numbers. Anything else throws at module load, naming the table, instead of building face
+ * bases from an empty or shifted table. The check runs once per table, when this module is first
+ * imported.
+ *
+ * @internal
+ */
+export function parseDggsFaceTable(
+  functionName: string,
+  columnCount: number,
+  source: string = dggs.source
+): number[][] {
+  const start = source.indexOf(`fn ${functionName}`);
+  const end = start < 0 ? -1 : source.indexOf('return values', start);
+  const rows =
+    end < 0
+      ? []
+      : [...source.slice(start, end).matchAll(/vec[23]f\(([^)]*)\)/g)].map(match =>
+          match[1].split(',').map(Number)
+        );
+  const isWellFormed =
+    rows.length === H3_FACE_COUNT &&
+    rows.every(row => row.length === columnCount && row.every(Number.isFinite));
+  if (!isWellFormed) {
+    throw new Error(
+      `h3-index-extended: dggs shader table ${functionName} has ${rows.length} rows; expected ${H3_FACE_COUNT} rows of ${columnCount} finite numbers. The layout of the @luma.gl/shaders dggs source changed.`
+    );
+  }
+  return rows;
 }
 
 /** Formats a float64 as a double-float `vec2f(high, low)` literal. */
@@ -25,8 +55,8 @@ function formatDoubleFloat(value: number): string {
 
 /** Float64 face center, hex i axis and hex j axis unit vectors for each of the 20 icosahedron faces. */
 function getFaceBasisVectors(): number[][] {
-  const centers = parseDggsTable('dggs_h3_get_face_center_geo');
-  const azimuths = parseDggsTable('dggs_h3_get_face_axis_azimuths');
+  const centers = parseDggsFaceTable('dggs_h3_get_face_center_geo', 2);
+  const azimuths = parseDggsFaceTable('dggs_h3_get_face_axis_azimuths', 3);
   const values: number[][] = [];
   centers.forEach(([latitude, longitude], face) => {
     const sinLat = Math.sin(latitude);

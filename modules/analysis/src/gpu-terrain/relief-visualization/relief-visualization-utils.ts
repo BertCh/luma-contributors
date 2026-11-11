@@ -10,6 +10,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {getRasterGroundScaleWGSL} from '../../analysis-core/raster-grid';
+import {GET_QUIET_NAN_SEEDED_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
@@ -258,7 +259,7 @@ const RADIUS: i32 = ${radius};${groundDeclarations}`;
   let row = i32(index / WIDTH);
   ${groundRadius ? 'let radius = getReliefPixelRadius(u32(row)).y;' : radiusSource}
   let isValid = validity[validityOffset + index] != 0u;
-  var deviationValue = getNaN(index);
+  var deviationValue = getQuietNaN(index);
   if (isValid) {
     let center = values[valuesOffset + index];
     var total = 0.0;
@@ -514,8 +515,7 @@ const INVERSE_QUANTUM: f32 = ${getWGSLFloatLiteral(1 / props.quantum)};
 ${TERRAIN_SUMMED_AREA_WGSL_HELPERS}
 ${TERRAIN_SUMMED_AREA_SUM_COUNT_BOX_WGSL}
 // Runtime operand so the NaN is not constant-folded away.
-fn getNaN(index: u32) -> f32 { return bitcast<f32>(0x7fc00000u | (index & 0u)); }
-// total + weight * strip, modulo 2^64 for the sum.
+${GET_QUIET_NAN_SEEDED_WGSL}// total + weight * strip, modulo 2^64 for the sum.
 fn addWeighted(total: TerrainBoxSums, strip: TerrainBoxSums, weight: u32) -> TerrainBoxSums {
   return TerrainBoxSums(
     add64(total.sum, multiply64By32(strip.sum, weight)),
@@ -534,7 +534,7 @@ fn addWeighted(total: TerrainBoxSums, strip: TerrainBoxSums, weight: u32) -> Ter
   // A single-cell box returns the centre's quantized elevation and validity exactly.
   let centre = readBoxSums(column, column, row, row);
   let isValid = centre.count == 1u;
-  var deviationValue = getNaN(index);
+  var deviationValue = getQuietNaN(index);
   if (isValid) {
     let firstColumn = max(column - ${radiusX}, 0i);
     let lastColumn = min(column + ${radiusX}, i32(WIDTH) - 1i);

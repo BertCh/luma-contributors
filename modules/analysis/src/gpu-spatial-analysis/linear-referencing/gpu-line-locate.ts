@@ -15,7 +15,7 @@ import {
   getStorageBindingElementLimit,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSphereRadius,
@@ -153,7 +153,8 @@ export type GPULineLocateProps = GPULineGeometryFields & {
  * the segment with an upper-bound binary search over the measures (so a measure that lands on a
  * vertex continues on the following segment, and zero-length segments are skipped), and
  * interpolates by measure. Lateral offsets move the point along the segment's left normal.
- * Events on empty or out-of-range lines are `invalid` with NaN positions.
+ * Events on empty or out-of-range lines, and events whose measure is NaN, are `invalid` with NaN
+ * positions; an infinite measure clamps to a line end.
  *
  * A great-circle `spatialContext` measures in sphere-radius units (meters by default) and places
  * events on great-circle arcs (Geod `npts`, `ST_LineInterpolatePoint` on a sphere). Tangents are
@@ -195,15 +196,15 @@ export class GPULineLocate implements GPUCommandNodeProducer {
     if (this.measureMode !== 'distance' && this.measureMode !== 'fraction') {
       throw new Error(`${id} measureMode must be 'distance' or 'fraction'`);
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    validateSinglePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
     if (props.lineOffsets.length < 2) {
       throw new Error(`${id} lineOffsets needs two rows`);
     }
-    validatePackedView(props.eventLineIndices, ['uint32'], `${id} eventLineIndices`);
+    validateSinglePackedView(props.eventLineIndices, ['uint32'], `${id} eventLineIndices`);
     const eventCount = props.eventLineIndices.length;
     if (eventCount < 1) {
       throw new Error(`${id} needs at least one event`);
@@ -213,14 +214,14 @@ export class GPULineLocate implements GPUCommandNodeProducer {
       ['eventOffsets', props.eventOffsets]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length !== eventCount) {
           throw new Error(`${id} ${name} length must equal eventLineIndices length`);
         }
       }
     }
     if (props.parameters) {
-      validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
       if (props.parameters.length < GPU_LINE_LOCATE_PARAMETER_LENGTH) {
         throw new Error(
           `${id} parameters must hold ${GPU_LINE_LOCATE_PARAMETER_LENGTH} float32 values`
@@ -245,7 +246,7 @@ export class GPULineLocate implements GPUCommandNodeProducer {
       if (!(name in formats)) {
         throw new Error(`${id} output.${name} is not a line-locate column`);
       }
-      validatePackedView(view, [formats[name]], `${id} output.${name}`);
+      validateSinglePackedView(view, [formats[name]], `${id} output.${name}`);
       const length = name === 'vertexMeasures' ? props.positions.length : eventCount;
       if (view.length !== length) {
         throw new Error(`${id} output.${name} must hold ${length} rows`);
@@ -352,7 +353,7 @@ export class GPULineLocate implements GPUCommandNodeProducer {
     let tangent = vec2<f32>(bitcast<f32>(results[base + 3u]), bitcast<f32>(results[base + 4u]));
     // atan2(0, 0) is undefined in WGSL: degenerate tangents report angle 0.
     angles[anglesOffset + index] = select(
-      atan2(tangent.y, tangent.x) * 57.2957795130823,
+      guardedAtan2(tangent.y, tangent.x) * 57.2957795130823,
       0.0,
       tangent.x == 0.0 && tangent.y == 0.0
     );

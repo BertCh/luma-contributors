@@ -37,6 +37,7 @@ import {
   validateRasterOutputTexture
 } from '../../raster-analysis/raster-band-utils';
 import {
+  getTerrainHorizonReadWGSL,
   getTerrainHorizonStorageLength,
   TERRAIN_HORIZON_UNORM16_SCALE,
   TERRAIN_HORIZON_UNORM16_STEP_DEGREES,
@@ -54,9 +55,9 @@ import {
   type GPURasterCellSizeMode,
   type GPURasterRowDirection,
   validateRasterCellSizeMode,
-  validateRasterRowDirection,
   writeRasterGridParameterValues
 } from '../../analysis-core/raster-grid';
+import {resolveTerrainRowDirection} from '../terrain-curvature/terrain-geomorphometry-utils';
 import {
   createTerrainHorizonSweepNode,
   createTerrainSweepSectorTable,
@@ -75,10 +76,13 @@ export type {GPUTerrainHorizonFormat} from './terrain-illumination-utils';
  *   size is not re-evaluated along the ray: at 60 N and 30 km on a 45 degree sector the samples
  *   lie at a true bearing of 44.75 degrees and 0.14% closer than assumed; re-scaling per row would
  *   only reach 44.83 degrees (a rhumb line, which is not the geodesic either).
- * - `'sweep'`: exact discrete horizons on digital lines through pixel centres with upper-hull
- *   pointers (Stewart 1998 style), amortised O(1) per pixel and sector. Samples are pixel centres
- *   on a digital line whose lateral offset from the ideal ray is at most half a pixel, so values
- *   differ from the march by sampling, not by precision. `stepGrowth` must be 1. One digital line
+ * - `'sweep'`: discrete horizons on digital lines through pixel centres with upper-hull
+ *   pointers (Stewart 1998 style), amortised O(1) per pixel and sector. The search is exact (it
+ *   equals brute force over the same samples); the sampling is nearest-pixel: each sample takes
+ *   the elevation of a pixel centre on the digital line and the distance `k * hypot(1, slope)`
+ *   cells along the ideal line, not the distance to that centre. The lateral offset from the ray
+ *   through the pixel's own centre is below one pixel (up to 0.86 px at line slope 0.3), so
+ *   values differ from the march by sampling, not by precision. `stepGrowth` must be 1. One digital line
  *   family has one pixel slope, so on anisotropic cells it follows each sector's ground azimuth
  *   at the reference row (`height / 2`); other rows of a `'geographic'` tile see the azimuth
  *   rotated by the change of cos(latitude) across the tile, worst at 45 degree sectors: at 60 N,
@@ -329,8 +333,25 @@ export type GPUTerrainHorizonOutput = {
    * `ceil(width * height * directionCount / 2)` words.
    */
   horizon?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
-  /** Sky-view factor per pixel in `[0, 1]`. */
+  /**
+   * Sky-view factor per pixel in `[0, 1]`, the solid-angle definition of Zaksek et al. (2011):
+   * `1 - mean(sin(max(h, 0)))`, the fraction of the hemisphere's solid angle that is visible. Use
+   * it for relief visualization. It is not the fraction of isotropic diffuse irradiance: see
+   * `irradianceSkyViewFactor`.
+   */
   skyViewFactor?: GraphDataView<'float32'>;
+  /**
+   * Cosine-weighted (irradiance) sky-view factor per pixel in `[0, 1]`, the horizontal-receiver
+   * form of Dozier and Frew (1990): `mean(cos^2(max(h, 0)))`, written as
+   * `1 - mean(sin^2(max(h, 0)))`. It is the fraction of the isotropic diffuse irradiance of an
+   * open horizontal surface that the pixel receives, and the factor `GPUSolarIrradiance` expects
+   * as its `skyViewFactor`. A uniform 30 degree horizon gives 0.75 here and 0.5 in
+   * `skyViewFactor`; on an infinite plane of slope `s` it is exactly `(1 + cos(s)) / 2`. Computed
+   * from the stored horizon map: with `horizonFormat: 'unorm16'` and a bound `output.horizon` it
+   * uses the quantised angles (error below 3e-5); without `output.horizon` the contributor keeps
+   * a transient float32 map of `width * height * directionCount` values.
+   */
+  irradianceSkyViewFactor?: GraphDataView<'float32'>;
   /** Positive openness per pixel in degrees. */
   positiveOpenness?: GraphDataView<'float32'>;
   /**
@@ -401,7 +422,11 @@ export type GPUTerrainHorizonProps = {
   maximumStepsPerDispatch?: number;
   /** Cell size interpretation. Defaults to `'uniform'`. */
   cellSizeMode?: GPURasterCellSizeMode;
-  /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
+  /**
+   * Direction in which the row index increases. Defaults to the direction the grid states: the
+   * sign of the row term `grid.affine[4]` (negative: `'south'`, a north-up raster; positive:
+   * `'north'`). An explicit value that contradicts the grid throws at construction.
+   */
   rowDirection?: GPURasterRowDirection;
   /**
    * Storage of `output.horizon`. `'float32'` (default) stores degrees; `'unorm16'` packs two
@@ -559,10 +584,21 @@ export function getTerrainHorizonSectorOutput(props: TerrainHorizonSectorOutputP
  * WGSL `fn getAnisotropicWeight(sector: u32) -> f32` for `directionCount` sectors, reading the
  * RVT main direction, level and minimum weight from `settings[8..10]`.
  *
- * RVT parity (`rvt.vis.sky_view_factor_compute`): RVT direction `i` has angle `i * 360 / n`
- * counterclockwise from north, so compass sector `d` is RVT direction `(n - d) mod n`, and the
- * weight is `(1 - wMin) * cos((a - A) / 2)^level + wMin` with the signed power of an integer level
- * (`0^0 = 1`, as numpy).
+ * Convention, stated in compass terms so it does not depend on RVT: sector `d` looks along
+ * compass azimuth `t = d * 360 / n` (clockwise from north) and gets the angle
+ * `a = (360 - t) mod 360`, counterclockwise from north. Its weight is
+ * `(1 - wMin) * cos((a - A) / 2)^level + wMin` with the signed power of an integer level
+ * (`0^0 = 1`, as numpy). The weight is largest for the sector at compass azimuth
+ * `(360 - A) mod 360`: `A = 315` weights the north-east sky, `A = 90` the west.
+ *
+ * This equals `rvt.vis.sky_view_factor_compute` of rvt-py 2.2.1, where direction `i` has angle
+ * `i * 360 / n` and looks at the pixel offset `(-cos, -sin) * r` over (rows, columns) of a
+ * north-up array: counterclockwise from north, so compass sector `d` is RVT direction
+ * `(n - d) mod n`. RVT does not wrap `a - A`, and neither does this kernel, which matters for odd
+ * levels. Checked against unmodified rvt-py on walls and ramps at the four compass sides and the
+ * diagonals, on north-up and rows-north grids, with both presets and an odd level
+ * (`test/oracles/terrain-sky-view-rvt.py`, `gpu-terrain-horizon-rvt.spec.ts`): where RVT and the
+ * kernel read the same samples the factors agree to 3e-7.
  *
  * @internal
  */
@@ -601,7 +637,12 @@ function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string 
  * keeps GRASS's initial southwest-cell sentinel outside the terrain. These adapters do not
  * imply parity for arbitrary azimuths, where the sampling paths differ.
  *
- * - Sky-view factor (Zaksek et al. 2011): `1 - mean(sin(max(h, 0)))`.
+ * - Sky-view factor (Zaksek et al. 2011): `1 - mean(sin(max(h, 0)))`, the visible fraction of
+ *   the hemisphere's solid angle. This is the relief-visualization definition.
+ * - Irradiance sky-view factor (Dozier and Frew 1990, horizontal receiver):
+ *   `mean(cos^2(max(h, 0)))`, the fraction of isotropic diffuse irradiance received. This is the
+ *   definition `GPUSolarIrradiance` needs; the two differ (0.5 against 0.75 under a uniform 30
+ *   degree horizon).
  * - Positive openness (Yokoyama et al. 2002): `mean(90 - h)` degrees.
  * - Negative openness: `90 - mean(h_nadir)` with `h_nadir` the horizon of the inverted terrain
  *   (z factor negated, curvature still drops), tracked in the same march loop.
@@ -609,7 +650,16 @@ function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string 
  *   direction convention: sector weights `(1 - wMin) * cos((a - A) / 2)^level + wMin`, where `a` is
  *   the sector's RVT direction angle (counterclockwise from north, `(360 - t) mod 360` for compass
  *   azimuth `t`), `A` is `anisotropyAzimuthDegrees` exactly as RVT's `asvf_dir`, and the power is
- *   signed with an integer level.
+ *   signed with an integer level. The heaviest sector is at compass azimuth `(360 - A) mod 360`.
+ *   The direction convention and the three reductions (sky-view factor, openness, anisotropic
+ *   factor) are checked against rvt-py 2.2.1. RVT's numbers are reproduced only where it reads the
+ *   same samples: RVT takes whole pixels (1 to the radius on the axes, `(k, k)` on the diagonals,
+ *   a rounded staircase in between) and reflect-pads the array by the radius. There the march
+ *   with 4 sectors and the sweep with 4 or 8 agree with RVT to 3e-7 (3e-5 degrees of openness).
+ *   Elsewhere the difference is sampling: on a plane of gradient 0.5 with 16 sectors the march
+ *   gives the closed form, while RVT reads a sky-view factor 0.022 lower and an openness 3.3
+ *   degrees lower (the sweep 0.019 and 2.6 degrees lower). Pixels nearer than `maximumRadius` to
+ *   the edge differ from RVT because rays stop at the edge here and see mirrored terrain there.
  *
  * With `algorithm: 'sweep'` the per-sector march is replaced by an exact upper-hull sweep over
  * digital lines through pixel centres (one invocation per line, amortised O(1) per pixel and
@@ -638,6 +688,8 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
   readonly horizonFormat: GPUTerrainHorizonFormat;
   /** Horizon search algorithm. */
   readonly algorithm: GPUTerrainHorizonAlgorithm;
+  /** Row direction the kernels use: the prop, or the direction the grid affine states. */
+  readonly rowDirection: GPURasterRowDirection;
 
   constructor(props: GPUTerrainHorizonProps) {
     this.id = props.id ?? 'terrain-horizon';
@@ -666,6 +718,7 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     if (
       !output.horizon &&
       !output.skyViewFactor &&
+      !output.irradianceSkyViewFactor &&
       !output.positiveOpenness &&
       !output.negativeOpenness &&
       !output.anisotropicSkyViewFactor &&
@@ -714,6 +767,13 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     );
     validateTerrainIlluminationView(
       id,
+      'output.irradianceSkyViewFactor',
+      output.irradianceSkyViewFactor,
+      'float32',
+      pixelCount
+    );
+    validateTerrainIlluminationView(
+      id,
       'output.positiveOpenness',
       output.positiveOpenness,
       'float32',
@@ -756,12 +816,13 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     );
     validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
-    validateRasterRowDirection(id, props.rowDirection ?? 'south');
+    this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
     validateRasterBuffersDistinct(
       id,
       [
         output.horizon,
         output.skyViewFactor,
+        output.irradianceSkyViewFactor,
         output.positiveOpenness,
         output.negativeOpenness,
         output.anisotropicSkyViewFactor,
@@ -783,17 +844,31 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
       props.parameters,
       output.horizon,
       output.skyViewFactor,
+      output.irradianceSkyViewFactor,
       output.positiveOpenness,
       output.negativeOpenness,
       output.anisotropicSkyViewFactor,
       output.outputValidity
     ]);
     const pixelCount = width * height;
-    if (output.horizon) {
+    // The irradiance sky-view factor is reduced from the horizon map, so it keeps one (float32)
+    // when the caller binds none.
+    const horizonFormat: GPUTerrainHorizonFormat = output.horizon ? this.horizonFormat : 'float32';
+    const horizonTarget: GraphDataView<'float32'> | GraphDataView<'uint32'> | undefined =
+      output.horizon ??
+      (output.irradianceSkyViewFactor
+        ? createTransientView(
+            graph,
+            `${id}-horizon-map`,
+            'float32',
+            getTerrainHorizonStorageLength('float32', pixelCount, directionCount)
+          )
+        : undefined);
+    if (horizonTarget) {
       validateTerrainIlluminationBindingSize(
         id,
         'horizon',
-        getTerrainHorizonStorageLength(this.horizonFormat, pixelCount, directionCount) * 4,
+        getTerrainHorizonStorageLength(horizonFormat, pixelCount, directionCount) * 4,
         graph.device.limits.maxStorageBufferBindingSize
       );
     }
@@ -819,7 +894,7 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     const nadirSum = output.negativeOpenness
       ? createTransientView(graph, `${id}-nadir-sum`, 'float32', pixelCount)
       : undefined;
-    const rowDirection = props.rowDirection ?? 'south';
+    const rowDirection = this.rowDirection;
     const cellSizeMode = props.cellSizeMode ?? 'uniform';
     const distances = Array.from(this.stepDistances, getWGSLFloatLiteral).join(', ');
     const hull =
@@ -845,8 +920,8 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
           cellSizeMode,
           elevationValues,
           settings: props.parameters,
-          horizonFormat: this.horizonFormat,
-          horizon: output.horizon,
+          horizonFormat,
+          horizon: horizonTarget,
           sineSum,
           angleSum,
           anisotropicSum,
@@ -888,8 +963,8 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
             elevationValues,
             settings: props.parameters,
             hull,
-            horizonFormat: this.horizonFormat,
-            horizon: output.horizon,
+            horizonFormat,
+            horizon: horizonTarget,
             sineSum,
             angleSum,
             anisotropicSum,
@@ -911,8 +986,8 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
           cellSizeMode,
           elevationValues,
           settings: props.parameters,
-          horizonFormat: this.horizonFormat,
-          horizon: output.horizon,
+          horizonFormat,
+          horizon: horizonTarget,
           sineSum,
           angleSum,
           anisotropicSum,
@@ -971,7 +1046,7 @@ ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}`,
           body: `let isValid = elevationValidity[elevationValidityOffset + index] != 0u${
             sineSum ? ' &&\n    isFiniteValue(angleSum[angleSumOffset + index])' : ''
           };
-  let invalidValue = getNaN(index);
+  let invalidValue = getQuietNaN(index);
   ${
     skyViewTarget
       ? `skyView[skyViewOffset + index] = select(invalidValue,
@@ -985,6 +1060,45 @@ ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}`,
       : ''
   }
   ${output.outputValidity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
+        })
+      );
+    }
+    if (output.irradianceSkyViewFactor && horizonTarget) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-irradiance-sky-view`,
+          operation: 'GPUTerrainHorizon',
+          variant: `irradiance-sky-view-${horizonFormat}`,
+          bindings: [
+            {name: 'elevationValidity', view: elevationValidity, type: 'u32', access: 'read'},
+            {
+              name: 'horizon',
+              view: horizonTarget,
+              type: horizonFormat === 'unorm16' ? 'u32' : 'f32',
+              access: 'read'
+            },
+            {
+              name: 'irradianceSkyView',
+              view: output.irradianceSkyViewFactor,
+              type: 'f32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: pixelCount,
+          declarations: `const DIRECTION_COUNT: u32 = ${directionCount}u;
+${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
+${getTerrainHorizonReadWGSL(horizonFormat, 'horizon')}`,
+          // Dozier and Frew (1990), horizontal receiver under an isotropic sky: the irradiance from
+          // the sky above a horizon at elevation h is proportional to cos^2(h) per unit azimuth.
+          body: `var sineSquaredSum = 0.0;
+  for (var sector = 0u; sector < DIRECTION_COUNT; sector++) {
+    let sine = sin(max(readHorizonAngle(index * DIRECTION_COUNT + sector), 0.0) * DEGREES_TO_RADIANS);
+    sineSquaredSum += sine * sine;
+  }
+  let isValid = elevationValidity[elevationValidityOffset + index] != 0u &&
+    isFiniteValue(sineSquaredSum);
+  irradianceSkyView[irradianceSkyViewOffset + index] = select(getQuietNaN(index),
+    1.0 - sineSquaredSum / f32(DIRECTION_COUNT), isValid);`
         })
       );
     }
@@ -1045,7 +1159,7 @@ const DIRECTION_COUNT_U32: u32 = ${directionCount}u;
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
 ${anisotropicSum ? getTerrainHorizonAnisotropicWeightWGSL(directionCount) : ''}`,
           body: `let isValid = ${validExpression};
-  let invalidValue = getNaN(index);
+  let invalidValue = getQuietNaN(index);
   ${statements}`
         })
       );
@@ -1413,8 +1527,8 @@ ${RASTER_PIXEL_DIRECTION_WGSL}`,
     // keeps this row's cell size (see GPUTerrainHorizonAlgorithm for the along-ray error).
     let direction = getPixelDirection(DIRECTIONS[sector], groundCell);
     let groundStep = length(direction * groundCell);
-    var horizonAngle = getNaN(index);
-    var nadirAngle = getNaN(index);
+    var horizonAngle = getQuietNaN(index);
+    var nadirAngle = getQuietNaN(index);
     if (centerValid && groundStep > 0.0 && isFiniteValue(groundStep)) {
       var hasSample = false;
       var maximumTangent = 0.0;
@@ -1553,8 +1667,8 @@ ${RASTER_PIXEL_DIRECTION_WGSL}`,
   let groundCell = getGroundCellSize(row);
   let direction = getPixelDirection(DIRECTIONS[sector], groundCell);
   let groundStep = length(direction * groundCell);
-  var horizonAngle = getNaN(index);
-  var nadirAngle = getNaN(index);
+  var horizonAngle = getQuietNaN(index);
+  var nadirAngle = getQuietNaN(index);
   if (isValidPixel(column, row) && groundStep > 0.0 && isFiniteValue(groundStep)) {
     let center = vec2<f32>(f32(column), f32(row));
     let centerElevation = getElevation(column, row);

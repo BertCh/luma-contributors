@@ -258,7 +258,7 @@ function addThinning(context: KernelAuditContext, rows: number): void {
           overflow: view('uint32', 1),
           candidateOverflow: view('uint32', 1)
         },
-        mask: view('uint32', rows),
+        validity: view('uint32', rows),
         positions: view('float32x2', capacity),
         timestamps: view('uint32x2', capacity)
       }

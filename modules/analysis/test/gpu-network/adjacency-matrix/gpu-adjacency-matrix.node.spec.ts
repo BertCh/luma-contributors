@@ -170,6 +170,15 @@ it('parameters packing and fixed-point weights follow their documented rules', (
   expect(getGPUAdjacencyMatrixFixedWeight(-3, 1024)).toBe(0);
   expect(getGPUAdjacencyMatrixFixedWeight(NaN, 1024)).toBe(0);
   expect(getGPUAdjacencyMatrixFixedWeight(1e30, 1024)).toBe(0xffffffff);
+  // Halves round up, and an odd integer product above 2^23 is kept (8192.0009765625 * 1024).
+  expect(getGPUAdjacencyMatrixFixedWeight(1.5 / 1024, 1024)).toBe(2);
+  expect(getGPUAdjacencyMatrixFixedWeight(2.5 / 1024, 1024)).toBe(3);
+  expect(getGPUAdjacencyMatrixFixedWeight(8192.0009765625, 1024)).toBe(8388609);
+  // The product is a float32, as on the GPU: 16.0035 is stored as 16.00349998474121, whose
+  // product with 1000 rounds to the float32 16003.5, and that rounds half up.
+  expect(getGPUAdjacencyMatrixFixedWeight(16.0035, 1000)).toBe(16004);
+  // The largest float32 below 2^32 saturates, as in the kernel.
+  expect(getGPUAdjacencyMatrixFixedWeight(4294967040 / 1024, 1024)).toBe(0xffffffff);
 });
 
 it('computeAdjacencyMatrixOrder sorts by group, tie key, then vertex', () => {

@@ -369,6 +369,43 @@ describe('GPUKernelFlowSmoothing (MOB-10)', () => {
     }
   });
 
+  it('is a normalised kernel mean: three zones by hand, and the total flow is not conserved', async () => {
+    // Zones at x = 0, 1 and 10 with unit weights and a neighbourhood size of 2: zones 0 and 1 are
+    // each other's neighbour (h = 1), and zone 2 reaches zone 1 only (h = 9). With
+    // bandwidthRatio 0.5 every neighbour weight is exp(-h^2 / (2 (h / 2)^2)) = exp(-2) = k, so
+    // the row-normalised weights are W_0 = [1, k, 0], W_1 = [k, 1, 0], W_2 = [0, k, 1], each
+    // divided by 1 + k, and S = W M W^T.
+    const k = Math.exp(-2);
+    const run = (matrix: number[]) =>
+      runSmoothing({
+        positions: Float32Array.from([0, 0, 1, 0, 10, 0]),
+        locationWeights: Float32Array.from([1, 1, 1]),
+        matrix: Float32Array.from(matrix),
+        neighborhoodSize: 2,
+        bandwidthRatio: 0.5
+      });
+    // One flow of 100 inside zone 1: S_ij = 100 w_i w_j with w = [k, 1, k] / (1 + k). Zone 1 is a
+    // neighbour of all three zones, so the total grows to 100 ((1 + 2k) / (1 + k))^2 = 125.26.
+    const central = await run([0, 0, 0, 0, 100, 0, 0, 0, 0]);
+    const centralWeights = [k, 1, k].map(value => value / (1 + k));
+    for (let origin = 0; origin < 3; origin++) {
+      for (let destination = 0; destination < 3; destination++) {
+        expect(central.smoothed[origin * 3 + destination]).toBeCloseTo(
+          100 * centralWeights[origin] * centralWeights[destination],
+          3
+        );
+      }
+    }
+    expect(central.smoothed.reduce((sum, value) => sum + value, 0)).toBeCloseTo(125.26, 1);
+    // One flow of 100 inside zone 2: no other zone has zone 2 as a neighbour, so only S_22 is
+    // non-zero and the total shrinks to 100 / (1 + k)^2 = 77.58.
+    const remote = await run([0, 0, 0, 0, 0, 0, 0, 0, 100]);
+    remote.smoothed.forEach((value, index) => {
+      expect(value).toBeCloseTo(index === 8 ? 100 / (1 + k) ** 2 : 0, 3);
+    });
+    expect(remote.smoothed.reduce((sum, value) => sum + value, 0)).toBeCloseTo(77.58, 1);
+  });
+
   it('reads the OD pairs of the aggregation like the dense matrix, ignoring pairs past the count and bad weights', async () => {
     const origins: number[] = [];
     const destinations: number[] = [];

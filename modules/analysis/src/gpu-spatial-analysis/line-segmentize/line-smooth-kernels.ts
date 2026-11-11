@@ -223,7 +223,8 @@ fn getSource(row: u32) -> vec2<f32> {
 }
 
 /**
- * Publishes Chaikin output line offsets (clamped), count, overflow, total and line count.
+ * Publishes Chaikin output line offsets (clamped), overflow and the optional clamped and unclamped
+ * vertex counts.
  *
  * @internal
  */
@@ -240,10 +241,9 @@ export function createSmoothPublishNode<Parameters>(
     smoothFlagStarts?: GraphDataView<'uint32'>;
     capacity: number;
     outputLineOffsets: GraphDataView<'uint32'>;
-    count: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
-    requiredCount?: GraphDataView<'uint32'>;
-    lineCountOutput?: GraphDataView<'uint32'>;
+    vertexCount?: GraphDataView<'uint32'>;
+    requiredVertexCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -260,16 +260,20 @@ export function createSmoothPublishNode<Parameters>(
   }
   bindings.push(
     {name: 'outputLineOffsets', view: props.outputLineOffsets, type: 'u32', access: 'read_write'},
-    {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   );
-  if (props.requiredCount) {
-    bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
-  }
-  if (props.lineCountOutput) {
+  if (props.vertexCount) {
     bindings.push({
-      name: 'lineCountOut',
-      view: props.lineCountOutput,
+      name: 'vertexCountOut',
+      view: props.vertexCount,
+      type: 'u32',
+      access: 'read_write'
+    });
+  }
+  if (props.requiredVertexCount) {
+    bindings.push({
+      name: 'totalOut',
+      view: props.requiredVertexCount,
       type: 'u32',
       access: 'read_write'
     });
@@ -291,10 +295,9 @@ ${LEVEL_OFFSETS_WGSL}`,
     body: /* wgsl */ `let total = getLevelOffset(LINE_COUNT, SCALE, true);
   outputLineOffsets[outputLineOffsetsOffset + index] = min(getLevelOffset(index, SCALE, true), CAPACITY);
   if (index == 0u) {
-    countOut[countOutOffset] = min(total, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
-    ${props.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
-    ${props.lineCountOutput ? 'lineCountOut[lineCountOutOffset] = LINE_COUNT;' : ''}
+    ${props.vertexCount ? 'vertexCountOut[vertexCountOutOffset] = min(total, CAPACITY);' : ''}
+    ${props.requiredVertexCount ? 'totalOut[totalOutOffset] = total;' : ''}
   }`
   });
 }

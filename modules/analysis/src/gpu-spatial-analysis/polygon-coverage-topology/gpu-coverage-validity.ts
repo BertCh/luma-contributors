@@ -19,7 +19,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
@@ -33,6 +33,7 @@ import {
 import {createRingOrientationNode} from './coverage-topology-kernels';
 import {GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH} from './coverage-validity-parameters';
 import {NODE_OVERLAPS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
 import {getNextPowerOfTwo} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 import {
@@ -58,8 +59,11 @@ export const GPU_COVERAGE_VALIDITY_FLAG = {
   /** The segment properly crosses a segment of another polygon. */
   crossing: 2,
   /**
-   * The segment runs nearly parallel to a segment of another polygon, within `gapWidth` of it, so
-   * the two polygons are separated by a narrow gap.
+   * The segment runs side by side with a segment of another polygon, within `gapWidth` of it, so
+   * the two polygons are separated by a narrow gap. "Side by side" is the GEOS rule (see
+   * {@link GPUCoverageValidity}): each segment projects onto the other over more than `gapWidth`,
+   * and the ends of the two projected parts are within `gapWidth` of each other. Segments that
+   * are staggered, side by side over only part of their length, are flagged.
    */
   gap: 4,
   /**
@@ -110,7 +114,7 @@ export type GPUCoverageValidityProps = GPUPolygonGeometryFields & {
   /**
    * Layout notes. `positions` are flattened ring vertices with finite coordinates. Rows are
    * features; rings close implicitly. The first ring of a polygon is its shell, the others are
-   * holes. Winding is free: orientation is read from the signed area. `ringOffsets`,
+   * holes. Winding is free: orientation is read from the exact turn at an extreme vertex. `ringOffsets`,
    * `polygonOffsets` and `featureOffsets` each carry a terminal entry. Segments of one feature are
    * never compared with each other.
    */
@@ -144,33 +148,44 @@ export type GPUCoverageValidityProps = GPUPolygonGeometryFields & {
  * - a collinear overlap of different segments, or a touch where an endpoint of either segment lies
  *   in the interior of the other (a T-junction without a matching vertex), is `unmatched`;
  * - when `gapWidth > 0`, two segments that neither cross nor touch in the ways above are `gap` when
- *   they run side by side: both endpoints of the shorter lie within `gapWidth` of the longer, and
- *   each projects onto the other over a length greater than `gapWidth`. Every other pair, such as
- *   a short segment next to a long one, a vertex pointing at an edge or edges meeting at a vertex,
- *   is valid;
+ *   they run side by side. Each segment is projected onto the other and clipped to it; the pair is
+ *   a gap when both clipped projections are longer than `gapWidth` (strictly) and their matching
+ *   ends are within `gapWidth` of each other (inclusive). The segments need not cover each other:
+ *   `(0, 0)-(10, 0)` beside `(5, 0.0625)-(15, 0.0625)` is a gap at `gapWidth` 0.125, over
+ *   `x` in `[5, 10]`. Every other pair, such as a segment that passes another by no more than
+ *   `gapWidth`, a vertex pointing at an edge or edges meeting at a vertex, is valid;
  * - an otherwise clean, unmatched segment whose midpoint lies inside another polygon (an island or
  *   spike inside a neighbor) is `overlap`, found with a winding number over the other polygons'
  *   segments.
  *
  * Segments sharing only a vertex are valid. Segments of the same polygon are never compared with
  * each other: self-intersections within one polygon are the business of `GPUGeometryValidity`.
- * Orientation is normalized from the signed area, so mixed clockwise and counter-clockwise rings
- * are fine.
+ * Orientation is normalized from the exact turn at each ring's lexicographically smallest vertex,
+ * so mixed clockwise and counter-clockwise rings are fine, including slivers whose float32 area is
+ * zero.
  *
- * **Parity with GEOS.** The gap rule was fitted against `shapely.coverage_invalid_edges` (GEOS
- * `CoverageValidator`), whose exact rule is not documented: the invalid segment sets agree on the
- * curated scenes of the specs and on 158 of 160 random jittered-triangulation cases at gap widths
- * from 0 to 0.75 (all 40 at gap width 0). The two differing cases are a segment next to a vertex of
- * an overlapping neighbor within `gapWidth`, which GEOS flags and this contributor does not. The
- * interior test uses the f32 midpoint of a segment, so a matched edge lying inside a *third*
- * polygon is not flagged (that polygon's own segments are).
+ * **Parity with GEOS.** The gap rule is the GEOS one (`coverage/InvalidSegmentDetector`,
+ * `isNearlyParallel`; JTS has the same rule), evaluated in float32 relative to the start of the
+ * tested segment. With Shapely 2.2.0 on GEOS 3.14.1 the invalid segment sets of
+ * `shapely.coverage_invalid_edges` and this contributor are equal on the curated scenes of the
+ * specs and on every case of `test/oracles/fixtures/coverage-validity-gaps.json`: staggered
+ * rectangles, disjoint polygon pairs and jittered triangulations with gaps and overlaps, near the
+ * origin and at projected-metre coordinates, at gap widths from 0 to 0.75 (0 to 24 m). A pair
+ * whose distance or projected length equals `gapWidth` to within float32 rounding can fall on
+ * either side; GEOS decides the same ties in binary64. Until 2026-11-11 the rule was this
+ * contributor's own (both ends of the shorter segment within `gapWidth` of the longer) and did not
+ * flag staggered segments. A matched edge lying inside a *third* polygon is not flagged (that
+ * polygon's own segments are).
  *
  * **Exactness.** Every orientation sign is exact for the f32 vertices: the pair tests use the shared
- * segment predicates and the winding number of the interior probe uses `orientSign` (an f32 filter
- * with an exact integer fallback), so a probe point exactly on a neighbor's edge is never
- * misclassified by rounding. The probe point itself is the rounded f32 midpoint of the segment, which
- * is not exactly on it. A pair with no decidable orientation (non-finite coordinate) sets the
- * `uncertain` flag; the validity checker never silently decides it.
+ * segment predicates and the winding number of the interior probe uses the shared exact side probe
+ * (`analysis-core/kernels/exact-geometry-wgsl.ts`): the symbolic point beside the exact midpoint of
+ * the segment, classified against each neighbor edge from the exact signs of the segment's two
+ * endpoints. No rounded sample point is formed, so a segment of a polygon thinner than one f32 step
+ * is not read as lying inside the neighbor across its other edge. Only when the *line* of a
+ * neighbor edge passes between the segment's endpoints does the rounded midpoint decide the side.
+ * A pair with no decidable orientation (non-finite coordinate) sets the `uncertain` flag; the
+ * validity checker never silently decides it.
  *
  * **Cost.** One BVH built over all segments; each segment probes it with its bounds inflated by
  * `gapWidth`. Output is one `uint32` row per vertex: nothing is capacity-bounded, nothing
@@ -193,7 +208,7 @@ export class GPUCoverageValidity implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} positions must hold at least one vertex`);
     }
@@ -209,7 +224,7 @@ export class GPUCoverageValidity implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} must hold at least two entries`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH} float32 values`
@@ -373,6 +388,7 @@ const MATCHED_BIT: u32 = 0x80000000u;
 const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
 
 ${NODE_OVERLAPS_WGSL}
+${EXACT_GEOMETRY_WGSL}
 
 fn isFlipped(row: u32) -> bool {
   return ringFlip[ringFlipOffset + segmentRing(row)] != 0u;
@@ -382,15 +398,9 @@ fn samePoint(first: vec2f, second: vec2f) -> bool {
   return first.x == second.x && first.y == second.y;
 }
 
-fn distanceToSegment(point: vec2f, start: vec2f, end: vec2f) -> f32 {
-  let direction = end - start;
-  let lengthSquared = dot(direction, direction);
-  let fraction = select(clamp(dot(point - start, direction) / lengthSquared, 0.0, 1.0), 0.0, lengthSquared == 0.0);
-  return length(point - (start + direction * fraction));
-}
-
 // Length of the part of segment (start, end) that projects onto segment (otherStart, otherEnd), times
-// the length of the latter, so that no division is needed and ties with gapWidth stay exact.
+// the length of the latter, so that no division is needed and ties with gapWidth stay exact. Zero
+// or negative when the one does not project onto the other at all.
 fn projectedLengthScaled(start: vec2f, end: vec2f, otherStart: vec2f, otherEnd: vec2f) -> f32 {
   let direction = otherEnd - otherStart;
   let lengthSquared = dot(direction, direction);
@@ -399,22 +409,43 @@ fn projectedLengthScaled(start: vec2f, end: vec2f, otherStart: vec2f, otherEnd: 
   return min(max(first, second), lengthSquared) - max(min(first, second), 0.0);
 }
 
-// The segments run side by side: both endpoints of the shorter lie within gapWidth of the longer,
-// and each projects onto the other over more than gapWidth.
+// The point of segment (start, end) nearest to the projection of point on its line: GEOS
+// LineSegment::project of one point, clamped to the segment. An end is returned as it is.
+fn projectOntoSegment(point: vec2f, start: vec2f, end: vec2f) -> vec2f {
+  let direction = end - start;
+  let lengthSquared = dot(direction, direction);
+  let along = dot(point - start, direction);
+  if (along <= 0.0) { return start; }
+  if (along >= lengthSquared) { return end; }
+  return start + direction * (along / lengthSquared);
+}
+
+// The GEOS gap rule (coverage/InvalidSegmentDetector::isNearlyParallel): each segment is projected
+// onto the other and clipped to it. The pair is a gap when both clipped projections are longer than
+// gapWidth and their matching ends lie within gapWidth of each other. (a, b) is the tested segment
+// and (c, d) the neighbor's, both in input order, as GEOS reads them. Everything is formed relative
+// to a, so that the f32 step of large projected coordinates does not enter the distances.
 fn isNearlyParallel(a: vec2f, b: vec2f, c: vec2f, d: vec2f, gapWidth: f32) -> bool {
-  let aLongest = distance(a, b) >= distance(c, d);
-  let longStart = select(c, a, aLongest);
-  let longEnd = select(d, b, aLongest);
-  let shortStart = select(a, c, aLongest);
-  let shortEnd = select(b, d, aLongest);
-  if (distanceToSegment(shortStart, longStart, longEnd) > gapWidth ||
-      distanceToSegment(shortEnd, longStart, longEnd) > gapWidth) {
+  let origin = vec2f(0.0);
+  let localB = b - a;
+  let localC = c - a;
+  let localD = d - a;
+  if (projectedLengthScaled(localC, localD, origin, localB) <= gapWidth * length(localB) ||
+      projectedLengthScaled(origin, localB, localC, localD) <= gapWidth * distance(localC, localD)) {
     return false;
   }
-  let shortOnLong = projectedLengthScaled(shortStart, shortEnd, longStart, longEnd);
-  let longOnShort = projectedLengthScaled(longStart, longEnd, shortStart, shortEnd);
-  return shortOnLong > gapWidth * distance(longStart, longEnd) &&
-    longOnShort > gapWidth * distance(shortStart, shortEnd);
+  // Projection of (c, d) on (a, b), and of (a, b) on (c, d).
+  let onRowStart = projectOntoSegment(localC, origin, localB);
+  let onRowEnd = projectOntoSegment(localD, origin, localB);
+  var onOtherStart = projectOntoSegment(origin, localC, localD);
+  var onOtherEnd = projectOntoSegment(localB, localC, localD);
+  if (distance(onRowStart, onOtherEnd) < distance(onRowStart, onOtherStart)) {
+    let swap = onOtherStart;
+    onOtherStart = onOtherEnd;
+    onOtherEnd = swap;
+  }
+  return distance(onRowStart, onOtherStart) <= gapWidth &&
+    distance(onRowEnd, onOtherEnd) <= gapWidth;
 }
 
 // Flags of segment row against segment other (another polygon). Bit 31 reports a matched edge.
@@ -442,8 +473,11 @@ fn comparePair(row: u32, other: u32, gapWidth: f32) -> u32 {
   return 0u;
 }
 
-// Contribution of segment other to the winding number of point (effective interior on the left).
-fn windingContribution(other: u32, point: vec2f) -> i32 {
+// Contribution of segment other to the winding number of the probe (effective interior on the
+// left). The probe is the symbolic point beside the exact midpoint of the tested segment (the
+// shared side probe), so a neighbor's edge closer to the segment than one f32 step is still on
+// the right side of it. An uncertain sign (non-finite input) counts as no crossing.
+fn windingContribution(other: u32, probe: ExactProbe) -> i32 {
   var start = segmentStart(other);
   var end = segmentEnd(other);
   if (isFlipped(other)) {
@@ -451,15 +485,7 @@ fn windingContribution(other: u32, point: vec2f) -> i32 {
     start = end;
     end = swap;
   }
-  // Exact side of the point relative to the segment (orientSign is 2 when no sign exists, which
-  // counts as neither side).
-  let side = orientSign(start, end, point);
-  if (start.y <= point.y) {
-    if (end.y > point.y && side == 1) { return 1; }
-  } else if (end.y <= point.y && side == -1) {
-    return -1;
-  }
-  return 0;
+  return exactProbeCrossing(probe, start, end).x;
 }`,
         body: `var flags = 0u;
   if (segmentValid(index)) {
@@ -481,12 +507,15 @@ fn windingContribution(other: u32, point: vec2f) -> i32 {
       flags = flags & FLAG_OVERLAP;
     }
     if (flags == 0u && !matched) {
+      // The rounded midpoint only selects BVH candidates: every edge the ray from the exact
+      // midpoint can cross has that height and a larger x inside its bounds.
       let midpoint = a * 0.5 + b * 0.5;
+      let probe = ExactProbe(midpoint, a, b, 1);
       var winding = 0;
       ${traverse(
         'vec2f(midpoint.x, midpoint.y)',
         'vec2f(FLOAT32_MAXIMUM, midpoint.y)',
-        'winding = winding + windingContribution(other, midpoint);'
+        'winding = winding + windingContribution(other, probe);'
       )}
       if (winding > 0) { flags = FLAG_OVERLAP; }
     }

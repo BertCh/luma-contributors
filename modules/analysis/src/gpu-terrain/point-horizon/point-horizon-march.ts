@@ -34,6 +34,11 @@ import {
   validateRasterGrid
 } from '../../raster-analysis/raster-band-utils';
 import {
+  GPU_WGS84_FLATTENING,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS
+} from '../../analysis-core/contracts/earth';
+import {resolveTerrainRowDirection} from '../terrain-curvature/terrain-geomorphometry-utils';
+import {
   GPU_POINT_HORIZON_EARTH_RADIUS,
   POINT_HORIZON_PROJECTION_TAGS,
   type GPUPointHorizonHeightReference,
@@ -304,7 +309,12 @@ export function getGPUPointHorizonSegments(
 export type GPUPointHorizonModelOptions = {
   /** Raster projection model. Defaults to `'planar'`. */
   projection?: GPUPointHorizonProjection;
-  /** Row direction of a planar raster. Defaults to `'south'`. */
+  /**
+   * Row direction of a planar raster. Defaults to the direction the grid states: the sign of the
+   * row term `grid.affine[4]` (negative: `'south'`, a north-up raster; positive: `'north'`). An
+   * explicit value that contradicts the grid throws at construction; when `affine[4]` is 0 the
+   * value alone decides (`'south'` by default). Web Mercator kernels do not read it.
+   */
   rowDirection?: GPUPointHorizonRowDirection;
   /** Eye height model. Defaults to `'ground'`. */
   heightReference?: GPUPointHorizonHeightReference;
@@ -420,10 +430,9 @@ export function resolvePointHorizonModel(
   if (projection !== 'planar' && projection !== 'web-mercator') {
     throw new Error(`${id} projection must be planar or web-mercator`);
   }
-  const rowDirection = options.rowDirection ?? 'south';
-  if (rowDirection !== 'south' && rowDirection !== 'north') {
-    throw new Error(`${id} rowDirection must be south or north`);
-  }
+  // North comes from the grid, as in every terrain contributor with a `rowDirection`: the default
+  // is the sign of `grid.affine[4]`, and an explicit value that contradicts it throws.
+  const rowDirection = resolveTerrainRowDirection(id, grid, options.rowDirection);
   const heightReference = options.heightReference ?? 'ground';
   if (heightReference !== 'ground' && heightReference !== 'absolute') {
     throw new Error(`${id} heightReference must be ground or absolute`);
@@ -493,6 +502,52 @@ export function validatePointHorizonRows(
 }
 
 const lit = getWGSLFloatLiteral;
+
+/** WGS84 first eccentricity squared `f (2 - f)`. */
+const WGS84_ECCENTRICITY_SQUARED = GPU_WGS84_FLATTENING * (2 - GPU_WGS84_FLATTENING);
+
+/**
+ * WGSL of the Web Mercator ground model: the WGS84 local metric at the eye, which is the row
+ * scale of `analysis-core/raster-grid.ts` (`N cos(lat)` east-west, `M` north-south).
+ *
+ * The great circle is traced on the sphere of radius `GPU_POINT_HORIZON_EARTH_RADIUS`, which
+ * fixes which pixels a ray visits. Ground length and bearing then follow the ellipsoid at the
+ * eye latitude: a sphere step with components `(east, north) = (sinA, cosA)` covers
+ * `(N sinA, M cosA) / R` ground meters per sphere meter, with `M` the meridional and `N` the
+ * prime-vertical radius of curvature. The scale is constant along a ray (evaluated at the eye),
+ * as the raster-grid scale is constant along a row.
+ *
+ * - `getGroundScaleAxes(eye)`: `(N / R, M / R)`.
+ * - `getRayGroundScale(eye, sinA, cosA)`: ground meters per sphere meter along sphere azimuth A.
+ * - `getSphereAzimuth(eye, sinT, cosT)`: sphere azimuth `(sinA, cosA)` of the ray whose ground
+ *   bearing is T (clockwise from north), `normalize(M sinT, N cosT)`.
+ *
+ * Every product is pinned so the march and pyramid kernels compute identical bits. Needs
+ * `EyeState` and `opaque`. @internal
+ */
+const POINT_HORIZON_GROUND_SCALE_WGSL = /* wgsl */ `
+const WGS84_ECCENTRICITY_SQUARED: f32 = ${lit(WGS84_ECCENTRICITY_SQUARED)};
+const WGS84_POLAR_RATIO: f32 = ${lit(1 - WGS84_ECCENTRICITY_SQUARED)};
+const WGS84_SEMI_MAJOR_OVER_SPHERE: f32 = ${lit(GPU_WGS84_SEMI_MAJOR_AXIS_METERS / GPU_POINT_HORIZON_EARTH_RADIUS)};
+fn getGroundScaleAxes(eye: EyeState) -> vec2<f32> {
+  let curvatureTerm = opaque(1.0 - opaque(WGS84_ECCENTRICITY_SQUARED * opaque(eye.sinP * eye.sinP)));
+  let east = opaque(WGS84_SEMI_MAJOR_OVER_SPHERE / sqrt(curvatureTerm));
+  return vec2<f32>(east, opaque(opaque(east * WGS84_POLAR_RATIO) / curvatureTerm));
+}
+fn getRayGroundScale(eye: EyeState, sinA: f32, cosA: f32) -> f32 {
+  let axes = getGroundScaleAxes(eye);
+  let east = opaque(axes.x * sinA);
+  let north = opaque(axes.y * cosA);
+  return sqrt(opaque(opaque(east * east) + opaque(north * north)));
+}
+fn getSphereAzimuth(eye: EyeState, sinT: f32, cosT: f32) -> vec2<f32> {
+  let axes = getGroundScaleAxes(eye);
+  let east = opaque(axes.y * sinT);
+  let north = opaque(axes.x * cosT);
+  let norm = sqrt(opaque(opaque(east * east) + opaque(north * north)));
+  return vec2<f32>(opaque(east / norm), opaque(north / norm));
+}
+`;
 const FLOAT_MAX = 3.4028234663852886e38;
 
 function f32Array(values: readonly number[]): string {
@@ -1056,7 +1111,7 @@ fn makeEye(column: f32, row: f32, height: f32) -> EyeState {
   ${eyeMercator}
   return eye;
 }
-
+${mercator ? POINT_HORIZON_GROUND_SCALE_WGSL : ''}
 struct Position { xi: i32, yi: i32, fx: f32, fy: f32 };
 
 // Position of the sample at distance d inside the segment starting at dA, relative to the eye's
@@ -1092,12 +1147,24 @@ fn skipBound(hMax: f32, hMin: f32, eye: EyeState, d: f32, dEnd: f32, curvature: 
 struct RayResult { has: bool, t: f32, d: f32, tQ: f32, evaluated: u32 };
 
 // Marches one ray. Returns the maximum tangent tBest = hr / d - d c over valid samples and its
-// distance. tQ is the running maximum when the first sample with d >= q is reached (q <= 0 or
-// !useQ: -BIG). evaluated counts the samples whose bilinear height was read (a debug measure of
+// distance, both in ground meters. tQ is the running maximum when the first sample at ground
+// distance >= groundQ is reached (groundQ <= 0 or !useQ: -BIG). (sinA, cosA) is the azimuth on the
+// sphere for Web Mercator, see getSphereAzimuth. evaluated counts the samples whose bilinear height was read (a debug measure of
 // the pyramid's skipping).
-fn marchRay(eye: EyeState, sinA: f32, cosA: f32, q: f32, useQ: bool) -> RayResult {
-  let curvature = settings[settingsOffset];
+fn marchRay(eye: EyeState, sinA: f32, cosA: f32, groundQ: f32, useQ: bool) -> RayResult {
+  ${
+    mercator
+      ? `// The ray is traced in mean-sphere meters and reported in WGS84 ground meters: with
+  // d_ground = s d, the tangent h / d_ground - c d_ground is (h / d - (c s^2) d) / s, so the march
+  // runs unchanged with the curvature c s^2 and limits divided by s, and s > 0 keeps the argmax.
+  let groundScale = getRayGroundScale(eye, sinA, cosA);
+  let curvature = opaque(opaque(settings[settingsOffset] * groundScale) * groundScale);
+  let maximumFrame = settings[settingsOffset + 3u] / groundScale;
+  let q = groundQ / groundScale;`
+      : `let curvature = settings[settingsOffset];
   let maximumFrame = settings[settingsOffset + 3u];
+  let q = groundQ;`
+  }
   let maximumDistance = select(LAT_LAST_DISTANCE, min(maximumFrame, LAT_LAST_DISTANCE), maximumFrame > 0.0);
   let rayLast = latFloorIndex(maximumDistance);
   ${raySetup}
@@ -1151,7 +1218,13 @@ fn marchRay(eye: EyeState, sinA: f32, cosA: f32, q: f32, useQ: bool) -> RayResul
     ${segmentEnd}
   }
   if (!qDone) { tQ = select(-BIG, tBest, has); }
-  return RayResult(has, tBest, dBest, tQ, evaluated);
+  ${
+    mercator
+      ? `// Back to ground meters; the no-sample sentinel -BIG of tQ is kept exact.
+  return RayResult(
+    has, tBest / groundScale, dBest * groundScale, select(tQ / groundScale, -BIG, tQ == -BIG), evaluated);`
+      : 'return RayResult(has, tBest, dBest, tQ, evaluated);'
+  }
 }
 `;
 }

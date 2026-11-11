@@ -17,7 +17,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -59,7 +59,10 @@ export type GPUFocalStatisticsOutput = {
 export type GPUFocalStatisticsProps = {
   /** Prefix for generated node IDs. Defaults to `'focal-statistics'`. */
   id?: string;
-  /** Packed row-major float32 raster, at least `grid.width * grid.height` rows. NaN cells are nodata. */
+  /**
+   * Packed row-major float32 raster, at least `grid.width * grid.height` rows. Non-finite cells
+   * (NaN or an infinity) are nodata.
+   */
   values: GraphDataView<'float32'>;
   /** Optional row-major `uint32` validity; zero marks a nodata cell. */
   validity?: GraphDataView<'uint32'>;
@@ -87,7 +90,7 @@ export type GPUFocalStatisticsProps = {
  *
  * Direct gather: one invocation per output cell visits the window in fixed row-major order, so
  * every result is deterministic and no atomics are used. Window cells outside the raster and
- * nodata cells (NaN, the `noDataValue` sentinel, or zero `validity`) are skipped, so edge windows
+ * nodata cells (NaN or an infinity, the `noDataValue` sentinel, or zero `validity`) are skipped, so edge windows
  * are clipped like ArcGIS `FocalStatistics` and GRASS `r.neighbors`. A cell is nodata when fewer
  * than `max(minimumCount, 1)` window cells are valid, or when its own value is nodata and
  * `propagateCenterNoData` is set. Standard deviation subtracts the window mean in a second pass
@@ -118,17 +121,17 @@ export class GPUFocalStatistics implements GPUCommandNodeProducer {
     if (outputs.length === 0) {
       throw new Error(`${id} needs at least one output`);
     }
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length < this.cellCount) {
       throw new Error(`${id} values must hold grid.width * grid.height rows`);
     }
     if (props.validity) {
-      validatePackedView(props.validity, ['uint32'], `${id} validity`);
+      validateSinglePackedView(props.validity, ['uint32'], `${id} validity`);
       if (props.validity.length < this.cellCount) {
         throw new Error(`${id} validity must hold grid.width * grid.height rows`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_FOCAL_STATISTICS_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_FOCAL_STATISTICS_PARAMETER_LENGTH} float32 values`
@@ -136,9 +139,9 @@ export class GPUFocalStatistics implements GPUCommandNodeProducer {
     }
     for (const [name, view] of outputs) {
       if (name === 'counts') {
-        validatePackedView(view, ['uint32'], `${id} output.counts`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.counts`);
       } else {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
       }
       if (view.length < this.cellCount) {
         throw new Error(`${id} output.${name} must hold grid.width * grid.height rows`);
@@ -289,8 +292,8 @@ ${IS_FINITE_VALUE_WGSL}
 fn readCell(cell: u32, value: ptr<function, f32>) -> bool {
   let sample = raster[rasterOffset + cell];
   *value = sample;
-  // Compare bits: NaN is nodata, and infinities are kept as values.
-  var isValid = (bitcast<u32>(sample) & 0x7fffffffu) <= 0x7f800000u;
+  // Compare bits: every non-finite sample (NaN or an infinity) is nodata, the published band rule.
+  var isValid = isFiniteValue(sample);
   ${noDataValue !== undefined ? `isValid = isValid && sample != ${getWGSLFloatLiteral(noDataValue)};` : ''}
   ${hasValidity ? 'isValid = isValid && validity[validityOffset + cell] != 0u;' : ''}
   return isValid;

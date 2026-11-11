@@ -17,7 +17,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   ERFC_VALUE_WGSL,
@@ -85,6 +85,8 @@ import {
   getTraceSeriesWGSL
 } from './spatial-maximum-likelihood-wgsl';
 import {SPATIAL_SERIES_TAIL_MINIMUM_POWER, getSpatialSeriesTailWGSL} from './spatial-series-tail';
+import {GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE} from './ordinary-least-squares-parameters';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 import {
   getBelsleyConditionNumberWGSL,
   getCholeskyWGSL,
@@ -217,14 +219,24 @@ export type GPUSpatialErrorMaximumLikelihoodProps = {
  * `e ~ N(0, s2 I)` (Anselin 1988; spreg `ML_Error` with `method='full'`, whose exact
  * log-determinant is replaced here by a truncated trace series). Nothing is read back.
  *
- * 1. With `Z = [1, X - mean, y - mean]` (`m = predictorCount + 2` columns), three tile passes with
- *    Kahan merges accumulate `G0 = Z'Z`, `G1 + G1' = Z'WZ + (Z'WZ)'` and `G2 = (WZ)'(WZ)` once.
+ * 1. A first tile pass fits ordinary least squares on the centered columns and gives
+ *    `e0 = (y - mean) - (X - mean) b0`. With `Z = [1, X - mean, e0]` (`m = predictorCount + 2`
+ *    columns), three tile passes with fixed-order merges accumulate `G0 = Z'Z`,
+ *    `G1 + G1' = Z'WZ + (Z'WZ)'` and `G2 = (WZ)'(WZ)` once.
  *    The Gram matrix of the filtered columns `Z - lambda W Z` is then exactly
  *    `G0 - lambda (G1 + G1') + lambda^2 G2` for any `lambda` (the filtered constant
  *    `1 - lambda * sum_j w_ij` is column 0, as in spreg), so no pass over the rows repeats.
+ *    Replacing the response by `e0` leaves the minimum over the coefficients unchanged for any
+ *    `b0` (the filtered regression then estimates `b - b0`), and it is what keeps the residual sum
+ *    of squares accurate in float32: every term of `ee` below is of the size of `ee` itself,
+ *    where with the raw response `yy - 2 b'r + b'Ab` cancels to `1 - R^2` of its terms.
+ *    `(y - mean)` and `(X - mean)` are fixed with `getRoundedDifference` before `e0` is formed:
+ *    the shader compiler of the test GPU otherwise regroups `(y - mean) - fit` as
+ *    `y - (mean + fit)` and `e0` comes out in float32 steps of the response (`s2` was 5% off for
+ *    a response near 10,000 with residuals of 0.002).
  * 2. For each `lambda` one small unit-scaled Cholesky solve of the filtered normal equations gives
- *    `s2(lambda) = ee(lambda) / n`, `ee = yy - 2 b'r + b'Ab` and, by the envelope theorem,
- *    `ee'(lambda) = yy' - 2 b'r' + b'A'b`. With the log-determinant series of
+ *    `s2(lambda) = ee(lambda) / n`, `ee = e0e0 - 2 d'r + d'Ad` (`d = b - b0`) and, by the envelope
+ *    theorem, `ee'(lambda) = e0e0' - 2 d'r' + d'A'd`. With the log-determinant series of
  *    `GPUSpatialWeightsTraces` the concentrated likelihood `-n/2 ln(s2) + ln|I - lambda W|` and its
  *    derivative are scanned on 1025 grid points, each positive-to-non-positive sign change is
  *    refined by 32 bisection steps and the best candidate wins (the same deterministic search as
@@ -241,6 +253,10 @@ export type GPUSpatialErrorMaximumLikelihoodProps = {
  *    intercept and predictors only (not `lambda`) in AIC and Schwarz (`k = x.shape[1]`), so the
  *    summary AIC and Schwarz use that count: `2 (predictorCount + 1) - 2 LL`. A criterion that
  *    counts `lambda` and `s2` differs by a constant `2` / `ln(n)` per omitted parameter.
+ *
+ * The filtered regression at the estimate is singular (status 1) when a Cholesky pivot of its
+ * unit-diagonal system is below `GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE` (`1e-3`), the limit
+ * of `GPUOrdinaryLeastSquares`: near-collinear predictors report status 1, not an estimate.
  *
  * Search interval, truncation and approximation behave exactly as in
  * `GPUSpatialLagMaximumLikelihood` (`min(0.99, seriesLimit) / ||W||_inf`, default `Q = 128`, exact
@@ -300,8 +316,8 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
     }
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
     this.exactLogDeterminant = validateExactLogDeterminant(id, props, rows);
-    validatePackedView(props.predictors, ['float32'], `${id} predictors`);
-    validatePackedView(props.response, ['float32'], `${id} response`);
+    validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
+    validateSinglePackedView(props.response, ['float32'], `${id} response`);
     if (props.response.length !== rows) {
       throw new Error(`${id} response length must equal the weights row count`);
     }
@@ -325,28 +341,32 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
       validateCapacity(id, 'traceProbeCount', props.traceProbeCount);
     }
     validateGPUSpatialWeightsTracesParameters(id, 'traceParameters', props.traceParameters);
-    validatePackedView(output.table, ['float32'], `${id} output.table`);
+    validateSinglePackedView(output.table, ['float32'], `${id} output.table`);
     if (output.table.length < (predictorCount + 2) * GPU_SPATIAL_MAXIMUM_LIKELIHOOD_TABLE_STRIDE) {
       throw new Error(`${id} output.table must hold (predictorCount + 2) * 4 float32 values`);
     }
-    validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
     if (output.summary.length < GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH) {
       throw new Error(
         `${id} output.summary must hold ${GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH} float32 values`
       );
     }
-    validatePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
+    validateSinglePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
     if (output.status.code.length < 1) {
       throw new Error(`${id} output.status.code must hold one uint32 row`);
     }
     if (output.status.converged) {
-      validatePackedView(output.status.converged, ['uint32'], `${id} output.status.converged`);
+      validateSinglePackedView(
+        output.status.converged,
+        ['uint32'],
+        `${id} output.status.converged`
+      );
       if (output.status.converged.length < 1) {
         throw new Error(`${id} output.status.converged must hold one uint32 row`);
       }
     }
     if (output.residuals) {
-      validatePackedView(output.residuals, ['float32'], `${id} output.residuals`);
+      validateSinglePackedView(output.residuals, ['float32'], `${id} output.residuals`);
       if (output.residuals.length < rows) {
         throw new Error(`${id} output.residuals must hold one row per input row`);
       }
@@ -434,6 +454,9 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
     allocate('STATUS');
     allocate('MEANS', k);
     allocate('YBAR');
+    allocate('OLS', k);
+    // A float32 zero written by the first-stage solve: the runtime zero of getRoundedDifference.
+    allocate('RUNTIME_ZERO');
     allocate('BETA', p);
     allocate('SIGMA2');
     allocate('CONDITIONING', 4);
@@ -488,6 +511,11 @@ ${IS_FINITE_VALUE_WGSL}`;
     const infinityNorm = transient('traces-infinity-norm', 1);
     const partialNorm = transient('partial-weights-norm', tileCount);
     const partialMeans = transient('partial-means', tileCount * (k + 1));
+    // First-stage OLS sums: the packed centered X'X, then X'y.
+    const olsMomentCount = (k * (k + 1)) / 2;
+    const olsSumCount = olsMomentCount + k;
+    const partialOls = transient('partial-ols', tileCount * olsSumCount);
+    const olsSums = transient('ols-sums', olsSumCount);
     const partialGram = transient('partial-gram', 3 * tileCount * packedCount);
     const gram = transient('gram', 3 * packedCount);
     const residualView = output.residuals ?? transient('residuals', rowCount);
@@ -495,12 +523,21 @@ ${IS_FINITE_VALUE_WGSL}`;
     const residualSums = transient('residual-sums', RESIDUAL_SUM_COUNT);
 
     const getRowWGSL = /* wgsl */ `
+${ROUNDED_DIFFERENCE_WGSL}
 fn getRow(row: u32, z: ptr<function, array<f32, ${columns}>>) {
+  // Each value minus its mean is fixed before it meets the small terms: the compiler of the test
+  // GPU otherwise regroups the residual as y - (mean + fit), in float32 steps of the response.
+  let runtimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
   (*z)[0] = 1.0;
   for (var column = 0u; column < K; column++) {
-    (*z)[1u + column] = design[designOffset + row * K + column] - workspace[workspaceOffset + W_MEANS + column];
+    (*z)[1u + column] = getRoundedDifference(design[designOffset + row * K + column], workspace[workspaceOffset + W_MEANS + column], runtimeZero);
   }
-  (*z)[K + 1u] = response[responseOffset + row] - workspace[workspaceOffset + W_YBAR];
+  // The response column is its first-stage OLS residual (see the class documentation).
+  var residual = getRoundedDifference(response[responseOffset + row], workspace[workspaceOffset + W_YBAR], runtimeZero);
+  for (var column = 0u; column < K; column++) {
+    residual -= (*z)[1u + column] * workspace[workspaceOffset + W_OLS + column];
+  }
+  (*z)[K + 1u] = residual;
 }`;
     const gramTiles = (mode: 0 | 1 | 2) =>
       tileKernel(
@@ -602,6 +639,84 @@ ${
         constants,
         `${getKahanSumWGSL('partial', 'index', `${k + 1}u`, 'TILE_COUNT')}
   workspace[workspaceOffset + W_MEANS + index] = sum / f32(ROWS);`
+      ),
+      ...tileKernel(
+        'ols-tiles',
+        () => [
+          f32('design', props.predictors, 'read'),
+          f32('response', props.response, 'read'),
+          f32('workspace', workspace, 'read'),
+          f32('partial', partialOls, 'read_write')
+        ],
+        constants,
+        `let firstRow = index * TILE_ROWS;
+  let lastRow = min(firstRow + TILE_ROWS, ROWS);
+  var sums: array<f32, ${olsSumCount}>;
+  for (var row = firstRow; row < lastRow; row++) {
+    var centered: array<f32, ${k}>;
+    for (var column = 0u; column < K; column++) {
+      centered[column] = design[designOffset + row * K + column] - workspace[workspaceOffset + W_MEANS + column];
+    }
+    let centeredResponse = response[responseOffset + row] - workspace[workspaceOffset + W_YBAR];
+    for (var first = 0u; first < K; first++) {
+      for (var second = 0u; second <= first; second++) {
+        sums[first * (first + 1u) / 2u + second] += centered[first] * centered[second];
+      }
+      sums[${olsMomentCount}u + first] += centered[first] * centeredResponse;
+    }
+  }
+  for (var slot = 0u; slot < ${olsSumCount}u; slot++) {
+    partial[partialOffset + index * ${olsSumCount}u + slot] = sums[slot];
+  }`
+      ),
+      kernel(
+        'ols-merge',
+        [f32('partial', partialOls, 'read'), f32('olsSums', olsSums, 'read_write')],
+        olsSumCount,
+        constants,
+        `${getKahanSumWGSL('partial', 'index', `${olsSumCount}u`, 'TILE_COUNT')}
+  olsSums[olsSumsOffset + index] = sum;`
+      ),
+      kernel(
+        'ols-solve',
+        [f32('olsSums', olsSums, 'read'), f32('workspace', workspace, 'read_write')],
+        1,
+        `${constants}
+${finiteDeclarations}
+${getCholeskyWGSL(k)}`,
+        // Any finite b0 gives the same estimator; b0 = 0 (the uncorrected response) is used when
+        // the centered system fails the OLS pivot limit. The filtered solve applies the same limit
+        // to its own system and reports status 1, so that fallback never reaches a published fit
+        // unless filtering itself lifts the system above the limit.
+        `workspace[workspaceOffset + W_RUNTIME_ZERO] = 0.0;
+  var a: array<f32, ${k * k}>;
+  var rhs: array<f32, ${k}>;
+  var scale: array<f32, ${k}>;
+  var valid = true;
+  for (var column = 0u; column < K; column++) {
+    let diagonal = olsSums[olsSumsOffset + column * (column + 1u) / 2u + column];
+    valid = valid && diagonal > 0.0 && isFiniteValue(diagonal);
+    scale[column] = sqrt(max(diagonal, 1.0e-30));
+  }
+  for (var row = 0u; row < K; row++) {
+    for (var column = 0u; column <= row; column++) {
+      let value = olsSums[olsSumsOffset + row * (row + 1u) / 2u + column] / (scale[row] * scale[column]);
+      a[row * K + column] = value;
+      a[column * K + row] = value;
+    }
+    rhs[row] = olsSums[olsSumsOffset + ${olsMomentCount}u + row] / scale[row];
+  }
+  valid = valid && choleskyFactor_${k}(&a);
+  for (var column = 0u; column < K; column++) {
+    valid = valid && a[column * K + column] >= ${getWGSLFloatLiteral(GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE)};
+  }
+  if (valid) {
+    choleskySolve_${k}(&a, &rhs);
+  }
+  for (var column = 0u; column < K; column++) {
+    let slope = rhs[column] / scale[column];
+    workspace[workspaceOffset + W_OLS + column] = select(0.0, slope, valid && isFiniteValue(slope));
+  }`
       ),
       ...new GPUSpatialWeightsTraces({
         id: `${id}-traces`,
@@ -928,6 +1043,9 @@ function getFilteredSolveBodyWGSL(k: number, p: number): string {
       }
     }
     singular = singular || !choleskyFactor_${p}(&a);
+    for (var column = 0u; column < P; column++) {
+      singular = singular || !(a[column * P + column] >= ${getWGSLFloatLiteral(GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE)});
+    }
     workspace[workspaceOffset + W_STATUS] = select(3.0, 1.0, singular && !nonFinite);
     return;
   }
@@ -951,6 +1069,14 @@ function getFilteredSolveBodyWGSL(k: number, p: number): string {
     workspace[workspaceOffset + W_STATUS] = 1.0;
     return;
   }
+  // The pivot limit of GPUOrdinaryLeastSquares on the unit-diagonal filtered system: a filtered
+  // column within 1 - 1e-6 (squared cosine) of the span of the earlier ones is singular, not a fit.
+  for (var column = 0u; column < P; column++) {
+    if (!(a[column * P + column] >= ${getWGSLFloatLiteral(GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE)})) {
+      workspace[workspaceOffset + W_STATUS] = 1.0;
+      return;
+    }
+  }
   choleskySolve_${p}(&a, &rhs);
   var filtered: array<f32, ${p}>;
   var errorSumOfSquares = getGramValue(K + 1u, K + 1u, lambda);
@@ -968,11 +1094,12 @@ function getFilteredSolveBodyWGSL(k: number, p: number): string {
   }
   workspace[workspaceOffset + W_STATUS] = 0.0;
   workspace[workspaceOffset + W_SIGMA2] = sigma2;
-  // Raw coefficients: b = filtered slopes, b0 = a0 + ybar - m'b.
+  // Raw coefficients: b = first-stage slopes + filtered slopes, intercept = a0 + ybar - m'b.
   var intercept = filtered[0] + workspace[workspaceOffset + W_YBAR];
   for (var column = 0u; column < K; column++) {
-    intercept -= workspace[workspaceOffset + W_MEANS + column] * filtered[1u + column];
-    workspace[workspaceOffset + W_BETA + 1u + column] = filtered[1u + column];
+    let slope = workspace[workspaceOffset + W_OLS + column] + filtered[1u + column];
+    intercept -= workspace[workspaceOffset + W_MEANS + column] * slope;
+    workspace[workspaceOffset + W_BETA + 1u + column] = slope;
   }
   workspace[workspaceOffset + W_BETA] = intercept;
   // Covariance sigma2 (Xs'Xs)^-1 = sigma2 D^-1 (unit^-1) D^-1 from unit solves.

@@ -8,6 +8,7 @@ import {
   validateMaximumCount,
   validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
+import {validateGPUStatusPort} from '../analysis-core/contracts/status';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -54,13 +55,32 @@ export type GPURasterWatershedSegmentationProps = {
   maximumSteps?: number;
   /** Forest-only Boruvka round budget, 1..32; default ceil(log2(pixel count)) + 1. */
   maximumIterations?: number;
-  output: {labels: GraphDataView<'uint32'>; status: {converged: GraphDataView<'uint32'>}};
+  output: {
+    labels: GraphDataView<'uint32'>;
+    /**
+     * `converged` is 1 when every reachable cell was labelled within the budget. The optional
+     * `iterationLimitReached` is `1 - converged`: `maximumSteps` (FIFO) or `maximumIterations`
+     * (forest) stopped the flood first.
+     */
+    status: GPURasterWatershedSegmentationStatus;
+  };
+};
+
+/** Named status words of {@link GPURasterWatershedSegmentation} (`GPUIterationStatusPort` names). */
+export type GPURasterWatershedSegmentationStatus = {
+  converged: GraphDataView<'uint32'>;
+  iterationLimitReached?: GraphDataView<'uint32'>;
 };
 /**
  * Marker-controlled segmentation with explicit FIFO or rooted minimum-spanning-forest semantics.
  * The default priority flood accepts complete domains of <=16384 cells.
  * Flood ordering is (maximum elevation along path, FIFO discovery age); row-major markers
- * initialize the queue. No watershed-line pixels are removed. Invalid input pixels are barriers.
+ * initialize the queue. This is not the queue order of `skimage.segmentation.watershed`, which
+ * orders by the cell's own value: the two agree where every basin is entered over its lowest
+ * pass, and differ where fronts from higher markers meet on lower ground. For the row
+ * `5, 2, 2, 2, 2, 2, 5` with markers on the ends this class labels `1 1 1 1 2 2 2` (the fronts
+ * advance in turn) and the scikit-image order gives `1 1 1 1 1 1 2`. No parity with scikit-image
+ * is claimed. No watershed-line pixels are removed. Invalid input pixels are barriers.
  * A binary heap preserves the deterministic ordering with O(cells * log(cells)) work
  * and O(cells) queue storage. This remains a bounded segmentation path, not large-image tiling.
  * Queue storage uses workgroup memory when it fits the device limit, otherwise graph scratch.
@@ -117,6 +137,13 @@ export class GPURasterWatershedSegmentation implements GPUCommandNodeProducer {
     requireRasterLength(props.markers, count, this.id, 'markers');
     requireRasterLength(props.output.labels, count, this.id, 'output.labels');
     requireRasterLength(props.output.status.converged, 1, this.id, 'output.status.converged');
+    requireRasterLength(
+      props.output.status.iterationLimitReached,
+      1,
+      this.id,
+      'output.status.iterationLimitReached'
+    );
+    validateGPUStatusPort(this.id, props.output.status);
     validateRequirement(
       this.id,
       Number.isInteger(props.maximumSteps ?? count) && (props.maximumSteps ?? count) > 0,
@@ -135,8 +162,13 @@ export class GPURasterWatershedSegmentation implements GPUCommandNodeProducer {
       ...getGraphOutputViews(output)
     ]);
     const band = getRasterBufferBandNodes(graph, id, props.input, grid, true);
+    const statusNodes = this.getIterationLimitNodes(graph);
     if (props.method === 'minimum-spanning-forest') {
-      return [...band.nodes, ...getRasterWatershedForestNodes(graph, id, props, band.band)];
+      return [
+        ...band.nodes,
+        ...getRasterWatershedForestNodes(graph, id, props, band.band),
+        ...statusNodes
+      ];
     }
     // Workgroup allocations are individually rounded to 16 bytes. Only invocation zero uses
     // the queue, so local storage preserves the serial flood order without synchronization.
@@ -273,6 +305,35 @@ if (!complete) {
     if (validity[validityOffset + cell] != 0u && markers[markersOffset + cell] == 0u) { labels[labelsOffset + cell] = 0xfffffffeu; }
   }
 }`
+      }),
+      ...statusNodes
+    ];
+  }
+
+  /** One-thread node that publishes the optional `iterationLimitReached` as `1 - converged`. */
+  private getIterationLimitNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): GPUCommandNode<Parameters>[] {
+    const {status} = this.props.output;
+    if (!status.iterationLimitReached) {
+      return [];
+    }
+    return [
+      createWGSLKernelNode(graph, {
+        id: `${this.id}-iteration-status`,
+        operation: 'GPURasterWatershedSegmentation',
+        variant: 'iteration-status',
+        invocationCount: 1,
+        bindings: [
+          {name: 'converged', view: status.converged, type: 'u32', access: 'read'},
+          {
+            name: 'iterationLimitReached',
+            view: status.iterationLimitReached,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        body: 'iterationLimitReached[iterationLimitReachedOffset] = 1u - min(converged[convergedOffset], 1u);'
       })
     ];
   }

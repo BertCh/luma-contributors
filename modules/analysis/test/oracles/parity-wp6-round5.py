@@ -6,7 +6,8 @@
 Pandas merge/groupby: unsigned key equality, all-ones sentinel removed BEFORE
 merge (pandas otherwise matches nulls), mask != 0, smallest right row gather,
 finite-only aggregates, and ascending compact left IDs. Exact fixed-point
-words use the API's np.rint(f32(value * 65536)) representation. No fanout rows
+words use the API's np.rint(f32(value * 65536)) representation; the float sum
+and mean are pandas' sum and mean of the values themselves. No fanout rows
 are exposed by GPUKeyJoin; compare every first match, multiplicity, membership,
 gather and aggregate instead. All 3109 counties are right-side inputs.
 
@@ -75,13 +76,16 @@ def join_case(name, left_keys, right_keys, values, left_mask, right_mask, bits=3
     finite = pairs[np.isfinite(pairs.value)].copy()
     finite['quantized'] = np.rint((finite.value.to_numpy().astype(np.float32) * np.float32(65536))).astype(np.int64)
     aggregates = finite.groupby('leftRow').agg(count=('value', 'count'), sum=('quantized', 'sum'),
+                                               floatSum=('value', 'sum'),
                                                minimum=('value', 'min'), maximum=('value', 'max'))
     aggregates = aggregates.reindex(all_rows)
     finite_counts = aggregates['count'].fillna(0).to_numpy()
     integer_sums = aggregates['sum'].fillna(0).astype(np.int64).to_numpy()
-    sums = integer_sums.astype(float) / 65536
+    # The float sum and mean are pandas' own, of the values, not of the fixed-point words
+    # (math review 2026-11-10, dataframe-03). Only the words are in units of 1 / 65536.
+    sums = aggregates['floatSum'].fillna(0).to_numpy().astype(float)
     sums[counts == 0] = np.nan
-    means = np.divide(integer_sums.astype(float) / 65536, finite_counts,
+    means = np.divide(aggregates['floatSum'].fillna(0).to_numpy().astype(float), finite_counts,
                       out=np.full(len(all_rows), np.nan), where=finite_counts > 0)
     selected = np.flatnonzero(counts)
     capacity = len(left_keys) if capacity is None else capacity

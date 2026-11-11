@@ -19,7 +19,7 @@ window reductions in f64 using constant NaN padding (clipped windows), arbitrary
 square/circle footprints, ddof=0. All outputs, including halo outputs, are stored;
 every core cell is also compared to the unpartitioned 512x512 SciPy result at
 generation time. Edge-of-halo outputs intentionally have local clipped support.
-Masks/NaN/sentinel filter samples; infinities remain valid samples; minimum count and center propagation affect
+Masks/NaN/infinities/sentinel filter samples (every non-finite sample is nodata); minimum count and center propagation affect
 floats but not counts. Negative radius means empty footprint. No RNG.
 
 Geographic: all nature observations grouped by actual category, plus an empty
@@ -154,7 +154,15 @@ def generateZonal(directory, positions, source):
 
 
 def computeFocal(values, validity, settings, maximumRadius, noDataValue):
-    valid = ~numpy.isnan(values) & (values != noDataValue) & (validity != 0)
+    # Every non-finite sample is nodata (NaN or an infinity), the published band rule. Until
+    # 2026-11-10 only NaN was, and the kernel kept an infinity as a value.
+    # parity-wp1-focal-small.json is the output of this script on the pinned set (2026-11-11,
+    # NumPy 2.5.4, SciPy 1.16.3, pointpats 2.6.0): against the fixture before the rule change 42
+    # cells differ, every one in a window that reaches the infinite cell. (A run of the day
+    # before on Python 3.9.6, NumPy 2.0.2 and SciPy 1.13.1 gave the same payload bit for bit.)
+    # The other 21 fixtures of this script, the sixteen Grand Canyon ones among them, hold no
+    # infinity; they regenerate with identical payloads and were left as committed.
+    valid = numpy.isfinite(values) & (values != noDataValue) & (validity != 0)
     samples = numpy.where(valid, values, numpy.nan)
     radius = min(settings['radius'], maximumRadius)
     if radius < 0:

@@ -58,7 +58,7 @@ export type ParameterField = {
 
 /** One packer of a class. */
 export type ClassPacker = {
-  /** Call shown in the docs, for example `getGPUKMeansParameterValues(settings)`. */
+  /** Call shown in the docs, for example `getGPUSpatialKMeansParameterValues(settings)`. */
   call: string;
   /** Packed view format, from the return type. */
   format: 'float32' | 'uint32' | 'unknown';

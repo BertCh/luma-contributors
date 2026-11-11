@@ -28,6 +28,7 @@ import {
 import {requireTestDevice} from '../../utils/require-test-device';
 import reference from './interpolation-advanced-reference.json';
 import gstatReference from './interpolation-gstat-reference.json';
+import defaultDegreeReference from '../../oracles/fixtures/interpolation-rbf-default-degree.json';
 const covariance: GPUPredictionCovariance = {...reference.covariance, model: 'exponential'};
 async function createHarness() {
   const device = await getWebGPUTestDevice();
@@ -319,6 +320,46 @@ for (const kernel of Object.keys(reference.radial.expected) as NonNullable<
       expect(Array.from(await status.read())).toEqual([0, 0, 0, 0]);
       const actual = await values.read();
       const expected = reference.radial.expected[kernel];
+      for (let row = 0; row < 4; row++) {
+        expect(actual[row * 4]).toBeCloseTo(expected[row], 3);
+        expect(actual[row * 4 + 2]).toBe(32);
+      }
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+// Math correctness review, interpolation-density-12: the SciPy fixture above always passes
+// degree 2. This one leaves `degree` out, against SciPy fitted at the default GPULocalRBF
+// documents for each kernel (`test/oracles/interpolation-rbf-default-degree.py`).
+for (const kernel of Object.keys(defaultDegreeReference.expected) as NonNullable<
+  GPULocalRBFProps['kernel']
+>[]) {
+  it(`${kernel} RBF at its default polynomial degree matches SciPy`, async () => {
+    const harness = await createHarness();
+    const data = reference.radial;
+    const values = harness.output(4, 'float32x4', 4);
+    const status = harness.output(4, 'uint32');
+    const contributor = new GPULocalRBF({
+      positions: harness.input(data.positions.flat(), 'float32x2', 2),
+      values: harness.input(data.values, 'float32'),
+      queries: harness.input(data.queries.flat(), 'float32x2', 2),
+      sampleSmoothing: harness.input(data.smoothing, 'float32'),
+      neighborhoods: harness.input(data.neighborhoods.flat(), 'uint32'),
+      neighborhoodCapacity: 32,
+      neighborCount: 32,
+      kernel,
+      epsilon: defaultDegreeReference.epsilon,
+      output: {values: values.view, status: status.view}
+    });
+    expect(contributor.degree).toBe(defaultDegreeReference.degrees[kernel]);
+    harness.graph.add(contributor);
+    const cleanup = await harness.run();
+    try {
+      expect(Array.from(await status.read())).toEqual([0, 0, 0, 0]);
+      const actual = await values.read();
+      const expected = defaultDegreeReference.expected[kernel];
       for (let row = 0; row < 4; row++) {
         expect(actual[row * 4]).toBeCloseTo(expected[row], 3);
         expect(actual[row * 4 + 2]).toBe(32);

@@ -20,7 +20,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -289,8 +289,8 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
         minY <= maxY,
       'indexBounds must be finite and ordered'
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.times, ['float32'], `${id} times`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.times, ['float32'], `${id} times`);
     validateRequirement(id, props.positions.length >= 1, 'needs at least one point');
     validateRequirement(
       id,
@@ -298,21 +298,21 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
       'times length must equal positions length'
     );
     if (props.weights) {
-      validatePackedView(props.weights, ['float32'], `${id} weights`);
+      validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
       validateRequirement(
         id,
         props.weights.length === props.positions.length,
         'weights length must equal positions length'
       );
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       props.parameters.length >= GPU_SPACE_TIME_KERNEL_DENSITY_PARAMETER_LENGTH,
       `parameters must hold ${GPU_SPACE_TIME_KERNEL_DENSITY_PARAMETER_LENGTH} float32 values`
     );
     const {output} = props;
-    validatePackedView(output.values, ['float32'], `${id} output.values`);
+    validateSinglePackedView(output.values, ['float32'], `${id} output.values`);
     validateRequirement(
       id,
       output.values.length >= this.voxelCount,
@@ -323,7 +323,7 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
       ['output.status.invalidCount', output.status?.invalidCount, 'uint32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} ${name}`);
+        validateSinglePackedView(view, [format], `${id} ${name}`);
         validateRequirement(id, view.length === 1, `${name} must contain exactly one row`);
       }
     }

@@ -481,7 +481,7 @@ export function createRasterBenchmarkCases(): BenchmarkCase[] {
               adjacency: scope.output('adjacency', regions * regions, 'uint32'),
               weights: scope.output('weights', regions * regions, 'float32'),
               mapping: scope.output('mapping', regions, 'uint32'),
-              status: scope.output('status', 1, 'uint32')
+              status: {iterationLimitReached: scope.output('status', 1, 'uint32')}
             }
           })
         );

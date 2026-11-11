@@ -4,8 +4,10 @@
 
 import {
   GPU_COMPOSITE_SCORE_AGGREGATION,
-  GPU_COMPOSITE_SCORE_POWER_ITERATIONS,
+  GPU_COMPOSITE_SCORE_LOADING_TIE_TOLERANCE,
+  GPU_COMPOSITE_SCORE_POLISH_STEPS,
   GPU_COMPOSITE_SCORE_SCALER,
+  GPU_COMPOSITE_SCORE_ZERO_SUM_TOLERANCE,
   type GPUCompositeScoreSettings
 } from '../../../src/dataframe-analysis/composite-indicators/composite-score-parameters';
 
@@ -157,8 +159,11 @@ export function computeCompositeScoreOnCPU(
 }
 
 /**
- * Power iteration on the correlation matrix of direction-adjusted z-scores, mirroring the WGSL
- * (start vector `1 / sqrt(d)`, fixed step count, non-negative sum sign rule).
+ * First eigenvector of the correlation matrix of direction-adjusted z-scores, with the rules of
+ * the WGSL: the closed form for two non-constant indicators, a float64 Jacobi decomposition
+ * otherwise, and the positive-sum sign rule with the first tied-largest loading positive for a
+ * zero sum. The specs check this twin and the kernel against closed forms (exact designs, the
+ * roots of the 3 x 3 characteristic polynomial), not against this Jacobi.
  */
 function getPrincipalComponent(
   covariance: Float64Array,
@@ -177,23 +182,34 @@ function getPrincipalComponent(
       correlation[a * d + b] = scale > 0 ? (sign * covariance[a * d + b]) / scale : 0;
     }
   }
-  let vector = new Float64Array(d).fill(1 / Math.sqrt(d));
-  for (let iteration = 0; iteration < GPU_COMPOSITE_SCORE_POWER_ITERATIONS; iteration++) {
-    const product = multiply(correlation, vector, d);
-    const norm = Math.hypot(...product);
-    if (!(norm > 0)) {
-      break;
+  let vector: Float64Array = new Float64Array(d);
+  if (d === 2 && nonConstant === 2) {
+    // [[1, r], [r, 1]]: (1, 1) / sqrt(2) for r >= 0 and (1, -1) / sqrt(2) for r < 0.
+    vector = Float64Array.of(Math.SQRT1_2, correlation[1] >= 0 ? Math.SQRT1_2 : -Math.SQRT1_2);
+  } else if (nonConstant > 0) {
+    vector = correlation.some(Number.isNaN)
+      ? new Float64Array(d).fill(NaN)
+      : getLargestEigenpairByJacobi(correlation, d).vector;
+    for (let step = 0; step < GPU_COMPOSITE_SCORE_POLISH_STEPS; step++) {
+      const product = multiply(correlation, vector, d);
+      const norm = Math.hypot(...product);
+      if (!(norm > 0)) {
+        break;
+      }
+      vector = product.map(value => value / norm);
     }
-    vector = product.map(value => value / norm);
   }
   const total = vector.reduce((sum, value) => sum + value, 0);
-  let largest = 0;
-  for (let c = 1; c < d; c++) {
-    if (Math.abs(vector[c]) > Math.abs(vector[largest])) {
-      largest = c;
-    }
-  }
-  if (!(total > 0 || (total === 0 && vector[largest] >= 0))) {
+  const absoluteTotal = vector.reduce((sum, value) => sum + Math.abs(value), 0);
+  const largestMagnitude = vector.reduce((largest, value) => Math.max(largest, Math.abs(value)), 0);
+  const leading = Math.max(
+    0,
+    vector.findIndex(
+      value => Math.abs(value) >= largestMagnitude * (1 - GPU_COMPOSITE_SCORE_LOADING_TIE_TOLERANCE)
+    )
+  );
+  const isZeroSum = Math.abs(total) <= GPU_COMPOSITE_SCORE_ZERO_SUM_TOLERANCE * absoluteTotal;
+  if (!((!isZeroSum && total > 0) || (isZeroSum && vector[leading] >= 0))) {
     vector = vector.map(value => -value);
   }
   const product = multiply(correlation, vector, d);

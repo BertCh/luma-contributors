@@ -32,9 +32,17 @@ export type GPUSegregationCounterfactualOutput = Omit<
   GPUSegregationDecompositionOutput,
   'distribution' | 'inference'
 > & {
-  /** `float32x2`, one row per unit: baseline composition on the final spatial structure. */
+  /**
+   * `float32x2`, one row per unit: the final composition on the baseline spatial structure (the
+   * baseline units keep their ranks and totals and take the final table's composition
+   * distribution; PySAL `counterfac_df1`).
+   */
   compositionOnly: GraphDataView<'float32x2'>;
-  /** `float32x2`, one row per unit: final composition on the baseline spatial structure. */
+  /**
+   * `float32x2`, one row per unit: the baseline composition on the final spatial structure (the
+   * final units keep their ranks and totals and take the baseline table's composition
+   * distribution; PySAL `counterfac_df2`).
+   */
   spatialOnly: GraphDataView<'float32x2'>;
 };
 

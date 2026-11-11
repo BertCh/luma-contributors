@@ -58,7 +58,7 @@ export type GPURasterCOLDMonitorSettings = {
   period?: number;
   /** Chi-squared quantile of the band count that flags one observation as anomalous (COLD: probability 0.99). */
   changeThreshold: number;
-  /** Larger chi-squared quantile above which one observation is skipped as an outlier (COLD: `1 - 1e-6`). */
+  /** Larger chi-squared quantile above which one observation is skipped as an outlier (pyxccd 1.1.0: `1 - 1e-5`). */
   outlierThreshold: number;
   /** Smallest mean cosine between consecutive normalized residual vectors of the peek window; defaults to `cos(45 deg)`. */
   minimumMeanCosine?: number;
@@ -102,7 +102,7 @@ export type GPURasterCOLDMonitorProps = {
   /** Band-interleaved `(cell * sliceCount + slice) * bandCount + band`; nonfinite samples are missing. */
   values: GraphDataView<'float32'>;
   /** Per-observation QA, `cell * sliceCount + slice`; zero rejects the whole observation. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Float32, see {@link getGPURasterCOLDMonitorParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Acquisition dates; the model is defined on real elapsed years. */
@@ -139,17 +139,46 @@ export type GPURasterCOLDMonitorProps = {
 /**
  * A simplified COLD monitor (Zhu et al. 2020, in the CCDC family of Zhu and Woodcock 2014): per
  * cell, recursive multi-band seasonal-trend segmentation on an irregular date axis, by ordinary
- * least squares. An observation window initializes a segment when it passes the stability test;
- * later observations are tested against the model and a change is confirmed by
- * `consecutiveCount` anomalies with a mean included angle under the threshold.
+ * least squares. An observation window initializes a segment when it passes pyxccd's stability
+ * test (per band, the slope times the span plus the larger of the first and last absolute
+ * residual, over the RMSE); later observations are tested against the model and a change is
+ * confirmed by `consecutiveCount` anomalies whose consecutive normalized residual vectors have a
+ * mean cosine of at least `minimumMeanCosine` (default `cos 45 deg`).
  *
- * What it omits against pyxccd's `cold_detect`, each documented in
- * `docs/api/gpu-raster/raster-change-monitoring.md`: LASSO (ordinary least squares here), Tmask
- * screening, the variogram-based minimum RMSE (`minimumRMSE` is caller-supplied), the temporally
- * adjusted RMSE (one whole-segment RMSE), the per-observation model update (refits happen when
- * the observation count grows by a factor of 1.33), the backward lookback of the initialization,
- * snow and insufficient-clear procedures and QA-class handling (the caller's `validity` is all),
- * and change probability below a confirmed break.
+ * This is the mean cosine, not the mean included angle of COLD, and the two differ: consecutive
+ * angles of 30, 30, 30, 30 and 100 degrees have a mean angle of 44 degrees (COLD confirms the
+ * break) and a mean cosine of 0.658, below `cos 45 deg` = 0.707 (this kernel does not).
+ *
+ * Compared with pyxccd 1.1.0 `cold_detect` on synthetic seven-band series with one or two abrupt
+ * breaks (`test/oracles/rts04-cold-pyxccd.py`), on the five bands pyxccd scores, with its
+ * thresholds, its variogram floor as `minimumRMSE` and `period` 365.25 / 365.2425. Whether the
+ * break dates agree depends on the size of the break against the threshold. Take the change score
+ * the break alone would give: the sum over bands of `(shift / max(RMSE, minimumRMSE))^2`.
+ * - At 4 or more times `changeThreshold` (each band shifted by about 3 or more times its residual
+ *   scale): every break date equals pyxccd's, with and without LASSO, on 80 random series and
+ *   five hand-made ones. Segment starts differ in 14 of the 80, by a few observations (no
+ *   lookback, another window advance).
+ * - At 1.05 to 1.45 times `changeThreshold` (shifts of 1.5 to 2.4 times the scale, 1.6 to 5.6
+ *   times a noise of 40): the confirmed breaks differ from pyxccd at `lam=0` in 31 of 80 random
+ *   series. In 23 pyxccd confirms nothing and this monitor confirms a break, often some
+ *   observations late; in 8 the dates differ. Neither is reliable there: pyxccd confirms exactly
+ *   the true break in 16 of the 80, this monitor in 26. The refit schedule is the main cause
+ *   (below). Between 1.45 and 4 times the threshold nothing was measured.
+ * A segment both fit on the same observations has the coefficients of pyxccd at `lam=0` to 0.07
+ * and its RMSE to 0.02 on 0-10000 data with noise 40; change magnitudes agree to 20. The
+ * definition itself is pinned in binary64 by `test/oracles/rts04-change-monitoring-numpy.py`.
+ *
+ * How it differs from pyxccd's `cold_detect`, each with its measured effect in
+ * `docs/api/gpu-raster/raster-change-monitoring.md`: ordinary least squares (pyxccd's default is
+ * LASSO with `lam=20`), no Tmask screening, a caller-supplied `minimumRMSE` (pyxccd derives it
+ * from the variogram), one whole-segment RMSE (pyxccd adjusts it temporally after 24
+ * observations), refits when the observation count has grown by a factor of 1.33 (pyxccd: at
+ * every observation up to 24, then at 3% growth, so its model absorbs a small step that this
+ * monitor's older model still scores as a change), no backward lookback of the initialization,
+ * a rejected initialization window is rebuilt as the shortest one from the next start (pyxccd
+ * moves both ends by one observation), every band is scored (pyxccd scores five of its seven), no snow or insufficient-clear procedures
+ * or QA classes (the caller's `mask` is all), and no change probability: the last
+ * `consecutiveCount` observations join the last segment and its fit.
  *
  * One band's fit reuses the shared QR of `getRasterLeastSquaresWGSL`, refactored per band. Fits
  * per cell are bounded by `maximumFitCount`.
@@ -231,8 +260,8 @@ export class GPURasterCOLDMonitor implements GPUCommandNodeProducer {
     );
     validateRequirement(
       id,
-      !props.validity || props.validity.length >= observations,
-      'validity must hold cellCount times sliceCount entries'
+      !props.mask || props.mask.length >= observations,
+      'mask must hold cellCount times sliceCount entries'
     );
     validateRequirement(
       id,
@@ -265,8 +294,8 @@ export class GPURasterCOLDMonitor implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, parameters} = this.props;
-    return [values, parameters, ...(validity ? [validity] : [])];
+    const {values, mask, parameters} = this.props;
+    return [values, parameters, ...(mask ? [mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -290,7 +319,7 @@ export class GPURasterCOLDMonitor implements GPUCommandNodeProducer {
       sliceCount: slices,
       bandCount: bands,
       values,
-      validity,
+      mask,
       parameters,
       dateAxis,
       output
@@ -396,7 +425,7 @@ fitsUsed = 0u;
 statusBits = 0u;
 observationTotal = 0u;
 for (var slice = 0u; slice < ${slices}u; slice++) {
-  var usable = ${validity ? `validity[validityOffset + index * ${slices}u + slice] != 0u` : 'true'};
+  var usable = ${mask ? `mask[maskOffset + index * ${slices}u + slice] != 0u` : 'true'};
   for (var band = 0u; band < ${bands}u; band++) { usable = usable && finite(observationValue(slice, band)); }
   if (usable) { observationSlices[observationTotal] = slice; observationTotal++; }
 }
@@ -440,7 +469,10 @@ loop {
     var score = 0.0;
     for (var band = 0u; band < ${bands}u; band++) {
       let floorRMSE = max(fitRMSE[band], minimumRMSEOf(band));
-      let term = (abs(fitCoefficients[band * ${columns}u + 1u]) * spanYears + abs(observationValue(firstSlice, band) - predictBand(firstSlice, band)) + abs(observationValue(lastSlice, band) - predictBand(lastSlice, band))) / floorRMSE;
+      let firstResidual = abs(observationValue(firstSlice, band) - predictBand(firstSlice, band));
+      let lastResidual = abs(observationValue(lastSlice, band) - predictBand(lastSlice, band));
+      // The larger end residual, as pyxccd; the sum of the two rejects windows pyxccd accepts.
+      let term = (abs(fitCoefficients[band * ${columns}u + 1u]) * spanYears + max(firstResidual, lastResidual)) / floorRMSE;
       score += term * term;
     }
     if (score <= changeThreshold) { windowEnd = end; initialized = true; break; }
@@ -537,7 +569,7 @@ cellSummary[cellSummaryOffset + index * 3u + 2u] = fitsUsed;`;
         bindings: [
           rasterBinding('values', values),
           rasterBinding('parameters', parameters),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           getGPURasterDateAxisBinding(dateAxis),
           rasterBinding('segments', output.segments, true),
           rasterBinding('coefficients', output.coefficients, true),

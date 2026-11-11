@@ -12,7 +12,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getParallelVariogramModelFitNodes} from './variogram-model-fit-nodes';
 import type {VariogramModelType, VariogramModelWeighting} from './variogram-model';
@@ -39,7 +39,10 @@ export type GPUVariogramModelFitProps = {
 
 /**
  * Constrained nugget/sill fitting over a log-range ladder and golden-section refinement, entirely
- * on GPU. Cressie repeats the search three times after the initial pair-weighted fit. Like the
+ * on GPU. Cressie repeats the search three times after the initial pair-weighted fit; its weights
+ * `N / max(fitted^2, 1e-20)` are divided by their total before the normal equations, in the
+ * ladder and in the refinement, so the fit scales with the semivariances (fitted values down to
+ * 1e-10, where the 1e-20 floor takes over). Like the
  * CPU helper, the search domain is [minimum positive lag / 10, maximum lag * 3]. A boundary optimum
  * is returned with status 3 rather than claimed to be an identified range. Nonpositive-count,
  * nonfinite, nonpositive-distance bins are skipped. Range candidates run in parallel. Each model's
@@ -47,6 +50,13 @@ export type GPUVariogramModelFitProps = {
  * on the GPU. Floating reductions preserve the fitting tolerance, not serial bit identity. Only
  * public diagnostics need readback. Compare model AIC only for the same empirical bins, and note
  * it is an unweighted Gaussian residual diagnostic, not a spatial likelihood.
+ *
+ * Status 2 (numerical failure, NaN outputs) is reported for every model when the objective
+ * cannot be evaluated in float32: when no candidate has a finite weighted residual, and, decided
+ * before the search, when the float32 resolution of the largest semivariance (`2^-23` of it),
+ * squared and summed with the pair weights, is not finite. That is semivariances above about
+ * `1.5e26 / sqrt(sum of weights)`; below it the fit of a column of constant semivariances would
+ * otherwise be 0 or infinity by rounding alone.
  */
 export class GPUVariogramModelFit implements GPUCommandNodeProducer {
   readonly id: string;
@@ -86,7 +96,7 @@ export class GPUVariogramModelFit implements GPUCommandNodeProducer {
       props.output.diagnostics,
       props.output.status
     ]) {
-      validatePackedView(view, [view.format], this.id);
+      validateSinglePackedView(view, [view.format], this.id);
     }
     if (
       [props.output.parameters, props.output.diagnostics, props.output.status].some(

@@ -23,7 +23,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -180,7 +180,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       props.spatialContext,
       HIERARCHICAL_DENSITY_SPATIAL_CONTEXT_SUPPORT
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     validateCapacity(
       id,
@@ -201,18 +201,18 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_SAMPLES
     );
     const {output} = props;
-    validatePackedView(output.labels, ['uint32'], `${id} output.labels`);
+    validateSinglePackedView(output.labels, ['uint32'], `${id} output.labels`);
     if (output.labels.length !== rows) {
       throw new Error(`${id} output.labels length must equal positions length`);
     }
     if (output.coreDistances) {
-      validatePackedView(output.coreDistances, ['float32'], `${id} output.coreDistances`);
+      validateSinglePackedView(output.coreDistances, ['float32'], `${id} output.coreDistances`);
       if (output.coreDistances.length !== rows) {
         throw new Error(`${id} output.coreDistances length must equal positions length`);
       }
     }
     if (output.status?.count) {
-      validatePackedView(output.status.count, ['uint32'], `${id} output.status.count`);
+      validateSinglePackedView(output.status.count, ['uint32'], `${id} output.status.count`);
       if (output.status.count.length < 1) {
         throw new Error(`${id} output.status.count must hold one row`);
       }

@@ -24,7 +24,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTrajectoryBracketNode,
@@ -196,15 +196,15 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
     );
     const {output} = props;
     const rowCount = props.positions.length;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
-    validatePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
     resolveGPUTrajectoryTemporalContext(id, props.timestamps, props.temporalContext);
     if (props.timestamps.length !== rowCount) {
       throw new Error(`${id} timestamps length must equal positions length`);
     }
     if (props.elevations) {
-      validatePackedView(props.elevations, ['float32'], `${id} elevations`);
+      validateSinglePackedView(props.elevations, ['float32'], `${id} elevations`);
       if (props.elevations.length !== rowCount) {
         throw new Error(`${id} elevations length must equal positions length`);
       }
@@ -219,7 +219,7 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
         `${id} ${isWordMode ? 'uint32x2 word' : 'float32'} timestamps require ${parameterFormat} parameters`
       );
     }
-    validatePackedView(props.parameters, [parameterFormat], `${id} parameters`);
+    validateSinglePackedView(props.parameters, [parameterFormat], `${id} parameters`);
     if (props.parameters.length < GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH} ${parameterFormat} values`
@@ -238,7 +238,7 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, [format], `${id} ${name}`);
+      validateSinglePackedView(view, [format], `${id} ${name}`);
       if (view.length !== trackCount) {
         throw new Error(`${id} ${name} length must equal the track count`);
       }
@@ -253,7 +253,7 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
       if (!output.activeTracks) {
         throw new Error(`${id} drawInstanceCount requires activeTracks`);
       }
-      validatePackedView(output.drawInstanceCount, ['uint32'], `${id} drawInstanceCount`);
+      validateSinglePackedView(output.drawInstanceCount, ['uint32'], `${id} drawInstanceCount`);
       if (output.drawInstanceCount.length < 1) {
         throw new Error(`${id} drawInstanceCount must contain one uint32 row`);
       }

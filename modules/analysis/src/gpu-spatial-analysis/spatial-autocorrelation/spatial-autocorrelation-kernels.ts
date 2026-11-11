@@ -34,7 +34,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createFloat32ValuesNodes,
@@ -78,14 +78,26 @@ export type SpatialAutocorrelationInputProps = {
 export type SpatialAutocorrelationInputs<Parameters> = {
   nodes: GPUCommandNode<Parameters>[];
   /**
-   * `rows + 5` floats: centered values `x - mean` (quiet NaN for rows outside the analysis)
-   * followed by the moments `[n, mean, variance, sumOfSquares, islandCount]`.
+   * `rows + 6` floats: centered values `x - mean` (quiet NaN for rows outside the analysis)
+   * followed by the moments `[n, mean, variance, sumOfSquares, islandCount, residualMean]`.
+   * `residualMean` is internal to the centering passes (see
+   * {@link SPATIAL_AUTOCORRELATION_RESIDUAL_MEAN_SLOT}).
    */
   statistics: GraphDataView<'float32'>;
 };
 
 /** Index of the island count inside the moments that follow the centered values. @internal */
 export const SPATIAL_AUTOCORRELATION_ISLAND_COUNT_SLOT = 4;
+
+/**
+ * Index, inside the moments, of the mean of the first-pass deviations `x - provisionalMean`. The
+ * centered value of a row is its stored first-pass deviation minus this residual, the scheme of
+ * `GPUGlobalSpatialStatistics`: the corrected mean is never rounded to one f32 and subtracted
+ * from the raw value, which would lose the second pass for values far from zero.
+ *
+ * @internal
+ */
+export const SPATIAL_AUTOCORRELATION_RESIDUAL_MEAN_SLOT = 5;
 
 /**
  * Validates an optional minimum active-neighbor count and returns it (default 1).
@@ -112,7 +124,7 @@ export function validateSpatialAutocorrelationInputs(
   const {id} = props;
   const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
   validateFloat32OrUint32Values(props.values, `${id} values`);
-  validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+  validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
   if (props.islands !== undefined) {
     resolveGPUIslandPolicy(id, props.islands);
   }
@@ -137,7 +149,7 @@ export function validateSpatialAutocorrelationInputs(
     }
   }
   if (props.globalStatistics) {
-    validatePackedView(props.globalStatistics, ['float32'], `${id} output.globalStatistics`);
+    validateSinglePackedView(props.globalStatistics, ['float32'], `${id} output.globalStatistics`);
     validateCapacity(
       id,
       'output.globalStatistics length',
@@ -164,8 +176,14 @@ ${GET_QUIET_NAN_SEEDED_WGSL}
 // erfcc Chebyshev fit, fractional error below 1.2e-7), so tiny p-values keep relative accuracy.
 ${ERFC_VALUE_WGSL}
 
+// Floor of every analytic (normal) p-value: the smallest normal f32. f32 exp underflows beyond
+// |z| of about 13, where erfc would read exactly 0; a floor keeps such p-values positive, so they
+// stay ordered against larger ones in a multiple-testing correction and safe under log(). One
+// rule for the global, local, hot-spot and emerging-hot-spot statistics.
+const ANALYTIC_P_VALUE_FLOOR: f32 = 1.17549435e-38;
+
 fn getTwoSidedPValue(z: f32) -> f32 {
-  return min(erfcValue(abs(z) * 0.70710678118654752), 1.0);
+  return clamp(erfcValue(abs(z) * 0.70710678118654752), ANALYTIC_P_VALUE_FLOOR, 1.0);
 }
 `;
 
@@ -228,10 +246,13 @@ export function getSpatialWeightsNeighborLoopWGSL(action: string, rowStart?: str
  * the global moments.
  *
  * Moments come from fixed-order two-level workgroup tree sums over the rows (no float atomics):
- * first the count (u32) and a provisional mean, then a second pass that adds the mean of the
- * deviations from it (`mean += sum(x - mean) / n`, which removes the rounding error of a large
- * offset), then the sum of squared centered values, so the variance never subtracts two large
- * numbers. Fixed moments in the parameters replace the count, mean and variance. When
+ * first the count (u32) and a provisional mean, then a second pass that stores every first-pass
+ * deviation `x - mean` and adds their mean to the reported mean (`mean += sum(x - mean) / n`,
+ * which removes the rounding error of a large offset). The centered values are the stored
+ * deviations minus that residual mean, read back from memory (the same scheme as
+ * `GPUGlobalSpatialStatistics`; subtracting the corrected mean, rounded to one f32, from the raw
+ * value would round every centered value to the f32 grid of the raw values). Then the sum of
+ * squared centered values, so the variance never subtracts two large numbers. Fixed moments in the parameters replace the count, mean and variance. When
  * `weights.status.overflow` is nonzero the weights are truncated and the mean becomes NaN, which
  * makes every output NaN.
  *
@@ -269,7 +290,7 @@ export function getSpatialAutocorrelationInputNodes<Parameters>(
     blockCount
   );
   const squarePartials = createTransientView(graph, `${id}-square-partials`, 'float32', blockCount);
-  const statistics = createTransientView(graph, `${id}-statistics`, 'float32', rows + 5);
+  const statistics = createTransientView(graph, `${id}-statistics`, 'float32', rows + 6);
   const rowStates = hasIslandPass
     ? createTransientView(graph, `${id}-row-states`, 'uint32', rows)
     : undefined;
@@ -465,7 +486,7 @@ var<workgroup> partialIslands: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
       bindings: [
         {name: 'values', view: values, type: 'f32', access: 'read'},
         ...momentRowBindings,
-        {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
+        {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'},
         {name: 'deviationPartials', view: deviationPartials, type: 'f32', access: 'read_write'}
       ],
       workgroupSize: MOMENT_WORKGROUP_SIZE,
@@ -473,7 +494,8 @@ var<workgroup> partialIslands: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
       guardIndex: false,
       declarations: `${blockDeclarations}
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
-      // Sum of the deviations from the provisional mean, whose rounding error it measures.
+      // Stores the deviation of every row from the provisional mean and sums them: the sum
+      // measures the rounding error of that mean.
       body: `let block = index / WORKGROUP_SIZE;
   let isInRange = index < INVOCATION_COUNT;
   var sum = 0.0;
@@ -481,9 +503,10 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
     let provisionalMean = statistics[statisticsOffset + MOMENTS + 1u];
     let end = min((block + 1u) * BLOCK_ROWS, ROW_COUNT);
     for (var row = block * BLOCK_ROWS + localInvocationIndex; row < end; row += WORKGROUP_SIZE) {
-      if (isRowValid(row)) {
-        sum += values[valuesOffset + row] - provisionalMean;
-      }
+      let valid = isRowValid(row);
+      let deviation = values[valuesOffset + row] - provisionalMean;
+      statistics[statisticsOffset + row] = select(getQuietNaN(row), deviation, valid);
+      sum += select(0.0, deviation, valid);
     }
   }
   partialSums[localInvocationIndex] = sum;
@@ -533,23 +556,31 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
   if (localInvocationIndex == 0u) {
     var total = statistics[statisticsOffset + MOMENTS];
     var mean = statistics[statisticsOffset + MOMENTS + 1u];
+    // Mean of the first-pass deviations: what the center pass subtracts from each stored deviation.
+    var residualMean = 0.0;
     if (total >= 1.0) {
-      mean += partialSums[0] / total;
+      residualMean = partialSums[0] / total;
     }
     if (readParameter(1u) != 0.0) {
+      // Fixed moments: center on the given mean, again through the stored deviations.
+      residualMean = readParameter(3u) - mean;
       total = readParameter(2u);
       mean = readParameter(3u);
+    } else {
+      mean += residualMean;
     }
     ${
       overflow
         ? `// Truncated weights: no statistic from them is trustworthy, so every output becomes NaN.
     if (overflow[overflowOffset] != 0u) {
       mean = getQuietNaN(index);
+      residualMean = getQuietNaN(index);
     }`
         : ''
     }
     statistics[statisticsOffset + MOMENTS] = total;
     statistics[statisticsOffset + MOMENTS + 1u] = mean;
+    statistics[statisticsOffset + MOMENTS + ${SPATIAL_AUTOCORRELATION_RESIDUAL_MEAN_SLOT}u] = residualMean;
   }`
     }),
     createWGSLKernelNode<Parameters>(graph, {
@@ -572,11 +603,14 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
   let isInRange = index < INVOCATION_COUNT;
   var sum = 0.0;
   if (isInRange) {
-    let mean = statistics[statisticsOffset + MOMENTS + 1u];
+    let residualMean = statistics[statisticsOffset + MOMENTS + ${SPATIAL_AUTOCORRELATION_RESIDUAL_MEAN_SLOT}u];
     let end = min((block + 1u) * BLOCK_ROWS, ROW_COUNT);
     for (var row = block * BLOCK_ROWS + localInvocationIndex; row < end; row += WORKGROUP_SIZE) {
       let valid = isRowValid(row);
-      let centered = values[valuesOffset + row] - mean;
+      // The stored first-pass deviation minus the mean of those deviations. It is read back from
+      // memory, not recomputed as (x - mean1) - mean2, which a shader compiler may reassociate to
+      // x - (mean1 + mean2).
+      let centered = statistics[statisticsOffset + row] - residualMean;
       // Rows outside the analysis store quiet NaN, which every later kernel reads as "not a focus
       // row and not a neighbor".
       statistics[statisticsOffset + row] = select(getQuietNaN(row), centered, valid);

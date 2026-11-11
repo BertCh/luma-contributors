@@ -16,7 +16,7 @@ Monte Carlo inference, exact leave-one-out model selection and bounded continuou
 | ST02 | `GPURestrictedRegimeRegression` | Any common/varying intercept and slopes; full restricted covariance; joint nested-model Chow F/degrees and coefficient/joint Wald chi-square tails | spatial/heteroskedastic restriction tests |
 | ST03 | `GPUSpatialPanelErrorMaximumLikelihood` | Balanced unit fixed-effects spatial-error Gaussian ML and pooled LM error and robust LM lag/error tests | Random/time effects, Hausman tests, clustered/serial inference |
 | ST04 | `GPUSeeminglyUnrelatedRegression` | One-step feasible SUR and Kelejian–Prucha spatial-error SUR, joint error covariance and full system coefficient covariance | iterated SUR and small-sample inference |
-| ST05 | `GPUProbitRegression` | Binary probit, expected-information standard errors, average marginal effects, bounded likelihood optimization; Pinkse, Kelejian–Prucha and Pinkse–Slade residual tests | Latent spatial probit |
+| ST05 | `GPUProbitRegression` | Binary probit, expected-information standard errors, average marginal effects, tail-accurate likelihood with separation reported as a status; Pinkse, Kelejian–Prucha and Pinkse–Slade residual tests | Latent spatial probit |
 | ST06 | `GPULocalCollinearity`; `GPUGeneralizedGeographicallyWeightedRegression` | Weighted VIF, intercept-inclusive design condition/variance decomposition; exact LOO bandwidth search; Poisson/logistic local SE and influence | Multiscale backfitting uncertainty and additional selection criteria |
 | ST07 | `GPUMultivariateLocalGearyPermutationTest` | Joint-vector conditional randomization, replay, equal-tail or esda minimum-tail p-values and optional Bonferroni adjustment | Exact upstream classification-label parity and additional correction families |
 | ST08 | `GPURankMarkov` | Full-rank/geographic-rank transitions, common complete panels and absolute-rank mobility | More than 64 rank states, fractional ties and incomplete-panel interpolation |
@@ -34,7 +34,7 @@ score rows exceed the device's storage binding size. All estimation rows must be
 no silent complete-case change after a model has already been fitted.
 
 Every row sum (column means, the centered moments `H'H`, `H'Z`, `diag(Z'Z)` and the meat matrix)
-is a row-tile reduction merged in tile order with compensation, so results are reproducible; one
+is a row-tile reduction merged in a fixed pairwise order, so results are reproducible; one
 invocation solves the small projection system. The HAC kernel is applied over its CSR neighbors,
 one invocation per row (`O(nnz · p)`), never over all pairs.
 
@@ -69,8 +69,28 @@ Empty or singular regimes are explicit, and a singular unrestricted fit does not
 restricted coefficient estimate. The joint test assumes independent homoskedastic normal errors.
 Rows (at most 2^24, and within the device's binding size for the predictors) are reduced in
 parallel: per-regime means and centered moments come from a stable regime sort and one workgroup
-per regime, one invocation rebuilds and solves both nested systems, and the residual sums of
-squares are compensated row-tile sums.
+per regime, one invocation solves both nested systems, and the residual sums of squares are
+row-tile sums merged in a fixed pairwise order.
+
+Both systems are solved in a shifted basis, never from raw cross-products, so a predictor with a
+large mean (a year, an elevation, a projected northing) costs no precision. With a varying
+intercept the predictors and the response are centered on their regime means; with a common
+intercept the response and the common-slope predictors are centered on their pooled means. A
+varying slope under a common intercept is not invariant to a shift, so when such a predictor has a
+mean larger than its spread the fit changes basis instead: `x - mean` takes the place of the
+constant and the raw columns `x 1[g]` stay (`1 = (sum_g x 1[g] - (x - mean)) / mean`), which spans
+the same model with a conditioning that does not depend on the size of the mean. The published
+coefficients and covariance are those of the raw design. Regime means are float32, so the sums of
+the deviations from them are carried through the moments and every difference of a value and its
+shift is fixed before it meets a small term (the shader compiler of the test GPU otherwise
+regroups `(y - mean) - fit` as `y - (mean + fit)`): a response whose mean is far above its
+residuals keeps its Chow statistic. The Chow numerator is the direct sum of
+squared differences of the two fits (equal to `SSE_restricted - SSE_unrestricted`), and each Wald
+contrast is formed from differences of shifts before it meets the coefficients. A system is
+singular (status 2 restricted, 3 unrestricted) when a Cholesky pivot of the unit-diagonal normal
+matrix is below `1e-3`, the limit of `GPUOrdinaryLeastSquares`; `GPUSpatialRegimeRegression`,
+`GPUSeeminglyUnrelatedRegression`, `GPUProbitRegression` and
+`GPUSpatialPanelLagMaximumLikelihood` apply the same limit.
 
 `GPUSpatialPanelErrorMaximumLikelihood` takes the existing spatial-error ML arguments plus
 `periodCount`. Data are balanced and period-major; the supplied weights describe only the entity
@@ -79,7 +99,7 @@ The objective and variance divisor use `N*T`, matching the profiled fixed-effect
 convention. This is not REML or a short-panel bias correction. It inherits the existing bounded
 trace-series search, boundary and approximation diagnostics. The absorbed intercept table row and
 information criteria are NaN. Predictors constant through time are singular after demeaning.
-Optional `diagnostics.tests` returns statistic/p-value pairs for pooled-panel LM error, robust LM lag and robust LM error. These fit pooled OLS on the original panel and use its residual variance, spatial lags and projected spatial fitted values, matching spreg 1.8.3. Diagnostic status is 0 valid, 1 failed/incomplete pooled fit, or 2 degenerate/nonfinite test information. The robust tests require positive spatial fitted-value information beyond the weight trace. They are specification tests, not clustered uncertainty for the FE estimator.
+Optional `diagnostics.tests` returns statistic/p-value pairs for pooled-panel LM error, robust LM lag and robust LM error. These fit pooled OLS on the original panel and use its residual variance, spatial lags and projected spatial fitted values, matching spreg 1.8.3. That variance is `RSS / (n - p)` (spreg `ols.sig2`, `n = N*T`, `p = predictorCount + 1`), where the cross-section LM tests of `GPUSpatialRegressionDiagnostics` use `RSS / n` (spreg `LMtests`): on the same residuals and block-diagonal weights a panel LM error is `((n - p) / n)^2` times the cross-section one, so compare each with its own reference and not with the other. Diagnostic status is 0 valid, 1 failed/incomplete pooled fit, or 2 degenerate/nonfinite test information. The robust tests require positive spatial fitted-value information beyond the weight trace. They are specification tests, not clustered uncertainty for the FE estimator.
 
 `GPUSeeminglyUnrelatedRegression` requires 2–4 equations with the same predictor count but
 potentially different predictor values. Data are equation-major, then row-major; observation IDs
@@ -106,10 +126,107 @@ Marginal effects average the normal density over estimation rows, then multiply 
 they are not effects evaluated at the means.
 
 Its summary is `[completeRows, logLikelihood, deviance, iterations]`. Status `0` means converged,
-`1` insufficient data, `2` singular information, `3` iteration/line-search exhaustion and `4`
-nonbinary data or separated/unsupported tails. Nonconverged finite iterates remain available with
-status 3, but their standard errors are NaN. The f32 normal CDF is floored at `1e-7`; all-zero/all-one
-outcomes and linear predictors outside ±12 are rejected explicitly. Optional `spatialDiagnostics` uses the fitted probit probability and generalized/standardized residuals to report `[Pinkse chi-square, p, Kelejian–Prucha z, two-sided p, Pinkse–Slade chi-square, p]`. Weights must have a sorted zero-diagonal CSR; the induced common complete-case graph is used. Diagnostic status is 0 valid, 1 failed/no-case model, 2 invalid weights, 3 zero test information. This does not estimate latent spatial probit.
+`1` insufficient data, `2` singular information, `3` not converged and `4` nonbinary data or
+separated data. Three invariants hold:
+
+- Status 0 is a maximum.
+- Status 4 for binary data means separated, and only with a certificate: a direction of the
+  coefficients that provably moves no row towards the wrong side and some row towards the right
+  side. Data that are not separated are never status 4.
+- Everything else that is not status 1 or 2 is status 3, with the last iterate written (and NaN
+  standard errors): iterations or line-search steps exhausted, a step pinned by the bound on
+  misclassified rows, a linear predictor that overflowed, or a small step on data that float32
+  could not tell from separated. An ordinary well-conditioned fit is never status 3 at the
+  default settings. Separated data whose certificate the search does not find are status 3 (or 2,
+  when the information matrix of the runaway fit loses rank first), never 0.
+
+Status 3 writes the iterate however large its linear predictors are: 2,001 rows that converge in 7
+steps, stopped after 3 with a correctly classified row beyond a linear predictor of 16, are status
+3 with their iterate. Every other failure writes NaN coefficients. All-zero/all-one outcomes are
+status 4.
+
+`fitted`, `marginalEffects` and the diagnostic residuals are computed from the centered, scaled
+design of the fit and its estimate, not from the published raw coefficients: the raw intercept is
+`a - sum mean_j b_j` in float32, which for a predictor near 2^24 with a spread of five float32
+steps is rounded to a step of 0.5. Rebuilt from the raw coefficients such a fit had fitted
+probabilities of 0.185, 0.421, 0.691 where statsmodels has 0.136, 0.345, 0.618, and a marginal
+effect 2.7% low; they now agree to 1e-7. The slopes were right throughout.
+
+The likelihood of a row is `log Phi(s eta)` (`s = +1` for a response of 1, `-1` for 0), with `Phi`
+evaluated through `erfc` so that its lower tail keeps relative accuracy down to the smallest normal
+f32; the score and the information weight are ratios of the density to the two tail probabilities,
+and no `1 - p` is formed. A row whose probability is within float32 rounding of 0 or 1 therefore
+still pulls the fit as the likelihood requires. (`fitted` and the spatial diagnostics use
+probabilities floored at `1e-7`.)
+
+- A row on the right side of the fit is not bounded: once its probability rounds to 1 it adds
+  nothing to the likelihood. 2,000 rows from a latent index `0.2 + 2x` plus one correctly classified
+  row at `x = 9` (a linear predictor of 18.9 at the maximum) return the maximum of the other rows,
+  slope 2.072, with status 0, as statsmodels `Probit` does. So does a fit whose maximum has a largest
+  linear predictor of 12.06.
+- A row on the wrong side leaves the float32 range of `Phi` near 13, so the line search accepts no
+  step that takes such a row beyond ±12. A fit is pinned when that bound, not the likelihood,
+  shortened the accepted step and the shortened step is below `tolerance` while the full Fisher
+  step is not: status 3 with the pinned iterate (it was status 4 with NaN coefficients; the data
+  are not separated). The same 2,000 rows plus a response of 0 at `x = 9` are such a fit (the
+  float64 maximum is a slope of 1.447 with that row at 13.2; the iterate has a slope of 1.314 with
+  that row at 12); a response of 0 at `x = 4` is not (slope 1.862, that row at 7.7, returned with
+  status 0).
+- Separated data have no finite maximum: some direction of the coefficients moves every row to the
+  right side or leaves it where it is. The fit certifies separation by exhibiting such a direction,
+  not by the size of a linear predictor, and a direction counts only when the sign of every row's
+  move is known. There is no tolerance: a move towards the wrong side disqualifies a direction
+  however small it is, and a row whose sign float32 cannot decide is not counted as standing still.
+  Three kinds of direction are tested, each reduced over the rows with maxima of flags, which are
+  exact whatever the row count:
+  - A column that separates at its lowest or highest value: the rows above the lowest value of a
+    column (or below its highest) all have the same response. Raw values are compared, which is
+    exact, and the test does not depend on the fit. An indicator of a group of rows that all have
+    a response of 1 is certified this way at any `maximumIterations` and any `tolerance`: one or
+    three rows of 600, an indicator among eleven predictors, every second row, one row of
+    100,000, three of 200,000, five of 400,000, five and twenty of 1,000,000.
+  - A single-column threshold from the Fisher direction. With its rounding taken out (a column
+    whose largest contribution to any row is below 1e-4 of the largest contribution of any column
+    is dropped; the intercept is set so that the rows at an end of the kept columns do not move
+    when their move is below that level), a direction with one column left is
+    `sign · (x - value)`. Rows are compared with `value`, and in the next pass with the two data
+    values next to it, so a column that separates at an interior value where both responses occur
+    is certified one iteration after the direction points there: quasi-complete separation, and a
+    three-valued predictor whose rows with both responses are at its middle value (100,002 rows;
+    status 3 at the defaults before, status 2 with 128 iterations and status 0 with a tolerance
+    of 1e-3).
+  - The Fisher direction itself, for separation by a combination of columns. The move of a row
+    takes its sign from the float32 value only when that is beyond the evaluation error bound,
+    `(predictorCount + 5) 2^-23` of the sum of the magnitudes of the row's terms; a row all of
+    whose terms are exactly zero stands still; any other row is undecided and the direction is
+    not a certificate. Complete separation by two predictors is certified this way. Quasi-complete
+    separation by a combination of columns, whose tied rows have moves that cancel to rounding, is
+    not: 606 such rows ended as status 2 at the defaults and status 3 with 8 or 16 iterations.
+  A certificate is kept once found, and a certified fit is status 4 however it ends: iterations
+  exhausted, a singular information matrix (without a certificate that is status 2), a failed line
+  search, an overflowing linear predictor, or a step below `tolerance`. statsmodels `Probit` does
+  not converge on any of these scenes, and a linear program over directions (SciPy `linprog`)
+  finds a separating direction on each.
+- What the certificates need. A column that separates at an end of its range: nothing. Complete
+  separation by one predictor: a budget of two iterations; by two predictors: seven;
+  quasi-complete separation at an interior value: five (measured). With a smaller
+  `maximumIterations` those are status 3. The `tolerance` no longer matters for an indicator (one
+  row of 600 at a tolerance of 1e-2 was status 0 with a coefficient of 3.94 and a standard error
+  of 5.39; it is status 4).
+- Data that are not separated are never status 4. 1,000 rows `(x = -1, y = 0)`, 2,000 rows
+  `(1, 1)` and the rows `(-1e-5, 1)` and `(1e-5, 0)` have a finite maximum at a slope of 6.02; the
+  first Fisher direction moves the two central rows towards the wrong side by 1.5e-5 of their own
+  terms, which a tolerance of 1e-3 took for separation (status 4 at every budget). They now
+  converge in 23 steps to the statsmodels maximum (slope within 2e-6 standard errors), and are
+  status 3 with their iterate when the budget is smaller. 60 samples of 25 to 69 rows with one to
+  four predictors that a linear program and statsmodels agree are not separated are all status 0,
+  as are an indicator group with both outcomes at 600, 20,000 and 100,000 rows and two rare-event
+  fits.
+- A candidate direction that moves no row towards the wrong side as far as float32 can tell but
+  leaves some row undecided is remembered, and a later step below `tolerance` is then status 3,
+  not 0. No scene of the specs needs this guard.
+
+Optional `spatialDiagnostics` uses the fitted probit probability and generalized/standardized residuals to report `[Pinkse chi-square, p, Kelejian–Prucha z, two-sided p, Pinkse–Slade chi-square, p]`. Weights must have a sorted zero-diagonal CSR; the induced common complete-case graph is used. Diagnostic status is 0 valid, 1 failed/no-case model, 2 invalid weights, 3 zero test information. This does not estimate latent spatial probit.
 
 `GPULocalCollinearity` uses supplied local estimation weights, including diagonal weights if the
 fit uses the focal observation. Every predictor uses the same complete neighbors. VIFs are the
@@ -118,7 +235,7 @@ its maximum/minimum eigenvalue ratio. The intercept is excluded from this correl
 
 `GPUGeneralizedGeographicallyWeightedRegression.inference` returns local scale-one Poisson/logistic standard errors and diagonal influence. The covariance is `A^-1 X' V W² X A^-1`, with `A = X' V W X`; it matches mgwr GLM local uncertainty and does not assume that spatial weights are frequency weights. Failed fits retain NaN inference.
 
-`bandwidthSelection` supplies 2–32 positive candidate bandwidths and outputs their exact leave-one-out mean deviance, the selected bandwidth and status (0 selected, 1 no valid candidate). Adaptive candidates must be integer neighbor counts within `maximumNeighborCount`. Each inner fit excludes its own focus, including from adaptive neighbor selection. Every eligible training row must converge for a candidate to be valid; ties choose the first candidate. This explicit criterion differs from mgwr `Sel_BW` AICc or approximate CV criteria. The pinned oracle executes mgwr local GLM solves with the self weight removed to verify the exact candidate scores.
+`bandwidthSelection` supplies 2–32 positive candidate bandwidths and outputs their exact leave-one-out mean deviance, the selected bandwidth and status (0 selected, 1 no valid candidate). Adaptive candidates must be integer neighbor counts within `maximumNeighborCount`. Each inner fit excludes its own focus, including from adaptive neighbor selection. Every eligible training row must converge for a candidate to be valid; ties choose the first candidate. The logistic deviance of a row is taken from its leave-one-out linear predictor, `2 log(1 + exp(-eta))` for a response of 1 and `2 log(1 + exp(eta))` for 0, so a confident prediction scores finitely (the float32 fitted mean is exactly 1 from `eta` of about 17 and cannot carry it). This explicit criterion differs from mgwr `Sel_BW` AICc or approximate CV criteria. The pinned oracle executes mgwr local GLM solves with the self weight removed to verify the exact candidate scores.
 
 For nested spatial evaluation, supply one outer fold's **training mask** and set `predictExcluded: true`. Bandwidth selection, centering/solves and inference use only training rows, while finite held-out predictor/position queries receive predictions without reading their responses. The direct test changes held-out counts from zero to 100,000 and verifies unchanged candidate scores, selected bandwidth, coefficients and predictions. Apply this graph separately to each fold; score held-out responses afterward. Finite query offsets remain caller inputs.
 
@@ -155,8 +272,14 @@ mobility reports mean absolute rank movement per adjacent period, NaN below two 
 containment, preserving holes and multipart features. Rings close implicitly. `tolerance` is the
 maximum separation, equivalent geometrically to intersecting exact round buffers of half that
 radius; it does not build approximated buffer polygons or use grid snapping.
-Features are limited to 512 and total vertices to 65,536. A dense feature-pair distance workspace
-is explicit. Feature status distinguishes valid, empty and malformed/nonfinite input. Simple valid
+Features are limited to 65,536 and total vertices to 65,536. Candidate pairs come from a BVH over
+feature bounds expanded by the tolerance, and only candidates run the exact distance test, so no
+feature-pair workspace is stored. The BVH leaves are sorted along a Morton curve of the bound
+centers, so the search cost does not depend on the input order (16,384 shuffled squares take about
+5 ms on the headless test GPU, against 110 ms with leaves in source order); the emitted pairs are
+radix-sorted by row and neighbor, so each row stays ascending. The query box widening scales with
+both the coordinates and the tolerance, so a pair the distance test accepts is found from both
+features and the CSR stays symmetric. Feature status distinguishes valid, empty and malformed/nonfinite input. Simple valid
 rings are required; self intersections and near-degenerate f32 predicates are not repaired.
 Edges are binary and ordered, with `added = 1` only for strictly positive separation.
 Output overflow reports the exact required neighbor count.
@@ -166,12 +289,33 @@ rows**, with lowest-ID distance ties. Selection is simultaneous, so islands may 
 other. Reciprocal insertion is the default; directed insertion is explicit. It preserves existing
 weights and uses weight 1 only for added edges. Empty means no stored slots, not a zero-weight row.
 Nearest comparisons use a shared distance scale to avoid squared-distance overflow or underflow
-for finite float32 representatives. No representative is inferred, and no implicit normalization
-is performed. Truncated CSR remains
+for finite float32 representatives. `nearestSearch` selects how the nearest is found and never
+changes the result: `'scan'` tests every representative per island (islands × rows), `'grid'` takes
+the 16 nearest candidates of each island from a `GPUNeighborSearch` grid and decides among them with
+the scan's own comparison, and `'auto'` (the default) scans up to
+`GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT` (4,096) rows and uses the grid above. Ties go to the
+lowest row on both paths. An island whose candidate list cannot prove the answer (the farthest
+candidate is not clearly farther than the chosen one, or the coordinates are so large that the grid
+bounds or squared distances overflow) rescans every representative, so the result always equals the
+scan's; such islands cost the scan, one pass over all rows (up to 65,535) in a single invocation. That
+fallback is never silent: the optional `output.status.uncertainCount` holds the exact number of
+islands that used it (always 0 with `'scan'`). A count near the island count means the
+representatives are too tied (15 or more at one address) or too large for the candidate list to
+help: use `'scan'` or deduplicate. On 60,000 shuffled rows with 25 percent islands the grid took
+7 ms against 52 ms for the scan (Apple GPU, second run, readback included). Writing the output costs
+each row's own degree. No representative is
+inferred, and no implicit normalization is performed. Truncated CSR remains
 ordered and bounded, with required counts, attachment IDs and per-edge provenance.
 
-`GPUSpatialCrossValidation` hashes explicit block IDs and a uint32 seed to fold IDs. Assignment
-is deterministic but not balanced; empty folds remain visible. Every finite unmasked position
+`GPUSpatialCrossValidation` deals explicit blocks to folds in a seeded random order. Every block
+that holds a finite unmasked row draws one Philox word keyed by the uint32 seed and the block ID;
+the blocks are ranked by that word (ties by block ID) and the block of rank `r` goes to fold
+`r % foldCount`. Fold sizes therefore differ by at most one block (not one row), no fold is empty
+when there are at least `foldCount` such blocks, and a different seed gives a different order.
+With fewer blocks than folds the empty folds remain visible in `status`. The fold of a block depends
+on the seed and on the set of blocks that hold a usable row: masking rows without emptying a block
+changes nothing, masking whole blocks re-deals the rest (ranking masked blocks too would leave folds
+empty), so `GPUNestedInterpolationValidation` deals its inner folds anew for each outer fold. Every finite unmasked position
 appears in exactly one test fold. A training point is excluded when its planar distance from any
 held-out point is less than or equal to `bufferDistance`. Distance zero also excludes duplicate
 positions in different blocks. Invalid coordinates enter neither training nor testing.
@@ -332,8 +476,10 @@ These small deterministic synthetic examples run the actual GPU producers and ca
 ## Recorded reference and scaling run
 
 The separate `statistics-blockcv.R` generator actually executes blockCV 4.0.1 `cv_spatial` with
-explicit user polygons/predefined folds and `cv_buffer` with projected distances. GPU masks are
-compared exactly against both. The seed hash is our explicit deterministic assignment rule;
+explicit user polygons/predefined folds and `cv_buffer` with projected distances. The GPU design
+is compared with both as a partition: every GPU fold must be one blockCV fold, with the same test
+rows and the same training rows, whatever number the fold carries. Blocks are dealt to folds in a
+seeded Philox order (see above), which is our explicit deterministic assignment rule;
 this does not claim identity with blockCV's random balancing optimizer.
 
 The checked-in `statistics-performance-baseline.json` records the Apple WebGPU run. Resident
@@ -364,11 +510,61 @@ unit effects use within-entity demeaning. The declared capacity is 2–32 entiti
 and 1–7 predictors. Weights must be nonnegative, row-standardized, zero-diagonal CSR with sorted
 unique neighbors and no islands. Missing observations invalidate the complete fit.
 
+The fit runs on centered data: the pooled mean of each predictor and of the response is removed
+before quasi-demeaning, so a predictor with a large mean (a year, an elevation, an income) costs
+no precision. Only the intercept depends on the shift; it is mapped back as
+`intercept + (1 - rho) mean(y) - slopes' mean(x)` and its covariance row and column are
+transformed to match. Normal and information matrices are factored after diagonal equilibration,
+and a Cholesky pivot of the unit-diagonal matrix below `1e-3` (the limit of
+`GPUOrdinaryLeastSquares`) is status 2.
+
+The concentrated variance is formed directly. With `e0`, `e1` the residuals of the quasi-demeaned
+response and of its lag on the predictors, `rho0 = e0'e1 / e1'e1` and `r = e0 - rho0 e1` summed
+per row, `u'u = S + e1'e1 (rho - rho*)^2`, two non-negative terms; the search and the published
+`sigma2`, log-likelihood and covariance all use it. The former `e0'e0 - 2 rho e0'e1 + rho^2 e1'e1`
+of three float32 sums is rounding once the model fits well. Measured on the test GPU against spreg
+1.9.1 `Panel_FE_Lag` and `Panel_RE_Lag` (16 entities, 16 periods, `rho` 0.4, residual deviation
+0.004): with `u'u` at 3e-5 of `e0'e0` the published `sigma2` was 1% to 2% off and is now within
+1e-5; at 3e-7, 36% low and 96% high, now within 6.3e-5; at 3e-9 (eight scenes, both effects) it
+was 10 to 241 times too large with status 0 in 9 of the 16 fits, negative with status 2 in one
+and status 3 in six, and is now within 1.7e-3 with status 0 in all 16, where the float32 rounding
+of the fitted values (0.6% of a residual per row) is what remains. The lag of the response is summed from differences rounded as written, with the
+row sums of the float32 weights carried exactly.
+
+Entity effects survive the pooled centering. Each column is stored as its within deviation
+(centered value less its entity mean) and its entity mean, and the quasi-demeaned value
+`value - (1 - phi) mean` is formed as `deviation + phi mean`, whose terms do not cancel; the
+normal equations of each step are the polynomial in `phi` of three moment sums taken once.
+Formed as written, `(value - mean) - fitted` was regrouped by the shader compiler of the test GPU
+as `value - (mean + fitted)`: with entity effects of +3000 and -3000 (16 entities, 16 periods,
+unit effects, residual deviation 0.004) all 256 published residuals were multiples of the float32
+step of 3000 and `rho` was 0.026 standard errors from spreg `Panel_FE_Lag`; it is now within
+0.002. What float32 leaves there: the entity means are sequential float32 sums, off by up to
+6e-4, which leaves a constant per entity in the residuals and `sigma2` 0.6% high (1.1% before),
+and the lag of the centered response is rounded to a float32 step of the effect, which leaves the
+within-entity part of a residual within 7e-5.
+
 `effects` defaults to `random`. `maximumIterations` (1–128, default 64) bounds outer sweeps;
 `maximumSearchIterations` (1–64, default 32) bounds each golden-section search. `tolerance`
-(default 1e-5) controls phi change and final rho bracket width. Rho is restricted to [-.999,.999],
-and random phi to [1e-5,1]. Boundary summary bit 1 flags rho near either endpoint; bit 2 flags
-random phi near either endpoint. Unit phi is exactly zero and does not set that bit.
+(default 1e-5) controls phi change and final rho bracket width; the change of phi is held against
+it as an absolute change for a phi of 0.01 or more and in proportion to `phi / 0.01` below. Rho is
+restricted to [-.999,.999], and random phi to [1e-8,1]. Boundary summary bit 1 flags rho near
+either endpoint; bit 2 flags random phi at either endpoint; bit 4 (with bit 2 and status 3) flags
+a phi whose estimate is below 1e-8 and was held there: the published numbers are then those of
+the constrained problem, not the maximum, and there is no covariance. Unit phi is exactly zero
+and sets neither bit. The lower limit was 1e-5 and was reported as status 0 with bit 2 only:
+entity effects of +3000 and -3000 with residuals of 0.004 (spreg `Panel_RE_Lag` phi 2.5e-7) came
+out with `sigma2` 105 times spreg's and `rho` 3.5 standard errors off; that fit is now status 0
+with phi within 0.2% of spreg, `rho` within 0.009 standard errors, the intercept within 0.2 and
+`sigma2` within 1.1% (the float32 entity means). float32 data cannot carry residuals much below
+1e-6 of an entity effect, so with 16 periods phi stays above about 1e-8 on data the kernel can
+resolve (effects of 16,000,000 with residuals of 0.5: spreg phi 9.1e-9, status 3).
+
+`fitted` is the quasi-demeaned response at the published phi less the residual
+(`fitted + residuals = y - (1 - phi) mean_i(y)`). A phi inside the tolerance of the alternation
+but `d` away from spreg's moves `fitted` by `d` times the entity mean of the response and leaves
+`residuals` alone: with a response mean of 10,000 and residuals of 0.004, a phi within 4.5e-7 of
+spreg's gives fitted values 1.2 residual deviations from spreg's.
 
 With `p = predictorCount + 1`, output shapes are: `coefficients[p+2]` (intercept, slopes, rho,
 phi), `covariance[(p+1)²]`, `summary[6]`, `status[1]`, and observation-sized `fitted`/`residuals`.

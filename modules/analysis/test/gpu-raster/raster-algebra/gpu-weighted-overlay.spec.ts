@@ -108,7 +108,7 @@ it('GPUWeightedOverlay matches the CPU oracle as weights, remaps, and policies c
       maximumBreakCount,
       output: {
         score: importGraphBuffer(graph, 'score', scoreBuffer, 'float32', cellCount),
-        outputValidity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', cellCount),
+        validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', cellCount),
         scoreRange: importGraphBuffer(graph, 'range', rangeBuffer, 'float32', 2)
       }
     })

@@ -24,9 +24,23 @@ Two buildings share a wall of length two. Their axial orientations straddle the 
 
 ## `addSparseResistanceConnectivityRecipe`
 
-A sparse grounded-Laplacian Jacobi-PCG resistance solve for up to 1,048,576 vertices and 2,097,152 edges, with an independent true current residual and edge and vertex current maps. Its lens scenario is pending (EC03 follow-up); the contract is documented in the landscape ecology API page.
+A 3 × 3 lattice of unit conductances with one weak diagonal chord carries unit current from one corner to the opposite corner. The sparse grounded-Laplacian Jacobi-PCG solve returns the potentials, the edge currents and the Circuitscape-style node currents (one at the source and the sink); the status and the independently recomputed true residual gate the effective resistance.
 
 {/* lens:addSparseResistanceConnectivityRecipe */}
+
+::lens{scenario=gpu-spatial-analysis.sparse-resistance-connectivity-recipe rung=result caption="Inspect the actual synthetic recipe outputs and status."}
+
+::lens{scenario=gpu-spatial-analysis.sparse-resistance-connectivity-recipe rung=graph caption="Follow the sort, CSR assembly and the unrolled conjugate gradient stages."}
+
+## `addRasterResistanceConnectivityRecipe`
+
+A 6 × 5 resistance raster has a no-data wall in its fourth column with a one-cell gap, and a high-resistance cell beside the gap. Eight-neighbour conductances `2 / (R(a) + R(b)) / edgeLength` are built on the GPU, and unit current flows from a cell on the west edge to a cell on the east edge: the whole current crosses the wall through the gap (its node current is one), and the wall cells have no potential.
+
+{/* lens:addRasterResistanceConnectivityRecipe */}
+
+::lens{scenario=gpu-spatial-analysis.raster-resistance-connectivity-recipe rung=result caption="Inspect the potentials, the current map and the edge conductances."}
+
+::lens{scenario=gpu-spatial-analysis.raster-resistance-connectivity-recipe rung=graph caption="Follow the edge builder, the invalid-cell count and the sparse solve."}
 
 ## `addIsovistsRecipe`
 

@@ -22,7 +22,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   resolveGPUSpatialContext,
@@ -49,8 +49,10 @@ export type GPUGeodesicPairsOutput = {
   /** Bearing on arrival at the target, degrees clockwise from north in `(-180, 180]`. */
   finalBearings?: GraphDataView<'float32'>;
   /**
-   * Great-circle midpoint (rhumb midpoint for `'rhumb'`), longitude continuous with the origin
-   * (turf `midpoint`). Spherical in every model.
+   * Great-circle midpoint (turf `midpoint`), longitude continuous with the origin. Spherical in
+   * every model. For `'rhumb'` it is the midpoint of the rhumb line by distance: the mean
+   * latitude, and the longitude the loxodrome has at that latitude, which is linear in the
+   * Mercator latitude and so is not the mean longitude unless the line runs east-west.
    */
   midpoints?: GraphDataView<'float32x2'>;
   /** Per-pair status scalars. */
@@ -91,6 +93,16 @@ export type GPUGeodesicPairsProps = {
  * pairs that do not converge (within about 0.5 degrees of antipodal) fall back to the sphere result
  * with `converged = 0`. `'rhumb'` evaluates the Mercator-stretched closed form in `rhumb-wgsl.ts`
  * (east-west limit, antimeridian short way, latitudes clamped at 89.9999 degrees). One invocation per pair; no reductions, so results are deterministic.
+ *
+ * Every model takes longitude differences with `geodesicLongitudeDelta`, so a pair a few
+ * kilometers apart across the antimeridian keeps its f32 precision.
+ *
+ * **Relation to luma.gl.** `GPUHaversineDistance` (`@luma.gl/graph/geospatial`) computes the same
+ * great-circle distance as the `'sphere'` model. It defaults to a radius of 6371 and so returns
+ * kilometers, where this class takes the radius and unit from the spatial context (6371008.8 m
+ * by default: 8.1 m more over New York to Paris). The sphere model stays local because the
+ * official f32 kernel subtracts raw longitudes (1.7 m lost on a 6 km pair across the
+ * antimeridian) and has no bearing or midpoint output.
  */
 export class GPUGeodesicPairs implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -124,7 +136,7 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
       ['origins', props.origins],
       ['targets', props.targets]
     ] as const) {
-      validatePackedView(view, ['float32x2'], `${id} ${name}`);
+      validateSinglePackedView(view, ['float32x2'], `${id} ${name}`);
     }
     const pairCount = props.origins.length;
     if (pairCount < 1 || props.targets.length !== pairCount) {
@@ -322,7 +334,7 @@ export function validateGeodesicColumns(
     if (!format) {
       throw new Error(`${id} output.${name} is not a known column`);
     }
-    validatePackedView(view, [format], `${id} output.${name}`);
+    validateSinglePackedView(view, [format], `${id} output.${name}`);
     if (view.length !== rowCount) {
       throw new Error(`${id} output.${name} must hold ${rowCount} rows`);
     }

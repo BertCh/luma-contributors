@@ -14,7 +14,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -103,12 +103,12 @@ export function validateSpatialValidationDesign(
       1,
       MAXIMUM_ITERATION_COUNT
     );
-    validatePackedView(design.features, ['float32'], id);
+    validateSinglePackedView(design.features, ['float32'], id);
     if (design.features.length !== rows * design.featureCount)
       throw new Error(`${id}: feature shape mismatch`);
   }
   if (design.mode === 'nndm' || design.mode === 'knndm') {
-    validatePackedView(design.predictionPositions, ['float32x2'], id);
+    validateSinglePackedView(design.predictionPositions, ['float32x2'], id);
     validateCapacity(
       id,
       'prediction rows',
@@ -139,7 +139,7 @@ export function validateSpatialValidationDesign(
       );
       if (!design.candidates)
         validateCapacity(id, 'generated cluster count', props.foldCount, 2, MAXIMUM_CLUSTER_COUNT);
-      if (design.candidates) validatePackedView(design.candidates, ['uint32'], id);
+      if (design.candidates) validateSinglePackedView(design.candidates, ['uint32'], id);
       if (
         (design.candidates && design.candidates.length !== rows * (design.candidateCount ?? 8)) ||
         !(
@@ -151,7 +151,7 @@ export function validateSpatialValidationDesign(
     }
   }
   if (design.diagnostics) {
-    validatePackedView(design.diagnostics, ['float32'], id);
+    validateSinglePackedView(design.diagnostics, ['float32'], id);
     if (design.diagnostics.length !== 4 + (design.mode === 'nndm' ? rows : 0))
       throw new Error(`${id}: diagnostics shape mismatch`);
   }

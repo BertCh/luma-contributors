@@ -13,7 +13,7 @@ import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -126,8 +126,8 @@ export class GPUSpaceTimeRelativeRisk implements GPUCommandNodeProducer {
     const {id} = this;
     this.scale = props.scale ?? 'log';
     validateRequirement(id, ['log', 'ratio'].includes(this.scale), 'scale must be log or ratio');
-    validatePackedView(props.casePositions, ['float32x2'], `${id} casePositions`);
-    validatePackedView(props.controlPositions, ['float32x2'], `${id} controlPositions`);
+    validateSinglePackedView(props.casePositions, ['float32x2'], `${id} casePositions`);
+    validateSinglePackedView(props.controlPositions, ['float32x2'], `${id} controlPositions`);
     validateRequirement(
       id,
       props.caseTimes.length === props.casePositions.length &&
@@ -156,13 +156,13 @@ export class GPUSpaceTimeRelativeRisk implements GPUCommandNodeProducer {
         output: {values: props.output.values}
       });
     probe(props.casePositions, props.caseTimes);
-    validatePackedView(props.output.values, ['float32'], `${id} output.values`);
+    validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
     for (const [name, view] of [
       ['output.caseDensity', props.output.caseDensity],
       ['output.controlDensity', props.output.controlDensity]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         validateRequirement(
           id,
           view.length >= props.grid.width * props.grid.height * props.sliceCount,

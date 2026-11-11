@@ -14,12 +14,13 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   type GPUSpatialWeights,
+  getGPUSpatialWeightsNeighborLoopWGSL,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT} from '../spatial-entropy/gpu-category-pair-counts';
@@ -53,8 +54,10 @@ export type GPULocalCategoryDependenceProps = {
   /** Prefix for generated node IDs. Defaults to `'local-category-dependence'`. */
   id?: string;
   /**
-   * Square weights; every listed slot to another row with a valid category is one neighbour.
-   * Weight values are ignored (binary composition, the default of spdep's `licd_multi`).
+   * Square weights; every active slot (positive weight, another row: the neighbor rule shared by
+   * the spatial statistics) to a row with a valid category is one neighbour. Self slots and
+   * zero-weight slots are not neighbours; the size of a positive weight is not used (binary
+   * composition).
    */
   weights: GPUSpatialWeights;
   /** Category per row; `0xffffffff` and values at or above `categoryCount` leave the row out. */
@@ -80,18 +83,27 @@ export type GPULocalCategoryDependenceOutput = {
  * Local indicators for categorical data (LICD), local composition part: for each row, how many of
  * its neighbours share its category, and how unusual that is against the category's global share.
  *
+ * **Definition.** For row `i` with category `c` and `k` neighbours that have a category (the row
+ * itself is never counted, neither as a neighbour nor as a like):
+ * - `likeCount` is the number of those neighbours of category `c`, `neighborCount` is `k`;
+ * - `proportion = likeCount / k` is the local share of the row's category;
+ * - `expectedProportion = N_c / N` is the global share of the category over all rows with one;
+ * - `upperTailProbability = P(X >= likeCount)` for `X ~ Binomial(k, N_c / N)`, the upper tail;
+ * - `standardizedScore` is the z score of the same binomial.
+ *
  * **Reference.** Boots (2003), "Developing local measures of spatial association for categorical
- * data", Journal of Geographical Systems 5, defines the LICD family. Its software form is
- * `licd_multi` of the R package spdep (GPL, not installed here, so no R fixture); its local
- * composition output (`count_like_i`, `count_nbs_i`, `prop_i`, `pbinom_like_BW`) is what this
- * class reproduces: the binomial test uses the global category share `N_c / N` as the success
- * probability. The specs compare with an independent binary64 evaluation of the formulas in
+ * data", Journal of Geographical Systems 5, defines the LICD family, and this class computes its
+ * local composition idea with the definition above. It does not reproduce the columns of
+ * `licd_multi` of the R package spdep (not installed here, so not checked): spdep counts the focal
+ * row among its own neighbours (`k + 1` trials, the focal row always a like), reports the global
+ * share as `prop_i`, and its `pbinom_like_BW` is the lower tail `P(X <= like)`. For 4 neighbours of
+ * which 3 are like and a share of 0.5 this class gives `P(X >= 3) = 0.3125` on `Binomial(4, 0.5)`,
+ * where spdep's `pbinom_like_BW` is `P(X <= 4) = 0.96875` on `Binomial(5, 0.5)`. The specs
+ * compare with hand-computed values and with a binary64 evaluation of the formulas in
  * {@link GPU_LOCAL_CATEGORY_DEPENDENCE_COLUMNS}.
  *
- * Not implemented, and not claimed: the local configuration part (local multi-category join
- * counts and their chi-square), the conditional permutation p-values, the unlike-neighbour
- * tails, and the `standardizedScore` is this class's own column (the z score of the same
- * binomial), not an spdep column.
+ * Not implemented: the local configuration part (local multi-category join counts and their
+ * chi-square), the conditional permutation p-values and the unlike-neighbour tails.
  *
  * The binomial tail is a bounded sum over the row's own neighbourhood (at most its degree),
  * evaluated in log space in float32 (relative error about 1e-5).
@@ -118,13 +130,13 @@ export class GPULocalCategoryDependence implements GPUCommandNodeProducer {
       1,
       GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT
     );
-    validatePackedView(props.categories, ['uint32'], `${id} categories`);
+    validateSinglePackedView(props.categories, ['uint32'], `${id} categories`);
     validateRequirement(
       id,
       props.categories.length === this.rowCount,
       'categories length must equal the weights row count'
     );
-    validatePackedView(props.output.statistics, ['float32'], `${id} output.statistics`);
+    validateSinglePackedView(props.output.statistics, ['float32'], `${id} output.statistics`);
     validateRequirement(
       id,
       props.output.statistics.length >=
@@ -132,7 +144,7 @@ export class GPULocalCategoryDependence implements GPUCommandNodeProducer {
       'output.statistics must hold rows * GPU_LOCAL_CATEGORY_DEPENDENCE_COLUMNS.length entries'
     );
     if (props.output.categoryRowCounts) {
-      validatePackedView(
+      validateSinglePackedView(
         props.output.categoryRowCounts,
         ['uint32'],
         `${id} output.categoryRowCounts`
@@ -146,7 +158,7 @@ export class GPULocalCategoryDependence implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.statistics, props.output.categoryRowCounts],
-      [props.categories, props.weights.offsets, props.weights.neighbors]
+      [props.categories, props.weights.offsets, props.weights.neighbors, props.weights.weights]
     );
   }
 
@@ -161,6 +173,7 @@ export class GPULocalCategoryDependence implements GPUCommandNodeProducer {
       props.categories,
       weights.offsets,
       weights.neighbors,
+      weights.weights,
       output.statistics,
       output.categoryRowCounts
     ]);
@@ -198,13 +211,14 @@ export class GPULocalCategoryDependence implements GPUCommandNodeProducer {
         bindings: [
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
           {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+          {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
           {name: 'categories', view: props.categories, type: 'u32', access: 'read'},
           {name: 'rowCounts', view: rowCounts, type: 'u32', access: 'read'},
           {name: 'statistics', view: output.statistics, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rowCount,
         declarations: `const ROWS: u32 = ${rowCount}u;
-const SLOTS: u32 = ${weights.neighbors.length}u;
+const CAPACITY: u32 = ${weights.neighbors.length}u;
 const CATEGORIES: u32 = ${categoryCount}u;
 const COLUMNS: u32 = ${columns.length}u;
 ${GET_NAN_WGSL}
@@ -231,18 +245,11 @@ fn getUpperTail(like: u32, count: u32, p: f32) -> f32 {
   var likeCount = 0u;
   var neighborCount = 0u;
   if (own < CATEGORIES) {
-    let first = min(offsets[offsetsOffset + index], SLOTS);
-    let last = min(offsets[offsetsOffset + index + 1u], SLOTS);
-    for (var slot = first; slot < last; slot++) {
-      let neighbor = neighbors[neighborsOffset + slot];
-      if (neighbor < ROWS && neighbor != index) {
-        let other = categories[categoriesOffset + neighbor];
-        if (other < CATEGORIES) {
-          neighborCount++;
-          likeCount += select(0u, 1u, other == own);
-        }
-      }
-    }
+    ${getGPUSpatialWeightsNeighborLoopWGSL(
+      'categories[categoriesOffset + neighbor] < CATEGORIES',
+      `neighborCount++;
+      likeCount += select(0u, 1u, categories[categoriesOffset + neighbor] == own);`
+    )}
   }
   statistics[base + ${columns.likeCount}u] = f32(likeCount);
   statistics[base + ${columns.neighborCount}u] = f32(neighborCount);

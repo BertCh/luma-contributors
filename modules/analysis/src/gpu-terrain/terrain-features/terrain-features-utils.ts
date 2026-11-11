@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GET_QUIET_NAN_SEEDED_WGSL} from '../../analysis-core/kernels/wgsl-common';
+
 /** Default compile-time loop bound, in pixels per axis, of metric disc searches. @internal */
 const DEFAULT_TERRAIN_FEATURES_MAXIMUM_RADIUS_PIXELS = 16;
 
@@ -52,7 +54,7 @@ export function validateTerrainFeaturesScalar(
 }
 
 /**
- * WGSL constants shared by the terrain feature kernels: `PI`, the canonical NaN / infinity bit patterns, and `getNan(seed)` / `getInfinity(seed)`. @internal
+ * WGSL constants shared by the terrain feature kernels: `PI`, the canonical NaN / infinity bit patterns, and `getQuietNaN(seed)` / `getInfinity(seed)`. @internal
  */
 export const TERRAIN_FEATURES_WGSL_CONSTANTS = /* wgsl */ `
 const PI: f32 = 3.141592653589793;
@@ -60,8 +62,7 @@ const NAN_BITS: u32 = 0x7fc00000u;
 const INFINITY_BITS: u32 = 0x7f800000u;
 // WGSL rejects constant-evaluated NaN and infinity; a runtime zero (seed & 0u) defers evaluation.
 
-fn getNan(seed: u32) -> f32 { return bitcast<f32>(NAN_BITS | (seed & 0u)); }
-fn getInfinity(seed: u32) -> f32 { return bitcast<f32>(INFINITY_BITS | (seed & 0u)); }`;
+${GET_QUIET_NAN_SEEDED_WGSL}fn getInfinity(seed: u32) -> f32 { return bitcast<f32>(INFINITY_BITS | (seed & 0u)); }`;
 
 /**
  * WGSL for metric disc and ring tests. Requires the kernel to define `MAXIMUM_RADIUS_PIXELS: i32`.

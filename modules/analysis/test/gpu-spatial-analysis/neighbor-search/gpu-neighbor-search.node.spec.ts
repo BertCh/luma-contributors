@@ -172,6 +172,9 @@ it('getGPUNeighborSearchParameterValues packs the layout and rejects unknown enu
   });
   expect(Array.from(values)).toEqual([1, 2, 3, 4, 5, 2, 2, 0.25, 3, 1, 0, 0]);
   expect(getGPUNeighborSearchParameterValues({bounds: [0, 0, 1, 1]})[4]).toBe(Infinity);
+  // The default distance floor of inverse-distance weights is 1e-6; an explicit 0 is kept.
+  expect(getGPUNeighborSearchParameterValues({bounds: [0, 0, 1, 1]})[7]).toBe(Math.fround(1e-6));
+  expect(getGPUNeighborSearchParameterValues({bounds: [0, 0, 1, 1], distanceFloor: 0})[7]).toBe(0);
   expect(() =>
     getGPUNeighborSearchParameterValues({bounds: [0, 0, 1, 1], weightKind: 'nope' as 'binary'})
   ).toThrow(/weightKind/);
@@ -193,7 +196,14 @@ it('the neighbor-search oracle selects lowest IDs on ties and sorts rows by ID',
   expect(
     getNeighborWeight(0.5, 1, {...parameters, weightKind: 'kernel', kernel: 'triangular'})
   ).toBe(0.5);
-  expect(getNeighborWeight(0, 1, {...parameters, weightKind: 'inverseDistance'})).toBe(0);
+  // The default floor 1e-6 gives coincident points a finite weight; an explicit 0 removes it.
+  expect(getNeighborWeight(0, 1, {...parameters, weightKind: 'inverseDistance'})).toBeCloseTo(
+    1e6,
+    0
+  );
+  expect(
+    getNeighborWeight(0, 1, {...parameters, weightKind: 'inverseDistance', distanceFloor: 0})
+  ).toBe(0);
 });
 
 // ---- spatial context, outputWeights and invalidCount (U5) ----

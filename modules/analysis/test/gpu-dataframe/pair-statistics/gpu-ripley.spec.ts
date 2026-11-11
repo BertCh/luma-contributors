@@ -274,6 +274,37 @@ it('GPURipley reproduces a hand-checked corner pair and the three corrections', 
   }
 });
 
+it('GPURipley isotropic weight of a point on the window edge does not depend on the sign of zero', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A is on the left edge x = 0 of [0, 10]^2 and B is 3 to its right. Half of the circle of
+  // radius 3 about A lies outside the window (side angle atan2(3, 0) = pi / 2), so the pair A to B
+  // has weight 2; the circle about B touches the edge only, weight 1. With n = 2:
+  // K(3) = 100 / (2 * 1) * (2 + 1) = 150. A coordinate of -0.0 makes the distance to the edge
+  // -0.0, and atan2(y, -0.0) returned -pi / 2 on the test GPU, which gave weight 2 / 3.
+  for (const zero of [0, -0]) {
+    const scene: Scene = {
+      positions: Float32Array.from([zero, 5, 3, 5]),
+      mask: new Uint32Array(2).fill(1)
+    };
+    const harness = createHarness(device, scene, 4);
+    try {
+      const result = await harness.run(
+        getGPURipleyParameterValues({
+          bounds: [0, 0, 10, 10],
+          maximumDistance: 4,
+          edgeCorrection: 'isotropic'
+        })
+      );
+      const label = Object.is(zero, -0) ? 'negative zero' : 'positive zero';
+      expect(result.k[1], `${label} K(2)`).toBe(0);
+      expectClose(`${label} K(3)`, result.k[2], 150, 0.02);
+    } finally {
+      harness.destroy();
+    }
+  }
+});
+
 it('GPURipley reports NaN with fewer than two included points and for an invalid window', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

@@ -80,7 +80,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     new GPUIsolines({
       grid,
       values: importView('raster', rasterBuffer, 'float32', width * height),
-      validity: validityBuffer
+      mask: validityBuffer
         ? importView('validity', validityBuffer, 'uint32', width * height)
         : undefined,
       noDataValue: options.noDataValue,

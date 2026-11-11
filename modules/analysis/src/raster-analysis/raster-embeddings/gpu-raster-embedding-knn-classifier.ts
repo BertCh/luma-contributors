@@ -54,7 +54,7 @@ export type GPURasterEmbeddingKNearestClassifierProps = {
   dimensions: number;
   vectors: GraphDataView<'float32'>;
   /** Per-pixel QA; zero makes the pixel invalid. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Labelled vectors, `sample * dimensions + band`. Contents are per-frame. */
   trainingVectors: GraphDataView<'float32'>;
   /** Class of each labelled vector, in `[0, classCount)`. Contents are per-frame. */
@@ -67,7 +67,8 @@ export type GPURasterEmbeddingKNearestClassifierProps = {
   neighborCount: number;
   /**
    * `'euclidean'` (scikit-learn's default) or `'cosine'`, the distance `1 - cosine similarity`.
-   * Defaults to `'euclidean'`.
+   * Two zero vectors have similarity 1 (distance 0) and exactly one zero vector gives similarity 0
+   * (distance 1), as in the published `GPUSimilaritySearch`. Defaults to `'euclidean'`.
    */
   metric?: 'euclidean' | 'cosine';
   output: GPURasterEmbeddingKNearestClassifierOutput;
@@ -121,7 +122,7 @@ export class GPURasterEmbeddingKNearestClassifier implements GPUCommandNodeProdu
       props.vectors,
       pixelCount,
       dimensions,
-      props.validity
+      props.mask
     );
     validateRequirement(
       id,
@@ -140,8 +141,8 @@ export class GPURasterEmbeddingKNearestClassifier implements GPUCommandNodeProdu
   }
 
   private getInputs(): RasterScalarView[] {
-    const {vectors, validity, trainingVectors, trainingLabels} = this.props;
-    return [vectors, trainingVectors, trainingLabels, ...(validity ? [validity] : [])];
+    const {vectors, mask, trainingVectors, trainingLabels} = this.props;
+    return [vectors, trainingVectors, trainingLabels, ...(mask ? [mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -167,7 +168,7 @@ export class GPURasterEmbeddingKNearestClassifier implements GPUCommandNodeProdu
           rasterBinding('vectors', props.vectors),
           rasterBinding('trainingVectors', props.trainingVectors),
           rasterBinding('trainingLabels', props.trainingLabels),
-          ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+          ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
           rasterBinding('labels', output.labels, true),
           ...(output.confidence ? [rasterBinding('confidence', output.confidence, true)] : []),
           ...(output.probabilities
@@ -177,7 +178,7 @@ export class GPURasterEmbeddingKNearestClassifier implements GPUCommandNodeProdu
         declarations: RASTER_FINITE_WGSL,
         body: `var vector: array<f32, ${dimensions}>;
 var squaredLength = 0.0;
-var isValid = ${props.validity ? 'validity[validityOffset + index] != 0u' : 'true'};
+var isValid = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
 for (var band = 0u; band < ${dimensions}u; band++) {
   let value = vectors[vectorsOffset + index * ${dimensions}u + band];
   if (!finite(value)) { isValid = false; }
@@ -203,7 +204,9 @@ for (var sampleIndex = 0u; sampleIndex < ${trainingCount}u; sampleIndex++) {
   ${
     isCosine
       ? `let denominator = sqrt(squaredLength * sampleLength);
-  let neighborDistance = 1.0 - select(0.0, dotProduct / denominator, denominator > 0.0);`
+  // Zero vectors as in the published GPUSimilaritySearch: two zero vectors have similarity 1,
+  // exactly one zero vector gives 0.
+  let neighborDistance = 1.0 - select(select(0.0, 1.0, squaredLength == 0.0 && sampleLength == 0.0), dotProduct / denominator, denominator > 0.0);`
       : 'let neighborDistance = dotProduct;'
   }
   // Strict comparison keeps the lower sample index on equal distances.

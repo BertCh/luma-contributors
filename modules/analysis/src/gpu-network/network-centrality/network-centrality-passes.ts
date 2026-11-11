@@ -14,6 +14,7 @@ import {
   getFrontierPushSource,
   getFrontierResetInvocationCount,
   getFrontierResetSource,
+  FRONTIER_CONTROL_PARAMETER_0,
   FRONTIER_CONTROL_TRUNCATED,
   type FrontierPhase,
   type FrontierState
@@ -97,11 +98,25 @@ const SIGMA_BASE: u32 = 0u;
 const REMAINING_BASE: u32 = ${expandedNodeCount}u;
 const DELTA_BASE: u32 = ${2 * expandedNodeCount}u;
 
-// A tight edge lies on a shortest path and strictly increases the cost, computed in f32 exactly as
-// the relaxation computes it. Zero-weight edges are never tight, which keeps the tight graph acyclic.
-fn isTightEdge(sourceCost: f32, weight: f32, targetCost: f32) -> bool {
-  return weight >= 0.0 && sourceCost < targetCost && bitcast<u32>(targetCost) < INFINITY_BITS &&
-    sourceCost + weight == targetCost;
+// A tight edge lies on a shortest path: the f32 sum the relaxation computes equals the target
+// cost, and either the cost rises or the weight is exactly zero (review network-paths-02). A
+// self-loop never is tight. A positive weight that float32 absorbs (cost + weight == cost, for
+// example 1 at a cost of 2^24) is not tight: it would be tight in both directions of an
+// undirected road and form a cycle that no positive weight could remove (fix review
+// fr-fields-02). So only a cycle of exactly-zero weights can make the tight graph cyclic; the
+// delta initialize kernel reports it.
+fn isTightEdge(sourceNode: u32, targetNode: u32, sourceCost: f32, weight: f32, targetCost: f32) -> bool {
+  return sourceNode != targetNode && weight >= 0.0 && bitcast<u32>(targetCost) < INFINITY_BITS &&
+    sourceCost + weight == targetCost && (sourceCost < targetCost || weight == 0.0);
+}
+
+// Path counts are held as a float32 mantissa in [1, 2) (scratch word SIGMA_BASE + node, 0 when
+// the node has no count) and a base-2 exponent (exponents view), so a count is not bounded by the
+// float32 range (review network-paths-03). 2^shift for a shift in [-126, 0], exactly; 0 below
+// -126, where the scaled term is under the resolution of anything it is added to.
+fn getSigmaScale(shift: i32) -> f32 {
+  if (shift < -126) { return 0.0; }
+  return bitcast<f32>(u32(min(shift, 0) + 127) << 23u);
 }`;
 }
 
@@ -383,6 +398,8 @@ type CentralityPhaseProps = {
   adjacency: GraphDataView<'uint32'>;
   costs: GraphDataView<'float32'>;
   scratch: GraphDataView<'uint32'>;
+  /** Base-2 exponent (i32 bits) of every expanded node's path count. */
+  exponents: GraphDataView<'uint32'>;
 };
 
 /**
@@ -402,6 +419,7 @@ export function createCentralitySigmaInitializeNode<Parameters>(
       {name: 'adjacency', view: props.adjacency, type: 'u32', access: 'read'},
       {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
       {name: 'scratch', view: props.scratch, type: 'u32', access: 'read_write'},
+      {name: 'exponents', view: props.exponents, type: 'u32', access: 'read_write'},
       ...getFrontierBindings(graph, state, phase, 0)
     ],
     invocationCount: expandedNodeCount,
@@ -418,15 +436,16 @@ ${getFrontierPushSource(phase, expandedNodeCount, graph.device.limits.maxCompute
       let sourceCsrNode = adjacency[adjacencyOffset + REVERSE_NEIGHBORS + edge];
       if (sourceCsrNode >= NODE_COUNT) { continue; }
       let weight = bitcast<f32>(adjacency[adjacencyOffset + REVERSE_WEIGHTS + edge]);
-      if (isTightEdge(costs[costsOffset + laneBase + sourceCsrNode], weight, cost)) {
+      if (isTightEdge(sourceCsrNode, csrNode, costs[costsOffset + laneBase + sourceCsrNode], weight, cost)) {
         tightInCount++;
       }
     }
   }
   scratch[scratchOffset + REMAINING_BASE + index] = tightInCount;
   scratch[scratchOffset + SIGMA_BASE + index] = 0u;
-  // Reached nodes without a tight in-edge are the roots: the pivot, and nodes reached only across
-  // zero-weight edges.
+  exponents[exponentsOffset + index] = 0u;
+  // Reached nodes without a tight in-edge are the roots: the pivots, and nodes reached only
+  // across a positive weight that float32 absorbs. A root has one path: mantissa 1, exponent 0.
   if (tightInCount == 0u && bitcast<u32>(cost) < INFINITY_BITS) {
     scratch[scratchOffset + SIGMA_BASE + index] = 0x3f800000u;
     frontierPush(index);
@@ -437,7 +456,9 @@ ${getFrontierPushSource(phase, expandedNodeCount, graph.device.limits.maxCompute
 /**
  * One round of the sigma phase. A queued node has all its tight predecessors final: it sums their
  * sigma in reverse-CSR order, then releases its tight successors, pushing each whose last
- * predecessor it was. @internal
+ * predecessor it was. The sum is formed at the largest exponent seen so far (scaling by a power of
+ * two is exact, so it rounds exactly like the plain float32 sum while that stays in range) and is
+ * stored normalised to a mantissa in [1, 2) and an exponent. @internal
  */
 export function createCentralitySigmaRoundNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -455,7 +476,9 @@ export function createCentralitySigmaRoundNode<Parameters>(
     bindings: [
       {name: 'adjacency', view: props.adjacency, type: 'u32', access: 'read'},
       {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
-      {name: 'scratch', view: props.scratch, type: 'atomic<u32>', access: 'read_write'}
+      {name: 'scratch', view: props.scratch, type: 'atomic<u32>', access: 'read_write'},
+      // Written once by the node's own visit and read in later dispatches only (one hop per round).
+      {name: 'exponents', view: props.exponents, type: 'u32', access: 'read_write'}
     ],
     declarations: `${getCentralitySharedSource(layout, expandedNodeCount)}
 fn loadScratchFloat(word: u32) -> f32 {
@@ -466,20 +489,41 @@ fn loadScratchFloat(word: u32) -> f32 {
   let csrNode = node - laneBase;
   let cost = costs[costsOffset + node];
   var tightInCount = 0u;
+  // total * 2^totalExponent is the running path count.
   var total = 0.0;
+  var totalExponent = 0;
   let firstReverse = min(adjacency[adjacencyOffset + REVERSE_OFFSETS + csrNode], REVERSE_EDGE_COUNT);
   let lastReverse = min(adjacency[adjacencyOffset + REVERSE_OFFSETS + csrNode + 1u], REVERSE_EDGE_COUNT);
   for (var edge = firstReverse; edge < lastReverse; edge++) {
     let sourceCsrNode = adjacency[adjacencyOffset + REVERSE_NEIGHBORS + edge];
     if (sourceCsrNode >= NODE_COUNT) { continue; }
     let weight = bitcast<f32>(adjacency[adjacencyOffset + REVERSE_WEIGHTS + edge]);
-    if (!isTightEdge(costs[costsOffset + laneBase + sourceCsrNode], weight, cost)) { continue; }
+    if (!isTightEdge(sourceCsrNode, csrNode, costs[costsOffset + laneBase + sourceCsrNode], weight, cost)) { continue; }
     tightInCount++;
-    total += loadScratchFloat(SIGMA_BASE + laneBase + sourceCsrNode);
+    let mantissa = loadScratchFloat(SIGMA_BASE + laneBase + sourceCsrNode);
+    if (!(mantissa > 0.0)) { continue; }
+    let exponent = bitcast<i32>(exponents[exponentsOffset + laneBase + sourceCsrNode]);
+    if (total == 0.0) {
+      total = mantissa;
+      totalExponent = exponent;
+    } else if (exponent > totalExponent) {
+      total = total * getSigmaScale(totalExponent - exponent) + mantissa;
+      totalExponent = exponent;
+    } else {
+      total += mantissa * getSigmaScale(exponent - totalExponent);
+    }
   }
   // A root keeps the sigma 1 written by the initialize kernel.
   if (tightInCount > 0u) {
-    atomicStore(&scratch[scratchOffset + SIGMA_BASE + node], bitcast<u32>(total));
+    var mantissaBits = 0u;
+    if (total > 0.0) {
+      // Normalise: the sum of at most 2^24 mantissas below 2 is a normal float32 of at least 1.
+      let totalBits = bitcast<u32>(total);
+      totalExponent += i32((totalBits >> 23u) & 0xffu) - 127;
+      mantissaBits = (totalBits & 0x007fffffu) | 0x3f800000u;
+    }
+    exponents[exponentsOffset + node] = bitcast<u32>(totalExponent);
+    atomicStore(&scratch[scratchOffset + SIGMA_BASE + node], mantissaBits);
   }
   let firstForward = min(adjacency[adjacencyOffset + FORWARD_OFFSETS + csrNode], FORWARD_EDGE_COUNT);
   let lastForward = min(adjacency[adjacencyOffset + FORWARD_OFFSETS + csrNode + 1u], FORWARD_EDGE_COUNT);
@@ -487,7 +531,7 @@ fn loadScratchFloat(word: u32) -> f32 {
     let targetCsrNode = adjacency[adjacencyOffset + FORWARD_NEIGHBORS + edge];
     if (targetCsrNode >= NODE_COUNT) { continue; }
     let weight = bitcast<f32>(adjacency[adjacencyOffset + FORWARD_WEIGHTS + edge]);
-    if (!isTightEdge(cost, weight, costs[costsOffset + laneBase + targetCsrNode])) { continue; }
+    if (!isTightEdge(csrNode, targetCsrNode, cost, weight, costs[costsOffset + laneBase + targetCsrNode])) { continue; }
     if (atomicSub(&scratch[scratchOffset + REMAINING_BASE + laneBase + targetCsrNode], 1u) == 1u) {
       push(laneBase + targetCsrNode);
     }
@@ -499,7 +543,8 @@ fn loadScratchFloat(word: u32) -> f32 {
 /**
  * Counts the tight out-edges of every expanded node into `remaining` (reusing the sigma counters),
  * clears delta and pushes the reached nodes without a tight out-edge into round 0 of the delta
- * phase. @internal
+ * phase. Before it overwrites a counter it sets the delta phase's first parameter word when the
+ * sigma phase left a reached node unordered. @internal
  */
 export function createCentralityDeltaInitializeNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -530,9 +575,16 @@ ${getFrontierPushSource(phase, expandedNodeCount, graph.device.limits.maxCompute
       let targetCsrNode = adjacency[adjacencyOffset + FORWARD_NEIGHBORS + edge];
       if (targetCsrNode >= NODE_COUNT) { continue; }
       let weight = bitcast<f32>(adjacency[adjacencyOffset + FORWARD_WEIGHTS + edge]);
-      if (isTightEdge(cost, weight, costs[costsOffset + laneBase + targetCsrNode])) {
+      if (isTightEdge(csrNode, targetCsrNode, cost, weight, costs[costsOffset + laneBase + targetCsrNode])) {
         tightOutCount++;
       }
+    }
+    // The sigma phase left this counter at the number of tight predecessors that never released
+    // the node. Above zero, the node was never ordered: the sigma phase hit its round limit, or
+    // the node lies on or after a cycle of zero-weight tight edges. The batch status node tells
+    // the two apart.
+    if (scratch[scratchOffset + REMAINING_BASE + index] != 0u) {
+      atomicStore(&control[controlOffset + FRONTIER_PARAMETER_0_WORD], 1u);
     }
   }
   scratch[scratchOffset + REMAINING_BASE + index] = tightOutCount;
@@ -564,7 +616,8 @@ export function createCentralityDeltaRoundNode<Parameters>(
     bindings: [
       {name: 'adjacency', view: props.adjacency, type: 'u32', access: 'read'},
       {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
-      {name: 'scratch', view: props.scratch, type: 'atomic<u32>', access: 'read_write'}
+      {name: 'scratch', view: props.scratch, type: 'atomic<u32>', access: 'read_write'},
+      {name: 'exponents', view: props.exponents, type: 'u32', access: 'read'}
     ],
     declarations: `${getCentralitySharedSource(layout, expandedNodeCount)}
 fn loadScratchFloat(word: u32) -> f32 {
@@ -575,6 +628,7 @@ fn loadScratchFloat(word: u32) -> f32 {
   let csrNode = node - laneBase;
   let cost = costs[costsOffset + node];
   let nodeSigma = loadScratchFloat(SIGMA_BASE + node);
+  let nodeExponent = bitcast<i32>(exponents[exponentsOffset + node]);
   var total = 0.0;
   let firstForward = min(adjacency[adjacencyOffset + FORWARD_OFFSETS + csrNode], FORWARD_EDGE_COUNT);
   let lastForward = min(adjacency[adjacencyOffset + FORWARD_OFFSETS + csrNode + 1u], FORWARD_EDGE_COUNT);
@@ -582,11 +636,16 @@ fn loadScratchFloat(word: u32) -> f32 {
     let targetCsrNode = adjacency[adjacencyOffset + FORWARD_NEIGHBORS + edge];
     if (targetCsrNode >= NODE_COUNT) { continue; }
     let weight = bitcast<f32>(adjacency[adjacencyOffset + FORWARD_WEIGHTS + edge]);
-    if (!isTightEdge(cost, weight, costs[costsOffset + laneBase + targetCsrNode])) { continue; }
+    if (!isTightEdge(csrNode, targetCsrNode, cost, weight, costs[costsOffset + laneBase + targetCsrNode])) { continue; }
     let targetSigma = loadScratchFloat(SIGMA_BASE + laneBase + targetCsrNode);
-    // A zero sigma only occurs when the sigma phase hit its round limit.
+    // A zero sigma only occurs when the sigma phase left the target unordered (round limit or a
+    // zero-weight cycle).
     if (!(targetSigma > 0.0)) { continue; }
-    total += nodeSigma / targetSigma * (1.0 + loadScratchFloat(DELTA_BASE + laneBase + targetCsrNode));
+    // sigma(v) / sigma(w): the ratio of the mantissas times an exact power of two. A target has at
+    // least the paths of each predecessor, so the exponent difference is never positive.
+    let targetExponent = bitcast<i32>(exponents[exponentsOffset + laneBase + targetCsrNode]);
+    let ratio = nodeSigma / targetSigma * getSigmaScale(nodeExponent - targetExponent);
+    total += ratio * (1.0 + loadScratchFloat(DELTA_BASE + laneBase + targetCsrNode));
   }
   atomicStore(&scratch[scratchOffset + DELTA_BASE + node], bitcast<u32>(total));
   let firstReverse = min(adjacency[adjacencyOffset + REVERSE_OFFSETS + csrNode], REVERSE_EDGE_COUNT);
@@ -595,7 +654,7 @@ fn loadScratchFloat(word: u32) -> f32 {
     let sourceCsrNode = adjacency[adjacencyOffset + REVERSE_NEIGHBORS + edge];
     if (sourceCsrNode >= NODE_COUNT) { continue; }
     let weight = bitcast<f32>(adjacency[adjacencyOffset + REVERSE_WEIGHTS + edge]);
-    if (!isTightEdge(costs[costsOffset + laneBase + sourceCsrNode], weight, cost)) { continue; }
+    if (!isTightEdge(sourceCsrNode, csrNode, costs[costsOffset + laneBase + sourceCsrNode], weight, cost)) { continue; }
     if (atomicSub(&scratch[scratchOffset + REMAINING_BASE + laneBase + sourceCsrNode], 1u) == 1u) {
       push(laneBase + sourceCsrNode);
     }
@@ -646,7 +705,16 @@ const BETWEENNESS_SCALE: f32 = ${getWGSLFloatLiteral(props.betweennessScale)};`,
   });
 }
 
-/** Clears a batch's converged slot when either phase hit its round limit. @internal */
+/** Word of a batch status slot that holds the batch's zero-weight cycle flag. @internal */
+export const CENTRALITY_BATCH_ZERO_WEIGHT_CYCLE_WORD = 1;
+
+/**
+ * Finishes a batch's status slot (two words: converged, zero-weight cycle). Word 0, written by
+ * the batch's reachability search, is cleared when either phase hit its round limit or the sigma
+ * phase left a reached node unordered. Word 1 is set when nodes were left unordered although the
+ * sigma phase did not hit its round limit, which only a cycle of zero-weight tight edges causes.
+ * @internal
+ */
 export function createCentralityBatchStatusNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
@@ -654,7 +722,8 @@ export function createCentralityBatchStatusNode<Parameters>(
     state: FrontierState;
     sigmaPhase: FrontierPhase;
     deltaPhase: FrontierPhase;
-    batchConverged: GraphDataView<'uint32'>;
+    /** The batch's two status words. */
+    batchStatus: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
@@ -663,42 +732,63 @@ export function createCentralityBatchStatusNode<Parameters>(
     variant: 'batch-status',
     bindings: [
       {name: 'control', view: props.state.control, type: 'u32', access: 'read'},
-      {name: 'batchConverged', view: props.batchConverged, type: 'u32', access: 'read_write'}
+      {name: 'batchStatus', view: props.batchStatus, type: 'u32', access: 'read_write'}
     ],
     invocationCount: 1,
-    body: `if (control[controlOffset + ${props.sigmaPhase.controlWordOffset + FRONTIER_CONTROL_TRUNCATED}u] != 0u ||
-      control[controlOffset + ${props.deltaPhase.controlWordOffset + FRONTIER_CONTROL_TRUNCATED}u] != 0u) {
-    batchConverged[batchConvergedOffset] = 0u;
-  }`
+    body: `let sigmaTruncated = control[controlOffset + ${props.sigmaPhase.controlWordOffset + FRONTIER_CONTROL_TRUNCATED}u] != 0u;
+  let deltaTruncated = control[controlOffset + ${props.deltaPhase.controlWordOffset + FRONTIER_CONTROL_TRUNCATED}u] != 0u;
+  let unordered = control[controlOffset + ${props.deltaPhase.controlWordOffset + FRONTIER_CONTROL_PARAMETER_0}u] != 0u;
+  if (sigmaTruncated || deltaTruncated || unordered) {
+    batchStatus[batchStatusOffset] = 0u;
+  }
+  batchStatus[batchStatusOffset + ${CENTRALITY_BATCH_ZERO_WEIGHT_CYCLE_WORD}u] = select(0u, 1u, unordered && !sigmaTruncated);`
   });
 }
 
-/** Combines the batch converged slots into the one-row output flag. @internal */
+/**
+ * Combines the batch status slots into the one-row output flags: `converged` is the minimum of
+ * the batches' word 0, `zeroWeightCycle` the maximum of their word 1. @internal
+ */
 export function createCentralityConvergedNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
     batchCount: number;
-    batchConverged: GraphDataView<'uint32'>;
-    converged: GraphDataView<'uint32'>;
+    batchStatus: GraphDataView<'uint32'>;
+    converged?: GraphDataView<'uint32'>;
+    zeroWeightCycle?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'batchStatus', view: props.batchStatus, type: 'u32', access: 'read'}
+  ];
+  if (props.converged) {
+    bindings.push({name: 'converged', view: props.converged, type: 'u32', access: 'read_write'});
+  }
+  if (props.zeroWeightCycle) {
+    bindings.push({
+      name: 'zeroWeightCycle',
+      view: props.zeroWeightCycle,
+      type: 'u32',
+      access: 'read_write'
+    });
+  }
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: 'converged',
-    bindings: [
-      {name: 'batchConverged', view: props.batchConverged, type: 'u32', access: 'read'},
-      {name: 'converged', view: props.converged, type: 'u32', access: 'read_write'}
-    ],
+    variant: `converged${props.converged ? '' : '-no-flag'}${props.zeroWeightCycle ? '-cycle' : ''}`,
+    bindings,
     invocationCount: 1,
     declarations: `const BATCH_COUNT: u32 = ${props.batchCount}u;
 const SLOT_WORDS: u32 = ${CENTRALITY_ALIGNMENT_ELEMENTS}u;`,
     body: `var allConverged = 1u;
+  var anyCycle = 0u;
   for (var batch = 0u; batch < BATCH_COUNT; batch++) {
-    allConverged = min(allConverged, batchConverged[batchConvergedOffset + batch * SLOT_WORDS]);
+    allConverged = min(allConverged, batchStatus[batchStatusOffset + batch * SLOT_WORDS]);
+    anyCycle = max(anyCycle, batchStatus[batchStatusOffset + batch * SLOT_WORDS + ${CENTRALITY_BATCH_ZERO_WEIGHT_CYCLE_WORD}u]);
   }
-  converged[convergedOffset] = allConverged;`
+  ${props.converged ? 'converged[convergedOffset] = allConverged;' : ''}
+  ${props.zeroWeightCycle ? 'zeroWeightCycle[zeroWeightCycleOffset] = anyCycle;' : ''}`
   });
 }
 
@@ -713,6 +803,7 @@ export function createCentralityEdgeAccumulateNode<Parameters>(
     betweennessScale: number;
     adjacency: GraphDataView<'uint32'>;
     scratch: GraphDataView<'uint32'>;
+    exponents: GraphDataView<'uint32'>;
     costs: GraphDataView<'float32'>;
     edgeBetweenness: GraphDataView<'float32'>;
   }
@@ -725,6 +816,7 @@ export function createCentralityEdgeAccumulateNode<Parameters>(
     bindings: [
       {name: 'adjacency', view: props.adjacency, type: 'u32', access: 'read'},
       {name: 'scratch', view: props.scratch, type: 'u32', access: 'read'},
+      {name: 'exponents', view: props.exponents, type: 'u32', access: 'read'},
       {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
       {name: 'edges', view: props.edgeBetweenness, type: 'f32', access: 'read_write'}
     ],
@@ -739,11 +831,14 @@ export function createCentralityEdgeAccumulateNode<Parameters>(
       for (var lane = 0u; lane < ${props.laneCount}u; lane++) {
         let sourceRow = lane * NODE_COUNT + index;
         let targetRow = lane * NODE_COUNT + destination;
-        if (isTightEdge(costs[costsOffset + sourceRow], weight, costs[costsOffset + targetRow])) {
+        if (isTightEdge(index, destination, costs[costsOffset + sourceRow], weight, costs[costsOffset + targetRow])) {
           let denominator = bitcast<f32>(scratch[scratchOffset + targetRow]);
           if (denominator > 0.0) {
-            total += bitcast<f32>(scratch[scratchOffset + sourceRow]) / denominator *
-              (1.0 + bitcast<f32>(scratch[scratchOffset + DELTA_BASE + targetRow]));
+            let ratio = bitcast<f32>(scratch[scratchOffset + sourceRow]) / denominator * getSigmaScale(
+              bitcast<i32>(exponents[exponentsOffset + sourceRow]) -
+              bitcast<i32>(exponents[exponentsOffset + targetRow])
+            );
+            total += ratio * (1.0 + bitcast<f32>(scratch[scratchOffset + DELTA_BASE + targetRow]));
           }
         }
       }

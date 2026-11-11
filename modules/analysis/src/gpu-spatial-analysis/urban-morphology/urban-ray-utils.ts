@@ -26,10 +26,19 @@ export const URBAN_BRUTE_FORCE_MAXIMUM_SEGMENT_COUNT = 4096;
 const URBAN_MINIMUM_BVH_LEAF_CAPACITY = 2;
 
 /** Depth bound of the ray traversal stack: a 2^24 leaf tree has 25 levels, two pushes per level. */
-const URBAN_RAY_STACK_CAPACITY = 64;
+export const URBAN_RAY_STACK_CAPACITY = 64;
 
 /** How rays find obstacle segments: every segment ('brute-force'), a segment BVH, or by count. */
 export type UrbanObstacleIndex = 'auto' | 'brute-force' | 'bvh';
+
+/**
+ * Coordinate frame of the ray predicates. `'input'` reads segments as given, which is right when
+ * every ray starts at an input coordinate (differences of input coordinates are formed first).
+ * `'local'` declares `var<private> urbanFrameOrigin: vec2<f32>`: segments and BVH boxes are read
+ * relative to it, so a kernel that computes its ray origins assigns the origin once and then
+ * works at local magnitudes.
+ */
+export type UrbanRayFrame = 'input' | 'local';
 
 /** Segment BVH views a ray kernel binds when the obstacle index is a BVH. */
 export type UrbanRayBVH = Pick<
@@ -113,20 +122,30 @@ export function getUrbanRayBVHBindings(bvh: UrbanRayBVH): WGSLKernelBinding[] {
  * `castRay` returns `(distance, segment row)`; the nearest segment wins and the lowest row breaks
  * ties. With `bvh`, `castRay` traverses the segment BVH and returns exactly the same result as the
  * loop over every segment; the kernel must also bind {@link getUrbanRayBVHBindings}.
+ *
+ * With `frame: 'local'` the kernel body must assign `urbanFrameOrigin` before its first call, and
+ * `readSegment`, ray origins and positions are all relative to that origin.
  */
 export function getUrbanRayDeclarations(
   segmentCount: number,
   tolerance: number,
-  bvh?: UrbanRayBVH
+  bvh?: UrbanRayBVH,
+  frame: UrbanRayFrame = 'input'
 ): string {
   const toleranceLiteral = getWGSLFloatLiteral(tolerance);
+  const frameDeclaration = frame === 'local' ? 'var<private> urbanFrameOrigin:vec2<f32>;' : '';
+  const frameShift = frame === 'local' ? '-vec4<f32>(urbanFrameOrigin,urbanFrameOrigin)' : '';
+  const boxShift = frame === 'local' ? '-urbanFrameOrigin' : '';
   const shared = `
-fn readSegment(row:u32)->vec4<f32>{let base=segmentsOffset+row*4u;return vec4<f32>(segments[base],segments[base+1u],segments[base+2u],segments[base+3u]);}
+${frameDeclaration}
+fn readSegment(row:u32)->vec4<f32>{let base=segmentsOffset+row*4u;return vec4<f32>(segments[base],segments[base+1u],segments[base+2u],segments[base+3u])${frameShift};}
 fn crossVectors(first:vec2<f32>,second:vec2<f32>)->f32{return first.x*second.y-first.y*second.x;}
+// The offset from the segment start is formed first, so the result does not lose digits to the
+// magnitude of the coordinates.
 fn distanceToSegment(position:vec2<f32>,segment:vec4<f32>)->f32{
- let direction=segment.zw-segment.xy;let squared=dot(direction,direction);var fraction=0.0;
- if(squared>0.0){fraction=clamp(dot(position-segment.xy,direction)/squared,0.0,1.0);}
- return distance(position,segment.xy+fraction*direction);
+ let direction=segment.zw-segment.xy;let offset=position-segment.xy;let squared=dot(direction,direction);var fraction=0.0;
+ if(squared>0.0){fraction=clamp(dot(offset,direction)/squared,0.0,1.0);}
+ return length(offset-fraction*direction);
 }
 // Returns (candidate distance along the ray, 1.0 when the segment blocks the ray, else 0.0).
 fn getSegmentCandidate(origin:vec2<f32>,direction:vec2<f32>,maximum:f32,segmentIndex:u32)->vec2<f32>{
@@ -156,9 +175,10 @@ fn castRay(origin:vec2<f32>,direction:vec2<f32>,maximum:f32)->vec2<f32>{
 // Entry distance of the ray into a node box, or a huge value when the ray misses it or the box is empty.
 fn getBoxEntry(node:u32,origin:vec2<f32>,direction:vec2<f32>,limit:f32)->f32{
  let component=node*2u;
- let lower=vec2<f32>(nodeMinima[nodeMinimaOffset+component],nodeMinima[nodeMinimaOffset+component+1u]);
- let upper=vec2<f32>(nodeMaxima[nodeMaximaOffset+component],nodeMaxima[nodeMaximaOffset+component+1u]);
- if(!(lower.x<=upper.x&&lower.y<=upper.y)){return 3.0e38;}
+ let boxLower=vec2<f32>(nodeMinima[nodeMinimaOffset+component],nodeMinima[nodeMinimaOffset+component+1u]);
+ let boxUpper=vec2<f32>(nodeMaxima[nodeMaximaOffset+component],nodeMaxima[nodeMaximaOffset+component+1u]);
+ if(!(boxLower.x<=boxUpper.x&&boxLower.y<=boxUpper.y)){return 3.0e38;}
+ let lower=boxLower${boxShift};let upper=boxUpper${boxShift};
  var entry=0.0;var exit=limit;
  for(var axis=0u;axis<2u;axis++){
   if(abs(direction[axis])<1.0e-20){if(origin[axis]<lower[axis]||origin[axis]>upper[axis]){return 3.0e38;}}

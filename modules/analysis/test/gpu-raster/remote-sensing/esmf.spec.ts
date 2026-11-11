@@ -44,7 +44,7 @@ for (const normalization of ['destination-area', 'covered-area', 'extensive'] as
             destination,
             normalization,
             values: harness.input(date.values),
-            validity,
+            mask: validity,
             preparedWeights,
             weightMode: index === 0 ? 'prepare' : 'reuse',
             output: {

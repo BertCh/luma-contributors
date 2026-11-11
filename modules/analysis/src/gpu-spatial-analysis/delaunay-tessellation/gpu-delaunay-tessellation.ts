@@ -18,7 +18,7 @@ import {
 import {
   validateCommandNodeBudget,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {
@@ -683,15 +683,15 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(output.triangles, ['uint32x3'], `${id} output.triangles`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(output.triangles, ['uint32x3'], `${id} output.triangles`);
     validateGPUStatusPort(`${id} output.status`, output.status);
     if (!output.status.requiredCount) {
       throw new Error(`${id} output.status.requiredCount is required`);
     }
     if (props.groups) {
       const {ids, count} = props.groups;
-      validatePackedView(ids, ['uint32'], `${id} groups.ids`);
+      validateSinglePackedView(ids, ['uint32'], `${id} groups.ids`);
       if (ids.length !== props.positions.length || !Number.isInteger(count) || count < 1) {
         throw new Error(`${id} groups.ids must have one row per position and count at least 1`);
       }
@@ -705,7 +705,7 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
         groupOutput.triangleOffsets
       ]) {
         if (view) {
-          validatePackedView(view, ['uint32'], `${id} output.groups`);
+          validateSinglePackedView(view, ['uint32'], `${id} output.groups`);
           if (view.length !== count) {
             throw new Error(`${id} output.groups views must have one row per group`);
           }
@@ -713,7 +713,7 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
       }
     }
     if (output.status.duplicateCount) {
-      validatePackedView(
+      validateSinglePackedView(
         output.status.duplicateCount,
         ['uint32'],
         `${id} output.status.duplicateCount`

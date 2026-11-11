@@ -19,11 +19,6 @@ export * from './terrain-flow-field/index';
 export * from './terrain-illumination/index';
 export * from './topographic-position/index';
 
-// Top-level files and shared contracts.
-export type {GPUCompactOutput, GPUUint32Rows} from '../analysis-core/kernels/gpu-contributor-types';
-export {GPUParameterBuffer} from '../analysis-core/kernels/gpu-contributor-utils';
-export type {
-  GPUParameterBufferProps,
-  GPUParameterFormat
-} from '../analysis-core/kernels/gpu-contributor-utils';
+// Top-level files. The contributor contract is exported from
+// '@luma-contributors/analysis/analysis-core', not from this entry point.
 export type {GPURasterCellSizeMode, GPURasterRowDirection} from '../analysis-core/raster-grid';

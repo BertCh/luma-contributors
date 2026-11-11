@@ -14,7 +14,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
@@ -139,7 +139,7 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
         throw new Error(`${id} directedEdges.${name} length must equal endpoints length`);
       }
     }
-    validatePackedView(
+    validateSinglePackedView(
       output.directedEdges.endpoints,
       ['float32x4'],
       `${id} output.directedEdges.endpoints`

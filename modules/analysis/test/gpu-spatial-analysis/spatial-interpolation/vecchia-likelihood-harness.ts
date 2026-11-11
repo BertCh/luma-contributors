@@ -284,7 +284,8 @@ export async function createVecchiaSpaceTimeHarness(
   const observationRows = new Float32Array(rowCount * 4);
   for (let row = 0; row < rowCount; row++) {
     observationRows[row * 4] = scene.values[row];
-    observationRows[row * 4 + 3] = 1;
+    observationRows[row * 4 + 1] = scene.observationError?.[row] ?? 0;
+    observationRows[row * 4 + 3] = scene.validity ? scene.validity[row] : 1;
   }
   const positions = createInputBuffer(
     device,

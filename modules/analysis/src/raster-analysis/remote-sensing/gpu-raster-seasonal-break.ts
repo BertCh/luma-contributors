@@ -34,7 +34,7 @@ export type GPURasterSeasonalBreakProps = {
   cellCount: number;
   sliceCount: number;
   values: GraphDataView<'float32'>;
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Seasonal period in slices on regular slots, or in fractional years with `dateAxis`. */
   period: number;
   /** Minimum elapsed slices and valid observations on each side; at least 3. */
@@ -216,8 +216,8 @@ export class GPURasterSeasonalBreak implements GPUCommandNodeProducer {
     validateRequirement(
       this.id,
       props.values.length >= props.cellCount * props.sliceCount &&
-        (!props.validity || props.validity.length >= props.cellCount * props.sliceCount),
-      'values and validity must hold cellCount times sliceCount entries'
+        (!props.mask || props.mask.length >= props.cellCount * props.sliceCount),
+      'values and mask must hold cellCount times sliceCount entries'
     );
     validateRequirement(
       this.id,
@@ -234,7 +234,7 @@ export class GPURasterSeasonalBreak implements GPUCommandNodeProducer {
     );
     validateRasterViews(
       this.id,
-      [props.values, ...(props.validity ? [props.validity] : [])],
+      [props.values, ...(props.mask ? [props.mask] : [])],
       Object.values(props.output)
     );
   }
@@ -246,7 +246,7 @@ export class GPURasterSeasonalBreak implements GPUCommandNodeProducer {
     validateRasterGraph(
       id,
       graph,
-      [props.values, ...(props.validity ? [props.validity] : [])],
+      [props.values, ...(props.mask ? [props.mask] : [])],
       Object.values(props.output)
     );
     if (props.dateAxis) validateGPURasterDateAxisGraph(id, graph, props.dateAxis);
@@ -274,7 +274,7 @@ export class GPURasterSeasonalBreak implements GPUCommandNodeProducer {
         workgroupSize: 32,
         bindings: [
           rasterBinding('values', props.values),
-          ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+          ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
           ...(props.dateAxis ? [getGPURasterDateAxisBinding(props.dateAxis)] : []),
           ...Object.entries(props.output).map(([name, view]) => rasterBinding(name, view, true))
         ],
@@ -283,7 +283,7 @@ export class GPURasterSeasonalBreak implements GPUCommandNodeProducer {
         body: `var design: array<f32, ${slices * 5}>; var response: array<f32, ${slices}>; var valid: array<bool, ${slices}>; var count = 0u; var energy = 0.0;
 for (var slice = 0u; slice < ${slices}u; slice++) {
   let source = index * ${slices}u + slice; let value = values[valuesOffset + source];
-  valid[slice] = finite(value) ${props.validity ? '&& validity[validityOffset + source] != 0u' : ''};
+  valid[slice] = finite(value) ${props.mask ? '&& mask[maskOffset + source] != 0u' : ''};
   if (!valid[slice]) { continue; }
   count++; response[slice] = value; energy += value * value;
   let angle = ${sliceAngle};

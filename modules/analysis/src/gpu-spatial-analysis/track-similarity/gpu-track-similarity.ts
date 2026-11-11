@@ -38,7 +38,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
 
@@ -360,20 +360,20 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
     );
     this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
     const {linesA, linesB, output} = props;
-    validatePackedView(linesA.positions, ['float32x2'], `${id} linesA.positions`);
-    validatePackedView(linesA.lineOffsets, ['uint32'], `${id} linesA.lineOffsets`);
+    validateSinglePackedView(linesA.positions, ['float32x2'], `${id} linesA.positions`);
+    validateSinglePackedView(linesA.lineOffsets, ['uint32'], `${id} linesA.lineOffsets`);
     if (linesA.lineOffsets.length < 2) {
       throw new Error(`${id} linesA.lineOffsets needs two rows`);
     }
     if (linesB) {
-      validatePackedView(linesB.positions, ['float32x2'], `${id} linesB.positions`);
-      validatePackedView(linesB.lineOffsets, ['uint32'], `${id} linesB.lineOffsets`);
+      validateSinglePackedView(linesB.positions, ['float32x2'], `${id} linesB.positions`);
+      validateSinglePackedView(linesB.lineOffsets, ['uint32'], `${id} linesB.lineOffsets`);
       if (linesB.lineOffsets.length < 2) {
         throw new Error(`${id} linesB.lineOffsets needs two rows`);
       }
     }
-    validatePackedView(props.pairA, ['uint32'], `${id} pairA`);
-    validatePackedView(props.pairB, ['uint32'], `${id} pairB`);
+    validateSinglePackedView(props.pairA, ['uint32'], `${id} pairA`);
+    validateSinglePackedView(props.pairB, ['uint32'], `${id} pairB`);
     if (props.pairA.length < 1 || props.pairB.length !== props.pairA.length) {
       throw new Error(`${id} pairA and pairB must have the same positive length`);
     }
@@ -385,7 +385,7 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
       GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT
     );
     if (props.activePairCount) {
-      validatePackedView(props.activePairCount, ['uint32'], `${id} activePairCount`);
+      validateSinglePackedView(props.activePairCount, ['uint32'], `${id} activePairCount`);
       if (props.activePairCount.length < 1) {
         throw new Error(`${id} activePairCount must contain one uint32 row`);
       }
@@ -409,7 +409,7 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
       throw new Error(`${id} output.frechetWithin and frechetEpsilon go together`);
     }
     if (props.frechetEpsilon) {
-      validatePackedView(props.frechetEpsilon, ['float32'], `${id} frechetEpsilon`);
+      validateSinglePackedView(props.frechetEpsilon, ['float32'], `${id} frechetEpsilon`);
       if (props.frechetEpsilon.length < 1) {
         throw new Error(`${id} frechetEpsilon must contain one float32 row`);
       }
@@ -436,7 +436,7 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
       ['pairStatus', output.pairStatus, 'uint32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} ${name}`);
+        validateSinglePackedView(view, [format], `${id} ${name}`);
         if (view.length !== props.pairA.length) {
           throw new Error(`${id} ${name} length must equal the pair capacity`);
         }

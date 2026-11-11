@@ -11,6 +11,7 @@ import {
 import {toRadians} from '@math.gl/core';
 import {GPU_EARTH_AUTHALIC_RADIUS_METERS} from './contracts/earth';
 import {getGPUAuthalicSphereRadius} from './contracts/spatial-context';
+import {IS_FINITE_VALUE_WGSL} from './kernels/wgsl-common';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from './kernels/wgsl-kernel-nodes';
 
 /** Number of float32 rows of a raster placement: `[originLongitude, originLatitude, cellWidth, cellHeight]`. */
@@ -151,11 +152,12 @@ export function createSphericalCellWeightsNode<Parameters>(
     invocationCount: props.cellCount,
     declarations: `const WIDTH: u32 = ${props.width}u;
 const HEIGHT: u32 = ${props.height}u;
-${getPlacedCellAreaWGSL(props.radius)}`,
+${getPlacedCellAreaWGSL(props.radius)}
+${IS_FINITE_VALUE_WGSL}`,
     body: `var weight = ${props.cellWeights ? 'cellWeights[cellWeightsOffset + index]' : '1.0'};
   weight = weight * getPlacedCellArea(index / WIDTH);
   // Non-finite (NaN or infinity) and non-positive weights carry no area.
-  if ((bitcast<u32>(weight) & 0x7f800000u) == 0x7f800000u || !(weight > 0.0)) {
+  if (!isFiniteValue(weight) || !(weight > 0.0)) {
     weight = 0.0;
   }
   output[outputOffset + index] = weight;`

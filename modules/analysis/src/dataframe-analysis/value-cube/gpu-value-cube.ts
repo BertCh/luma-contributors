@@ -27,7 +27,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -155,15 +155,15 @@ export class GPUValueCube implements GPUCommandNodeProducer {
     validateCapacity(id, 'periodCount', periodCount, 1, MAXIMUM_INDEX);
     this.binCount = cellCount * periodCount;
     validateMaximumCount(id, 'cellCount * periodCount', this.binCount, MAXIMUM_INDEX);
-    validatePackedView(cells, ['uint32'], `${id} cells`);
-    validatePackedView(periods, ['uint32'], `${id} periods`);
-    validatePackedView(values, ['float32'], `${id} values`);
+    validateSinglePackedView(cells, ['uint32'], `${id} cells`);
+    validateSinglePackedView(periods, ['uint32'], `${id} periods`);
+    validateSinglePackedView(values, ['float32'], `${id} values`);
     this.rowCount = cells.length;
     validateRequirement(id, this.rowCount >= 1, 'needs at least one row');
     validateViewLength(id, 'periods', periods, this.rowCount);
     validateViewLength(id, 'values', values, this.rowCount);
     if (mask) {
-      validatePackedView(mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(mask, ['uint32'], `${id} mask`);
       validateViewLength(id, 'mask', mask, this.rowCount);
     }
     validateRequirement(
@@ -177,7 +177,7 @@ export class GPUValueCube implements GPUCommandNodeProducer {
       ['means', output.means, 'float32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} output.${name}`);
+        validateSinglePackedView(view, [format], `${id} output.${name}`);
         validateViewLength(id, `output.${name}`, view, this.binCount);
       }
     }

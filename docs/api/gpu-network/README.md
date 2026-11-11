@@ -53,9 +53,9 @@ on them rather than replace them:
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUNetworkReachability,
-  GPUParameterBuffer,
   type GPUNetworkTopology
 } from '@luma-contributors/analysis/gpu-network';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'network'});
 const startNodes = new GPUParameterBuffer(device, {id: 'starts', format: 'uint32', length: 4});

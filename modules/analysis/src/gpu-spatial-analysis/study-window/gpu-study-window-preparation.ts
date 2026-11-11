@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Buffer, assert} from '@luma.gl/core';
+import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
   GPUScan,
@@ -31,7 +31,8 @@ import {
   importGraphBuffer,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getPolygonEdgeSlabNodes} from '../../analysis-core/kernels/polygon-edge-slabs';
 import {
@@ -39,6 +40,7 @@ import {
   getStudyWindowSampleCellWGSL,
   STUDY_WINDOW_BOUNDARY_CELL_BIT
 } from '../../analysis-core/kernels/study-window-wgsl';
+import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -138,9 +140,9 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
     this.vertexCount = props.positions.length;
     this.sampleGrid = props.samplingGrid ?? [256, 256];
     const {id, sampleGrid} = this;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     for (const name of ['featureOffsets', 'polygonOffsets', 'ringOffsets'] as const) {
-      validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(props[name], ['uint32'], `${id} ${name}`);
     }
     if (props.featureOffsets.length !== 2) {
       throw new Error(`${id} study window needs exactly one feature (featureOffsets of length 2)`);
@@ -158,7 +160,7 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
       );
     }
     if (props.output?.summary) {
-      validatePackedView(props.output.summary, ['float32'], `${id} output.summary`);
+      validateSinglePackedView(props.output.summary, ['float32'], `${id} output.summary`);
       if (props.output.summary.length !== GPU_STUDY_WINDOW_SUMMARY_LENGTH) {
         throw new Error(`${id} output.summary must contain 8 float32 values`);
       }
@@ -421,9 +423,12 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
         variant: 'summarize',
         bindings: [ringsBinding, {...summaryBinding, access: 'read_write'}],
         invocationCount: 1,
-        declarations: `${IS_FINITE_BITS_WGSL}${GET_NAN_WGSL}`,
+        declarations: `${IS_FINITE_BITS_WGSL}${GET_NAN_WGSL}${ADDITION_ROUNDING_ERROR_WGSL}`,
+        // The ring totals carry the exact rounding error of every addition, read off the integer
+        // significands: a float Kahan term is algebraically zero and a fast-math shader compiler
+        // removes it, which lost every small ring that followed a large one.
         body: `var totals = vec3f(0.0);
-  var compensation = vec3f(0.0);
+  var roundingErrors = vec3f(0.0);
   var minimum = vec2f(3.402823466e38);
   var maximum = vec2f(-3.402823466e38);
   var flags = 0u;
@@ -431,9 +436,12 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
     let base = ringsOffset + ${RING_STRIDE}u * ring;
     if (rings[base + 9u] == 0.0) { continue; }
     let values = vec3f(rings[base], rings[base + 1u], rings[base + 2u]);
-    let adjusted = values - compensation;
-    let nextTotals = totals + adjusted;
-    compensation = (nextTotals - totals) - adjusted;
+    let nextTotals = totals + values;
+    roundingErrors += vec3f(
+      getAdditionRoundingError(totals.x, values.x, nextTotals.x),
+      getAdditionRoundingError(totals.y, values.y, nextTotals.y),
+      getAdditionRoundingError(totals.z, values.z, nextTotals.z)
+    );
     totals = nextTotals;
     flags |= u32(rings[base + 3u]);
     if (values.z > 0.0) {
@@ -441,6 +449,7 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
       maximum = max(maximum, vec2f(rings[base + 6u], rings[base + 7u]));
     }
   }
+  totals += roundingErrors;
   if (!isFiniteBits(totals.x) || totals.x <= 0.0) { flags |= ${GPU_STUDY_WINDOW_FLAG_EMPTY}u; }
   if (any(minimum > maximum)) { minimum = vec2f(getNaN()); maximum = minimum; }
   summary[summaryOffset] = minimum.x;
@@ -700,7 +709,11 @@ ${getStudyWindowSampleCellWGSL(sampleGrid, 'readSummary')}`,
       const existing = node.condition;
       if (existing) {
         // Nested producers may already have a CPU gate. Always evaluate the rebuild latch first.
-        assert(existing.source === 'cpu');
+        validateRequirement(
+          id,
+          existing.source === 'cpu',
+          'rebuild latch needs nested nodes without a GPU-sourced condition'
+        );
         return {
           ...node,
           condition: {
@@ -711,7 +724,6 @@ ${getStudyWindowSampleCellWGSL(sampleGrid, 'readSummary')}`,
           }
         } as GPUCommandNode<Parameters>;
       }
-      assert(!node.condition);
       return {
         ...node,
         condition: {id: `${id}-rebuild`, source: 'cpu', evaluate}

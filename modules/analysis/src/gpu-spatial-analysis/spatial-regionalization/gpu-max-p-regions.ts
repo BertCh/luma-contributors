@@ -21,7 +21,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -337,9 +337,9 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
       throw new Error(`${id} maximumIterations needs at least 2 rows`);
     }
     validateRegionalizationParameters(id, props.parameters, GPU_MAX_P_REGIONS_PARAMETER_LENGTH);
-    validatePackedView(props.values, ['float32'], `${id} values`);
-    validatePackedView(props.extensiveValues, ['float32'], `${id} extensiveValues`);
-    validatePackedView(props.threshold, ['float32'], `${id} threshold`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.extensiveValues, ['float32'], `${id} extensiveValues`);
+    validateSinglePackedView(props.threshold, ['float32'], `${id} threshold`);
     if (props.values.length !== rowCount * columnCount) {
       throw new Error(`${id} values length must equal rows * columnCount`);
     }
@@ -349,9 +349,9 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
     if (props.threshold.length < 1) {
       throw new Error(`${id} threshold must hold one value`);
     }
-    validatePackedView(output.labels, ['uint32'], `${id} output.labels`);
-    validatePackedView(output.status, ['uint32'], `${id} output.status`);
-    validatePackedView(output.objective, ['float32'], `${id} output.objective`);
+    validateSinglePackedView(output.labels, ['uint32'], `${id} output.labels`);
+    validateSinglePackedView(output.status, ['uint32'], `${id} output.status`);
+    validateSinglePackedView(output.objective, ['float32'], `${id} output.objective`);
     if (output.labels.length !== rowCount) {
       throw new Error(`${id} output.labels length must equal the weights row count`);
     }

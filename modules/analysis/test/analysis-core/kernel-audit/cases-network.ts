@@ -40,6 +40,7 @@ import {
   GPUNetworkCostTable,
   GPUNetworkReachability,
   GPUNetworkSnapping,
+  GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK,
   GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH,
   GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
   GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS,
@@ -831,10 +832,10 @@ const NETWORK_SNAPPING_CASES: KernelAuditCase[] = [
   ),
   {
     exportName: 'GPUNetworkSnapping',
-    name: 'exact scan, points and edges at the binding limit, no weights',
+    name: 'exact scan, edges at the binding limit, few points, no weights',
     build: context => {
       const {graph, view, maximumRows} = context;
-      const points = maximumRows(8);
+      const points = 4;
       graph.add(
         new GPUNetworkSnapping({
           positions: view('float32x2', points),
@@ -844,6 +845,27 @@ const NETWORK_SNAPPING_CASES: KernelAuditCase[] = [
       );
     }
   },
+  ...[0, 1].map(
+    (overMaximum): KernelAuditCase => ({
+      exportName: 'GPUNetworkSnapping',
+      // Without candidateCapacity every point tests every edge, so points times edges is capped.
+      name: overMaximum
+        ? 'exact scan, points times edges above the maximum'
+        : 'exact scan, points times edges at the maximum, no weights',
+      build: context => {
+        const {graph, view, maximumRows} = context;
+        const edges = 8;
+        const points = GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK / edges + overMaximum;
+        graph.add(
+          new GPUNetworkSnapping({
+            positions: view('float32x2', points),
+            topology: topology(context, maximumRows(8), edges, {weights: false}) as never,
+            output: snappingOutput(context, points, false)
+          })
+        );
+      }
+    })
+  ),
   ...[0, 1].map(
     (overMaximum): KernelAuditCase => ({
       exportName: 'GPUNetworkSnapping',
@@ -2028,13 +2050,14 @@ function kFunctionEventsCase(
   context: KernelAuditContext,
   rowsPerBlock: number,
   eventDivisor: number = 1,
-  maximumIterations: number = 8
+  maximumIterations: number = 8,
+  edgeCount: number = 64
 ): void {
   const {graph, view, maximumRows} = context;
   graph.add(
     new GPUNetworkKFunction({
       positions: view('float32x2', Math.floor(maximumRows(8) / eventDivisor)),
-      topology: topology(context, 16, 64) as never,
+      topology: topology(context, 16, edgeCount) as never,
       maximumDistance: view('float32', 1),
       networkLength: view('float32', 1),
       parameters: view('uint32', GPU_NETWORK_K_FUNCTION_PARAMETER_LENGTH),

@@ -4,8 +4,10 @@
 
 import type {GPUGridIndexView, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {
+  GPUCandidateStatusPort,
   GPUOverflowStatusPort,
-  GPULonLatPolygonStatusPort
+  GPULonLatPolygonStatusPort,
+  GPUStatusScalar
 } from '../../analysis-core/contracts/index';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
 import {
@@ -19,7 +21,12 @@ import {
 /** Number of `uint32` header words at the start of a region statistics summary. */
 export const GPU_REGION_STATISTICS_HEADER_LENGTH = 8;
 
-/** Word index of each field in a region statistics summary. Float fields are stored as f32 bits. */
+/**
+ * Word index of each field in a region statistics summary. Float fields are stored as f32 bits.
+ * Words 0 to 7 are the header (every word is rewritten each encoding); the histogram follows.
+ * The flag bits are also published as named status scalars, see
+ * {@link GPURegionStatisticsStatusPort}.
+ */
 export const GPU_REGION_STATISTICS_SUMMARY_LAYOUT = {
   /** `u32` rows inside the region. */
   selectedCount: 0,
@@ -41,9 +48,12 @@ export const GPU_REGION_STATISTICS_SUMMARY_LAYOUT = {
   histogram: 8
 } as const;
 
-/** Bits of the summary `flags` word. */
+/**
+ * Bits of the summary `flags` word (word 7). Bits 3 to 31 are always 0. `status.overflow` is
+ * `selectionTruncated | regionTruncated` and `status.candidateOverflow` is `candidatesTruncated`.
+ */
 export const GPU_REGION_STATISTICS_FLAGS = {
-  /** `output.selectedRows.ids` was too small for every selected row. */
+  /** `output.selectedRows.ids` was too small for every selected row. Always 0 without `selectedRows`. */
   selectionTruncated: 1,
   /** The region input was truncated: lasso vertex count above capacity, or pick-region overflow. */
   regionTruncated: 2,
@@ -69,7 +79,10 @@ export type GPURegionRectangle = {
   screenTransform?: GraphDataView<'float32'>;
 };
 
-/** Closed lasso polygon with even-odd fill and a per-frame vertex count. */
+/**
+ * Closed lasso polygon with even-odd fill and a per-frame vertex count. Inclusive like the
+ * rectangle: a point exactly on an edge or a vertex is selected.
+ */
 export type GPURegionPolygon = {
   /** Shape discriminator. */
   kind: 'polygon';
@@ -127,14 +140,36 @@ export type GPURegionMaskOutput = {
   status: GPUOverflowStatusPort & GPULonLatPolygonStatusPort;
 };
 
+/**
+ * Named status scalars of `GPURegionStatistics`, published beside the `summary` header (which keeps
+ * its `flags` word). Each is an optional one-row `uint32` view, 0 or 1, rewritten every encoding.
+ */
+export type GPURegionStatisticsStatusPort = Partial<GPUOverflowStatusPort> &
+  GPUCandidateStatusPort & {
+    /**
+     * 1 when an output or the region input was truncated: `output.selectedRows.ids` was too small
+     * (flag `selectionTruncated`) or the lasso vertex count or pick region overflowed (flag
+     * `regionTruncated`). The same capacities `GPURegionMask` and `selectedRows` report.
+     */
+    overflow?: GPUStatusScalar;
+    /**
+     * 1 when the `spatialIndex` candidate stage may have missed rows (flag `candidatesTruncated`):
+     * the grid query overflowed `candidateCapacity` or the index, or the index holds fewer rows
+     * than the source. Always 0 without `spatialIndex`. Not folded into `overflow`.
+     */
+    candidateOverflow?: GPUStatusScalar;
+  };
+
 /** Caller-owned outputs of `GPURegionStatistics`. */
 export type GPURegionStatisticsOutput = {
   /**
-   * Optional world-space lon/lat lasso diagnostics: `antimeridianUncertainCount` counts
-   * unprepared crossing rings; `poleUncertainCount` counts uncapped pole rings. Both are
+   * Optional status scalars. World-space lon/lat lasso diagnostics: `antimeridianUncertainCount`
+   * counts unprepared crossing rings; `poleUncertainCount` counts uncapped pole rings. Both are
    * rewritten each encoding; planar, screen-space and non-polygon selections leave them untouched.
+   * `overflow` and `candidateOverflow` publish the summary flag bits under the shared status
+   * names (see {@link GPURegionStatisticsStatusPort}).
    */
-  status?: GPULonLatPolygonStatusPort;
+  status?: GPULonLatPolygonStatusPort & GPURegionStatisticsStatusPort;
   /** Packed summary of `8 + binCount` uint32 words, see {@link GPU_REGION_STATISTICS_SUMMARY_LAYOUT}. */
   summary: GraphDataView<'uint32'>;
   /** Optional 0/1 source-aligned selection mask for highlighting. Not allowed with `kind: 'mask'`. */

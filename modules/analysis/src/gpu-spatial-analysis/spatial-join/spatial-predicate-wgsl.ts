@@ -546,6 +546,51 @@ fn pairDistanceSq(l: u32, r: u32) -> f32 {
 }
 
 /**
+ * Declares `${prefix}ProbeInside(origin, ahead, leftSide, f) -> bool` for a polygon side: the even-odd
+ * location in polygon feature `f` of the point `origin + s (ahead - origin) + t n`, where `n` is the
+ * left normal of `ahead - origin` (the right normal when `leftSide` is false) and `0 < t << s` are
+ * infinitesimal. That is the point just beyond `origin` toward `ahead` and just off the line, which
+ * is never on an edge. Requires `origin != ahead`.
+ *
+ * Nothing is rounded: the probe is never formed. Each comparison of the crossing-number test is a
+ * polynomial in `s` and `t` whose sign is the sign of its first non-zero coefficient, and every
+ * coefficient is a coordinate comparison or an exact orientation sign of three input vertices.
+ */
+function getProbeInsideWGSL(side: SpatialPredicateSide): string {
+  const p = side.prefix;
+  return `
+fn ${p}ProbeInside(origin: vec2f, ahead: vec2f, leftSide: bool, f: u32) -> bool {
+  // probe.y - origin.y = s (ahead.y - origin.y) +/- t (ahead.x - origin.x).
+  let probeAbove = ahead.y > origin.y || (ahead.y == origin.y && (ahead.x > origin.x) == leftSide);
+  // On the line through origin and ahead a non-degenerate axis orders points exactly.
+  let useX = ahead.x != origin.x;
+  let aheadPositive = select(ahead.y > origin.y, ahead.x > origin.x, useX);
+  var inside = false;
+  ${forEachEdge(
+    side,
+    'f',
+    'a',
+    'b',
+    `let aAbove = a.y > origin.y || (a.y == origin.y && !probeAbove);
+      let bAbove = b.y > origin.y || (b.y == origin.y && !probeAbove);
+      if (aAbove != bAbove) {
+        // orient(a, b, probe) = orient(a, b, origin) + s cross(b - a, ahead - origin) +/- t dot(b - a, ahead - origin).
+        // With origin on the line a-b the second coefficient is orient(a, b, ahead). With ahead on
+        // it too the edge is parallel to the direction, and the third is positive when it points the same way.
+        var o = orient(a, b, origin);
+        if (o == 0.0) { o = orient(a, b, ahead); }
+        if (o == 0.0) {
+          let edgePositive = select(b.y > a.y, b.x > a.x, useX);
+          o = select(-1.0, 1.0, (edgePositive == aheadPositive) == leftSide);
+        }
+        if ((b.y > a.y) == (o > 0.0)) { inside = !inside; }
+      }`
+  )}
+  return inside;
+}`;
+}
+
+/**
  * Declares `pairContains(outer, inner)` for the given kinds (OGC `ST_Contains`:
  * `inner` lies in the closure of `outer` and the interiors intersect).
  */
@@ -553,6 +598,7 @@ function getContainsWGSL(outer: SpatialPredicateSide, inner: SpatialPredicateSid
   const o = outer.prefix;
   const i = inner.prefix;
   let body: string;
+  let probes = '';
   if (inner.kind === 'points') {
     body = `return ${o}Locate(${i}First(inner).xy, outer) == 1u;`;
   } else if (outer.kind === 'points' || (outer.kind === 'lines' && inner.kind === 'polygons')) {
@@ -579,30 +625,40 @@ function getContainsWGSL(outer: SpatialPredicateSide, inner: SpatialPredicateSid
   )}
   return interior;`;
   } else {
-    // Polygon contains polygon. Every inner edge must lie in the closed outer polygon, no outer
-    // vertex may lie strictly inside the inner polygon (a hole), and an inner edge that runs along
-    // the outer boundary must have the outer interior on the inner interior's side (this rejects an
-    // inner polygon that coincides with a hole).
+    // Polygon contains polygon. Every inner edge must lie in the closed outer polygon, and no part
+    // of the outer exterior (a hole) may lie inside the inner polygon. With the first test passed,
+    // an exterior region inside the inner polygon is bounded by outer edges only, and each of its
+    // vertices is strictly inside the inner polygon or on its boundary. From a vertex on the inner
+    // boundary the outer edge either heads into the inner interior or runs along an inner edge with
+    // the inner interior on the hole's side. Both show as a point just off the outer edge that is
+    // inside the inner polygon and not inside the outer one. The probe is symbolic
+    // (getProbeInsideWGSL), so the answer does not depend on a rounded midpoint or on an offset
+    // that falls below one float32 step: an inner polygon equal to a hole, or with a hole
+    // inscribed in it, is rejected for any vertex coordinates.
+    probes = `${getProbeInsideWGSL(outer)}
+${getProbeInsideWGSL(inner)}`;
     body = `${forEachEdge(
       inner,
       'inner',
       'ia',
       'ib',
-      `if ((${o}SegmentWithin(ia, ib, outer) & 1u) == 0u) { return false; }
-      let middle = (ia + ib) * 0.5;
-      if (${o}Locate(middle, outer) == 2u) {
-        let edge = ib - ia;
-        let normal = vec2f(-edge.y, edge.x) * 0.001;
-        var probe = middle + normal;
-        var found = ${i}Locate(probe, inner) == 1u;
-        if (!found) { probe = middle - normal; found = ${i}Locate(probe, inner) == 1u; }
-        if (found && ${o}Locate(probe, outer) != 1u) { return false; }
-      }`
+      `if ((${o}SegmentWithin(ia, ib, outer) & 1u) == 0u) { return false; }`
     )}
-  ${forEachEdge(outer, 'outer', 'oa', 'ob', `if (${i}Locate(oa, inner) == 1u) { return false; }`)}
+  ${forEachEdge(
+    outer,
+    'outer',
+    'oa',
+    'ob',
+    `let location = ${i}Locate(oa, inner);
+      if (location == 1u) { return false; }
+      if (location == 2u && (oa.x != ob.x || oa.y != ob.y)) {
+        if (${i}ProbeInside(oa, ob, true, inner) && !${o}ProbeInside(oa, ob, true, outer)) { return false; }
+        if (${i}ProbeInside(oa, ob, false, inner) && !${o}ProbeInside(oa, ob, false, outer)) { return false; }
+      }`
+  )}
   return true;`;
   }
-  return `
+  return `${probes}
 fn pairContains(outer: u32, inner: u32) -> bool {
   if (${o}First(outer).z == 0.0 || ${i}First(inner).z == 0.0) { return false; }
   ${body}

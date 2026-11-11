@@ -28,7 +28,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -99,8 +99,8 @@ export type GPUTrajectoryThinningOutput = {
   trackOffsets: GraphDataView<'uint32'>;
   /** Kept row count, overflow, and `candidateOverflow` when a search hit `maximumSearchRows`. */
   status: GPUCardinalityPort & GPUOverflowStatusPort & GPUCandidateStatusPort;
-  /** Optional `1`/`0` mask of the kept rows, `positions.length` rows. */
-  mask?: GraphDataView<'uint32'>;
+  /** Optional `1`/`0` validity of the rows: `1` for a kept row, `positions.length` rows. */
+  validity?: GraphDataView<'uint32'>;
   /** Optional copied positions of the kept rows, capacity rows. */
   positions?: GraphDataView<'float32x2'>;
   /** Optional copied timestamps of the kept rows, capacity rows, the input format. */
@@ -135,20 +135,21 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
   readonly maximumSearchRows: number;
   readonly capacity: number;
 
-  constructor(props: GPUTrajectoryThinningProps) {
-    this.id = props.id ?? 'trajectory-thinning';
-    this.props = props;
+  constructor(input: GPUTrajectoryThinningProps) {
+    this.id = input.id ?? 'trajectory-thinning';
     const id = this.id;
+    const props = input;
+    this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
       GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
     );
     const {positions, timestamps, trackOffsets, parameters, output, mode} = props;
-    validatePackedView(positions, ['float32x2'], `${id} positions`);
-    validatePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
-    validatePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
-    validatePackedView(parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(parameters, ['float32'], `${id} parameters`);
     validateViewLength(id, 'timestamps', timestamps, positions.length);
     resolveGPUTrajectoryTemporalContext(id, timestamps, props.temporalContext);
     validateRequirement(
@@ -174,21 +175,21 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
       this.maximumSearchRows,
       GPU_TRAJECTORY_THINNING_MAXIMUM_SEARCH_ROWS
     );
-    validatePackedView(output.rowIds, ['uint32'], `${id} output.rowIds`);
-    validatePackedView(output.trackOffsets, ['uint32'], `${id} output.trackOffsets`);
+    validateSinglePackedView(output.rowIds, ['uint32'], `${id} output.rowIds`);
+    validateSinglePackedView(output.trackOffsets, ['uint32'], `${id} output.trackOffsets`);
     validateCapacity(id, 'output.rowIds', output.rowIds.length);
     this.capacity = output.rowIds.length;
     validateViewLength(id, 'output.trackOffsets', output.trackOffsets, trackOffsets.length);
-    if (output.mask) {
-      validatePackedView(output.mask, ['uint32'], `${id} output.mask`);
-      validateViewLength(id, 'output.mask', output.mask, positions.length);
+    if (output.validity) {
+      validateSinglePackedView(output.validity, ['uint32'], `${id} output.validity`);
+      validateViewLength(id, 'output.validity', output.validity, positions.length);
     }
     if (output.positions) {
-      validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+      validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
       validateViewLength(id, 'output.positions', output.positions, this.capacity);
     }
     if (output.timestamps) {
-      validatePackedView(output.timestamps, [timestamps.format], `${id} output.timestamps`);
+      validateSinglePackedView(output.timestamps, [timestamps.format], `${id} output.timestamps`);
       validateViewLength(id, 'output.timestamps', output.timestamps, this.capacity);
     }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), [
@@ -208,7 +209,7 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
       output.status.overflow,
       output.status.requiredCount,
       output.status.candidateOverflow,
-      output.mask,
+      output.validity,
       output.positions,
       output.timestamps
     ];
@@ -242,7 +243,7 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
     const rowTracks = createTransientView(graph, `${id}-row-tracks`, 'uint32', rowCount);
     const next = createTransientView(graph, `${id}-next`, 'uint32', rowCount);
     const reach = createTransientView(graph, `${id}-reach`, 'uint32', rowCount);
-    const keep = output.mask ?? createTransientView(graph, `${id}-keep`, 'uint32', rowCount);
+    const keep = output.validity ?? createTransientView(graph, `${id}-keep`, 'uint32', rowCount);
     const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rowCount);
     const keptRows = createTransientView(graph, `${id}-kept-rows`, 'uint32', rowCount);
     const keptTotal = createTransientView(graph, `${id}-kept-total`, 'uint32', 1);

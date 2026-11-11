@@ -16,8 +16,9 @@ import {
   validateCapacity,
   validateMaximumCount,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
@@ -54,6 +55,8 @@ export const GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS = 1024;
 
 /** Largest accepted compile-time `localIterations`. */
 export const GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS = 64;
+
+const OPERATION = 'GPUNetworkReachability';
 
 /** Largest accepted compile-time `maximumTieIterations`. */
 export const GPU_NETWORK_REACHABILITY_MAXIMUM_TIE_ITERATIONS = 1024;
@@ -186,6 +189,13 @@ export type GPUNetworkReachabilityOutput = {
      */
     iterationCount?: GraphDataView<'uint32'>;
     /**
+     * Optional one-row flag, the named `GPUIterationStatusPort` complement of `converged`: 1 when
+     * a round limit (`maximumIterations`, or `maximumTieIterations` with `predecessors`) stopped
+     * the search before it converged, so `costs` may be truncated; 0 when it converged. It is
+     * exactly `1 - converged` and can be requested with or without `converged`.
+     */
+    iterationLimitReached?: GraphDataView<'uint32'>;
+    /**
      * Optional two-row count of edge relaxations attempted by all relax rounds, as a 64-bit value
      * in (low, high) `uint32` words: every edge scanned by a visit (`lastEdge - firstEdge`),
      * summed over every visit of every round, including the workgroup-local chained hops, and over
@@ -308,15 +318,16 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
       ['output.status.converged', output.status?.converged],
       ['output.unresolvedCount', output.unresolvedCount],
       ['output.status.iterationCount', output.status?.iterationCount],
+      ['output.status.iterationLimitReached', output.status?.iterationLimitReached],
       ['output.status.relaxationCount', output.status?.relaxationCount],
       ['output.status.reachedEdgeCount', output.status?.reachedEdgeCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     if (typeof props.startCount === 'object') {
-      validatePackedView(props.startCount, ['uint32'], `${id} startCount`);
+      validateSinglePackedView(props.startCount, ['uint32'], `${id} startCount`);
     }
     for (const [name, view] of [
       ['startCosts', props.startCosts],
@@ -325,7 +336,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
       ['costBreaks', props.costBreaks]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
     const nodeCount = output.costs.length;
@@ -356,7 +367,8 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
       ['costLimit', props.costLimit],
       ['output.status.converged', output.status?.converged],
       ['output.unresolvedCount', output.unresolvedCount],
-      ['output.status.iterationCount', output.status?.iterationCount]
+      ['output.status.iterationCount', output.status?.iterationCount],
+      ['output.status.iterationLimitReached', output.status?.iterationLimitReached]
     ] as const) {
       if (view && view.length !== 1) {
         throw new Error(`${id} ${name} must contain exactly one row`);
@@ -422,6 +434,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
       output.status?.converged,
       output.unresolvedCount,
       output.status?.iterationCount,
+      output.status?.iterationLimitReached,
       output.status?.relaxationCount,
       output.status?.reachedEdgeCount
     ]
@@ -661,8 +674,15 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
         })
       );
     }
+    const iterationLimitReached = output.status?.iterationLimitReached;
+    // The limit flag is the complement of `converged`, so it needs the finalize node's flag.
+    const convergedView =
+      output.status?.converged ??
+      (iterationLimitReached
+        ? createTransientView(graph, `${id}-converged-scratch`, 'uint32', 1)
+        : undefined);
     if (
-      output.status?.converged ||
+      convergedView ||
       output.status?.iterationCount ||
       output.status?.relaxationCount ||
       output.status?.reachedEdgeCount
@@ -673,7 +693,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
           state,
           phase,
           tiePhase: hasTiePhase ? tiePhase : undefined,
-          converged: output.status?.converged,
+          converged: convergedView,
           iterationCount: output.status?.iterationCount,
           counters:
             counterWordOffset === undefined
@@ -683,6 +703,21 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
                   relaxationCount: output.status?.relaxationCount,
                   reachedEdgeCount: output.status?.reachedEdgeCount
                 }
+        })
+      );
+    }
+    if (iterationLimitReached && convergedView) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-iteration-limit-reached`,
+          operation: OPERATION,
+          variant: 'iteration-limit-reached',
+          bindings: [
+            {name: 'converged', view: convergedView, type: 'u32', access: 'read'},
+            {name: 'limitReached', view: iterationLimitReached, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          body: 'limitReached[limitReachedOffset] = 1u - min(converged[convergedOffset], 1u);'
         })
       );
     }
@@ -732,6 +767,7 @@ function getViews(props: GPUNetworkReachabilityProps): (GraphDataView | undefine
     output.status?.converged,
     output.unresolvedCount,
     output.status?.iterationCount,
+    output.status?.iterationLimitReached,
     output.status?.relaxationCount,
     output.status?.reachedEdgeCount
   ];

@@ -14,7 +14,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -155,12 +155,16 @@ export class GPUSpaceTimeVariogram implements GPUCommandNodeProducer {
     validatePairHistogramShape(id, getBinCount(props), 5);
     for (const view of [props.secondValues, props.times])
       if (view) {
-        validatePackedView(view, ['float32'], `${id} input`);
+        validateSinglePackedView(view, ['float32'], `${id} input`);
         if (view.length !== rows) throw new Error(`${id} values must match positions`);
       }
     const bins = getBinCount(props);
     for (const [name, view] of Object.entries(props.output)) {
-      validatePackedView(view, [name === 'semivariances' ? 'float32' : 'uint32'], `${id} ${name}`);
+      validateSinglePackedView(
+        view,
+        [name === 'semivariances' ? 'float32' : 'uint32'],
+        `${id} ${name}`
+      );
       if (view.length < bins) throw new Error(`${id} output.${name} must hold ${bins} bins`);
     }
     validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [
@@ -290,7 +294,7 @@ export class GPUSpaceTimeVariogram implements GPUCommandNodeProducer {
         body: `let first = firstStatistics[firstStatisticsOffset + index];
   let second = ${secondStatistics ? 'secondStatistics[secondStatisticsOffset + index]' : 'first'};
   let time = times[timesOffset + index];
-  let usable = isFiniteFloat(first) && isFiniteFloat(second) && isFiniteFloat(time);
+  let usable = isFiniteValue(first) && isFiniteValue(second) && isFiniteValue(time);
   rowTable[rowTableOffset + index * 3u] = select(getQuietNaN(index), first, usable);
   rowTable[rowTableOffset + index * 3u + 1u] = second;
   rowTable[rowTableOffset + index * 3u + 2u] = time;`
@@ -326,10 +330,10 @@ const LARGE_TERM_UNIT: f32 = ${2 ** PAIR_HISTOGRAM_LARGE_TERM_SHIFT}.0;`;
     let focusTime = rowTable[focusBase + 2u];
     let maximumTime = readParameter(5u);
     let scale = scaleView[scaleViewOffset];
-    let focusUsable = isFiniteFloat(focusFirst) && isFiniteFloat(maximumTime) && maximumTime > 0.0;`,
+    let focusUsable = isFiniteValue(focusFirst) && isFiniteValue(maximumTime) && maximumTime > 0.0;`,
       pairAction: `let otherBase = rowTableOffset + neighbor * 3u;
             let otherFirst = rowTable[otherBase];
-            if (!focusUsable || !isFiniteFloat(otherFirst)) { continue; }
+            if (!focusUsable || !isFiniteValue(otherFirst)) { continue; }
             let timeLag = abs(rowTable[otherBase + 2u] - focusTime);
             if (timeLag > maximumTime) { continue; }
             let spatialClass = select(
@@ -368,7 +372,7 @@ ${getPairHistogramReadWGSL('accumulators', channelCount, '', bins)}`,
   let negative = readPairAccumulator(index, 2u) + readPairAccumulator(index, 4u) * LARGE_TERM_UNIT;
   // A zero scale means a constant column: every term is 0.
   let value = select(0.0, (positive - negative) / scale / count, scale > 0.0);
-  let finite = isFiniteFloat(value);
+  let finite = isFiniteValue(value);
   semivariances[semivariancesOffset + index] = select(getQuietNaN(index), value, count > 0.0 && finite);
   pairCounts[pairCountsOffset + index] = readPairCount(index, 0u);
   status[statusOffset + index] = select(select(select(2u, 0u, finite), 3u, readPairOverflow()), 1u, count == 0.0);`

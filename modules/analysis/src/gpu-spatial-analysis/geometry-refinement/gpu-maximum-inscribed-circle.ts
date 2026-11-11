@@ -16,7 +16,7 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -79,9 +79,9 @@ export class GPUMaximumInscribedCircle implements GPUCommandNodeProducer {
     if (!(Number.isFinite(props.tolerance) && props.tolerance > 0)) {
       throw new Error('Invalid circle tolerance');
     }
-    validatePackedView(props.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.positions, ['float32x2'], this.id);
     for (const offsets of [props.ringOffsets, props.polygonOffsets, props.featureOffsets]) {
-      validatePackedView(offsets, ['uint32'], this.id);
+      validateSinglePackedView(offsets, ['uint32'], this.id);
       validateCapacity(this.id, 'offset length', offsets.length, 2);
     }
     for (const [name, format] of [
@@ -89,7 +89,7 @@ export class GPUMaximumInscribedCircle implements GPUCommandNodeProducer {
       ['witnesses', 'float32x2'],
       ['status', 'uint32']
     ] as const) {
-      validatePackedView(props.output[name], [format], this.id);
+      validateSinglePackedView(props.output[name], [format], this.id);
       if (props.output[name].length !== props.featureOffsets.length - 1) {
         throw new Error('Circle output length mismatch');
       }

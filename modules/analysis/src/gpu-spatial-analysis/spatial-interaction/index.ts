@@ -4,3 +4,16 @@
 
 export {GPUSpatialInteraction} from './gpu-spatial-interaction';
 export type {GPUSpatialInteractionProps} from './gpu-spatial-interaction';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeSpatialInteractionOnCPU,
+  CPUSpatialInteractionOperation
+} from './cpu-spatial-interaction-operation';
+export type {
+  CPUSpatialInteractionInput,
+  CPUSpatialInteractionOptions,
+  CPUSpatialInteractionResult
+} from './cpu-spatial-interaction-operation';
+export {GPUSpatialInteractionOperation} from './gpu-spatial-interaction-operation';
+export type {SpatialInteractionOperationProps} from './gpu-spatial-interaction-operation';

@@ -20,7 +20,7 @@ import {
   validateFiniteNumber,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getTheilSenSlopeWGSL} from '../../analysis-core/kernels/wgsl-theil-sen-median';
@@ -203,7 +203,13 @@ export type GPUEmergingHotSpotsProps = {
  * Passes, each deterministic and free of float atomics:
  * 1. Global `n`, mean and population standard deviation of valid bins: per-block sums over fixed
  *    1024-bin blocks, then one invocation adding the block partials in order (mean first, then
- *    the sum of squared deviations).
+ *    the sum of squared deviations). The mean gets a second-pass correction
+ *    (`mean += sum(x - mean) / n`) and every `x_j - X` below is the stored first-pass deviation
+ *    minus the mean of those deviations, the scheme of `GPUGlobalSpatialStatistics` and
+ *    `GPUHotSpotAnalysis`, so a large common offset does not round the centered values. In the
+ *    Gi* sums the residual is subtracted once per sum (`sum_j w_j d_j - r sum_j w_j` with `d_j`
+ *    the stored deviations), so two windows whose values add up to the same total get bitwise
+ *    equal z-scores and count as a tie in step 3.
  * 2. Space-time Gi* per bin, the focal bin included. Lattice mode uses binary weights:
  *    `z = sum_j (x_j - X) / (S * sqrt((n k - k^2) / (n - 1)))` where `j` covers valid bins of cells
  *    whose lattice offset satisfies `dx^2 + dy^2 <= radius^2` in the current and `temporalWindow`
@@ -352,11 +358,11 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       0,
       GPU_EMERGING_HOT_SPOTS_MAXIMUM_RADIUS
     );
-    validatePackedView(props.values, ['float32', 'uint32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32', 'uint32'], `${id} values`);
     if (props.values.length !== binCount) {
       throw new Error(`${id} values length must equal cellCount * sliceCount`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters is too short`);
     }
@@ -366,7 +372,7 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
         throw new Error(`${id} mask length must equal the cell count`);
       }
     }
-    validatePackedView(output.giZScores, ['float32'], `${id} giZScores`);
+    validateSinglePackedView(output.giZScores, ['float32'], `${id} giZScores`);
     if (output.giZScores.length !== binCount) {
       throw new Error(`${id} giZScores length must equal values length`);
     }
@@ -375,7 +381,7 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       ['adjustedPValues', output.adjustedPValues]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length !== binCount) {
           throw new Error(`${id} ${name} length must equal values length`);
         }
@@ -394,9 +400,9 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
         throw new Error(`${id} lastValidSlice length must equal the cell count`);
       }
     }
-    validatePackedView(output.trendZ, ['float32'], `${id} trendZ`);
-    validatePackedView(output.trendP, ['float32'], `${id} trendP`);
-    validatePackedView(output.trendS, ['sint32'], `${id} trendS`);
+    validateSinglePackedView(output.trendZ, ['float32'], `${id} trendZ`);
+    validateSinglePackedView(output.trendP, ['float32'], `${id} trendP`);
+    validateSinglePackedView(output.trendS, ['sint32'], `${id} trendS`);
     validatePackedUint32View(output.category, `${id} category`);
     validatePackedUint32View(output.hotSliceCount, `${id} hotSliceCount`);
     validatePackedUint32View(output.coldSliceCount, `${id} coldSliceCount`);
@@ -413,7 +419,7 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       }
     }
     if (output.globalStatistics) {
-      validatePackedView(output.globalStatistics, ['float32'], `${id} globalStatistics`);
+      validateSinglePackedView(output.globalStatistics, ['float32'], `${id} globalStatistics`);
       if (output.globalStatistics.length < GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH) {
         throw new Error(`${id} globalStatistics is too short`);
       }
@@ -543,8 +549,27 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
         'float32',
         GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH
       );
+    // Mean centering, the scheme of GPUGlobalSpatialStatistics and the local statistics: the
+    // first-pass deviation of every bin from the provisional mean is stored (NaN for a bin outside
+    // the analysis), the mean of those deviations corrects the mean, and a centered value is the
+    // stored deviation minus that residual. The Gi* sums add the stored deviations and subtract
+    // the residual once per sum (residual * sum of weights), so windows whose values add up to the
+    // same total keep bitwise equal z-scores, which the Mann-Kendall tie count relies on.
+    const centeredValues = createTransientView(
+      graph,
+      `${id}-first-deviations`,
+      'float32',
+      binCount
+    );
+    const deviationPartials = createTransientView(
+      graph,
+      `${id}-deviation-partials`,
+      'float32',
+      blockCount
+    );
+    const residualMean = createTransientView(graph, `${id}-residual-mean`, 'float32', 1);
 
-    const declarations = /* wgsl */ `
+    const constantDeclarations = /* wgsl */ `
 const GRID_WIDTH: u32 = ${gridWidth}u;
 const GRID_HEIGHT: u32 = ${gridHeight}u;
 const CELL_COUNT: u32 = ${cellCount}u;
@@ -554,7 +579,9 @@ const BIN_BLOCK: u32 = ${BIN_BLOCK}u;
 const MAXIMUM_RADIUS: f32 = ${maximumRadius}.0;
 const SELF_WEIGHT: f32 = ${getWGSLFloatLiteral(selfWeight)};
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
-
+`;
+    // Kernels that read the raw cube.
+    const declarations = /* wgsl */ `${constantDeclarations}
 fn readValue(bin: u32) -> f32 {
   return f32(values[valuesOffset + bin]);
 }
@@ -564,6 +591,29 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
   return isFiniteFloat(readValue(bin));
 }
 `;
+    // Kernels that read the stored first-pass deviations: a bin is in the analysis when its
+    // deviation is finite (the deviation pass wrote NaN for masked and non-finite bins).
+    const centeredDeclarations = /* wgsl */ `${constantDeclarations}
+fn readDeviation(bin: u32) -> f32 {
+  return centeredValues[centeredValuesOffset + bin];
+}
+
+fn isBinValid(bin: u32, cell: u32) -> bool {
+  return isFiniteFloat(readDeviation(bin));
+}
+`;
+    const residualMeanBinding: WGSLKernelBinding = {
+      name: 'residualMean',
+      view: residualMean,
+      type: 'f32',
+      access: 'read'
+    };
+    const centeredBinding = (access: 'read' | 'read_write'): WGSLKernelBinding => ({
+      name: 'centeredValues',
+      view: centeredValues,
+      type: 'f32',
+      access
+    });
     const valuesBinding: WGSLKernelBinding = {
       name: 'values',
       view: values,
@@ -600,7 +650,7 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
     let bin = cell * SLICE_COUNT + slice;
     // The focal cell has weight SELF_WEIGHT; its CSR row never lists the cell itself.
     if (SELF_WEIGHT != 0.0 && isBinValid(bin, cell)) {
-      weighted += SELF_WEIGHT * (readValue(bin) - mean);
+      weighted += SELF_WEIGHT * readDeviation(bin);
       weightTotal += SELF_WEIGHT;
       squareTotal += SELF_WEIGHT * SELF_WEIGHT;
     }
@@ -612,7 +662,7 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
       let weight = weights[weightsOffset + slot];
       let neighborBin = neighborCell * SLICE_COUNT + slice;
       if (isBinValid(neighborBin, neighborCell)) {
-        weighted += weight * (readValue(neighborBin) - mean);
+        weighted += weight * readDeviation(neighborBin);
         weightTotal += weight;
         squareTotal += weight * weight;
       }
@@ -638,7 +688,7 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
         let neighborCell = u32(neighborRow) * GRID_WIDTH + u32(neighborColumn);
         let neighborBin = neighborCell * SLICE_COUNT + slice;
         if (isBinValid(neighborBin, neighborCell)) {
-          weighted += readValue(neighborBin) - mean;
+          weighted += readDeviation(neighborBin);
           neighborCount++;
         }
       }
@@ -679,7 +729,6 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
   let rawRadius = ${weights ? '0.0' : 'parameters[parametersOffset]'};
   let rawWindow = parameters[parametersOffset + 1u];
   let count = statistics[statisticsOffset];
-  let mean = statistics[statisticsOffset + 1u];
   let variance = statistics[statisticsOffset + 2u];
   let deviation = statistics[statisticsOffset + 3u];
   let parametersValid = isFiniteFloat(rawRadius) && isFiniteFloat(rawWindow) && rawRadius >= 0.0 && rawWindow >= 0.0;
@@ -706,7 +755,10 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
           : 'let spread = weightSum * (count - weightSum) / (count - 1.0);'
       }
       if (count >= 2.0 && variance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
-        zScore = weightedSum / (deviation * sqrt(spread));
+        // sum_j w_j (x_j - X): the stored deviations from the provisional mean, corrected once by
+        // the mean of those deviations.
+        let centeredSum = weightedSum - residualMean[residualMeanOffset] * weightSum;
+        zScore = centeredSum / (deviation * sqrt(spread));
       }
     }
     giZScores[giZScoresOffset + cell * SLICE_COUNT + slice] = zScore;
@@ -743,9 +795,9 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
   // erfc(|z| / sqrt(2)); NaN z (missing bin) stays NaN and is excluded from the family.
   pValues[pValuesOffset + index] = select(
     getQuietNaN(index),
-    // f32 exp underflows beyond |z| of about 9.3, so p-values are floored at the smallest normal
-    // f32 (1.17549435e-38) instead of reporting exact zeros that would tie in the correction.
-    clamp(erfcValue(abs(zScore) * 0.7071067811865476), 1.17549435e-38, 1.0),
+    // The shared analytic p-value, floored at the smallest normal f32 instead of reporting exact
+    // zeros that would tie in the correction.
+    getTwoSidedPValue(zScore),
     isFiniteFloat(zScore)
   );`
       }),
@@ -866,17 +918,20 @@ var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
     statistics[statisticsOffset + 3u] = 0.0;
   }`
       }),
+      // Second-pass mean: the first-pass deviation of every bin from the provisional mean is
+      // stored, and the block sums of the deviations measure the rounding error of that mean.
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-block-squares`,
+        id: `${id}-block-deviations`,
         operation: OPERATION,
-        variant: 'block-squares',
+        variant: 'block-deviations',
         bindings: [
           valuesBinding,
           ...maskBindings,
           statisticsBinding('read'),
+          centeredBinding('read_write'),
           {
-            name: 'squarePartials',
-            view: squarePartials,
+            name: 'deviationPartials',
+            view: deviationPartials,
             type: 'f32',
             access: 'read_write'
           }
@@ -888,14 +943,107 @@ var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
         body: `let block = index / ${MOMENT_WORKGROUP_SIZE}u;
   let isInRange = index < INVOCATION_COUNT;
-  let mean = statistics[statisticsOffset + 1u];
+  let provisionalMean = statistics[statisticsOffset + 1u];
+  var sum = 0.0;
+  if (isInRange) {
+    let begin = block * BIN_BLOCK;
+    let end = min(begin + BIN_BLOCK, BIN_COUNT);
+    for (var bin = begin + localInvocationIndex; bin < end; bin += ${MOMENT_WORKGROUP_SIZE}u) {
+      let valid = isBinValid(bin, bin / SLICE_COUNT);
+      let deviation = readValue(bin) - provisionalMean;
+      centeredValues[centeredValuesOffset + bin] = select(getQuietNaN(bin), deviation, valid);
+      sum += select(0.0, deviation, valid);
+    }
+  }
+  partialSums[localInvocationIndex] = sum;
+  workgroupBarrier();
+  for (var stride = ${MOMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }
+  if (isInRange && localInvocationIndex == 0u) {
+    deviationPartials[deviationPartialsOffset + block] = partialSums[0];
+  }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-mean-correction`,
+        operation: OPERATION,
+        variant: 'mean-correction',
+        bindings: [
+          {
+            name: 'deviationPartials',
+            view: deviationPartials,
+            type: 'f32',
+            access: 'read'
+          },
+          statisticsBinding('read_write'),
+          {
+            name: 'residualMean',
+            view: residualMean,
+            type: 'f32',
+            access: 'read_write'
+          }
+        ],
+        workgroupSize: MOMENT_WORKGROUP_SIZE,
+        invocationCount: MOMENT_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `const BLOCK_COUNT: u32 = ${blockCount}u;
+var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
+        body: `var sum = 0.0;
+  for (var block = localInvocationIndex; block < BLOCK_COUNT; block += ${MOMENT_WORKGROUP_SIZE}u) {
+    sum += deviationPartials[deviationPartialsOffset + block];
+  }
+  partialSums[localInvocationIndex] = sum;
+  workgroupBarrier();
+  for (var stride = ${MOMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }
+  if (localInvocationIndex == 0u) {
+    let count = statistics[statisticsOffset];
+    // Mean of the first-pass deviations: added to the reported mean and subtracted from every
+    // stored deviation by the next kernel.
+    let residual = select(0.0, partialSums[0] / count, count > 0.0);
+    statistics[statisticsOffset + 1u] += residual;
+    residualMean[residualMeanOffset] = residual;
+  }`
+      }),
+      // Reduces the squared centered values of every block: the centered value is the stored
+      // deviation minus the residual mean (read back from memory, not recomputed from the raw
+      // value).
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-block-squares`,
+        operation: OPERATION,
+        variant: 'block-squares',
+        bindings: [
+          centeredBinding('read'),
+          residualMeanBinding,
+          {
+            name: 'squarePartials',
+            view: squarePartials,
+            type: 'f32',
+            access: 'read_write'
+          }
+        ],
+        workgroupSize: MOMENT_WORKGROUP_SIZE,
+        invocationCount: blockCount * MOMENT_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `${centeredDeclarations}
+var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
+        body: `let block = index / ${MOMENT_WORKGROUP_SIZE}u;
+  let isInRange = index < INVOCATION_COUNT;
+  let residual = residualMean[residualMeanOffset];
   var sum = 0.0;
   if (isInRange) {
     let begin = block * BIN_BLOCK;
     let end = min(begin + BIN_BLOCK, BIN_COUNT);
     for (var bin = begin + localInvocationIndex; bin < end; bin += ${MOMENT_WORKGROUP_SIZE}u) {
       if (isBinValid(bin, bin / SLICE_COUNT)) {
-        let centered = readValue(bin) - mean;
+        let centered = readDeviation(bin) - residual;
         sum += centered * centered;
       }
     }
@@ -956,8 +1104,8 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
           operation: OPERATION,
           variant: weights ? 'gi-star-weights' : 'gi-star',
           bindings: [
-            valuesBinding,
-            ...maskBindings,
+            centeredBinding('read'),
+            residualMeanBinding,
             parametersBinding,
             ...(dispatch
               ? ([
@@ -993,7 +1141,7 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
           invocationCount:
             Math.ceil((dispatch?.rowCount ?? cellCount) / cellsPerGroup) * GI_WORKGROUP_SIZE,
           guardIndex: false,
-          declarations: `${declarations}${dispatch?.constantsWGSL ? `\n${dispatch.constantsWGSL}` : ''}
+          declarations: `${centeredDeclarations}${dispatch?.constantsWGSL ? `\n${dispatch.constantsWGSL}` : ''}
 const CELLS_PER_GROUP: u32 = ${cellsPerGroup}u;
 var<workgroup> instantWeighted: array<f32, ${GI_WORKGROUP_SIZE}>;
 var<workgroup> instantWeight: array<f32, ${GI_WORKGROUP_SIZE}>;

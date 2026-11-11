@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {clamp} from '@math.gl/core';
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -12,6 +11,7 @@ import {
   type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -114,8 +114,8 @@ export function getGroupedSumNodes<Parameters>(
   const quantityCount = outputs.length;
   // The caller validates the group count against the chunked limit (one lane per group) and
   // passes a fixed set of quantities that fits the shared-memory tile.
-  assert(groupCount >= 1 && groupCount <= GROUPED_SUM_MAXIMUM_GROUPS);
-  assert(quantityCount >= 1 && quantityCount <= MAXIMUM_QUANTITIES);
+  validateCapacity(id, 'groupCount', groupCount, 1, GROUPED_SUM_MAXIMUM_GROUPS);
+  validateCapacity(id, 'output count', quantityCount, 1, MAXIMUM_QUANTITIES);
   const chunkCount = clamp(Math.ceil(rows / WORKGROUP_SIZE), 1, MAXIMUM_CHUNKS);
   const chunkSize = Math.ceil(rows / chunkCount / WORKGROUP_SIZE) * WORKGROUP_SIZE;
   const slices = Math.min(MAXIMUM_SLICES, Math.floor(WORKGROUP_SIZE / groupCount));

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   validatePackedUint32View,
   type GPUCommandGraph,
@@ -15,7 +14,8 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getLocalPermutationKernelWGSL,
@@ -74,14 +74,18 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
     this.props = props;
     validatePackedUint32View(props.row, `${this.id} row`);
     validateCapacity(this.id, 'row length', props.row.length, 1, 1);
-    validatePackedView(props.output.nullDistribution, ['float32'], `${this.id} nullDistribution`);
+    validateSinglePackedView(
+      props.output.nullDistribution,
+      ['float32'],
+      `${this.id} nullDistribution`
+    );
     validateCapacity(
       this.id,
       'nullDistribution length',
       props.output.nullDistribution.length,
       props.test.props.maximumPermutations
     );
-    validatePackedView(props.output.replayInfo, ['float32'], `${this.id} replayInfo`);
+    validateSinglePackedView(props.output.replayInfo, ['float32'], `${this.id} replayInfo`);
     validateCapacity(this.id, 'replayInfo length', props.output.replayInfo.length, 3);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [props.row]);
   }
@@ -92,7 +96,11 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const inputs = props.test.replayInputs;
-    assert(inputs); // replay requires the test to have been lowered first
+    validateRequirement(
+      id,
+      inputs !== undefined,
+      'replay requires its test to have been lowered first (call the test getCommandNodes before the replay)'
+    );
     const reads = [
       ...inputs.bindings.map(binding => binding.view),
       inputs.observedRaw,

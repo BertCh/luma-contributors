@@ -36,8 +36,11 @@ Isovists: 4,096 rays per viewpoint with `sampling: 'vertices'` and 65,536 otherw
 segment for every ray, `'bvh'` builds a Morton-sorted segment BVH (`GPUBVH`) and traverses it, and the
 default `'auto'` uses brute force up to 4,096 segments and the BVH above that. Both give identical
 hits: the nearest segment wins and the lowest segment row breaks ties. Segment finiteness is checked
-once per segment, not once per ray. The visibility graph and the free-space classification still test
-every segment for every pair or viewpoint.
+once per segment, not once per ray. `addVisibilityGraphRecipe` takes the same `obstacleIndex` and
+applies it to its sightlines. In the isovists and the visibility graph the free-space classification
+uses the same index: with the BVH each viewpoint visits only the segments that meet the horizontal ray to its right
+(the ones that change its winding number or lie within the tolerance), and one reduction finds
+non-finite segments. The classification is identical either way.
 
 ## `addBuildingTessellationRecipe` — UR01
 
@@ -48,7 +51,8 @@ exterior and its holes in the same position view. Segment endpoints are sampled 
 `sampleSpacing`; repeated segment end vertices are avoided. The recipe clips every boundary-sample
 Voronoi cell to the enclosure, groups cells by building, and uses the existing `GPUPolygonOverlay`
 dissolve contributor to remove internal fragment boundaries. `outputs[buildingId]` is an actual
-packed polygon result, with that stable building ID in its published source-ID column.
+packed polygon result; the building ID is its index in `outputs` (the overlay result has no
+source-ID column, so the former per-ring copy of the building ID is gone).
 
 `sampleCapacity` is explicit and at most 128; enclosures have 3–32 vertices, and a recipe supports
 at most 64 buildings. `capacity.intersections`, `nodedSegments`, `vertices` and `rings` separately
@@ -98,6 +102,22 @@ resulting interval. An occluded wall contributes no facade length. This is exact
 straight rectangular corridor up to the shared geometric tolerance, rather than a sample-count
 estimate. It supports at most 1,024 obstacle segments; curved streets require explicit subdivision
 and ownership at joins so facade intervals are not counted twice.
+
+A stretch of wall is visible when no other segment crosses the perpendicular from the street axis
+before it. The facade kernel works relative to the street start, so the same geometry gives the same
+lengths at the origin and at projected-metre coordinates (the inputs are still float32: near
+4,500,000 a coordinate resolves 0.5). Two rules use a tolerance that scales with the geometry
+(`tolerance` plus 1e-5 of a length):
+
+- A wall perpendicular to the street, within that slack of its own length, is edge-on and has no
+  visible length.
+- Where segments coincide, the lowest segment row owns the stretch and the others report 0 there.
+  Segments coincide when their distances along the sightline are within that slack (of the larger
+  of the street length and `maximumDistance`) of the nearest one; a segment farther than that
+  behind the nearest one is hidden. Ownership is decided against the one nearest hit, so any number
+  of coincident walls has exactly one owner. Two walls that meet at a corner are each counted once.
+- A segment within `tolerance` of the point where a sightline leaves the street axis blocks that
+  sightline at distance 0, on either side of the axis.
 
 ## `addBuildingAdjacencyRecipe` — UR03
 
@@ -157,7 +177,10 @@ obstacle contact, including a tangent or endpoint contact, blocks a pair. Coinci
 not create an edge. `adjacency` is the complete dense visibility matrix; `edges` contains the bounded
 upper-triangle edge list. `status` is `[writtenEdges, requiredEdges, overflow, invalidViewpoints]`.
 Dense analysis remains valid when only the edge-list capacity overflows, but an incomplete edge list
-must not be consumed as a complete network. Invalid viewpoints invalidate all graph summary metrics.
+must not be consumed as a complete network. Invalid viewpoints invalidate all graph summary metrics: when any viewpoint is invalid (`status`
+word 3 is not 0), `metrics`, `choice`, `integration`, `extendedIntegration` and `normalizedChoice` are NaN
+for every viewpoint, and `normalizedChoice` is also NaN for every viewpoint when fewer than 3
+viewpoints are given. In a valid graph a viewpoint that sees nothing scores 0.
 
 `metrics` contains `[degree, reachableOtherVertices, sumHopDistances, reachableHopCloseness]`.
 Closeness is reachable count divided by total hop distance, and is NaN for an isolated point.

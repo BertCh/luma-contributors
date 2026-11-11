@@ -18,7 +18,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateGPUStorageBindingByteLength,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -163,10 +163,10 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     this.rows = validateGPUSpatialWeights(id, props.neighbors, 'neighbors');
-    validatePackedView(props.times, ['float32'], `${id} times`);
-    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
-    validatePackedView(props.output.statistics, ['uint32'], `${id} output.statistics`);
-    validatePackedView(props.output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(props.times, ['float32'], `${id} times`);
+    validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validateSinglePackedView(props.output.statistics, ['uint32'], `${id} output.statistics`);
+    validateSinglePackedView(props.output.summary, ['float32'], `${id} output.summary`);
     this.temporalContext = resolveGPUSpaceTimeTemporalContext(id, props.temporalContext);
     validateCapacity(id, 'k', props.k, 1, GPU_JACQUEZ_MAXIMUM_K);
     if (this.rows <= props.k) {

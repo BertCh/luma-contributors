@@ -11,7 +11,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -122,8 +122,8 @@ export function validateConformalInputs(
   validateCapacity(id, 'foldCount', foldCount, 1, GPU_CONFORMAL_MAXIMUM_FOLD_COUNT);
   const rows = calibration.observations.length;
   validateCapacity(id, 'calibration rows', rows, 1);
-  validatePackedView(calibration.observations, ['float32'], `${id} calibration.observations`);
-  validatePackedView(calibration.predictions, ['float32'], `${id} calibration.predictions`);
+  validateSinglePackedView(calibration.observations, ['float32'], `${id} calibration.observations`);
+  validateSinglePackedView(calibration.predictions, ['float32'], `${id} calibration.predictions`);
   validateViewLength(id, 'calibration.predictions', calibration.predictions, foldCount * rows);
   if (foldCount > 1 && !calibration.folds) {
     throw new Error(`${id} calibration.folds is required when foldCount is more than one`);
@@ -134,14 +134,14 @@ export function validateConformalInputs(
     ['mask', calibration.mask, 'uint32']
   ] as const) {
     if (view) {
-      validatePackedView(view, [format], `${id} calibration.${name}`);
+      validateSinglePackedView(view, [format], `${id} calibration.${name}`);
       validateViewLength(id, `calibration.${name}`, view, rows);
     }
   }
-  validatePackedView(query.predictions, ['float32'], `${id} query.predictions`);
+  validateSinglePackedView(query.predictions, ['float32'], `${id} query.predictions`);
   validateViewLength(id, 'query.predictions', query.predictions, foldCount * queryRows);
   if (query.scales) {
-    validatePackedView(query.scales, ['float32'], `${id} query.scales`);
+    validateSinglePackedView(query.scales, ['float32'], `${id} query.scales`);
     validateViewLength(id, 'query.scales', query.scales, queryRows);
   }
   return rows;

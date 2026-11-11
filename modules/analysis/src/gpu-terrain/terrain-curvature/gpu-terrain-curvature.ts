@@ -16,7 +16,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
@@ -32,16 +32,17 @@ import {
 } from '../../raster-analysis/raster-band-utils';
 import {
   TERRAIN_GEOMORPHOMETRY_CELL_SLOTS,
+  resolveTerrainRowDirection,
   writeTerrainGeomorphometryCellSettings,
   TERRAIN_GEOMORPHOMETRY_SHARED_PARAMETER_LENGTH,
+  TERRAIN_ONE_SIDED_BORDER_WGSL,
   type TerrainGeomorphometryCellSettings
 } from './terrain-geomorphometry-utils';
 import {
   getRasterGroundCellSizeWGSL,
   type GPURasterCellSizeMode,
   type GPURasterRowDirection,
-  validateRasterCellSizeMode,
-  validateRasterRowDirection
+  validateRasterCellSizeMode
 } from '../../analysis-core/raster-grid';
 
 /**
@@ -49,7 +50,9 @@ import {
  *
  * - `'evans-young'`: 3x3 quadratic least squares (Evans 1979, Young 1978).
  * - `'zevenbergen-thorne'`: 3x3 partial quartic (Zevenbergen and Thorne 1987).
- * - `'florinsky'`: 5x5 quadratic least squares (Florinsky 2016).
+ * - `'florinsky'`: 5x5 third-order (cubic) polynomial least squares (Florinsky 2009, 2016). It is
+ *   not a quadratic fit: on `z = x^3` it gives `p = 0` at the origin, where a 5x5 quadratic fit
+ *   gives 3.4 (in cell units). The partials match WhiteboxTools and xDEM.
  */
 export type GPUTerrainCurvatureMethod = 'evans-young' | 'zevenbergen-thorne' | 'florinsky';
 
@@ -223,10 +226,26 @@ export type GPUTerrainCurvatureProps = {
   ringSquash?: 'none' | 'pade-tanh';
   /** Cell size interpretation. Defaults to `'uniform'`. */
   cellSizeMode?: GPURasterCellSizeMode;
-  /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
+  /**
+   * Direction in which the row index increases. Defaults to the direction the grid states: the
+   * sign of the row term `grid.affine[4]` (negative: `'south'`, a north-up raster; positive:
+   * `'north'`). An explicit value that contradicts the grid throws at construction.
+   */
   rowDirection?: GPURasterRowDirection;
-  /** `'clamp'` repeats edge samples; `'nodata'` invalidates windows leaving the raster. Defaults to `'clamp'`. */
-  borderMode?: 'clamp' | 'nodata';
+  /**
+   * Treatment of window samples outside the raster. Defaults to `'one-sided'`.
+   * - `'one-sided'`: an outside sample is the quadratic through the three nearest in-grid samples
+   *   along that axis (the line through two when the third is missing or invalid). The first
+   *   derivatives across the edge are then the second-order one-sided stencil
+   *   `(-3 f0 + 4 f1 - f2) / (2 h)` of luma.gl's `GPUFiniteDifference2D`, and the second
+   *   derivatives are the second difference one cell inward: every curvature is 0 on a plane and
+   *   exact on a quadratic surface up to the border.
+   * - `'clamp'`: repeats edge samples. On a plane of gradient `g` this reports `r = g / h` in the
+   *   border column (gradient 0.2 on 10 m cells: profile curvature -0.0197 1/m with
+   *   `'zevenbergen-thorne'`), so use it only to reproduce earlier output.
+   * - `'nodata'`: invalidates windows leaving the raster.
+   */
+  borderMode?: 'one-sided' | 'clamp' | 'nodata';
 };
 
 type OutputSlot =
@@ -234,14 +253,15 @@ type OutputSlot =
   | {kind: 'ring'; view: GraphDataView<'float32'>}
   | {kind: 'validity'; view: GraphDataView<'uint32'>};
 
-// Not GPURasterConvolution/GPURasterNeighborhood: curvature needs per-row cell-size modes and edge extrapolation that they lack.
+// Not GPURasterConvolution/GPURasterNeighborhood: curvature needs per-row cell-size modes and
+// one-sided edge extrapolation that they lack.
 /**
  * Computes second-order terrain curvatures (profile, plan, tangential, mean, Gaussian, principal,
  * excess, and more) and the multi-radius ring curvature from an elevation raster.
  *
  * Cell-size model: projected metres (`'uniform'`), Web Mercator metres (`'web-mercator'`), or
- * geographic degrees with latitude-dependent row spacing (`'geographic'`), per row, with a
- * spherical row-constant approximation like `GPUTerrainDerivatives`.
+ * geographic degrees with latitude-dependent row spacing (`'geographic'`), per row, with the
+ * WGS84 row-constant scale of `GPUTerrainDerivatives`.
  *
  * Window samples are differenced against the centre elevation before any sum, so large base
  * heights do not cost f32 precision. Requested outputs are split into kernels of at most five
@@ -256,6 +276,8 @@ export class GPUTerrainCurvature implements GPUCommandNodeProducer {
   readonly props: GPUTerrainCurvatureProps;
   /** Receptive field in pixels: 1 (3x3), 2 (florinsky), or the largest ring radius if larger. */
   readonly requiredHalo: number;
+  /** Row direction the kernels use: the prop, or the direction the grid affine states. */
+  readonly rowDirection: GPURasterRowDirection;
 
   constructor(props: GPUTerrainCurvatureProps) {
     this.id = props.id ?? 'terrain-curvature';
@@ -284,14 +306,14 @@ export class GPUTerrainCurvature implements GPUCommandNodeProducer {
       ['ringCurvature', output.ringCurvature] as const
     ]) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== pixelCount) {
           throw new Error(`${id} output.${name} must contain one value per pixel`);
         }
       }
     }
     if (output.outputValidity) {
-      validatePackedView(output.outputValidity, ['uint32'], `${id} output.outputValidity`);
+      validateSinglePackedView(output.outputValidity, ['uint32'], `${id} output.outputValidity`);
       if (output.outputValidity.length !== pixelCount) {
         throw new Error(`${id} output.outputValidity must contain one value per pixel`);
       }
@@ -299,9 +321,9 @@ export class GPUTerrainCurvature implements GPUCommandNodeProducer {
     validateRasterParameters(id, props.parameters, GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
-    validateRasterRowDirection(id, props.rowDirection);
-    if (!['clamp', 'nodata'].includes(props.borderMode ?? 'clamp')) {
-      throw new Error(`${id} borderMode must be clamp or nodata`);
+    this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
+    if (!['one-sided', 'clamp', 'nodata'].includes(props.borderMode ?? 'one-sided')) {
+      throw new Error(`${id} borderMode must be one-sided, clamp, or nodata`);
     }
     if (!['none', 'pade-tanh'].includes(props.ringSquash ?? 'none')) {
       throw new Error(`${id} ringSquash must be none or pade-tanh`);
@@ -358,6 +380,7 @@ export class GPUTerrainCurvature implements GPUCommandNodeProducer {
         getCurvatureNode(graph, {
           id: `${id}-curvature-${group}`,
           props,
+          rowDirection: this.rowDirection,
           source,
           slots: slots.slice(start, start + OUTPUTS_PER_KERNEL),
           hasWindowOutput,
@@ -489,6 +512,7 @@ function getCurvatureNode<Parameters>(
   options: {
     id: string;
     props: GPUTerrainCurvatureProps;
+    rowDirection: GPURasterRowDirection;
     source: RasterBufferBandSource<Parameters>;
     slots: readonly OutputSlot[];
     hasWindowOutput: boolean;
@@ -498,8 +522,8 @@ function getCurvatureNode<Parameters>(
   const {props, source, slots} = options;
   const {width, height} = props.grid;
   const method = props.method ?? 'evans-young';
-  const northSign = (props.rowDirection ?? 'south') === 'south' ? -1 : 1;
-  const clamp = (props.borderMode ?? 'clamp') === 'clamp';
+  const northSign = options.rowDirection === 'south' ? -1 : 1;
+  const borderMode = props.borderMode ?? 'one-sided';
   const needsWindow =
     slots.some(slot => slot.kind === 'curvature') ||
     (options.hasWindowOutput && slots.some(slot => slot.kind === 'validity'));
@@ -582,6 +606,7 @@ function getCurvatureNode<Parameters>(
   let cellsValid = wx > 0.0 && wy > 0.0 && isFiniteValue(wx) && isFiniteValue(wy) && isFiniteValue(zFactor);
   let cellMetres = sqrt(wx * wy);
   let invalidValue = bitcast<f32>(0x7fc00000u | (index & 0u));
+  windowCentre = centre;
   windowValid = cellsValid;
   ringValid = cellsValid;
   ${
@@ -595,7 +620,7 @@ function getCurvatureNode<Parameters>(
   return createWGSLKernelNode<Parameters>(graph, {
     id: options.id,
     operation: 'GPUTerrainCurvature',
-    variant: `${method}-${props.cellSizeMode ?? 'uniform'}-${props.borderMode ?? 'clamp'}`,
+    variant: `${method}-${props.cellSizeMode ?? 'uniform'}-${borderMode}`,
     bindings,
     invocationCount: width * height,
     declarations: `const WIDTH: u32 = ${width}u;
@@ -604,19 +629,39 @@ const WIDTH_SIGNED: i32 = ${width};
 const HEIGHT_SIGNED: i32 = ${height};
 var<private> windowValid: bool;
 var<private> ringValid: bool;
+var<private> windowCentre: f32;
 ${RASTER_WGSL_HELPERS}
 ${getRasterGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}
+${
+  borderMode === 'one-sided'
+    ? `// In-grid elevation minus the window centre; .y is 1 when the sample is valid.
+fn readGridSample(column: i32, row: i32) -> vec2<f32> {
+  let sampleIndex = u32(row * WIDTH_SIGNED + column);
+  let value = elevationValues[elevationValuesOffset + sampleIndex];
+  let isValid = elevationValidity[elevationValidityOffset + sampleIndex] != 0u && isFiniteValue(value);
+  return vec2<f32>(select(0.0, value - windowCentre, isValid), select(0.0, 1.0, isValid));
+}
+${TERRAIN_ONE_SIDED_BORDER_WGSL}`
+    : ''
+}
 // Elevation of an offset sample minus the centre elevation; flags the window invalid on failure.
 fn readWindowDelta(column: u32, row: u32, dx: i32, dy: i32, centre: f32) -> f32 {
   var sampleColumn = i32(column) + dx;
   var sampleRow = i32(row) + dy;
   ${
-    clamp
+    borderMode === 'clamp'
       ? `sampleColumn = clamp(sampleColumn, 0, WIDTH_SIGNED - 1);
   sampleRow = clamp(sampleRow, 0, HEIGHT_SIGNED - 1);`
       : `if (sampleColumn < 0 || sampleRow < 0 || sampleColumn >= WIDTH_SIGNED || sampleRow >= HEIGHT_SIGNED) {
-    windowValid = false;
-    return 0.0;
+    ${
+      borderMode === 'one-sided'
+        ? `// One-sided border: extrapolate the centre-relative surface past the edge.
+    let extended = readExtendedSample(sampleColumn, sampleRow);
+    if (extended.y == 0.0) { windowValid = false; }
+    return extended.x;`
+        : `windowValid = false;
+    return 0.0;`
+    }
   }`
   }
   let sampleIndex = u32(sampleRow) * WIDTH + u32(sampleColumn);

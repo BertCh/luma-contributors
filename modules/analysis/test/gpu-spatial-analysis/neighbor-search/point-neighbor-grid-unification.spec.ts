@@ -183,12 +183,15 @@ function computeReference(options: SearchOptions): {offsets: number[]; neighbors
   const radiusSquared = f32(radius * radius);
   const isTimeUsable = (time: number) =>
     !times || (Number.isFinite(time) && time >= f32(minimumTime) && time <= f32(maximumTime));
+  // A planar cross-join query needs only a finite time; a self join's queries are its targets.
+  const isQueryTimeUsable = (time: number) =>
+    !times || (selfJoin ? isTimeUsable(time) : Number.isFinite(time));
   const offsets = [0];
   const neighbors: number[] = [];
   for (let query = 0; query < queryPositions.length / 2; query++) {
     const row: {id: number; distanceSquared: number}[] = [];
     const queryTime = queryTimes ? queryTimes[query] : 0;
-    if (isTimeUsable(queryTime)) {
+    if (isQueryTimeUsable(queryTime)) {
       for (let target = 0; target < positions.length / 2; target++) {
         if (selfJoin && target === query) continue;
         if (times) {
@@ -375,6 +378,55 @@ describe('GPUNeighborSearch time axis', () => {
       );
       const knn: SearchOptions = {...base, mode: 'knn', k: 9, capacity: 400 * 9};
       expectSameRows(await runSearch(device, knn), computeReference(knn), `cross knn ${label}`);
+    }, 60_000);
+  }
+
+  for (const timeBucketCount of [undefined, 16]) {
+    it(`cross-join queries outside the bounds and time bounds match brute force, bucket count ${timeBucketCount ?? 'default'}`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const {positions, times} = createTimedScene();
+      const queryPositions = createPoints(51, 60);
+      const queryTimes = createTimes(52, 60);
+      // Queries off the lattice on every side, and times before and after the time bounds.
+      const outside = [
+        [-40, 500, -30],
+        [1040, 500, 130],
+        [500, -40, 5],
+        [500, 1040, 95],
+        [-40, -40, -20],
+        [1040, 1040, 120],
+        [500, 500, 140],
+        [500, 500, -45]
+      ];
+      outside.forEach(([x, y, time], index) => {
+        queryPositions[index * 2] = x;
+        queryPositions[index * 2 + 1] = y;
+        queryTimes[index] = time;
+      });
+      const base = {
+        positions,
+        times,
+        queryPositions,
+        queryTimes,
+        timeRadius: 60,
+        timeBounds: TIME_BOUNDS,
+        timeBucketCount
+      };
+      const radius: SearchOptions = {...base, mode: 'radius', radius: 150, capacity: 60 * ROWS};
+      const radiusReference = computeReference(radius);
+      const outsideNeighbors = radiusReference.offsets[8] - radiusReference.offsets[0];
+      expect(
+        outsideNeighbors,
+        'the reference finds neighbors of the outside queries'
+      ).toBeGreaterThan(0);
+      const radiusResult = await runSearch(device, radius);
+      expectSameRows(radiusResult, radiusReference, 'outside radius');
+      expect(radiusResult.invalidCount).toBe(0);
+      const knn: SearchOptions = {...base, mode: 'knn', k: 9, capacity: 60 * 9};
+      const knnResult = await runSearch(device, knn);
+      expectSameRows(knnResult, computeReference(knn), 'outside knn');
+      expect(knnResult.invalidCount).toBe(0);
     }, 60_000);
   }
 

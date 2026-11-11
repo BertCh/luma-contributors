@@ -58,7 +58,10 @@ export const GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_LIKELIHOOD = 3;
 /**
  * `summary` slot: Akaike criterion `2 k - 2 logLikelihood` with spreg's `k`: the number of table
  * rows for the lag model (intercept, predictors, `rho`) and the number of intercept and predictor
- * rows only for the error model (spreg `ML_Error` does not count `lambda`).
+ * rows only for the error model (spreg `ML_Error` does not count `lambda`). So a lag model and an
+ * error model with the same log-likelihood differ by 2 here (and by `ln(n)` in the Schwarz
+ * criterion); `GPUOrdinaryLeastSquares` counts intercept and predictors, the GWR family
+ * `tr(S) + 1`. Add 2 per uncounted parameter before comparing across models.
  */
 export const GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_AIC = 4;
 /** `summary` slot: Schwarz criterion `k ln(n) - 2 logLikelihood` with the same `k`. */

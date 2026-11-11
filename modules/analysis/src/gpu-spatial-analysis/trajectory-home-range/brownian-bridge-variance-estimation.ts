@@ -38,12 +38,19 @@ function getError(locationError: number | ArrayLike<number> | undefined, index: 
 }
 
 /**
- * Log-likelihood terms of the Brownian bridge variance estimator of Horne, Garton, Krone and
- * Lewis (Ecology 88, 2007): every second fix `i` (1, 3, 5, ...) is predicted from the fixes
- * `i - 1` and `i + 1`. With `T = t[i+1] - t[i-1]` and `alpha = (t[i] - t[i-1]) / T` the prediction
- * is the point at fraction `alpha` of the chord, with variance
- * `s^2 = T alpha (1 - alpha) sigma^2 + (1 - alpha)^2 delta[i-1]^2 + alpha^2 delta[i+1]^2 + delta[i]^2`,
- * and the observed fix has the isotropic bivariate normal density with that variance.
+ * Log-likelihood terms of a leave-one-out Brownian bridge variance estimator in the manner of
+ * Horne, Garton, Krone and Lewis (Ecology 88, 2007): every second fix `i` (1, 3, 5, ...) is
+ * predicted from the fixes `i - 1` and `i + 1`. With `T = t[i+1] - t[i-1]` and
+ * `alpha = (t[i] - t[i-1]) / T` the prediction is the point at fraction `alpha` of the chord, and
+ * the observed fix has the isotropic bivariate normal density with variance
+ * `s^2 = T alpha (1 - alpha) sigma^2 + (1 - alpha)^2 delta[i-1]^2 + alpha^2 delta[i+1]^2 + delta[i]^2`.
+ *
+ * The last term, `delta[i]^2`, is the location error of the predicted fix itself: the residual is
+ * between two observed positions, and the observed fix `i` carries its own error. The bridge
+ * variance as usually written for Horne et al. and the R packages `BBMM` and `move` (not run or
+ * read here) stops at the first three terms, which describe the true position. With a location
+ * error above 0 this estimator therefore returns a smaller motion variance than those packages
+ * would for the same input; with a location error of 0 the two forms are the same.
  */
 function getVarianceTerms(
   track: BrownianBridgeTrack,
@@ -130,14 +137,21 @@ function maximizeLikelihood(terms: ReturnType<typeof getVarianceTerms>): number 
 
 /**
  * Maximum-likelihood Brownian motion variance of one track (units of length squared per time
- * unit), after Horne et al. (2007): the variance that best predicts every second fix from its two
- * neighbours. The estimate is the input of {@link GPUBrownianBridgeUtilization} (`motionVariances`).
- * With a zero location error it equals `mean(r^2 / (2 T alpha (1 - alpha)))` over the predicted
- * fixes, which the tests use as a closed form.
+ * unit), in the manner of Horne et al. (2007): the variance that best predicts every second fix
+ * from its two neighbours. The estimate is the input of {@link GPUBrownianBridgeUtilization}
+ * (`motionVariances`). With a zero location error it equals
+ * `mean(r^2 / (2 T alpha (1 - alpha)))` over the predicted fixes, which the tests use as a closed
+ * form.
+ *
+ * With a location error the likelihood variance includes the predicted fix's own error
+ * (`+ delta[i]^2`, see the terms above), so the estimate is lower than one from the three-term
+ * bridge variance of `BBMM` and `move`. On a simulated random walk of true variance 15 with a
+ * location error of 20 on every fix this form returned 15.6 and the three-term form 28.5 (review
+ * of 2026-11-10, a binary64 script).
  *
  * This is a CPU, binary64 helper: the optimizer is a log-spaced scan followed by golden-section
- * refinement. It is written from the published definition; the R package `move` (licence not
- * verified) was not consulted or run, so no claim of parity with its optimizer is made.
+ * refinement. The R packages `move` and `BBMM` (licences not verified) were not consulted or run,
+ * so no parity with their estimates or optimizers is claimed.
  *
  * @returns The variance, or NaN when the track has fewer than three fixes.
  */

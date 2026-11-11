@@ -15,7 +15,7 @@ import {
 } from '../../analysis-core/network-topology';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs,
   validateCapacity
@@ -72,12 +72,12 @@ export class GPUAlternativeRoutes implements GPUCommandNodeProducer {
     this.maximumExpansions = props.maximumExpansions ?? 100000;
     validateCapacity(this.id, 'maximumExpansions', this.maximumExpansions, 1, 10000000);
     for (const view of [props.sources, props.targets])
-      validatePackedView(view, ['uint32'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
     if (props.sources.length !== props.targets.length || props.sources.length < 1)
       throw new Error('Route queries must have equal positive lengths');
     const routes = props.sources.length * props.routeCount;
     for (const [name, view] of Object.entries(props.output)) {
-      validatePackedView(view, [name === 'costs' ? 'float32' : 'uint32'], this.id);
+      validateSinglePackedView(view, [name === 'costs' ? 'float32' : 'uint32'], this.id);
       const expected =
         name === 'vertices' || name === 'edges'
           ? routes * this.nodeCount

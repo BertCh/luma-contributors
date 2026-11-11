@@ -16,7 +16,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
@@ -138,30 +138,30 @@ export class GPUSpatialLagImpacts implements GPUCommandNodeProducer {
     if (props.rhoBound !== undefined && !(props.rhoBound > 0)) {
       throw new Error(`${id} rhoBound must be positive`);
     }
-    validatePackedView(props.coefficients, ['float32'], `${id} coefficients`);
+    validateSinglePackedView(props.coefficients, ['float32'], `${id} coefficients`);
     const lastRow = Math.max(rhoIndex, firstPredictorIndex + predictorCount - 1);
     if (props.coefficients.length < lastRow * coefficientStride + 1) {
       throw new Error(`${id} coefficients must hold every predictor row and the rho row`);
     }
-    validatePackedView(props.traces.powerTraces, ['float32'], `${id} traces.powerTraces`);
-    validatePackedView(props.traces.powerSums, ['float32'], `${id} traces.powerSums`);
+    validateSinglePackedView(props.traces.powerTraces, ['float32'], `${id} traces.powerTraces`);
+    validateSinglePackedView(props.traces.powerSums, ['float32'], `${id} traces.powerSums`);
     if (
       props.traces.powerTraces.length < maximumPower ||
       props.traces.powerSums.length < maximumPower
     ) {
       throw new Error(`${id} traces must hold maximumPower float32 values each`);
     }
-    validatePackedView(props.traces.infinityNorm, ['float32'], `${id} traces.infinityNorm`);
+    validateSinglePackedView(props.traces.infinityNorm, ['float32'], `${id} traces.infinityNorm`);
     if (props.traces.infinityNorm.length < 1) {
       throw new Error(`${id} traces.infinityNorm must hold one float32 value`);
     }
     if (props.status) {
-      validatePackedView(props.status, ['uint32'], `${id} status`);
+      validateSinglePackedView(props.status, ['uint32'], `${id} status`);
       if (props.status.length < 1) {
         throw new Error(`${id} status must hold one uint32 row`);
       }
     }
-    validatePackedView(props.output.impacts, ['float32'], `${id} output.impacts`);
+    validateSinglePackedView(props.output.impacts, ['float32'], `${id} output.impacts`);
     if (props.output.impacts.length < predictorCount * GPU_SPATIAL_LAG_IMPACTS_STRIDE) {
       throw new Error(`${id} output.impacts must hold predictorCount * 3 float32 values`);
     }

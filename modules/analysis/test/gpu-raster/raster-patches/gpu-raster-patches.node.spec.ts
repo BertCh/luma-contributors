@@ -45,6 +45,24 @@ it('GPURasterPatchMetrics and GPURasterSieve validate props and declare nodes', 
         output: {pixelCounts: view('uint32', 4)}
       })
   ).toThrow(/affine/);
+  // `parameters` carries the row edges of a non-uniform cellSizeMode only.
+  expect(
+    () =>
+      new GPURasterPatchMetrics({
+        ...base,
+        parameters: view('float32', 8),
+        output: {pixelCounts: view('uint32', 4)}
+      })
+  ).toThrow(/^raster-patch-metrics parameters is read only with a non-uniform cellSizeMode/);
+  expect(
+    () =>
+      new GPURasterPatchMetrics({
+        ...base,
+        cellSizeMode: 'geographic',
+        parameters: view('float32', 5),
+        output: {pixelCounts: view('uint32', 4)}
+      })
+  ).toThrow(/^raster-patch-metrics parameters must contain at least 6 values/);
   const metrics = new GPURasterPatchMetrics({
     ...base,
     output: {

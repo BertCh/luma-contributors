@@ -90,6 +90,26 @@ it('GPUGeomorphons validates radii, outputs, and buffers', () => {
   );
   expect(() => create({cellSizeMode: 'polar' as never})).toThrow(/cellSizeMode/);
   expect(() => create({rowDirection: 'east' as never})).toThrow(/rowDirection/);
+  // The grid affine states the row direction (roadmap 12.3): the default follows it and an
+  // explicit value that contradicts it throws.
+  const northGrid = makeGPURasterMetadata({
+    width: 12,
+    height: 10,
+    cellSize: [2, 3],
+    origin: [0, 5],
+    rowDirection: 'north'
+  });
+  expect(GRID.affine[4]).toBeLessThan(0);
+  expect(northGrid.affine[4]).toBeGreaterThan(0);
+  expect(create().rowDirection).toBe('south');
+  expect(create({grid: northGrid}).rowDirection).toBe('north');
+  expect(create({grid: northGrid, rowDirection: 'north'}).rowDirection).toBe('north');
+  expect(() => create({grid: northGrid, rowDirection: 'south'})).toThrow(
+    /^geomorphons rowDirection 'south' must match the grid: grid\.affine\[4\] is 3, so rows advance north/
+  );
+  expect(() => create({rowDirection: 'north'})).toThrow(
+    /^geomorphons rowDirection 'north' must match the grid: grid\.affine\[4\] is -3, so rows advance south/
+  );
   expect(() => create({grid: {...GRID, width: 0}})).toThrow(/dimensions/);
   const shared = createTransientView(graph, 'shared', 'uint32', 120);
   expect(() => create({output: {forms: shared, ternary: shared}})).toThrow(/share buffers/);

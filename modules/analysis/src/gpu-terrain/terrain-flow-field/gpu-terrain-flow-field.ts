@@ -17,7 +17,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateRasterCellSizeMode,
@@ -152,7 +152,7 @@ export class GPUTerrainFlowField implements GPUCommandNodeProducer {
     validateRasterParameters(id, props.parameters, GPU_TERRAIN_FLOW_FIELD_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
-    validatePackedView(output.velocities, ['float32x2'], `${id} output.velocities`);
+    validateSinglePackedView(output.velocities, ['float32x2'], `${id} output.velocities`);
     if (output.velocities.length !== cellCount) {
       throw new Error(`${id} output.velocities must contain one row per cell`);
     }

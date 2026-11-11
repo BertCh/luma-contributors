@@ -80,7 +80,7 @@ export type GPURasterSnapshotCovarianceProps = {
   /** Cell-major `cell * sliceCount + slice`. A nonfinite or out-of-range sample excludes the whole cell. */
   values: GraphDataView<'float32'>;
   /** Per-observation QA; zero excludes the whole cell. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Optional per-cell area weights in `(0, 1]`, for example `cos(latitude)`. A weight outside that range excludes the cell. Defaults to 1. */
   weights?: GraphDataView<'float32'>;
   /** Float32, see {@link getGPURasterSnapshotCovarianceParameterValues}. */
@@ -128,8 +128,8 @@ export class GPURasterSnapshotCovariance implements GPUCommandNodeProducer {
     validateCapacity(id, 'cellCount times sliceCount', observations);
     validateRequirement(
       id,
-      [props.values, props.validity].every(view => !view || view.length >= observations),
-      'values and validity must hold cellCount times sliceCount entries'
+      [props.values, props.mask].every(view => !view || view.length >= observations),
+      'values and mask must hold cellCount times sliceCount entries'
     );
     validateRequirement(
       id,
@@ -155,8 +155,8 @@ export class GPURasterSnapshotCovariance implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, weights, parameters} = this.props;
-    return [values, parameters, ...(validity ? [validity] : []), ...(weights ? [weights] : [])];
+    const {values, mask, weights, parameters} = this.props;
+    return [values, parameters, ...(mask ? [mask] : []), ...(weights ? [weights] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -168,7 +168,7 @@ export class GPURasterSnapshotCovariance implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, entryCount, blockCount} = this;
-    const {cellCount, sliceCount: slices, values, validity, weights, parameters, output} = props;
+    const {cellCount, sliceCount: slices, values, mask, weights, parameters, output} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const cellMeans = createTransientView(graph, `${id}-means`, 'float32', cellCount);
     const cellKept = createTransientView(graph, `${id}-kept`, 'uint32', cellCount);
@@ -182,7 +182,7 @@ export class GPURasterSnapshotCovariance implements GPUCommandNodeProducer {
         bindings: [
           rasterBinding('values', values),
           rasterBinding('parameters', parameters),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           ...(weights ? [rasterBinding('weights', weights)] : []),
           rasterBinding('cellMeans', cellMeans, true),
           rasterBinding('cellKept', cellKept, true)
@@ -195,7 +195,7 @@ var total = 0.0;
 for (var slice = 0u; slice < ${slices}u; slice++) {
   let source = cell * ${slices}u + slice;
   let value = values[valuesOffset + source];
-  if (!finite(value) || abs(value) > limit ${validity ? '|| validity[validityOffset + source] == 0u' : ''}) { kept = false; break; }
+  if (!finite(value) || abs(value) > limit ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { kept = false; break; }
   total += value;
 }
 cellMeans[cellMeansOffset + cell] = select(0.0, total / ${slices}.0, kept);

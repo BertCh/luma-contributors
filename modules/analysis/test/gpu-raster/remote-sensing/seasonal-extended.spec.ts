@@ -38,7 +38,7 @@ async function run(
       maximumIterations: options.maximumIterations,
       tolerance: options.tolerance,
       values: harness.input(options.values ?? entry.values),
-      validity: harness.mask(options.validity ?? entry.validity),
+      mask: harness.mask(options.validity ?? entry.validity),
       output: {
         coefficients: harness.output('coefficients', 'float32', coefficientCount),
         components: harness.output('components', 'float32', entry.sliceCount * 3),

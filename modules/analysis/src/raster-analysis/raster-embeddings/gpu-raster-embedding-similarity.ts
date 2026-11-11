@@ -74,7 +74,7 @@ export type GPURasterEmbeddingSimilarityProps = {
   /** Decoded vectors, `pixel * dimensions + band`; a pixel with a non-finite component is invalid. */
   vectors: GraphDataView<'float32'>;
   /** Per-pixel QA; zero makes the pixel invalid. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Number of query vectors, in `[1, 64]`. */
   queryCount: number;
   /**
@@ -119,7 +119,7 @@ export class GPURasterEmbeddingSimilarity implements GPUCommandNodeProducer {
       props.vectors,
       pixelCount,
       dimensions,
-      props.validity
+      props.mask
     );
     validateRequirement(
       id,
@@ -150,8 +150,8 @@ export class GPURasterEmbeddingSimilarity implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {vectors, validity, queries, parameters} = this.props;
-    return [vectors, queries, ...(validity ? [validity] : []), ...(parameters ? [parameters] : [])];
+    const {vectors, mask, queries, parameters} = this.props;
+    return [vectors, queries, ...(mask ? [mask] : []), ...(parameters ? [parameters] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -182,7 +182,7 @@ ${output.matches ? 'matches[matchesOffset + index] = 0u;' : ''}`;
         bindings: [
           rasterBinding('vectors', props.vectors),
           rasterBinding('queries', props.queries),
-          ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+          ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
           ...(props.parameters ? [rasterBinding('parameters', props.parameters)] : []),
           ...(output.similarity ? [rasterBinding('similarity', output.similarity, true)] : []),
           ...(output.maximum ? [rasterBinding('maximum', output.maximum, true)] : []),
@@ -192,7 +192,7 @@ ${output.matches ? 'matches[matchesOffset + index] = 0u;' : ''}`;
         declarations: RASTER_FINITE_WGSL,
         body: `var vector: array<f32, ${dimensions}>;
 var squaredLength = 0.0;
-var isValid = ${props.validity ? 'validity[validityOffset + index] != 0u' : 'true'};
+var isValid = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
 for (var band = 0u; band < ${dimensions}u; band++) {
   let value = vectors[vectorsOffset + index * ${dimensions}u + band];
   if (!finite(value)) { isValid = false; }

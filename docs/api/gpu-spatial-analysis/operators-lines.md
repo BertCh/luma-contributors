@@ -27,9 +27,13 @@ description: "Lines & trajectories contributors in @luma-contributors/analysis/g
 ::lens{scenario=gpu-spatial-analysis.line-chunk rung=result caption="Grey: 223 Wicker Park streets · blue: 100 m chunks"}
 
 Geometry-producing line contributors. Each writes a `GPULineGeometryOutput`: flat `positions`, clamped
-`lineOffsets` (deck.gl `PathLayer` `startIndices`), `status` (`count`, which counts output vertices, `overflow`, and optional `requiredCount`,
-`lineCount` and `approximation`), optional `sourceLineIndices` (output line to input line), `sourceRows` (output vertex to input
-segment row) and `measures` (distance along the source line). The vertex capacity is
+`lineOffsets` (deck.gl `PathLayer` `startIndices`), `status` (`count`, `overflow`, and optional `requiredCount`,
+`approximation`, `vertexCount` and `requiredVertexCount`), optional `sourceLineIndices` (output line to input line), `sourceRows` (output vertex to input
+segment row) and `measures` (distance along the source line). As in the generated-geometry layout
+(contributor contract rule 8), `count` and `requiredCount` count output lines and `vertexCount` and
+`requiredVertexCount` count vertices; `vertexCount` is the indirect draw count of `positions`.
+**Breaking (2026-11-10):** `count` and `requiredCount` counted vertices before, and `status.lineCount`
+is removed (it is `count`). A line truncated by the vertex capacity still counts as written. The vertex capacity is
 `positions.length`; offsets are clamped to it, so a truncated result is still a valid layout.
 Inputs are packed `positions` sorted by line with `lineOffsets` (`lineCount + 1` rows).
 `GPULineSegmentize`, `GPULineChunk` and `GPUGreatCircleArcs` declare `measure: 'distance'`;
@@ -40,14 +44,14 @@ graph.add(new GPULineSegmentize({
   positions, lineOffsets,
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}, // omit for planar
   parameters: segmentizeParameters.importToGraph(graph),
-  output: {positions: densified, lineOffsets: densifiedOffsets, status: {count, overflow}, measures}
+  output: {positions: densified, lineOffsets: densifiedOffsets, status: {count, overflow, vertexCount}, measures}
 }));
 segmentizeParameters.write(getGPULineSegmentizeParameterValues({maximumSegmentLength: 50000}));
 
 graph.add(new GPUGreatCircleArcs({
   sources, targets, // longitude/latitude pairs
   parameters: arcParameters.importToGraph(graph),
-  output: {positions: arcPositions, lineOffsets: arcOffsets, status: {count, overflow}}
+  output: {positions: arcPositions, lineOffsets: arcOffsets, status: {count, overflow, vertexCount}}
 }));
 arcParameters.write(getGPUGreatCircleArcsParameterValues({maximumSegmentLength: 0, minimumSegments: 32}));
 
@@ -56,7 +60,7 @@ graph.add(new GPULineSmooth({positions, lineOffsets, iterationCount: 3, closed: 
 
 graph.add(new GPULineChunk({positions, lineOffsets, mode: 'chunk', // or 'substring'
   parameters: chunkParameters.importToGraph(graph),
-  output: {positions: pieces, lineOffsets: pieceOffsets, status: {count, overflow, lineCount}, sourceLineIndices}}));
+  output: {positions: pieces, lineOffsets: pieceOffsets, status: {count, overflow, vertexCount}, sourceLineIndices}}));
 chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
 ```
 
@@ -95,7 +99,8 @@ chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
 - `GPULineChunk`: `'chunk'` splits each line into pieces of `chunkLength` (turf `lineChunk`), the
   last piece ending at the line end; consecutive pieces share their boundary point. The piece
   count is data dependent: the line capacity is `output.lineOffsets.length - 1`, and
-  `status.lineCount`/`sourceLineIndices` report the pieces. `'substring'` extracts `[startMeasure,
+  `status.count`/`sourceLineIndices` report the pieces; `requiredCount` is the unclamped piece count,
+  a lower bound past the capacity when one line alone needs more than `lineCapacity + 1` pieces. `'substring'` extracts `[startMeasure,
   endMeasure]` from every line (turf `lineSliceAlong`, PostGIS `ST_LineSubstring` by distance);
   measures are clamped to the line and a start past the end gives an empty line. Zero-length
   lines are copied as one piece. Both modes support a great-circle `spatialContext`.
@@ -288,7 +293,10 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
 - With `metric: 'great-circle'` and linear edges (the default), area uses Chamberlain-Duquette
   (turf parity): an approximation of degree-straight edges with second-order error in latitude
   span, exact for longitude/latitude boxes. With `edgeModel: 'great-circle'`, area uses signed
-  spherical excess on the context sphere (`areaModel: 'sphere-polygon'`). Perimeter uses
+  spherical excess on the context sphere (`areaModel: 'sphere-polygon'`), summed per edge as the
+  Lambert chord term from the feature origin less the bulge of the great-circle arc over that
+  chord, so a ring a hundred meters across keeps the same f32 relative precision (about `5e-7`)
+  as a continental one. Perimeter uses
   great-circle chords for both edge models; centroids retain the straight Lambert equal-area
   construction. For linear-edge area, pass
   `sphereRadius: GPU_WGS84_SEMI_MAJOR_AXIS_METERS` for turf `area` parity. Ellipsoidal with
@@ -343,14 +351,19 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
   `(-180, 180]`), and midpoint per pair. `'sphere'` uses a Vincenty-form central angle that is well
   conditioned from millimeters to antipodal; `'wgs84'` runs Vincenty's inverse with a compile-time
   `maximumIterations` cap (default 16) and reports non-converged (near-antipodal) pairs, which fall
-  back to the sphere.
+  back to the sphere. luma.gl's `GPUHaversineDistance` computes the same sphere distance with a
+  default radius of 6371 (kilometers); this class takes radius and unit from the spatial context
+  (6371008.8 m by default) and takes longitude differences on the seam side, so short pairs across
+  the antimeridian keep their precision in every model.
 - `GPUGeodesicDestination`: destination and final bearing from origin, bearing and distance
   columns, on the sphere or by Vincenty's direct solution.
   No warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](./concepts.md#precision-of-longitudelatitude-positions).
 - `model: 'rhumb'` on both classes (turf `rhumbDistance`, `rhumbBearing`, `rhumbDestination`; geo `Rhumb`):
   a line of constant bearing on a sphere of `radius` (default 6371008.8 m). Pairs give `distances` (in
   `radius` units), `initialBearings` equal to `finalBearings` (constant, in `(-180, 180]`) and the rhumb
-  `midpoints`. The destination longitude is continuous with the origin, and `finalBearings` flips to the
+  `midpoints` (the midpoint by distance: the mean latitude, and the longitude of the loxodrome at
+  that latitude, which is linear in the Mercator latitude and differs from the mean longitude
+  unless the line runs east-west). The destination longitude is continuous with the origin, and `finalBearings` flips to the
   opposite north-south sense when a move overshoots a pole and is reflected, as turf does (the reflected
   case is approximate). Longitude differences take the short way across the antimeridian, latitudes clamp
   at 89.9999 degrees, equal-latitude edges use the east-west limit `cos(lat)`, and the Mercator-stretched
@@ -447,7 +460,7 @@ Two ways to work on longitude/latitude data, used consistently across the packag
 
 ::lens{scenario=gpu-spatial-analysis.linear-referencing rung=result caption="Grey: 223 Wicker Park streets · blue: foot points of 40 Overture places within 500 m"}
 
-**`GPULineLocate`** — Places events on polylines by measure, writing the located point and a status code per event.
+**`GPULineLocate`** — Places events on polylines by measure, writing the located point and a status code per event. A measure outside the line is clamped to the nearest end (status `clamped`); a NaN measure, an empty line or a line index out of range is `invalid` with NaN outputs.
 
 ::lens{scenario=gpu-spatial-analysis.line-locate rung=result caption="Grey: 223 Wicker Park streets · blue: 40 Overture places located by their measure"}
 
@@ -464,7 +477,7 @@ graph.add(new GPULinearReferencing({
   radius: radiusParameters.importToGraph(graph), // one float32 row, per frame
   candidateCapacity: 1 << 20, spatialSort: true,
   output: {lineIndices, segmentIndices, fractions, footPoints, distances, measures, sides, signedOffsets,
-           status: {overflow}}
+           status: {candidateOverflow, requiredCandidateCount}}
 }));
 
 graph.add(new GPULineLocate({
@@ -483,9 +496,14 @@ locateParameters.write(getGPULineLocateParameterValues({measureOffset: elapsedMe
   line, segment within the line, fraction along the segment, foot point, distance, measure (distance
   along the line to the foot point), side (`1` left of the line direction, `-1` right, `0` on it)
   and `side * distance`. Points with nothing in range get `0xffffffff` indices, distance `-1`,
-  side `0` and NaN elsewhere. `output.status.overflow` reports BVH leaf or candidate capacity overflow (and the optional
-  `output.status.requiredCount` the unclamped candidate count; `output.status.candidateCount` holds the same value
-  and is deprecated because it is not in the shared status vocabulary). There is no `count`: every row is one query point. `queryPositions` are the points to snap; `positions` and
+  side `0` and NaN elsewhere. Both capacities (BVH leaves and, planar, the bounding-box candidates)
+  are intermediate: the required `output.status.candidateOverflow` is 1 when either was too small,
+  so some points may have missed their nearest line, and the optional
+  `output.status.requiredCandidateCount` is the unclamped candidate count (planar; 0 for a
+  great-circle context), so `candidateCapacity` of at least that value removes the candidate cause.
+  There is no `count` and no `overflow`: every row is one query point. **Breaking (2026-11-10):**
+  `status.overflow` (the same flag) and `status.candidateCount` are removed, and the unclamped
+  candidate count moved from `status.requiredCount` to `status.requiredCandidateCount`. `queryPositions` are the points to snap; `positions` and
   `lineOffsets` are the lines.
 - `GPULineLocate` (turf `along`, PostGIS `ST_LineInterpolatePoint` and `ST_LocateAlong`): each
   event's measure (distance or fraction, optionally `measure * scale + offset` from the parameter
@@ -587,8 +605,11 @@ shared by exactly two line ends (an exact f32 match) into maximal chains. Juncti
 stop a chain, a closed line never joins itself, and lines with fewer than two vertices are ignored. With
 `directed: true` (Shapely `line_merge(directed=True)`) only a line end meeting a line start joins, chains
 follow the input direction and `lineReversed` is all 0.
-Props: `positions`, `lineOffsets` and `output: {chainOffsets, positions, status: {count}, lineChains?, lineOrders?,
-lineReversed?}`; `status.count` counts chains. The list-ranking rounds are the shared helper in `line-merge/list-ranking.ts`, which `GPUSharedPaths` also uses. The result is deterministic: chains are ordered by their lowest line, paths start at the
+Props: `positions`, `lineOffsets` and `output: {chainOffsets, positions, status: {count, requiredCount?,
+overflow?, vertexCount?, requiredVertexCount?}, sourceIds?, lineChains?, lineOrders?, lineReversed?}`;
+`status.count` counts chains. The capacities always suffice, so `requiredCount` equals `count` and
+`overflow` is 0. `sourceIds` is the source row of each chain, its first line; `lineChains` and
+`lineOrders` list every member. The list-ranking rounds are the shared helper in `line-merge/list-ranking.ts`, which `GPUSharedPaths` also uses. The result is deterministic: chains are ordered by their lowest line, paths start at the
 lower endpoint ID and cycles start at their lowest line and are emitted closed. Chains are ranked by
 pointer jumping (list ranking), so a chain of `n` lines takes `O(log n)` dispatches rather than `n`
 serial steps. Merging with a tolerance is not provided.
@@ -659,9 +680,11 @@ matched on total length (under 2e-3) and piece end points.
 `GPUSharedPaths` is Shapely `shared_paths(a, b)` for many line pairs. Collinear overlaps from
 `GPUSegmentIntersection` are oriented along the left line, tagged forward or backward by the exact sign of
 the segment directions, and chained into one polyline per (left line, right line, direction). The output
-`output: {runs, status}`: `runs` (`GPUSharedPathsRuns`) has `leftLineIds`, `rightLineIds`, `forward`, `offsets` and
-`positions`; `status` has `count`, `vertexCount?`, `overflow?`, `requiredCount?`, `requiredVertexCount?` and
-`uncertainCount?` (`count` counts runs, not vertices). Closed left lines are cut at their first vertex and two
+`output: {runs, status}`: `runs` (`GPUSharedPathsRuns`) has `leftSourceIds` and `rightSourceIds` (the `left` and
+`right` line rows of each run, contributor contract rule 8; **breaking (2026-11-10):** renamed from `leftLineIds` and
+`rightLineIds`), `forward`, `offsets` and `positions`; `status` has `count`, `vertexCount?`, `overflow?`, `requiredCount?`, `requiredVertexCount?`,
+`uncertainCount?` and `candidateOverflow?` (`count` counts runs, not vertices; `candidateOverflow` is 1 when the
+`intersectionCapacity` pair list overflowed, which also sets `overflow`). Closed left lines are cut at their first vertex and two
 coincident right segments emit duplicate runs. Runs are sized and written by list ranking (Wyllie pointer jumping, `ceil(log2(intersectionCapacity))`
 rounds per pass) rather than one invocation walking each run, so a long shared road costs the same dispatches as a short one; the work is
 `O(intersectionCapacity * log(intersectionCapacity))`.
@@ -795,10 +818,12 @@ and direction.
 
 Props: the four-level polygon layout (`positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets`; rows
 are features and a ring's coverage identity is its feature),
-`snapTolerance` (default 0), `parameters` (packed with `getGPULineSimplificationParameterValues`; the
+`snapTolerance` (default 0; vertices snap to cells `floor((coordinate - origin) / snapTolerance + 0.5)` with
+the first vertex as origin, so every vertex must be within `2^24 * snapTolerance` of the first vertex on both
+axes; vertices outside that range are counted in the optional `status.uncertainCount`, not in `overflow`), `parameters` (packed with `getGPULineSimplificationParameterValues`; the
 tolerance changes per frame without recompiling), `maximumIterations`, and `output` with
 `positions` (the kept vertices, capacity), `ringOffsets` (`ringCount + 1`), optional `outputMask` (per input
-vertex), and `status: {overflow, requiredCount?, converged?}`. Feature and polygon offsets are
+vertex), and `status: {overflow, requiredCount?, converged?, uncertainCount?}`. Feature and polygon offsets are
 unchanged.
 
 Maximum: `positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(device)` (4194304 on a default device: the 32-byte segment-table row per vertex must fit one storage binding) rows.
@@ -819,10 +844,13 @@ fewer than three vertices (the farthest original vertices are restored, even wit
 Then `topologyIterationCount` (compile-time, default 4, 0 turns the repair off) iterations compact the
 simplified rings, run `GPUSegmentIntersection` with exact predicates and, for every pair of segments that
 cross, touch or overlap without sharing a coverage point, restore the original vertex farthest from each
-segment (one Douglas-Peucker split; decisions go through point IDs, so neighbors still agree).
-`output.topologyStatistics` (4 `uint32`, length `GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATISTICS_LENGTH`) reports
-the crossings before repair, the crossings remaining, the vertices restored and a candidate-pair overflow
-flag; `topologyPairCapacity` (default `max(256, 4 * vertices)`) sizes the candidate list. Residual crossings
+segment (one Douglas-Peucker split; decisions go through point IDs, so neighbors still agree). Each
+iteration also tests every kept vertex against the area between each span's original chain and its shortcut
+(exact point-in-ring signs, candidates from one BVH over the input segments): a shortcut that passes over an
+island crosses nothing but would move the island into the neighboring polygon, so such a span is repaired
+the same way. `output.topologyStatistics` (4 `uint32`, length
+`GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATISTICS_LENGTH`) reports the crossings and swept spans before repair,
+those remaining, the vertices restored and a candidate-pair overflow flag; `topologyPairCapacity` (default `max(256, 4 * vertices)`) sizes the candidate list. Residual crossings
 are reported, never hidden, and input that already crosses itself cannot be repaired (it counts in both
 numbers). On a wavy-strip scene the repaired output passes Shapely `coverage_is_valid`, where plain
 Douglas-Peucker gave three invalid polygons. The criterion is distance, not area (Shapely's
@@ -877,7 +905,11 @@ overlay: a coverage has no crossings, so the result is a subset of the input edg
 input vertex count plus one closing vertex per ring, with ring and vertex capacities and an overflow flag.
 The input must be a valid coverage (check it with [`GPUCoverageValidity`](./operators-validity.md#gpucoveragevalidity)).
 Planar only: `spatialContext` defaults to native planar coordinates and `longitude-latitude` throws.
-`snapTolerance` snaps vertices and the output uses the first vertex's coordinates. Dissolve edge sets,
+`snapTolerance` snaps vertices (cells relative to the first vertex of `positions`; every vertex must be
+within `2^24 * snapTolerance` of it on both axes; vertices outside that range are counted in the optional
+`status.uncertainCount`, and `overflow` stays for dropped rows) and
+the output uses the coordinates of the lowest vertex index of each point. Ring winding is the exact turn at
+each ring's lexicographically smallest vertex. Dissolve edge sets,
 area, parts and holes matched `gdf.dissolve(method='coverage')` exactly on 5 scenes and 18 labels. The
 per-ring area walk is serial per ring. The directory is `polygon-coverage-topology/` because `.gitignore`
 ignores `coverage-*/`.
@@ -1263,7 +1295,7 @@ Construction warns when the host-known `maximumDistance` derived from `cellSize`
 Maximum: `columns * rows * bucketCount` of the lattice is at most `getGPUGridIndexMaximumCellCount(device)` (2^25 - 1 on a default device); raise `cellSize` or lower `bucketCount`.
 
 - Inputs: dense `samples` (`[trackCount * bucketCount]` `float32x2`, row `track * bucketCount + bucket`,
-  the `GPUTrajectoryResample.samples` layout), `trackCount`, `bucketCount`, optional `trackValid`,
+  the `GPUTrajectoryResample.samples` layout), `trackCount`, `bucketCount`, optional `mask`,
   per-frame `distance` (one float row, clamped to `cellSize`), compile-time `cellSize` and
   `bounds [minX, minY, maxX, maxY]`, `hitCapacity` and optional `bucketTimes`.
 - Outputs, all in `output`: `output.pairs` (a `GPUCompactOutput`, `ids` is the lower track, extended with the
@@ -1349,7 +1381,7 @@ lies between the roots of `|D + V tau|^2 = distance^2`. With the optional per-fr
 and no cell entries, so a long gap can no longer raise `entryOverflow`.
 
 - Inputs: the trajectory layout (`positions`, `timestamps` as `float32` seconds or `uint32x2` Int64 words,
-  `trackOffsets`), optional `trackValid`, a per-frame one-row `distance`, and the compile-time `cellSize`,
+  `trackOffsets`), optional `mask`, a per-frame one-row `distance`, and the compile-time `cellSize`,
   `timeCellSize`, `entryCapacity` (cell entries) and `hitCapacity` (segment-pair hits). Planar only; project
   longitude/latitude first with `createGPULocalFrame`.
 - Outputs, in `output`: `pairs`, a `GPUCompactOutput` (`ids` is the lower track) in `(track, partner)`

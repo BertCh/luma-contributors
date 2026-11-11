@@ -20,7 +20,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   describeGPUSpatialWeights,
@@ -247,7 +247,7 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
       assertCompatibleGPUSpatialContexts(id, props.weights.spatialContext, props.spatialContext);
     }
     if (props.output) {
-      validatePackedView(props.output, ['float32'], `${id} output`);
+      validateSinglePackedView(props.output, ['float32'], `${id} output`);
       if (props.output.length !== props.weights.neighbors.length) {
         throw new Error(`${id} output length must equal the slot capacity`);
       }

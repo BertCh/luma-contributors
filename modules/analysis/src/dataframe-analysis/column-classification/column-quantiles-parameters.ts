@@ -87,3 +87,77 @@ export function getGPUColumnQuantilesParameterValues(
   }
   return values;
 }
+
+/** Largest numerator or denominator of a rational probability: the terms are `uint32` words. */
+export const GPU_COLUMN_QUANTILES_MAXIMUM_RATIONAL_TERM = 0xffffffff;
+
+/** A probability as the exact ratio `numerator / denominator` of two integers. */
+export type GPUColumnQuantileRationalProbability = readonly [
+  numerator: number,
+  denominator: number
+];
+
+/** Number of uint32 words of a `rationalProbabilities` view for `quantileCount` probabilities. */
+export function getGPUColumnQuantilesRationalProbabilityLength(quantileCount: number): number {
+  return 2 * quantileCount;
+}
+
+/**
+ * Packs the `rationalProbabilities` view of `GPUColumnQuantiles`: the probabilities as exact
+ * ratios, for the integer rank that stays exact at any row count.
+ *
+ * Layout (uint32): `[numerator_0, denominator_0, ..., numerator_{quantileCount-1},
+ * denominator_{quantileCount-1}]`. Slots beyond `probabilities.length` are `[0, 0]`, which is not
+ * a probability, so their outputs are NaN. A ratio above 1 (`numerator > denominator`) is packed
+ * as given and also produces NaN, like a float probability outside `[0, 1]`. The ratio need not
+ * be reduced: `[95, 100]` and `[19, 20]` give the same quantile.
+ *
+ * @param probabilities One `[numerator, denominator]` per quantile; both integers in
+ * `[0, 2^32 - 1]`, the denominator at least 1.
+ * @param quantileCount Number of probability slots. Defaults to `probabilities.length`.
+ * @param target Optional destination of at least
+ * {@link getGPUColumnQuantilesRationalProbabilityLength} elements.
+ */
+export function getGPUColumnQuantilesRationalProbabilityValues(
+  probabilities: readonly GPUColumnQuantileRationalProbability[],
+  quantileCount: number = probabilities.length,
+  target?: Uint32Array
+): Uint32Array {
+  validateCapacity(
+    'GPUColumnQuantiles',
+    'quantileCount',
+    quantileCount,
+    1,
+    GPU_COLUMN_QUANTILES_MAXIMUM_QUANTILE_COUNT
+  );
+  if (probabilities.length > quantileCount) {
+    throw new Error('GPUColumnQuantiles rational probabilities exceed quantileCount');
+  }
+  const length = getGPUColumnQuantilesRationalProbabilityLength(quantileCount);
+  const values = target ?? new Uint32Array(length);
+  if (values.length < length) {
+    throw new Error(`GPUColumnQuantiles rational probability target must hold ${length} elements`);
+  }
+  for (let index = 0; index < quantileCount; index++) {
+    const [numerator, denominator] = index < probabilities.length ? probabilities[index] : [0, 0];
+    if (index < probabilities.length) {
+      validateCapacity(
+        'GPUColumnQuantiles',
+        `rational probability ${index} numerator`,
+        numerator,
+        0,
+        GPU_COLUMN_QUANTILES_MAXIMUM_RATIONAL_TERM
+      );
+      validateCapacity(
+        'GPUColumnQuantiles',
+        `rational probability ${index} denominator`,
+        denominator,
+        1,
+        GPU_COLUMN_QUANTILES_MAXIMUM_RATIONAL_TERM
+      );
+    }
+    values[2 * index] = numerator;
+    values[2 * index + 1] = denominator;
+  }
+  return values;
+}

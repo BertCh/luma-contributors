@@ -32,5 +32,6 @@ export type {
   GPURegionShape,
   GPURegionStatisticsGridIndex,
   GPURegionStatisticsOutput,
-  GPURegionStatisticsResult
+  GPURegionStatisticsResult,
+  GPURegionStatisticsStatusPort
 } from './region-statistics-types';

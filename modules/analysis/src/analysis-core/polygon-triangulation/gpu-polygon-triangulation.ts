@@ -28,7 +28,7 @@ import {
   getStorageBindingElementLimit,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../kernels/gpu-contributor-utils';
 import {EXACT_GEOMETRY_WGSL} from '../kernels/exact-geometry-wgsl';
 import {EXACT_ORIENTATION_WGSL} from '../kernels/exact-orientation-wgsl';
@@ -61,7 +61,7 @@ export function getPolygonTriangulationIndexCount(
  * `uint32` words (28 bytes) with the z-order hash (the default) or 4 words (16 bytes) without it,
  * and the scratch must fit one storage binding, so 4793490 (8388608 without the hash) on a default
  * device (128 MiB bindings). The node count of a layout is
- * `2 * (vertices + 2 * (rings - polygons)) + 8 * polygons`, see
+ * `2 * vertices + 5 * (rings - polygons) + 8 * polygons`, see
  * {@link getPolygonTriangulationNodeCount}, about `2` to `3` per input vertex.
  *
  * @param device Device whose `maxStorageBufferBindingSize` bounds the scratch.
@@ -76,15 +76,18 @@ export function getGPUPolygonTriangulationMaximumNodeCount(
 
 /**
  * Number of scratch nodes {@link GPUPolygonTriangulation} allocates for a layout:
- * `2 * (vertices + 2 * (rings - polygons)) + 8 * polygons`, twice the minimum node count for
- * diagonal splits plus a margin per polygon.
+ * `2 * vertices + 5 * (rings - polygons) + 8 * polygons`. That is twice the minimum node count
+ * for diagonal splits (`vertices + 2 * holes`), a margin of 8 per polygon, and one node per hole
+ * for the vertex that is inserted into an edge of another ring when the hole's leftmost vertex
+ * lies inside that edge.
  */
 export function getPolygonTriangulationNodeCount(
   vertexCount: number,
   ringCount: number,
   polygonCount: number
 ): number {
-  return 2 * (vertexCount + 2 * (ringCount - polygonCount)) + 8 * polygonCount;
+  const holeCount = ringCount - polygonCount;
+  return 2 * (vertexCount + 2 * holeCount) + 8 * polygonCount + holeCount;
 }
 
 /**
@@ -129,9 +132,12 @@ export type GPUPolygonTriangulationOutput = {
   indices: GraphDataView<'uint32'>;
   /**
    * Flag per polygon, `polygonCount` rows: 1 when the triangulation completed, 0 when
-   * it failed (self-intersecting or otherwise untriangulable rings, scratch overflow, or
-   * `maximumWork` exceeded). Empty polygons and degenerate shells complete with zero triangles.
-   * A failed polygon's slice
+   * it failed (self-intersecting or otherwise untriangulable rings, a hole that cannot be
+   * joined to the shell, non-finite coordinates, scratch overflow, or `maximumWork` exceeded).
+   * For a valid polygon (simple rings, holes inside the shell and outside each other; rings may
+   * touch at single points) a result flagged 1 is a tiling: the triangles cover the polygon once
+   * and nothing else, see {@link GPUPolygonTriangulation}. Empty polygons and degenerate shells
+   * complete with zero triangles. A failed polygon's slice
    * is entirely degenerate. The polygons of feature `f` are
    * `[featureOffsets[f], featureOffsets[f + 1])`.
    */
@@ -191,9 +197,12 @@ export type GPUPolygonTriangulationProps = GPUPolygonGeometryFields & {
    *   vertices skip Earcut, and every polygon for which Earcut fails (`maximumWork` exceeded, or
    *   rings it cannot split) is retried, by a parallel y-monotone decomposition followed by a
    *   linear stack triangulation of each monotone piece. A polygon that skipped Earcut and that
-   *   the monotone path flags invalid (rings touching at a vertex, input beyond
+   *   the monotone path flags invalid (most polygons whose rings touch, input beyond
    *   {@link GPUPolygonTriangulationProps.monotoneMaximumVertices}) is then given to Earcut within
-   *   `maximumWork`, so the method never does worse than `'none'`. The output contract is
+   *   `maximumWork`. The monotone path flags a polygon whenever one of its triangles would come
+   *   out clockwise, which is what a wrong decomposition of touching rings produces, so a polygon
+   *   it returns as valid is a tiling and the method never does worse than `'none'`: it is valid
+   *   wherever `'none'` is, and never valid with a wrong triangulation. The output contract is
    *   unchanged: the same slice, `valid` and `triangleCount`. Polygons that Earcut triangulates are
    *   bit-identical to `'none'`. The path costs fixed O(vertices) scans and sorts (sized by
    *   {@link GPUPolygonTriangulationProps.monotoneMaximumVertices}) and a few hundred bytes of
@@ -242,8 +251,28 @@ const Z_ORDER_HASH_MINIMUM_VERTICES = 80;
  * circular list, and stalls fall back to filtering collinear points, curing local
  * self-intersections and splitting along a valid diagonal. Orientation tests use the exact
  * predicate of `GPUSegmentIntersection`, so collinear and near-degenerate input does not depend
- * on f32 rounding. Polygons above 80 vertices use Earcut's z-order hash
+ * on f32 rounding. The hole bridge is chosen exactly too: which shell edge the ray from the
+ * hole's leftmost vertex meets first, which vertices lie in the bridge triangle, which candidate
+ * makes the smallest angle with the ray (collinear candidates keep the nearer one), and the order
+ * of holes that share their leftmost vertex are orientation tests, not f32 quotients. Polygons
+ * above 80 vertices use Earcut's z-order hash
  * ({@link GPUPolygonTriangulationProps.useZOrderHash}), so ear tests visit only nearby vertices.
+ *
+ * **A valid result is a tiling.** Rings may touch at single points: a hole vertex on a vertex of
+ * another ring, or inside an edge of another ring. A hole whose leftmost vertex lies inside an
+ * edge is joined there: the vertex is inserted into the edge and the bridge has zero length.
+ * The port departs from Earcut in three places so that `valid = 1` can be relied on. Earcut cures
+ * a local self-intersection of the working ring by writing a triangle across it; that is the
+ * only step that does not keep the boundary of the remaining ring plus the triangles written
+ * equal to the boundary of the polygon, so the port flags the polygon instead. A hole that
+ * cannot be joined to the shell flags the polygon instead of being dropped. A predicate that
+ * cannot be certified (non-finite coordinates) flags it too. Every triangle written is then a
+ * counter-clockwise ear of exact positive area and the triangle boundaries sum to the polygon
+ * boundary, so the number of triangles over any point is the polygon's winding number there: 1
+ * inside, 0 outside. This holds for every valid polygon; an invalid one (rings that cross, a hole
+ * outside its shell) is flagged or covered according to its winding number. The monotone path
+ * has the same property: its triangles sum to the polygon boundary by construction, and it flags
+ * a polygon when a triangle would be clockwise.
  *
  * GPU layout preparation counts non-degenerate rings and scans polygon slices: exactly
  * `3 * (vertices + 2 * holes - 2)` indices per non-empty polygon, see {@link GPUPolygonTriangulationOutput.indices}. Like Earcut the result is not a
@@ -276,9 +305,9 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     for (const name of ['featureOffsets', 'polygonOffsets', 'ringOffsets'] as const) {
-      validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(props[name], ['uint32'], `${id} ${name}`);
       if (props[name].length < 1) {
         throw new Error(`${id} ${name} requires a terminal entry`);
       }
@@ -290,7 +319,7 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
       this.ringCount,
       this.polygonCount
     );
-    validatePackedView(output.indices, ['uint32'], `${id} output.indices`);
+    validateSinglePackedView(output.indices, ['uint32'], `${id} output.indices`);
     // Preserve acceptance of legacy buffers for non-degenerate layouts. The GPU checks each
     // actual slice; callers handling empty polygons should use the safe capacity helper.
     const minimumIndexCount = Math.max(
@@ -301,17 +330,17 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
       throw new Error(`${id} output.indices needs at least ${minimumIndexCount} rows`);
     }
     if (output.triangleOffsets) {
-      validatePackedView(output.triangleOffsets, ['uint32'], `${id} output.triangleOffsets`);
+      validateSinglePackedView(output.triangleOffsets, ['uint32'], `${id} output.triangleOffsets`);
       if (output.triangleOffsets.length !== this.polygonCount + 1) {
         throw new Error(`${id} triangleOffsets length mismatch`);
       }
     }
-    validatePackedView(output.valid, ['uint32'], `${id} output.valid`);
+    validateSinglePackedView(output.valid, ['uint32'], `${id} output.valid`);
     if (output.valid.length !== this.polygonCount) {
       throw new Error(`${id} output.valid length must equal the polygon count`);
     }
     if (output.triangleCount) {
-      validatePackedView(output.triangleCount, ['uint32'], `${id} output.triangleCount`);
+      validateSinglePackedView(output.triangleCount, ['uint32'], `${id} output.triangleCount`);
       if (output.triangleCount.length !== this.polygonCount) {
         throw new Error(`${id} output.triangleCount length must equal the polygon count`);
       }
@@ -367,7 +396,7 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
       props.useZOrderHash ?? true
     );
     const vertexCount = props.positions.length;
-    // Scratch nodes: 4 words each, with a capacity of 2 * (vertices + 2 * holes) + 8 per polygon.
+    // Scratch nodes: 4 words each, with a capacity of 2 * vertices + 5 * holes + 8 per polygon.
     const nodeCount = getPolygonTriangulationNodeCount(vertexCount, ringCount, polygonCount);
     const useZOrderHash = props.useZOrderHash ?? true;
     // Words 0..4n-1 hold the ring nodes; the z-order list (z, previous, next) of node n follows at
@@ -553,15 +582,22 @@ fn spend(amount: u32) {
 }
 
 // Sign of Earcut's area(p, q, r), which is minus the orientation: negative at a convex vertex
-// of the (counter-clockwise) working order. Uncertain predicates count as zero.
+// of the (counter-clockwise) working order. A predicate that cannot be certified (non-finite
+// coordinates) fails the polygon: no decision may rest on it.
 fn areaSign(p: vec2f, q: vec2f, r: vec2f) -> i32 {
   let result = orientSign(p, q, r);
-  if (result == 2) { return 0; }
+  if (result == 2) {
+    failed = true;
+    return 0;
+  }
   return -result;
 }
 fn orientOf(p: vec2f, q: vec2f, r: vec2f) -> i32 {
   let result = orientSign(p, q, r);
-  if (result == 2) { return 0; }
+  if (result == 2) {
+    failed = true;
+    return 0;
+  }
   return result;
 }
 
@@ -651,7 +687,9 @@ fn linkedList(start: u32, count: u32, wantCounterClockwise: bool) -> u32 {
   return last;
 }
 
-// Removes collinear and coincident nodes; with end == start the whole ring until stable.
+// Removes collinear and coincident nodes; with end == start the whole ring until stable. The
+// ring keeps its boundary as a sum of directed segments: two collinear edges add up to the edge
+// that replaces them, also where one folds back over the other.
 fn filterPoints(start: u32, endIn: u32) -> u32 {
   var end = endIn;
   let full = end == start;
@@ -917,6 +955,12 @@ fn isValidDiagonal(a: u32, b: u32) -> bool {
     areaSign(pointOf(prevOf(a)), pa, pointOf(nextOf(a))) > 0 &&
     areaSign(pointOf(prevOf(b)), pb, pointOf(nextOf(b))) > 0;
   if (vertexOf(nextOf(a)) == vertexOf(b)) { return false; }
+  // Two nodes at one point (rings that touch at a vertex, or a bridge at a shared vertex) can
+  // only be split in Earcut's special case, where both sectors are reflex and the split pairs
+  // the edges at the point the other way. Between two convex sectors the split would turn one
+  // loop inside out. Earcut leaves that case to its float midpoint test at the shared point;
+  // the exact midpoint parity below perturbs the point to one side and can say inside.
+  if (samePoint(pa, pb) && !zeroLength) { return false; }
   if (!(zeroLength || (locallyInside(a, b) && locallyInside(b, a) &&
       (areaSign(pointOf(prevOf(a)), pa, pointOf(prevOf(b))) != 0 ||
        areaSign(pa, pointOf(prevOf(b)), pb) != 0)))) {
@@ -955,10 +999,15 @@ fn emitTriangle(first: u32, second: u32, third: u32) {
   trianglesWritten += 1u;
 }
 
-fn cureLocalIntersections(startIn: u32) -> u32 {
-  var start = startIn;
+// Whether Earcut's cureLocalIntersections would act: two edges of the ring, one node apart, cross
+// properly. Earcut writes the triangle (a, p, b) across the crossing and drops the two nodes
+// between. That triangle and the piece dropped do not add up to the ring they replace, so a
+// triangulation that contains one is never a tiling: the caller fails the polygon instead. On a
+// valid polygon the working ring only crosses itself after an ear that was no ear, and every
+// wrong triangulation found for valid polygons with touching rings (frc-geometry-01) had passed
+// through this step.
+fn hasLocalIntersection(start: u32) -> bool {
   var p = start;
-  var cured = false;
   loop {
     spend(1u);
     if (failed) { break; }
@@ -967,18 +1016,12 @@ fn cureLocalIntersections(startIn: u32) -> u32 {
     let b = nextOf(following);
     if (segmentsIntersect(pointOf(a), pointOf(p), pointOf(following), pointOf(b), false) &&
         locallyInside(a, b) && locallyInside(b, a)) {
-      emitTriangle(vertexOf(a), vertexOf(p), vertexOf(b));
-      removeNode(p);
-      removeNode(following);
-      start = b;
-      p = b;
-      cured = true;
+      return true;
     }
     p = nextOf(p);
     if (p == start) { break; }
   }
-  if (cured) { return filterPoints(p, p); }
-  return p;
+  return false;
 }
 
 // First valid diagonal of the ring as (a, b), or (NONE, NONE).
@@ -1043,7 +1086,9 @@ fn clipEars(first: u32) {
           continue;
         }
         if (!cured) {
-          ear = cureLocalIntersections(ear);
+          // Where Earcut would cure a local intersection the polygon fails (hasLocalIntersection).
+          // Otherwise the ring is scanned once more, as Earcut does after its cure pass.
+          if (hasLocalIntersection(ear)) { failed = true; }
           stop = ear;
           cured = true;
           continue;
@@ -1069,16 +1114,28 @@ fn clipEars(first: u32) {
   }
 }
 
+// The first node after 'node' that is not at the point of 'node': a ring can repeat a vertex.
+fn nextDistinctOf(node: u32) -> u32 {
+  var following = nextOf(node);
+  while (following != node && equalNodes(following, node)) {
+    spend(1u);
+    if (failed) { break; }
+    following = nextOf(following);
+  }
+  return following;
+}
+
 fn isLeftOf(first: u32, second: u32) -> bool {
   let a = pointOf(first);
   let b = pointOf(second);
   if (a.x != b.x) { return a.x < b.x; }
   if (a.y != b.y) { return a.y < b.y; }
-  let nextA = pointOf(nextOf(first)) - a;
-  let nextB = pointOf(nextOf(second)) - b;
-  let slopeA = select(select(-1.0e30, 1.0e30, nextA.y > 0.0), nextA.y / nextA.x, nextA.x != 0.0);
-  let slopeB = select(select(-1.0e30, 1.0e30, nextB.y > 0.0), nextB.y / nextB.x, nextB.x != 0.0);
-  return slopeA < slopeB;
+  // Two holes that meet at their leftmost vertex: Earcut's order by the slope of the edge that
+  // leaves it. Both edges point into x >= a.x (straight up at most), so the smaller slope is the
+  // clockwise one, and the exact orientation decides it where two f32 quotients can tie. The
+  // edge that leaves the vertex is the one to the next different point: with the leftmost vertex
+  // repeated, the next node is at the same point and the orientation would be zero both ways.
+  return orientOf(a, pointOf(nextDistinctOf(first)), pointOf(nextDistinctOf(second))) > 0;
 }
 
 fn sectorContainsSector(m: u32, p: u32) -> bool {
@@ -1087,14 +1144,71 @@ fn sectorContainsSector(m: u32, p: u32) -> bool {
     areaSign(pointOf(nextOf(p)), pm, pointOf(nextOf(m))) < 0;
 }
 
-// David Eberly's bridge between a hole's leftmost vertex and the outer ring, or NONE. The f32
-// ray intersection x below only places the candidate bridge vertex (it is not a parity or
-// containment decision); validity of the resulting diagonal is decided exactly by isValidDiagonal.
+// Whether edge start -> end meets the row y = rowY strictly right of where bestStart -> bestEnd
+// meets it. Both edges run downward across the row. Two edges of a simple polygon do not cross,
+// so one of them lies on one closed side of the other's line, and the exact orientation of its
+// ends gives the order of the two crossings; a positive orientation against a downward edge is
+// the +x side. An end that lies on the other line at the row itself is the same crossing.
+// Edges that do cross (the input is not a simple polygon) take crossingIsRight, the f32 order.
+fn crossesRowRightOf(
+  start: vec2f, end: vec2f, bestStart: vec2f, bestEnd: vec2f, rowY: f32, crossingIsRight: bool
+) -> bool {
+  let sideStart = orientOf(bestStart, bestEnd, start);
+  let sideEnd = orientOf(bestStart, bestEnd, end);
+  if (sideStart >= 0 && sideEnd >= 0) {
+    return (sideStart > 0 && sideEnd > 0) || (sideStart > 0 && end.y != rowY) ||
+      (sideEnd > 0 && start.y != rowY);
+  }
+  if (sideStart <= 0 && sideEnd <= 0) { return false; }
+  let bestSideStart = orientOf(start, end, bestStart);
+  let bestSideEnd = orientOf(start, end, bestEnd);
+  if (bestSideStart <= 0 && bestSideEnd <= 0) {
+    return (bestSideStart < 0 && bestSideEnd < 0) || (bestSideStart < 0 && bestEnd.y != rowY) ||
+      (bestSideEnd < 0 && bestStart.y != rowY);
+  }
+  if (bestSideStart >= 0 && bestSideEnd >= 0) { return false; }
+  return crossingIsRight;
+}
+
+// The end of the edge from 'node' that lies on the row y = rowY, or NONE when the row meets the
+// edge between its ends. For an edge that is not horizontal.
+fn hitEndOnRow(node: u32, rowY: f32) -> u32 {
+  if (pointOf(node).y == rowY) { return node; }
+  if (pointOf(nextOf(node)).y == rowY) { return nextOf(node); }
+  return NONE;
+}
+
+// David Eberly's bridge between a hole's leftmost vertex and the outer ring, or NONE. Every
+// decision is an exact orientation or a coordinate comparison, so the bridge does not depend on
+// f32 rounding of the ray crossing or of the tangents:
+// - a hole vertex that lies inside an edge of the outer ring (any direction, horizontal too)
+//   becomes a vertex of that edge: a node with the hole vertex's row is inserted between the
+//   edge's ends and returned, so the bridge has zero length, like the bridge to a coincident
+//   vertex. The edge is the same set of points with or without the node. Earcut bridges such a
+//   vertex to an end of the edge, along the edge, which is right only when the collinear filter
+//   that follows removes the right node (frc-geometry-01),
+// - an edge is hit by the ray toward -x when the hole vertex is on its +x side,
+// - of two hit edges the nearer is found by crossesRowRightOf; of two that meet the row at one
+//   point, an edge that ends there at a node whose sector does not hold the hole gives way to
+//   one that passes through the point or whose node there holds the hole. Two nodes can share
+//   the point (an earlier bridge ends at that vertex), and a node can lie inside an edge (the
+//   collinear filter removed the other node of an earlier bridge); the walk order chose between
+//   them before, and a hole joined to the wrong sector cannot be clipped (frc-geometry-04),
+// - a vertex is inside the triangle (hole vertex, crossing, first candidate) by its side of the
+//   ray's row, of the hit edge's line (the crossing lies on it) and of the line to the candidate,
+// - of two candidates the one with the smaller angle to the ray is on the ray's side of the line
+//   from the hole vertex to the other; collinear candidates keep the nearer one, as Earcut does.
+// The f32 crossing x is kept only as the order of two hit edges that cross each other.
+// As in Earcut, the chosen bridge is not checked afterwards: eliminateHoles splits on it
+// directly, and isValidDiagonal guards only the later splits of findSplit.
 fn findHoleBridge(hole: u32, outerNode: u32) -> u32 {
   let hp = pointOf(hole);
   var p = outerNode;
   var qx = -3.0e38;
   var m = NONE;
+  var hitNode = NONE;
+  var hitStart = hp;
+  var hitEnd = hp;
   if (equalNodes(hole, p)) { return p; }
   loop {
     spend(1u);
@@ -1103,12 +1217,39 @@ fn findHoleBridge(hole: u32, outerNode: u32) -> u32 {
     let edgeStart = pointOf(p);
     let edgeEnd = pointOf(following);
     if (equalNodes(hole, following)) { return following; }
+    // Inside this edge (its ends were compared above): the box test, then the exact line test.
+    if (onSegment(edgeStart, hp, edgeEnd) && orientOf(edgeStart, edgeEnd, hp) == 0) {
+      return insertNode(vertexOf(hole), p);
+    }
     if (hp.y <= edgeStart.y && hp.y >= edgeEnd.y && edgeEnd.y != edgeStart.y) {
-      let x = edgeStart.x + (hp.y - edgeStart.y) * (edgeEnd.x - edgeStart.x) / (edgeEnd.y - edgeStart.y);
-      if (x <= hp.x && x > qx) {
-        qx = x;
-        m = select(following, p, edgeStart.x < edgeEnd.x);
-        if (x == hp.x) { return m; }
+      let side = orientOf(edgeStart, edgeEnd, hp);
+      if (side > 0) {
+        let x = edgeStart.x + (hp.y - edgeStart.y) * (edgeEnd.x - edgeStart.x) / (edgeEnd.y - edgeStart.y);
+        var isNearer = m == NONE;
+        if (!isNearer) {
+          isNearer = crossesRowRightOf(edgeStart, edgeEnd, hitStart, hitEnd, hp.y, x > qx);
+        }
+        if (!isNearer) {
+          // The same crossing as the hit edge so far, which reaches the row at one of its ends,
+          // and the sector of that node does not hold the hole (a sliver between a bridge and an
+          // edge, say): this edge is the one the hole faces when the row meets it between its
+          // ends, or at a node whose sector holds the hole.
+          let hitRowEnd = hitEndOnRow(hitNode, hp.y);
+          if (hitRowEnd != NONE) {
+            if (!locallyInside(hitRowEnd, hole) && orientOf(edgeStart, edgeEnd, pointOf(hitRowEnd)) == 0) {
+              let rowEnd = hitEndOnRow(p, hp.y);
+              isNearer = rowEnd == NONE;
+              if (!isNearer) { isNearer = locallyInside(rowEnd, hole); }
+            }
+          }
+        }
+        if (isNearer) {
+          qx = x;
+          hitStart = edgeStart;
+          hitEnd = edgeEnd;
+          hitNode = p;
+          m = select(following, p, edgeStart.x < edgeEnd.x);
+        }
       }
     }
     p = following;
@@ -1117,23 +1258,31 @@ fn findHoleBridge(hole: u32, outerNode: u32) -> u32 {
   if (m == NONE) { return NONE; }
   let pm = pointOf(m);
   let stop = m;
-  var tanMin = 3.0e38;
+  let isAbove = hp.y < pm.y;
+  // Whether m is a candidate that passed the visibility test (Earcut's tanMin < Infinity).
+  var hasCandidate = false;
   p = m;
   loop {
     spend(1u);
     if (failed) { return NONE; }
     let pp = pointOf(p);
     if (hp.x >= pp.x && pp.x >= pm.x && hp.x != pp.x) {
-      let corner = select(vec2f(qx, hp.y), vec2f(hp.x, hp.y), hp.y < pm.y);
-      let corner2 = select(vec2f(hp.x, hp.y), vec2f(qx, hp.y), hp.y < pm.y);
-      if (pointInTriangle(corner, pm, corner2, pp)) {
-        let tangent = abs(hp.y - pp.y) / (hp.x - pp.x);
-        let touchesEdge = pp.y == hp.y && pointOf(nextOf(p)).y == hp.y && pointOf(nextOf(p)).x > hp.x;
-        if ((locallyInside(p, hole) || touchesEdge) &&
-            (tangent < tanMin || (tangent == tanMin &&
-              (pp.x > pm.x || (pp.x == pm.x && sectorContainsSector(m, p)))))) {
-          m = p;
-          tanMin = tangent;
+      let onTriangleSideOfRay = select(pp.y <= hp.y, pp.y >= hp.y, isAbove);
+      let sideOfCandidateLine = select(orientOf(pm, hp, pp), orientOf(hp, pm, pp), isAbove);
+      if (onTriangleSideOfRay && sideOfCandidateLine >= 0 && orientOf(hitStart, hitEnd, pp) >= 0) {
+        if (locallyInside(p, hole)) {
+          var isBetter = !hasCandidate;
+          if (hasCandidate) {
+            let best = pointOf(m);
+            // Positive when p makes the smaller angle with the ray than the current best.
+            let turn = select(orientOf(hp, pp, best), orientOf(hp, best, pp), isAbove);
+            isBetter = turn > 0 ||
+              (turn == 0 && (pp.x > best.x || (pp.x == best.x && sectorContainsSector(m, p))));
+          }
+          if (isBetter) {
+            m = p;
+            hasCandidate = true;
+          }
         }
       }
     }
@@ -1187,7 +1336,11 @@ fn eliminateHoles(ringFirst: u32, ringLast: u32, outerIn: u32) -> u32 {
     if (best == NONE || failed) { break; }
     scratch[scratchOffset + 4u * (nodeBase + bestSlot) + 3u] = NONE;
     let bridge = findHoleBridge(best, outerNode);
-    if (bridge == NONE) { continue; }
+    // Earcut drops a hole it cannot bridge and triangulates the rest, which covers the hole.
+    if (bridge == NONE) {
+      failed = true;
+      break;
+    }
     let bridgeReverse = splitPolygon(bridge, best);
     filterPoints(bridgeReverse, nextOf(bridgeReverse));
     outerNode = filterPoints(bridge, nextOf(bridge));
@@ -1195,10 +1348,12 @@ fn eliminateHoles(ringFirst: u32, ringLast: u32, outerIn: u32) -> u32 {
   return filterPoints(outerNode, outerNode);
 }
 
+// Scratch nodes before polygon 'polygon': getPolygonTriangulationNodeCount of the layout prefix.
 fn baseNodeOf(polygon: u32) -> i32 {
   let ringPrefix = i32(polygonOffsets[polygonOffsetsOffset + polygon]);
   let vertexPrefix = i32(ringOffsets[ringOffsetsOffset + u32(ringPrefix)]);
-  return 2 * (vertexPrefix + 2 * (ringPrefix - i32(polygon))) + 8 * i32(polygon);
+  let holePrefix = ringPrefix - i32(polygon);
+  return 2 * (vertexPrefix + 2 * holePrefix) + 8 * i32(polygon) + holePrefix;
 }
 fn baseSlotOf(polygon: u32) -> i32 {
   return 3 * i32(polygonOffsets[polygonOffsetsOffset + POLYGON_COUNT + 1u + polygon]);

@@ -10,7 +10,7 @@ import type {
 import {dggs} from '@luma.gl/shaders';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
@@ -39,9 +39,9 @@ export class GPUS2CellMeasures implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUS2CellMeasuresProps) {
     this.id = props.id ?? 's2-cell-measures';
-    validatePackedView(props.cells, ['uint32x2'], this.id);
-    validatePackedView(props.output.measures, ['float32x2'], this.id);
-    validatePackedView(props.output.status, ['uint32'], this.id);
+    validateSinglePackedView(props.cells, ['uint32x2'], this.id);
+    validateSinglePackedView(props.output.measures, ['float32x2'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32'], this.id);
     // One measurement/status row per cell.
     validateRequirement(
       this.id,

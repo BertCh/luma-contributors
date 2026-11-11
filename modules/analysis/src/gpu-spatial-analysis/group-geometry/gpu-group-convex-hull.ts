@@ -27,7 +27,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_QUIET_NAN_SEEDED_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
@@ -220,7 +220,7 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -228,7 +228,7 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
     if (rows > MAXIMUM_ROWS) {
       throw new Error(`${id} supports fewer than 2^24 rows`);
     }
-    validatePackedView(props.labels, ['uint32'], `${id} labels`);
+    validateSinglePackedView(props.labels, ['uint32'], `${id} labels`);
     if (props.labels.length !== rows) {
       throw new Error(`${id} labels length must equal positions length`);
     }
@@ -268,7 +268,7 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, formats, `${id} output.${name}`);
+      validateSinglePackedView(view, formats, `${id} output.${name}`);
       if (view.length < length) {
         throw new Error(`${id} output.${name} must hold at least ${length} rows`);
       }
@@ -421,10 +421,16 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
         ],
         `let isValid = validFlags[validFlagsOffset + index] != 0u;
   let scale = lattice[latticeOffset + 2u];
-  let dx = xs[xsOffset + index] - lattice[latticeOffset];
-  let dy = ys[ysOffset + index] - lattice[latticeOffset + 1u];
-  latticeX[latticeXOffset + index] = select(0u, u32(floor(dx * scale + 0.5)), isValid);
-  latticeY[latticeYOffset + index] = select(0u, u32(floor(dy * scale + 0.5)), isValid);`
+  // Nearest lattice point from the exact fraction: d * scale + 0.5 is a tie in f32 for odd
+  // values from 2^23, which would move a point that is already on the lattice by one step.
+  let scaled = vec2f(
+    xs[xsOffset + index] - lattice[latticeOffset],
+    ys[ysOffset + index] - lattice[latticeOffset + 1u]
+  ) * scale;
+  let lower = floor(scaled);
+  let nearest = lower + step(vec2f(0.5), scaled - lower);
+  latticeX[latticeXOffset + index] = select(0u, u32(nearest.x), isValid);
+  latticeY[latticeYOffset + index] = select(0u, u32(nearest.y), isValid);`
       )
     );
 

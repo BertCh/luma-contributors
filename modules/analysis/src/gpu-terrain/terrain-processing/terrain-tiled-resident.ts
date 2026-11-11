@@ -29,7 +29,10 @@ export function createTerrainResidentTileNodes<Parameters>(
   const reach = [0, 1].map(side =>
     createTransientView(graph, `${id}-reach-${side}`, 'uint32', count)
   );
-  const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}`;
+  // A stream cell is any nonzero word except the two unresolved sentinels (0xffffffff, 0xfffffffe),
+  // the same test as stream order, stream network, flow distance and height above drainage.
+  const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height, props.directionEncoding)}\n${TERRAIN_FINITE_WGSL}
+fn isStreamWord(word: u32) -> bool { return word != 0u && word < UNRESOLVED_DIRECTION; }`;
   const nodes: GPUCommandNode<Parameters>[] = [];
   props.tiles.forEach((tile, tileIndex) => {
     const [column, row, width, height] = tile.owned;
@@ -51,10 +54,10 @@ export function createTerrainResidentTileNodes<Parameters>(
         body: `let local = (index / ${width}u + ${row}u) * ${tile.width}u + index % ${width}u + ${column}u;
 let cell = (index / ${width}u + ${tile.row + row}u) * GRID_WIDTH + index % ${width}u + ${tile.column + column}u;
 let stream = inputStreams[inputStreamsOffset + local];
-let code = directions[directionsOffset + local];
-var valid = stream <= 1u;
-${tile.fractions ? '' : 'valid = valid && (code == 0u || (code <= 128u && (code & (code - 1u)) == 0u && getFlowReceiver(cell, code) != NO_CELL));'}
-runoff[runoffOffset + cell] = select(missing(), inputRunoff[inputRunoffOffset + local], valid);
+let code = getFlowDirectionCode(directions[directionsOffset + local]);
+var valid = stream < UNRESOLVED_DIRECTION;
+${tile.fractions ? 'valid = valid && code != NO_CELL;' : 'valid = valid && (code == 0u || (code <= 128u && (code & (code - 1u)) == 0u && getFlowReceiver(cell, code) != NO_CELL));'}
+runoff[runoffOffset + cell] = select(getNaN(), inputRunoff[inputRunoffOffset + local], valid);
 streams[streamsOffset + cell] = stream;
 for (var direction = 0u; direction < 8u; direction++) { fractions[fractionsOffset + cell * 8u + direction] = ${tile.fractions ? 'inputFractions[inputFractionsOffset + local * 8u + direction]' : 'select(0.0, 1.0, code == (1u << direction))'}; }`
       })
@@ -84,11 +87,11 @@ for (var direction = 0u; direction < 8u; direction++) { fractions[fractionsOffse
         terrainBinding('reach', reach[0], 'read_write')
       ],
       body: `var parent = NO_CELL;
-if (status[statusOffset + index] == 1u && streams[streamsOffset + index] == 1u) {
+if (status[statusOffset + index] == 1u && isStreamWord(streams[streamsOffset + index])) {
  var donors = 0u; var inherited = index;
  for (var direction = 0u; direction < 8u; direction++) {
   let neighbor = getFlowReceiver(index, 1u << direction);
-  if (neighbor == NO_CELL || streams[streamsOffset + neighbor] != 1u || !(fractions[fractionsOffset + neighbor * 8u + (direction + 4u) % 8u] > 0.0)) { continue; }
+  if (neighbor == NO_CELL || !isStreamWord(streams[streamsOffset + neighbor]) || !(fractions[fractionsOffset + neighbor * 8u + (direction + 4u) % 8u] > 0.0)) { continue; }
   donors++;
   var receiverCount = 0u;
   for (var receiverDirection = 0u; receiverDirection < 8u; receiverDirection++) { receiverCount += u32(fractions[fractionsOffset + neighbor * 8u + receiverDirection] > 0.0); }
@@ -131,7 +134,7 @@ reach[reachOffset + index] = parent;`
         ],
         body: `let column = index % ${tile.width}u; let row = index / ${tile.width}u;
 let owned = column >= ${column}u && column < ${column + width}u && row >= ${row}u && row < ${row + height}u;
-var value = missing(); var state = 0u; var reach = NO_CELL;
+var value = getNaN(); var state = 0u; var reach = NO_CELL;
 if (owned) {
  let cell = u32(i32(row) + ${tile.row}) * GRID_WIDTH + u32(i32(column) + ${tile.column});
  value = values[valuesOffset + cell]; state = globalStatus[globalStatusOffset + cell]; reach = globalReach[globalReachOffset + cell];

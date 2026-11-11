@@ -29,12 +29,4 @@ export * from './network-subgraph-filter/index';
 export * from './network-time-geography/index';
 export * from './recipes/index';
 
-// Top-level files and shared contracts.
-export type {GPUCompactOutput, GPUUint32Rows} from '../analysis-core/kernels/gpu-contributor-types';
-export {GPUParameterBuffer} from '../analysis-core/kernels/gpu-contributor-utils';
-export type {
-  GPUParameterBufferProps,
-  GPUParameterFormat
-} from '../analysis-core/kernels/gpu-contributor-utils';
-
 export * from './network-point-process/index';

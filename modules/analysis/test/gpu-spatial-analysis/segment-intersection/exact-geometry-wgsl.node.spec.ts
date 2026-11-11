@@ -63,7 +63,6 @@ it('GPUBufferSurface compaction and winding membership kernels parse', () => {
       overflow: view('uint32', 1),
       candidateOverflow: view('uint32', 1)
     });
-    const sourceIds = view('uint32', 8);
     const surface = new GPUBufferSurface({
       geometry:
         kind === 'polygons'
@@ -85,10 +84,8 @@ it('GPUBufferSurface compaction and winding membership kernels parse', () => {
           positions: view('float32x2', 64),
           featureOffsets: view('uint32', 9),
           polygonOffsets: view('uint32', 9),
-          ringOffsets: view('uint32', 9),
-          sourceIds
+          ringOffsets: view('uint32', 9)
         },
-        sourceIds,
         status: status(),
         boundary: {
           endpoints: view('float32x4', 64),

@@ -8,6 +8,8 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
+import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -102,6 +104,8 @@ export function createTrajectoryRestrictionNodes<Parameters>(
   const rings = props.polygonRingVertexCounts ?? [];
   const vertexCount = rings.reduce((total, count) => total + count, 0);
   const slots = props.intervalsPerSegment ?? 1;
+  // The time window's two ends plus up to two boundary parameters per polygon edge (four box sides).
+  const boundaryCapacity = 2 + Math.max(vertexCount * 2, 4);
   const closedGeometry = props.geometryBoundary !== 'open';
   const closedStart = props.timeBoundary !== 'open' && props.timeBoundary !== 'right-closed';
   const closedEnd = props.timeBoundary !== 'open' && props.timeBoundary !== 'left-closed';
@@ -112,6 +116,30 @@ export function createTrajectoryRestrictionNodes<Parameters>(
     return Array.from({length: count}, (_, vertex) => start + ((vertex + 1) % count));
   });
   const time = getRestrictionTimeSource(props, timeTable);
+  // Sorts the boundary parameters, drops repeats, and sets the number of classification queries.
+  const sortBoundariesSource = `for (var positionIndex = 1u; positionIndex < boundaryCount; positionIndex++) {
+    let value = boundaries[positionIndex]; var cursor = positionIndex;
+    while (cursor > 0u && boundaries[cursor - 1u] > value) { boundaries[cursor] = boundaries[cursor - 1u]; cursor--; } boundaries[cursor] = value;
+  }
+  for (var cursor = 1u; cursor < boundaryCount; cursor++) { if (boundaries[cursor] != boundaries[uniqueCount - 1u]) { boundaries[uniqueCount] = boundaries[cursor]; uniqueCount++; } }
+  queryCount = select(2u * uniqueCount - 1u, 1u, isGap || duration <= 0.0);`;
+  // Sets queryPoint and queryOnBoundary for 'query': boundary 'query / 2', or the midpoint of the
+  // piece after it when the query is odd.
+  const querySetupSource = `{
+      let slot = query / 2u; var fraction = boundaries[slot];
+      var onBoundary = ${vertexCount ? 'fraction > lower && fraction < upper' : 'false'};
+      if ((query & 1u) == 1u) {
+        let finish = boundaries[slot + 1u]; let betweenCrossings = onBoundary && finish < upper;
+        let beginPoint = first + direction * fraction; let finishPoint = first + direction * finish;
+        fraction = (fraction + finish) * 0.5; let middlePoint = first + direction * fraction;
+        onBoundary = betweenCrossings && all((middlePoint == beginPoint) | (middlePoint == finishPoint));
+        ${vertexCount ? 'for (var range = 0u; range < collinearCount; range++) { if (fraction >= collinearRanges[range].x && fraction <= collinearRanges[range].y) { onBoundary = true; } }' : ''}
+      }
+      queryPoint = first + direction * fraction;
+      if (fraction <= 0.0) { queryPoint = first; }
+      if (fraction >= 1.0) { queryPoint = second; }
+      queryOnBoundary = onBoundary;
+    }`;
   const nodes: GPUCommandNode<Parameters>[] = [
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-intervals`,
@@ -136,23 +164,15 @@ fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x
 fn cross(first: vec2<f32>, second: vec2<f32>) -> f32 { return first.x * second.y - first.y * second.x; }
 fn position(row: u32) -> vec2<f32> { return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]); }
 fn vertex(row: u32) -> vec2<f32> { return vec2<f32>(parameters[parametersOffset + 7u + 2u * row], parameters[parametersOffset + 8u + 2u * row]); }
-${vertexCount ? `const NEXT = array<u32, ${vertexCount}>(${nextVertices.map(value => `${value}u`).join(',')});` : ''}
-fn inside(point: vec2<f32>) -> bool {
+${vertexCount ? `const NEXT = array<u32, ${vertexCount}>(${nextVertices.map(value => `${value}u`).join(',')});\n${EXACT_ORIENTATION_WGSL}\n${EXACT_GEOMETRY_WGSL}` : ''}
+const CLOSED_GEOMETRY: bool = ${closedGeometry};
 ${
   vertexCount
-    ? `var parity = false;
-for (var edge = 0u; edge < ${vertexCount}u; edge++) {
-  let first = vertex(edge); let second = vertex(NEXT[edge]); let direction = second - first;
-  if (abs(cross(point - first, direction)) <= 0.000001 * max(1.0, dot(direction, direction)) && all(point >= min(first, second) - vec2<f32>(0.000001)) && all(point <= max(first, second) + vec2<f32>(0.000001))) { return ${closedGeometry}; }
-  if ((first.y > point.y) != (second.y > point.y)) {
-    let crossing = first.x + (point.y - first.y) * direction.x / direction.y;
-    if (point.x < crossing) { parity = !parity; }
-  }
-}
-return parity;`
-    : `let minimum = vec2<f32>(parameters[parametersOffset + 2u], parameters[parametersOffset + 3u]); let maximum = vec2<f32>(parameters[parametersOffset + 4u], parameters[parametersOffset + 5u]);
-return all(point ${closedGeometry ? '>=' : '>'} minimum) && all(point ${closedGeometry ? '<=' : '<'} maximum);`
-}
+    ? ''
+    : `fn inside(point: vec2<f32>) -> bool {
+let minimum = vec2<f32>(parameters[parametersOffset + 2u], parameters[parametersOffset + 3u]); let maximum = vec2<f32>(parameters[parametersOffset + 4u], parameters[parametersOffset + 5u]);
+return all(point ${closedGeometry ? '>=' : '>'} minimum) && all(point ${closedGeometry ? '<=' : '<'} maximum);
+}`
 }
 fn timeIncluded(time: f32) -> bool { return time ${closedStart ? '>=' : '>'} parameters[parametersOffset] && time ${closedEnd ? '<=' : '<'} parameters[parametersOffset + 1u]; }
 fn writeInterval(row: u32, slot: u32, firstTime: f32, duration: f32, first: vec2<f32>, direction: vec2<f32>, lower: f32, upper: f32, includeStart: bool, includeEnd: bool) {
@@ -180,51 +200,148 @@ for (var row = start; row < end; row++) {
   let firstTime = rowTime(row); let secondTime = rowTime(next); let duration = rowElapsed(next, row);
   if (!validParameters || !finite(firstTime) || !finite(secondTime) || duration < 0.0 || !finite(first.x) || !finite(first.y) || !finite(second.x) || !finite(second.y) || (duration == 0.0 && any(direction != vec2<f32>(0.0)))) { status[statusOffset + row * SLOT_COUNT] = 4u; unknownCount++; continue; }
   if (secondTime < minimumTime || firstTime > maximumTime) { continue; }
-  if (duration > maximumGap) {
+  let isGap = duration > maximumGap;
+  var lower = 0.0; var upper = select(1.0, 0.0, duration == 0.0);
+  var boundaries: array<f32, ${boundaryCapacity}>; var uniqueCount = 1u; var boundaryCount = 1u;
+  ${vertexCount ? `var collinearRanges: array<vec2<f32>, ${vertexCount}>; var collinearCount = 0u;` : ''}
+  if (isGap) {
     status[statusOffset + row * SLOT_COUNT] = 8u;
     if (max(minimumTime, firstTime) < min(maximumTime, secondTime)) { unknownCount++; }
-    if (timeIncluded(firstTime)) {
-      supportCount++; status[statusOffset + row * SLOT_COUNT] |= 32u;
-      let contained = inside(first); anyInside = anyInside || contained; allInside = allInside && contained;
-      if (contained) { writeInterval(row, 0u, firstTime, 0.0, first, vec2<f32>(0.0), 0.0, 0.0, true, true); status[statusOffset + row * SLOT_COUNT] |= 16u; }
+    if (!timeIncluded(firstTime)) { continue; }
+    supportCount++; status[statusOffset + row * SLOT_COUNT] |= 32u;
+    // Only the fix itself is classified.
+    upper = 0.0; boundaries[0] = 0.0;
+  } else {
+    if (duration > 0.0) { lower = max(0.0, (minimumTime - firstTime) / duration); upper = min(1.0, (maximumTime - firstTime) / duration); }
+    if (lower > upper || ((lower == upper || duration == 0.0) && !timeIncluded(firstTime + duration * lower))) { continue; }
+    supportCount++; status[statusOffset + row * SLOT_COUNT] = 32u;
+    boundaries[0] = lower; boundaries[1] = upper; boundaryCount = 2u;
+    ${
+      vertexCount
+        ? ''
+        : `for (var axis = 0u; axis < 2u; axis++) { if (direction[axis] != 0.0) { for (var side = 0u; side < 2u; side++) { let fraction = (parameters[parametersOffset + 2u + axis + 2u * side] - first[axis]) / direction[axis]; if (fraction > lower && fraction < upper) { boundaries[boundaryCount] = fraction; boundaryCount++; } } } }`
     }
-    continue;
   }
-  var lower = 0.0; var upper = select(1.0, 0.0, duration == 0.0);
-  if (duration > 0.0) { lower = max(0.0, (minimumTime - firstTime) / duration); upper = min(1.0, (maximumTime - firstTime) / duration); }
-  if (lower > upper || ((lower == upper || duration == 0.0) && !timeIncluded(firstTime + duration * lower))) { continue; }
-  supportCount++; status[statusOffset + row * SLOT_COUNT] = 32u;
-  var boundaries: array<f32, ${2 + Math.max(vertexCount * 2, 4)}>;
-  boundaries[0] = lower; boundaries[1] = upper; var boundaryCount = 2u;
+  // Classify every boundary point (even query) and the midpoint of every piece between two of
+  // them (odd query) in one place. A fix is tested as it was read. A polygon crossing is on the
+  // boundary because it was constructed there, not because its rounded coordinates say so; so is
+  // a piece that runs along an edge, and a piece between two crossings that has no float32 point
+  // of its own. Everything else is the exact test of the computed point.
+  var containment: array<u32, ${2 * boundaryCapacity}>; var queryCount = 1u;
+  var queryPoint = first; var queryOnBoundary = false;
   ${
     vertexCount
-      ? `for (var edge = 0u; edge < ${vertexCount}u; edge++) {
-    let edgeStart = vertex(edge); let edgeDirection = vertex(NEXT[edge]) - edgeStart; let denominator = cross(direction, edgeDirection);
-    if (denominator != 0.0) {
-      let fraction = cross(edgeStart - first, edgeDirection) / denominator; let edgeFraction = cross(edgeStart - first, direction) / denominator;
-      if (fraction > lower && fraction < upper && edgeFraction >= 0.0 && edgeFraction <= 1.0) { boundaries[boundaryCount] = fraction; boundaryCount++; }
-    } else if (cross(edgeStart - first, direction) == 0.0 && dot(direction, direction) > 0.0) {
-      for (var endpoint = 0u; endpoint < 2u; endpoint++) { let fraction = dot(edgeStart + edgeDirection * f32(endpoint) - first, direction) / dot(direction, direction); if (fraction > lower && fraction < upper) { boundaries[boundaryCount] = fraction; boundaryCount++; } }
+      ? `// One loop holds the only call of exactOrientSigns (the orientation code is large and is
+  // inlined at every call). Jobs 0 .. V - 1 decide, edge by edge, whether the segment meets the
+  // edge, from the exact sides of the two fixes against the edge and of the edge's two ends
+  // against the segment; float32 only places a crossing that exists. The following jobs are the
+  // exact even-odd test of each query point against each edge, with the rule of
+  // exactProbeCrossing (the shared predicate GPUZoneEvents uses): on the boundary only when the
+  // exact orientation is zero inside the edge's box.
+  var job = select(0u, ${vertexCount}u, isGap || all(direction == vec2<f32>(0.0)));
+  var jobCount = ${vertexCount + 1}u; var winding = 0; var boundaryHit = false;
+  loop {
+    if (job >= jobCount) { break; }
+    if (job == ${vertexCount}u) {
+      ${sortBoundariesSource}
+      jobCount = ${vertexCount}u + queryCount * ${vertexCount}u;
     }
+    let edge = job % ${vertexCount}u; let isProbe = job >= ${vertexCount}u;
+    let edgeStart = vertex(edge); let edgeEnd = vertex(NEXT[edge]);
+    var signCount = 4u; var straddles = false; var inBox = false;
+    var starts = array<vec2<f32>, 4>(edgeStart, edgeStart, first, first);
+    var ends = array<vec2<f32>, 4>(edgeEnd, edgeEnd, second, second);
+    var points = array<vec2<f32>, 4>(first, second, edgeStart, edgeEnd);
+    if (isProbe) {
+      let query = job / ${vertexCount}u - 1u;
+      if (edge == 0u) {
+        ${querySetupSource}
+        winding = 0; boundaryHit = false;
+      }
+      signCount = 0u;
+      if (!queryOnBoundary) {
+        straddles = (edgeStart.y >= queryPoint.y) != (edgeEnd.y >= queryPoint.y);
+        inBox = all(queryPoint >= min(edgeStart, edgeEnd)) && all(queryPoint <= max(edgeStart, edgeEnd));
+        if (straddles || inBox) {
+          signCount = 1u;
+          starts = array<vec2<f32>, 4>(edgeStart, edgeStart, edgeStart, edgeStart);
+          ends = array<vec2<f32>, 4>(edgeEnd, edgeEnd, edgeEnd, edgeEnd);
+          points = array<vec2<f32>, 4>(queryPoint, queryPoint, queryPoint, queryPoint);
+        }
+      }
+    } else if (all(edgeStart == edgeEnd)) {
+      // A repeated vertex is not an edge; its neighbours carry the crossing.
+      signCount = 0u;
+    }
+    let exact = exactOrientSigns(signCount, starts, ends, points);
+    if (!isProbe) {
+      if (signCount == 4u) {
+        // x, y: the two fixes against the edge. z, w: the edge's two ends against the segment.
+        let sides = exact.signs; let lengthSquared = dot(direction, direction);
+        if (sides.x == 0 && sides.y == 0) {
+          // The segment runs along this edge's line: between the edge's two ends it is on the boundary.
+          if (lengthSquared > 0.0) {
+            let startFraction = dot(edgeStart - first, direction) / lengthSquared; let endFraction = dot(edgeEnd - first, direction) / lengthSquared;
+            if (startFraction > lower && startFraction < upper) { boundaries[boundaryCount] = startFraction; boundaryCount++; }
+            if (endFraction > lower && endFraction < upper) { boundaries[boundaryCount] = endFraction; boundaryCount++; }
+            collinearRanges[collinearCount] = vec2<f32>(min(startFraction, endFraction), max(startFraction, endFraction)); collinearCount++;
+          }
+        } else if (sides.x * sides.y <= 0 && sides.z * sides.w <= 0) {
+          // The segment and the edge share exactly one point. A fix on the edge is the query at
+          // 0 or 1; a vertex on the segment is placed by its own projection, so the two edges
+          // that share it give the same parameter; otherwise the float32 quotient places it.
+          var fraction = 0.5;
+          if (sides.x == 0) { fraction = 0.0; }
+          else if (sides.y == 0) { fraction = 1.0; }
+          else if (sides.z == 0 && lengthSquared > 0.0) { fraction = dot(edgeStart - first, direction) / lengthSquared; }
+          else if (sides.w == 0 && lengthSquared > 0.0) { fraction = dot(edgeEnd - first, direction) / lengthSquared; }
+          else {
+            let edgeDirection = edgeEnd - edgeStart; let denominator = cross(direction, edgeDirection);
+            if (denominator != 0.0) { fraction = cross(edgeStart - first, edgeDirection) / denominator; }
+          }
+          fraction = clamp(fraction, 0.0, 1.0);
+          if (fraction > lower && fraction < upper) { boundaries[boundaryCount] = fraction; boundaryCount++; }
+        }
+      }
+    } else {
+      if (signCount == 1u) {
+        if (inBox && exact.signs.x == 0) { boundaryHit = true; }
+        let side = sosPointSide(exact.signs.x, edgeStart, edgeEnd);
+        if (straddles) {
+          let upward = edgeEnd.y > edgeStart.y;
+          if (upward && side > 0) { winding += 1; }
+          if (!upward && side < 0) { winding -= 1; }
+        }
+      }
+      if (edge == ${vertexCount - 1}u) {
+        var contained = CLOSED_GEOMETRY;
+        if (!queryOnBoundary && !boundaryHit) { contained = (winding & 1) != 0; }
+        containment[job / ${vertexCount}u - 1u] = select(0u, 1u, contained);
+      }
+    }
+    job++;
   }`
-      : `for (var axis = 0u; axis < 2u; axis++) { if (direction[axis] != 0.0) { for (var side = 0u; side < 2u; side++) { let fraction = (parameters[parametersOffset + 2u + axis + 2u * side] - first[axis]) / direction[axis]; if (fraction > lower && fraction < upper) { boundaries[boundaryCount] = fraction; boundaryCount++; } } } }`
+      : `${sortBoundariesSource}
+  for (var query = 0u; query < queryCount; query++) {
+    ${querySetupSource}
+    containment[query] = select(0u, 1u, inside(queryPoint));
+  }`
   }
-  for (var positionIndex = 1u; positionIndex < boundaryCount; positionIndex++) {
-    let value = boundaries[positionIndex]; var cursor = positionIndex;
-    while (cursor > 0u && boundaries[cursor - 1u] > value) { boundaries[cursor] = boundaries[cursor - 1u]; cursor--; } boundaries[cursor] = value;
+  if (isGap) {
+    let contained = containment[0] != 0u; anyInside = anyInside || contained; allInside = allInside && contained;
+    if (contained) { writeInterval(row, 0u, firstTime, 0.0, first, vec2<f32>(0.0), 0.0, 0.0, true, true); status[statusOffset + row * SLOT_COUNT] |= 16u; }
+    continue;
   }
-  var uniqueCount = 1u;
-  for (var cursor = 1u; cursor < boundaryCount; cursor++) { if (boundaries[cursor] != boundaries[uniqueCount - 1u]) { boundaries[uniqueCount] = boundaries[cursor]; uniqueCount++; } }
   var written = 0u; var fullyInside = true; var previousInterior = false;
   for (var cursor = 0u; cursor < uniqueCount; cursor++) {
     let begin = boundaries[cursor]; let beginTime = firstTime + duration * begin;
-    let pointSupported = timeIncluded(beginTime); let pointInside = inside(first + direction * begin);
+    let pointSupported = timeIncluded(beginTime); let pointInside = containment[2u * cursor] != 0u;
     let hasNext = cursor + 1u < uniqueCount && duration > 0.0;
     var nextInterior = false; var finish = begin;
-    if (hasNext) { finish = boundaries[cursor + 1u]; nextInterior = inside(first + direction * ((begin + finish) * 0.5)); fullyInside = fullyInside && nextInterior; }
+    if (hasNext) { finish = boundaries[cursor + 1u]; nextInterior = containment[2u * cursor + 1u] != 0u; fullyInside = fullyInside && nextInterior; }
     if (pointSupported) { fullyInside = fullyInside && pointInside; }
     if (nextInterior) {
-      let endIncluded = timeIncluded(firstTime + duration * finish) && inside(first + direction * finish);
+      let endIncluded = timeIncluded(firstTime + duration * finish) && containment[2u * cursor + 2u] != 0u;
       writeInterval(row, written, firstTime, duration, first, direction, begin, finish, pointSupported && pointInside, endIncluded); written++; anyInside = true;
     } else if (pointSupported && pointInside && !previousInterior) {
       writeInterval(row, written, firstTime, duration, first, direction, begin, begin, true, true); written++; anyInside = true;

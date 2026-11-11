@@ -64,7 +64,7 @@ parameters.write(getGPUSpatialClusteringParameterValues({
 ST-DBSCAN adds one gather of `times` into grid-cell order and one float compare per scanned
 candidate. The grid is spatial only, so the scan visits every spatial candidate and a short window
 does not prune work; a time-sorted or three-dimensional index would, and is a separate item.
-ST-OPTICS keeps the all-pairs frontier of `GPUOPTICS` and its limits (at most 4096 rows).
+ST-OPTICS keeps the frontier of `GPUOPTICS` and its limits: at most 4096 rows with the exhaustive reachability step or xi extraction, at most 65,536 with `neighborIndex: 'grid'`, whose radius list also applies the time window.
 
 ## Reference and agreement
 

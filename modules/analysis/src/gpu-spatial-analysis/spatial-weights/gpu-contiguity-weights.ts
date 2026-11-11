@@ -16,16 +16,15 @@ import type {
   GPUCapacityPlan
 } from '../../analysis-core/contracts/capacity-planning';
 import type {GPUPolygonGeometryPort} from '../../analysis-core/contracts/index';
-import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
   validateCapacity,
+  validateFiniteNumber,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateMaximumCount,
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getKeyGroupNodes,
@@ -46,6 +45,7 @@ import {
   validateGPUSpatialWeightsOutput
 } from './spatial-weights';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {getCoverageSnapKeyWGSL} from '../polygon-coverage-topology/coverage-topology-kernels';
 
 const OPERATION = 'GPUContiguityWeights';
 const INVALID = `${KEY_PAIR_INVALID}u`;
@@ -55,6 +55,13 @@ const INVALID = `${KEY_PAIR_INVALID}u`;
  * pair per shared vertex or edge) before deduplication.
  */
 export const GPU_CONTIGUITY_WEIGHTS_PAIR_CAPACITY_FACTOR = 4;
+
+/**
+ * Largest snap-grid cell index, in either direction from the local origin (the first vertex), at
+ * which float32 still resolves every cell: `2^24`. With `snapTolerance > 0`,
+ * `coordinateExtent / snapTolerance` must stay at or below it.
+ */
+export const GPU_CONTIGUITY_WEIGHTS_MAXIMUM_SNAP_CELLS = 2 ** 24;
 
 /** uint32 transients per vertex declared by the vertex stage (high, low, feature, next). */
 const VERTEX_WORDS = 4;
@@ -89,14 +96,30 @@ export type GPUContiguityWeightsProps = {
   polygons: GPUPolygonGeometryPort;
   /**
    * Vertex snap tolerance in coordinate units. Vertices are quantised with
-   * `q = floor(x / snapTolerance + 0.5)` per axis (round half up, in f32) and two vertices are the
-   * same point when both `q` match. `0` (the default) compares the exact f32 values (`-0` equals
-   * `+0`). Quantisation is a grid snap, not a distance test: two points closer than the tolerance
-   * can still fall in different cells, so choose a tolerance well below the feature size and
-   * pre-snap data where exactness matters. `extent / snapTolerance` must stay below 2^24, the f32
-   * integer range.
+   * `q = floor((x - origin) / snapTolerance + 0.5)` per axis (round half up, in f32; from 2^23
+   * steps the quotient is already an integer and is used as it is) and two vertices are the same
+   * point when both `q` match. It is the snap key of the coverage operators
+   * (`GPUCoverageDissolve`, `GPUCoverageSimplification`). The origin is local: the first vertex of
+   * `polygons.positions` (0 when that vertex is not finite), so `q` depends on the extent of the
+   * data and not on its distance from the coordinate origin (projected coordinates in the
+   * millions keep a millimetre tolerance). `0` (the default) compares the exact f32 values (`-0`
+   * equals `+0`). Quantisation is a grid snap, not a distance test: two points closer than the
+   * tolerance can still fall in different cells, so choose a tolerance well below the feature size
+   * and pre-snap data where exactness matters. The offset of every vertex from the first one,
+   * divided by `snapTolerance`, must stay at or below
+   * {@link GPU_CONTIGUITY_WEIGHTS_MAXIMUM_SNAP_CELLS} (2^24, the f32 integer range); pass
+   * `coordinateExtent` to have that checked at construction. Beyond it cells are only as fine as
+   * float32 resolves the offset, and beyond 2^31 cells every vertex shares the last cell.
    */
   snapTolerance?: number;
+  /**
+   * Optional largest offset, on either axis, between any two vertices (the longer side of the
+   * bounding box of the data), in coordinate units. Used only for validation: with a positive
+   * `snapTolerance`, construction throws when `coordinateExtent / snapTolerance` exceeds
+   * {@link GPU_CONTIGUITY_WEIGHTS_MAXIMUM_SNAP_CELLS}. The vertex data is on the GPU, so without
+   * this the range is not checked.
+   */
+  coordinateExtent?: number;
   /**
    * Caller-owned output CSR: `offsets` has `featureCount + 1` entries; the slot capacity is
    * `neighbors.length`. Binary weights (1) and ascending neighbor IDs; `distances` is not written.
@@ -137,7 +160,8 @@ export type GPUContiguityWeightsCapacityPlan = GPUContributorCapacityPlan & {
  * {@link GPUSpatialWeights} CSR whose rows are the polygon FEATURES.
  *
  * Definition, which the GPU result matches exactly (IDs, offsets, weights):
- * - Vertices are snapped as described by `snapTolerance`. Non-finite vertices are ignored.
+ * - Vertices are snapped as described by `snapTolerance`, on a grid anchored at the first vertex.
+ *   Non-finite vertices are ignored.
  * - Queen: features `i != j` are neighbors when they have at least one snapped vertex in common.
  * - Rook: features `i != j` are neighbors when they have a ring edge in common, meaning both
  *   endpoints match after snapping, in either direction. Degenerate edges (both endpoints snapping
@@ -188,10 +212,10 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
       throw new Error(`${id} criterion must be 'queen' or 'rook'`);
     }
     const {polygons} = props;
-    validatePackedView(polygons.positions, ['float32x2'], `${id} polygons.positions`);
+    validateSinglePackedView(polygons.positions, ['float32x2'], `${id} polygons.positions`);
     validateCapacity(id, 'polygons.positions length', polygons.positions.length, 1, 2 ** 31 - 1);
     for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
-      validatePackedView(polygons[name], ['uint32'], `${id} polygons.${name}`);
+      validateSinglePackedView(polygons[name], ['uint32'], `${id} polygons.${name}`);
       validateCapacity(id, `polygons.${name} length`, polygons[name].length, 2);
     }
     if (
@@ -199,6 +223,17 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
       (!Number.isFinite(props.snapTolerance) || props.snapTolerance < 0)
     ) {
       throw new Error(`${id} snapTolerance must be finite and >= 0`);
+    }
+    if (props.coordinateExtent !== undefined) {
+      validateFiniteNumber(id, 'coordinateExtent', props.coordinateExtent, 0);
+      if (props.snapTolerance) {
+        validateMaximumCount(
+          id,
+          'coordinateExtent / snapTolerance',
+          props.coordinateExtent / props.snapTolerance,
+          GPU_CONTIGUITY_WEIGHTS_MAXIMUM_SNAP_CELLS
+        );
+      }
     }
     const featureCount = validateGPUSpatialWeightsOutput(id, props.output);
     if (featureCount !== polygons.featureOffsets.length - 1) {
@@ -245,7 +280,7 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
    * current capacities). `slots` grows with `getGPUSpatialWeightsCapacityPlan`; `pairs` keeps the
    * default ratio to the slots, and doubles when `candidateOverflow` was reported.
    * `estimatedPeakTransientBytes` counts every transient this contributor declares (from the same
-   * per-vertex and per-pair word constants as `getCommandNodes`); the scratch of the gpgpu sort
+   * per-vertex and per-pair word constants as `getCommandNodes`); the scratch of the luma.gl sort
    * and scan primitives, which depends on the device, is not included.
    */
   getCapacityPlan(
@@ -337,17 +372,15 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
         declarations: `const RING_COUNT: u32 = ${ringCount}u;
 const POLYGON_COUNT: u32 = ${polygonCount}u;
 const FEATURE_COUNT: u32 = ${featureCount}u;
-const SNAP_TOLERANCE: f32 = ${getWGSLFloatLiteral(snapTolerance)};
 
 ${IS_FINITE_FLOAT_WGSL}
-
-fn quantise(value: f32) -> u32 {
-  if (SNAP_TOLERANCE <= 0.0) {
-    return bitcast<u32>(select(value, 0.0, value == 0.0));
-  }
-  let snapped = clamp(floor(value / SNAP_TOLERANCE + 0.5), -2147483520.0, 2147483520.0);
-  return bitcast<u32>(i32(snapped)) ^ 0x80000000u;
-}`,
+// The snap key shared with the coverage operators: getSnapOrigin() (the first vertex of the
+// buffer, 0 when it is not finite) and quantise(value, origin). Keys are formed from the offset to
+// the origin, so they depend on the extent of the data and not on its distance from the
+// coordinate origin (an absolute key x / tolerance passes 2^31 for coordinates in the millions
+// with a millimetre tolerance), and from 2^23 steps the integer quotient is used as it is,
+// because adding 0.5 there rounds an odd step to the next even one.
+${getCoverageSnapKeyWGSL(snapTolerance)}`,
         body: `var ring = 0u;
   var high = RING_COUNT;
   while (ring + 1u < high) {
@@ -388,8 +421,9 @@ fn quantise(value: f32) -> u32 {
     polygon >= featureOffsets[featureOffsetsOffset] && polygon < featureOffsets[featureOffsetsOffset + FEATURE_COUNT] &&
     polygon < featureOffsets[featureOffsetsOffset + feature + 1u] &&
     isFiniteFloat(x) && isFiniteFloat(y);
-  vertexHigh[vertexHighOffset + index] = select(${INVALID}, quantise(x), valid);
-  vertexLow[vertexLowOffset + index] = select(${INVALID}, quantise(y), valid);
+  let origin = getSnapOrigin();
+  vertexHigh[vertexHighOffset + index] = select(${INVALID}, quantise(x, origin.x), valid);
+  vertexLow[vertexLowOffset + index] = select(${INVALID}, quantise(y, origin.y), valid);
   vertexPolygon[vertexPolygonOffset + index] = select(${INVALID}, feature, valid);
   vertexNext[vertexNextOffset + index] = select(index + 1u, ringBegin, index + 1u == ringEnd);`
       })

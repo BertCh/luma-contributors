@@ -6,8 +6,9 @@ Run /tmp/luma-coverage-oracles/bin/python modules/analysis/test/oracles/nested-v
 RBF fits call scipy.interpolate.RBFInterpolator; ordinary kriging solves the
 bordered covariance equations with NumPy LAPACK. Neighborhoods use explicit
 (distance, original row) ordering to make equal-distance ties reproducible.
-The public seeded uint32 fold hash is reproduced only to define identical
-partitions; scores, predictions, and metrics are computed independently.
+The inner partition is fixed here (blocks 0, 1 and 4 in fold 1, the others in
+fold 0); the spec picks the seed whose block order gives it and checks that on
+the GPU. Scores, predictions, and metrics are computed independently.
 """
 import json
 from pathlib import Path
@@ -22,13 +23,10 @@ POSITIONS = np.array([[row % 4, row // 4] for row in range(12)], dtype=float)
 RESPONSE = (2 + .3 * POSITIONS[:, 0] + .8 * POSITIONS[:, 1]).astype(np.float32).astype(float)
 BLOCKS = np.arange(12) // 2
 
-def fold_hash(group):
-    key = int(group) ^ 2
-    key = ((key ^ (key >> 16)) * 0x7feb352d) & 0xffffffff
-    key = ((key ^ (key >> 15)) * 0x846ca68b) & 0xffffffff
-    return (key ^ (key >> 16)) % 2
-
-INNER_FOLDS = np.array([fold_hash(group) for group in BLOCKS])
+# Inner fold of each of the six blocks. (These are the values the former `hash(block ^ 2) % 2`
+# rule gave, kept so the fixture did not change when the contributor moved to a ranked order.)
+BLOCK_FOLDS = [1, 1, 0, 0, 1, 0]
+INNER_FOLDS = np.array([BLOCK_FOLDS[group] for group in BLOCKS])
 
 def predict(candidate, training, query):
     available = np.flatnonzero(training)

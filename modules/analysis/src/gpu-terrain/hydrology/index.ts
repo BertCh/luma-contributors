@@ -59,5 +59,40 @@ export type {
 } from './gpu-terrain-hydrologic-indices';
 export {GPUTerrainFlowDistance} from './gpu-terrain-flow-distance';
 export type {GPUTerrainFlowDistanceProps} from './gpu-terrain-flow-distance';
+export type {GPUTerrainFlowDirectionEncoding} from './terrain-flow-tracing';
 export {GPUTerrainStreamNetwork} from './gpu-terrain-stream-network';
 export type {GPUTerrainStreamNetworkProps} from './gpu-terrain-stream-network';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeTerrainFlowDistanceOnCPU,
+  CPUTerrainFlowDistanceOperation
+} from './cpu-terrain-flow-distance-operation';
+export type {
+  CPUTerrainFlowDistanceOptions,
+  CPUTerrainFlowDistanceResult
+} from './cpu-terrain-flow-distance-operation';
+export {
+  computeTerrainStreamOrderOnCPU,
+  CPUTerrainStreamOrderOperation
+} from './cpu-terrain-stream-order-operation';
+export type {CPUTerrainStreamOrderResult} from './cpu-terrain-stream-order-operation';
+export {
+  computeTerrainWatershedsOnCPU,
+  CPUTerrainWatershedsOperation
+} from './cpu-terrain-watersheds-operation';
+export type {CPUTerrainWatershedsResult} from './cpu-terrain-watersheds-operation';
+export {GPUTerrainFlowDistanceOperation} from './gpu-terrain-flow-distance-operation';
+export type {TerrainFlowDistanceOperationProps} from './gpu-terrain-flow-distance-operation';
+export {GPUTerrainStreamOrderOperation} from './gpu-terrain-stream-order-operation';
+export type {TerrainStreamOrderOperationProps} from './gpu-terrain-stream-order-operation';
+export {GPUTerrainWatershedsOperation} from './gpu-terrain-watersheds-operation';
+export type {TerrainWatershedsOperationProps} from './gpu-terrain-watersheds-operation';
+export {computeTerrainFlowOnCPU, CPUTerrainFlowOperation} from './cpu-terrain-flow-operation';
+export type {
+  CPUTerrainFlowInput,
+  CPUTerrainFlowOptions,
+  CPUTerrainFlowResult
+} from './cpu-terrain-flow-operation';
+export {GPUTerrainFlowOperation} from './gpu-terrain-flow-operation';
+export type {TerrainFlowOperationProps} from './gpu-terrain-flow-operation';

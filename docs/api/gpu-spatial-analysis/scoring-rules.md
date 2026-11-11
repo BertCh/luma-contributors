@@ -120,6 +120,12 @@ suite checks a 200-member quantile ensemble of `N(0, 1)` against `crps_norm(1; 0
 - Oracle `test/oracles/scoring-rules.py` writes `fixtures/scoring-rules.json`: binary64
   evaluations of the definitions above, with the CRPS cross-checked against the exact integral of
   `(F_m - 1{y <= x})^2` and the Gaussian CRPS against numerical integration.
+- Oracle `test/oracles/scoring-rules-fair.py` (NumPy and SciPy) writes
+  `fixtures/scoring-rules-fair.json` for the fair variants, which scoringRules does not define: the
+  fair CRPS by order statistics, the fair energy score as a mean over distinct pairs
+  (`scipy.spatial.distance.pdist`), and the closed-form CRPS and energy score of the standard normal
+  distribution, which the mean of the fair scores over many small ensembles must equal (and the
+  non-fair mean must exceed). Spec `gpu-ensemble-scores-fair.spec.ts`.
 - **The external scoringRules fixture is pending.** scoringRules is an R package and R was not
   installed where the fixture was made. A sibling script that calls `crps_sample`, `es_sample`,
   `vs_sample` and `crps_norm` on the same inputs should replace the self-computed values.

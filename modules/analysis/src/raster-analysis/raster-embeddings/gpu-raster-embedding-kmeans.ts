@@ -34,7 +34,7 @@ export type GPURasterEmbeddingKMeansProps = {
   dimensions: number;
   vectors: GraphDataView<'float32'>;
   /** Per-pixel QA; zero excludes the pixel. A pixel with a non-finite component is excluded too. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Number of clusters, at least 1. */
   clusterCount: number;
   /** Lloyd iterations encoded in the graph, in `[1, 64]`; later ones do nothing once labels stop changing. Defaults to 10. */
@@ -48,7 +48,7 @@ export type GPURasterEmbeddingKMeansProps = {
  * on the raster's vectors, so seeding is that class's deterministic evenly spaced valid rows
  * (not k-means++) and the centres are Euclidean means. Normalize the vectors first
  * (`GPURasterEmbeddingDequantize` with `normalize`) for a clustering by direction. The 2-D
- * `GPUKMeans` of `gpu-spatial-analysis` is a different contract for planar points.
+ * `GPUSpatialKMeans` of `gpu-spatial-analysis` is a different contract for planar points.
  *
  * Per-frame: the contents of the views. Compile-time: `pixelCount`, `dimensions`, `clusterCount`,
  * `maximumIterations` and which optional views exist.
@@ -68,7 +68,7 @@ export class GPURasterEmbeddingKMeans {
       props.vectors,
       pixelCount,
       dimensions,
-      props.validity
+      props.mask
     );
     validateCapacity(id, 'clusterCount', props.clusterCount);
     validateCapacity(
@@ -80,7 +80,7 @@ export class GPURasterEmbeddingKMeans {
     );
     this.clustering = new GPUKMeans({
       id,
-      dataset: createRasterEmbeddingMatrix(props.vectors, pixelCount, dimensions, props.validity),
+      dataset: createRasterEmbeddingMatrix(props.vectors, pixelCount, dimensions, props.mask),
       clusterCount: props.clusterCount,
       centroids: output.centroids,
       labels: output.labels,

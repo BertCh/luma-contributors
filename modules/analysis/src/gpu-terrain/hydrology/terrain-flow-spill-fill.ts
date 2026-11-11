@@ -44,10 +44,13 @@ const OPERATION = 'GPUTerrainFlow';
  *
  * The filled surface is the minimax (bottleneck) elevation to the outlets: F(c) is the smallest
  * possible maximum elevation along a path of cells from c to a boundary cell, both ends included.
- * It is the unique fixpoint of F(c) = max(z(c), min over neighbors n of F(n)) with F = z on the
- * boundary, so any exact algorithm gives the same float32 values as the tiled Planchon-Darboux
- * relaxation (`createTerrainFlowFillNodes`). This module computes it in four stages without a
- * length-dependent loop:
+ * It is the greatest fixpoint of F(c) = max(z(c), min over neighbors n of F(n)) with F = z on the
+ * boundary. The fixpoint is not unique: inside a closed depression every level between the pit and
+ * the pour point satisfies the equation (a 5 x 5 grid with border 10 and interior 0 admits
+ * interior 0, 5 and 10; only 10 is the fill). The tiled Planchon-Darboux relaxation
+ * (`createTerrainFlowFillNodes`) starts at +infinity and only lowers, so it reaches the greatest
+ * fixpoint too, and the two paths give the same float32 values. This module computes it in four
+ * stages without a length-dependent loop:
  *
  * 1. Tile fill. One workgroup per T x T tile (T = 32, or 16 when the device offers less than 12 KiB
  *    of workgroup memory) fills the tile on its own, with every tile perimeter cell and every true
@@ -389,7 +392,7 @@ var<workgroup> tileContinue: u32;`,
     if (column < SPILL_WIDTH && row < SPILL_HEIGHT) {
       let cell = row * SPILL_WIDTH + column;
       let value = elevation[elevationOffset + cell];
-      if (isSpillFinite(value)) {
+      if (isFiniteValue(value)) {
         var boundary = false;
         for (var direction = 0u; direction < 8u; direction++) {
           let neighbor = getSpillNeighbor(cell, direction);
@@ -397,7 +400,7 @@ var<workgroup> tileContinue: u32;`,
             boundary = true;
             break;
           }
-          if (!isSpillFinite(elevation[elevationOffset + neighbor])) {
+          if (!isFiniteValue(elevation[elevationOffset + neighbor])) {
             boundary = true;
             break;
           }
@@ -809,7 +812,7 @@ fn loadSpillEdge(slot: u32) {
     `${common}
 const SPILL_OCEAN: u32 = ${cellCount}u;`,
     `let value = elevation[elevationOffset + index];
-  if (!isSpillFinite(value)) {
+  if (!isFiniteValue(value)) {
     filled[filledOffset + index] = 0x7fc00000u;
     return;
   }

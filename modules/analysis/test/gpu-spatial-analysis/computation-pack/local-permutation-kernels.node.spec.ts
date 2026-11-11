@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {readFileSync} from 'node:fs';
+import {readFileSync, writeFileSync} from 'node:fs';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
@@ -11,6 +11,20 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {createReplayTest} from './local-permutation-test-fixture';
 
+// The fixture is `JSON.stringify(kernels, null, 2)` plus a newline, the full WGSL of the permute
+// kernel per configuration. When a shared WGSL module that the kernel includes changes on purpose,
+// regenerate it with `UPDATE_LOCAL_PERMUTATION_KERNELS=1 npx vitest run --project node
+// modules/analysis/test/gpu-spatial-analysis/computation-pack/local-permutation-kernels.node.spec.ts`
+// and diff the old and new text of a few configurations before accepting it.
+//
+// Baseline history after the computation-pack refactor:
+// - 2026-11-10 (math correctness review): two additions, identical in all 162 configurations and
+//   nothing else. (1) `PHILOX_WGSL` gained `philoxOpenUnitFloat`, the open-interval uniform
+//   (core-numerics-05); the permute kernel includes the module and does not call the function.
+//   (2) The shared `getTwoSidedPValue` of `SPATIAL_AUTOCORRELATION_FLOAT_WGSL` gained the
+//   constant `ANALYTIC_P_VALUE_FLOOR` and clamps to it instead of `min(..., 1.0)`
+//   (spatial-statistics-08); the permute kernel includes the module and does not call the
+//   function, so no permutation result changes.
 it('preserves the complete pre-refactor permutation WGSL byte for byte across 162 configurations', () => {
   const kernels: Record<string, string> = {};
   for (const statistic of [
@@ -56,5 +70,8 @@ it('preserves the complete pre-refactor permutation WGSL byte for byte across 16
   }
   const fixture = new URL('./fixtures/local-permutation-kernels.json', import.meta.url);
   expect(Object.keys(kernels)).toHaveLength(162);
+  if (process.env['UPDATE_LOCAL_PERMUTATION_KERNELS']) {
+    writeFileSync(fixture, `${JSON.stringify(kernels, null, 2)}\n`);
+  }
   expect(kernels).toEqual(JSON.parse(readFileSync(fixture, 'utf8')));
 });

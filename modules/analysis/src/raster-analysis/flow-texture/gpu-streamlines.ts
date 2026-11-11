@@ -156,6 +156,12 @@ export type GPUStreamlinesProps = {
  * Determinism: integer atomics only (`atomicMax` of keys); counter-based jitter and priorities.
  * The pruning is exact given the traced points: grid cells use one subtraction and one
  * multiplication by a host-rounded reciprocal, both correctly rounded.
+ *
+ * Row direction: every field raster places row 0 at the smallest y (`originY` of its extent) and
+ * rows advance toward larger y; `v` is the velocity toward larger y. No grid affine is read and
+ * nothing is checked at construction. A north-up field (row 0 at the top, the usual raster order)
+ * must have its row order reversed by the caller before upload, or the flow is mirrored north to
+ * south. Following a grid affine is deferred (roadmap 12.4).
  */
 export class GPUStreamlines implements GPUCommandNodeProducer {
   /** Prefix for graph node and transient IDs. */

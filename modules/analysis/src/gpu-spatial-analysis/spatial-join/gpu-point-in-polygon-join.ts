@@ -55,7 +55,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateCapacity,
   validateCompactOutput,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -136,8 +136,9 @@ export type GPUPointInPolygonJoinOutput = {
    * laid out in point-row order and the slots past the capacity are dropped, so the flagged points
    * are the point whose candidates cross the capacity (it keeps its first ones) and every later
    * point that had a candidate (it keeps none); earlier points are complete. A flagged point may
-   * show `GPU_SPATIAL_JOIN_NO_FEATURE` although a feature contains it. Rows lost to a BVH overflow
-   * are not flagged. See `status.candidateOverflow`.
+   * show `GPU_SPATIAL_JOIN_NO_FEATURE` although a feature contains it. A BVH overflow (more
+   * features than `leafCapacity`) drops features that any point may fall in, so it flags every
+   * point. See `status.candidateOverflow`.
    */
   candidateTruncated?: GraphDataView<'uint32'>;
   /**
@@ -149,7 +150,8 @@ export type GPUPointInPolygonJoinOutput = {
     GPUCandidateStatusPort & {
       /**
        * One-row flag: 1 when BVH leaf, candidate, or `matches` capacity overflowed. Its meaning is
-       * unchanged; `candidateOverflow` isolates the candidate capacity.
+       * unchanged; `candidateOverflow` isolates the intermediate capacities (BVH leaf and
+       * candidate), leaving out `matches`.
        */
       overflow: GraphDataView<'uint32'>;
       /** Optional one-row unclamped candidate count, for sizing `candidateCapacity`. */
@@ -353,7 +355,7 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       throw new Error(`${id} needs point and polygon geometry`);
     }
     for (const chunk of getGraphViewChunks(points.positions)) {
-      validatePackedView(chunk, ['float32x2'], `${id} points.positions`);
+      validateSinglePackedView(chunk, ['float32x2'], `${id} points.positions`);
     }
     validateSpatialJoinGeometry(id, 'polygons', polygons, {allowEmpty: true});
     this.featureCount = polygons.featureOffsets.length - 1;
@@ -362,7 +364,7 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       ['points.sourceIds', points.sourceIds]
     ] as const) {
       for (const chunk of view ? getGraphViewChunks(view) : []) {
-        validatePackedView(chunk, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(chunk, ['uint32'], `${id} ${name}`);
       }
       validateMatchingChunks(id, name, points.positions, view);
     }
@@ -371,7 +373,7 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       ['output.featureCounts', output.featureCounts]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length !== this.featureCount) {
           throw new Error(`${id} ${name} needs one row per feature`);
         }
@@ -379,7 +381,11 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
     }
     validateStatusScalars(id, status);
     if (output.candidateTruncated) {
-      validatePackedView(output.candidateTruncated, ['uint32'], `${id} output.candidateTruncated`);
+      validateSinglePackedView(
+        output.candidateTruncated,
+        ['uint32'],
+        `${id} output.candidateTruncated`
+      );
       if (output.candidateTruncated.length !== points.positions.length) {
         throw new Error(`${id} output.candidateTruncated needs one row per point`);
       }
@@ -582,7 +588,8 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
         pointRowOffset: 0,
         querySort: this.querySort,
         candidateTruncated: output.candidateTruncated,
-        candidateOverflow: output.status.candidateOverflow
+        candidateOverflow: output.status.candidateOverflow,
+        bvhOverflow: bvh.overflow
       })
     );
     const candidateDispatch = createWGSLActiveCountDispatch(graph, {

@@ -23,7 +23,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_CALENDAR_BUCKETS_MATRIX_LENGTH,
@@ -215,19 +215,19 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
     const id = this.id;
     const {output} = props;
     this.unit = resolveCalendarUnit(id, props);
-    validatePackedView(props.timestamps, ['uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(props.timestamps, ['uint32x2'], `${id} timestamps`);
     this.rowCount = props.timestamps.length;
     if (this.rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal timestamps length`);
       }
     }
     if (props.utcOffsets) {
-      validatePackedView(props.utcOffsets, ['sint32'], `${id} utcOffsets`);
+      validateSinglePackedView(props.utcOffsets, ['sint32'], `${id} utcOffsets`);
       if (props.utcOffsets.length !== this.rowCount) {
         throw new Error(`${id} utcOffsets length must equal timestamps length`);
       }
@@ -236,8 +236,12 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
       if (props.utcOffsets) {
         throw new Error(`${id} timeZone and utcOffsets are mutually exclusive`);
       }
-      validatePackedView(props.timeZone.transitions, ['uint32x2'], `${id} timeZone.transitions`);
-      validatePackedView(props.timeZone.offsets, ['sint32'], `${id} timeZone.offsets`);
+      validateSinglePackedView(
+        props.timeZone.transitions,
+        ['uint32x2'],
+        `${id} timeZone.transitions`
+      );
+      validateSinglePackedView(props.timeZone.offsets, ['sint32'], `${id} timeZone.offsets`);
       if (props.timeZone.transitions.length < 1) {
         throw new Error(`${id} timeZone needs at least one transition`);
       }
@@ -245,7 +249,7 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
         throw new Error(`${id} timeZone.offsets length must be transitions length + 1`);
       }
     }
-    validatePackedView(props.parameters, ['sint32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['sint32'], `${id} parameters`);
     if (props.parameters.length < GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH} sint32 values`
@@ -258,7 +262,7 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
         continue;
       }
       outputCount++;
-      validatePackedView(
+      validateSinglePackedView(
         view,
         [column.signed ? 'sint32' : 'uint32'],
         `${id} output.${column.name}`
@@ -269,7 +273,11 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
     }
     if (output.hourWeekdayCounts) {
       outputCount++;
-      validatePackedView(output.hourWeekdayCounts, ['uint32'], `${id} output.hourWeekdayCounts`);
+      validateSinglePackedView(
+        output.hourWeekdayCounts,
+        ['uint32'],
+        `${id} output.hourWeekdayCounts`
+      );
       if (output.hourWeekdayCounts.length < GPU_CALENDAR_BUCKETS_MATRIX_LENGTH) {
         throw new Error(
           `${id} output.hourWeekdayCounts must hold ${GPU_CALENDAR_BUCKETS_MATRIX_LENGTH} elements`

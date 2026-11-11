@@ -281,3 +281,152 @@ for (const large of [false, true]) {
     expect(result.invalidCount).toBe(0);
   });
 }
+
+// Math correctness review 2026-11-10, geometry-measures-01. Rings a few hundred meters across:
+// the f32 unit-vector fan the kernel used to sum returned 60,920 m2 for the first shell (true
+// 10,008 m2) and a negative area for the second.
+const SMALL_GREAT_CIRCLE_RINGS: NestedFeatures = [
+  [
+    [
+      [10.3, 45.2],
+      [10.301276, 45.2],
+      [10.301276, 45.2009],
+      [10.3, 45.2009]
+    ]
+  ],
+  [
+    [
+      [-122.4, 37.7],
+      [-122.398863, 37.7],
+      [-122.398863, 37.7009],
+      [-122.4, 37.7009]
+    ]
+  ],
+  [
+    [
+      [10.3, 45.2],
+      [10.31276, 45.2],
+      [10.31276, 45.209],
+      [10.3, 45.209]
+    ]
+  ],
+  [
+    [
+      [30, 80],
+      [30.00518, 80],
+      [30.00518, 80.0009],
+      [30, 80.0009]
+    ]
+  ],
+  // Shell with a clockwise hole: the hole's sign comes from its own (small) ring area.
+  [
+    [
+      [-122.4, 37.7],
+      [-122.398863, 37.7],
+      [-122.398863, 37.7009],
+      [-122.4, 37.7009]
+    ],
+    [
+      [-122.3997, 37.7002],
+      [-122.3997, 37.7006],
+      [-122.3992, 37.7006],
+      [-122.3992, 37.7002]
+    ]
+  ]
+];
+
+/** Binary64 l'Huilier area of a convex quadrilateral ring whose vertices are rounded to f32. */
+function getSmallRingArea(ring: number[][]): number {
+  const rounded = ring.map(vertex => [Math.fround(vertex[0]), Math.fround(vertex[1])]);
+  return (
+    getSphericalTriangleArea([rounded[0], rounded[1], rounded[2]], 6371008.8) +
+    getSphericalTriangleArea([rounded[0], rounded[2], rounded[3]], 6371008.8)
+  );
+}
+
+for (const large of [false, true]) {
+  it(`GPUGeometryMeasures great-circle area of rings a hundred meters across (${
+    large ? 'cooperative' : 'serial'
+  })`, async () => {
+    const result = await measure(SMALL_GREAT_CIRCLE_RINGS, {
+      geometryType: 'polygons',
+      metric: 'great-circle',
+      edgeModel: 'great-circle',
+      large
+    });
+    SMALL_GREAT_CIRCLE_RINGS.forEach((feature, index) => {
+      const expected =
+        getSmallRingArea(feature[0]) - (feature[1] ? getSmallRingArea(feature[1]) : 0);
+      expect(Math.abs(result.areas[index] / expected - 1), `feature ${index}`).toBeLessThan(1e-5);
+    });
+    // Hand check of the first shell: 100.0 m by 100.08 m at latitude 45.2.
+    expect(result.areas[0]).toBeGreaterThan(10000);
+    expect(result.areas[0]).toBeLessThan(10020);
+    expect(result.invalidCount).toBe(0);
+  });
+}
+
+// A concave ring (reflex at the third vertex) that crosses the antimeridian and the equator. The
+// diagonal from the first to the third vertex is interior, so the area is the sum of two
+// spherical triangles (binary64 l'Huilier), independent of the kernel's per-edge sum.
+const CONCAVE_ANTIMERIDIAN_RING = [
+  [170, -10],
+  [-170, 0],
+  [178, 8],
+  [172, 30]
+];
+
+for (const large of [false, true]) {
+  it(`GPUGeometryMeasures great-circle area of a concave ring across the antimeridian (${
+    large ? 'cooperative' : 'serial'
+  })`, async () => {
+    const result = await measure(
+      [[CONCAVE_ANTIMERIDIAN_RING], [[...CONCAVE_ANTIMERIDIAN_RING].reverse()]],
+      {geometryType: 'polygons', metric: 'great-circle', edgeModel: 'great-circle', large}
+    );
+    const [first, second, third, fourth] = CONCAVE_ANTIMERIDIAN_RING;
+    const expected =
+      getSphericalTriangleArea([first, second, third], 6371008.8) +
+      getSphericalTriangleArea([first, third, fourth], 6371008.8);
+    expect(expected).toBeGreaterThan(2.9e12);
+    expect(Math.abs(result.areas[0] / expected - 1)).toBeLessThan(2e-6);
+    // The clockwise copy has the same unsigned area.
+    expect(Math.abs(result.areas[1] / expected - 1)).toBeLessThan(2e-6);
+    expect(result.invalidCount).toBe(0);
+  });
+}
+
+// Math correctness review 2026-11-10, geometry-measures-06. The centroid of a longitude/latitude
+// box lies at the mean authalic sine of its two parallels; the expected latitudes are the exact
+// inverse of the closed-form authalic latitude (binary64 Newton iteration, scratch script
+// authalic-check.mjs). The forward-series coefficient 17/360 the kernel used moved them by 4.5e-5
+// degrees (5.05 m).
+const AUTHALIC_CENTROID_BOXES: {south: number; north: number; latitude: number}[] = [
+  {south: 22.4, north: 22.6, latitude: 22.499964679776852},
+  {south: 67.4, north: 67.6, latitude: 67.49979015842966},
+  {south: -22.6, north: -22.4, latitude: -22.499964679776838},
+  {south: 10, north: 35, latitude: 21.950942713733028}
+];
+
+it('GPUGeometryMeasures ellipsoidal polygon centroids invert the authalic latitude', async () => {
+  const result = await measure(
+    AUTHALIC_CENTROID_BOXES.map(box => [
+      [
+        [5, box.south],
+        [6, box.south],
+        [6, box.north],
+        [5, box.north]
+      ]
+    ]),
+    {geometryType: 'polygons', metric: 'ellipsoidal'}
+  );
+  AUTHALIC_CENTROID_BOXES.forEach((box, index) => {
+    expect(result.centroids[2 * index], `longitude ${index}`).toBeCloseTo(5.5, 5);
+    // The kernel takes asin of an f32 authalic sine, so the latitude carries the sine's rounding
+    // divided by cos(latitude): 8e-6 degrees (0.9 m) at the equator, 2.1e-5 at latitude 67.5.
+    expect(
+      Math.abs(result.centroids[2 * index + 1] - box.latitude),
+      `latitude ${index}`
+    ).toBeLessThan(8e-6 / Math.cos((box.latitude * Math.PI) / 180));
+  });
+});

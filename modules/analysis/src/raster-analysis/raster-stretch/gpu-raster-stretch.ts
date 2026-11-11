@@ -74,8 +74,8 @@ export type GPURasterStretchProps = {
   grid: GPURasterMetadata;
   /** Optional finite nodata sentinel compared exactly. NaN is always nodata. */
   noDataValue?: number;
-  /** Optional validity per cell; zero marks nodata. */
-  validity?: GraphDataView<'uint32'>;
+  /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
+  mask?: GraphDataView<'uint32'>;
   /** Optional per-frame region mask per cell; nonzero cells contribute to statistics. */
   regionMask?: GraphDataView<'uint32'>;
   /** Per-frame float32 view of {@link GPU_RASTER_STRETCH_PARAMETER_LENGTH} values. */
@@ -105,8 +105,17 @@ export type GPURasterStretchProps = {
  *   from min/max and the histogram). The apply step always runs on every cell.
  * - Histogram bins are equal-width over the domain; the last bin includes the maximum. Cells outside
  *   an explicit domain are not counted.
- * - Percentile bounds find the first bin whose cumulative count reaches `p * total` and interpolate
- *   linearly inside it, so `lo`/`hi` are within one bin width (`binWidth`) of the exact percentile.
+ * - Percentile bounds use the rank rule of the published `GPURasterGlobalPercentile`: the bin that
+ *   holds order statistic `floor((N - 1) * p)` of the `N` counted cells, reported at its centre, so
+ *   `lo`/`hi` are within half a bin width (`binWidth`) of that order statistic. With an automatic
+ *   domain, `p = 0` and `p = 1` are the exact minimum and maximum. This is not NumPy's default
+ *   (linear between order statistics): ten values 0, 10, ..., 90 at `p = 0.98` give 80.02 here and
+ *   88.2 in NumPy.
+ * - Equalization uses the rule of the published `GPURasterContrast` (and OpenCV `equalizeHist`):
+ *   `(cdf[bin] - cdfFirst) / (total - cdfFirst)`, where `cdfFirst` is the cumulative count of the
+ *   first occupied bin. It depends only on ranks: the smallest value maps to 0, the largest to 1,
+ *   and three equally frequent values map to 0, 0.5 and 1. When all counted cells fall in one bin
+ *   the mapping is the linear one over the domain.
  * - After the mode, `t` goes through the display gamma `t ** (1 / gamma)` (`gamma > 1` brightens, as in
  *   rio-color and GIMP levels) and then the sigmoidal contrast. GDAL has no gamma; its
  *   `-exponent e` option (`gdal_translate`, VRT) is `t ** e`, so it equals `gamma: 1 / e`.
@@ -147,7 +156,7 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     if (!props.values) {
       throw new Error(`${id} needs values`);
     }
-    validateRasterAlgebraView(id, 'validity', props.validity, 'uint32', cellCount);
+    validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', cellCount);
     validateRasterAlgebraView(id, 'regionMask', props.regionMask, 'uint32', cellCount);
     validateRasterAlgebraView(
       id,
@@ -194,7 +203,7 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
         output.histogram,
         output.statistics
       ],
-      [props.values, props.validity, props.regionMask, props.parameters, props.palette]
+      [props.values, props.mask, props.regionMask, props.parameters, props.palette]
     );
   }
 
@@ -208,7 +217,7 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     const cellCount = width * height;
     validateRasterAlgebraGraph(id, graph, [
       props.values,
-      props.validity,
+      props.mask,
       props.regionMask,
       props.parameters,
       props.palette,
@@ -221,7 +230,10 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
     const keys = createTransientView(graph, `${id}-keys`, 'uint32', 4);
-    const state = createTransientView(graph, `${id}-state`, 'float32', 8);
+    // Rows 0 to 7: domain minimum and maximum, bin scale, bin width, lo, hi, in-domain count,
+    // valid count. Rows 8 and 9: the count of the first occupied bin as two 16-bit halves (each
+    // exact in float32), read by the equalization.
+    const state = createTransientView(graph, `${id}-state`, 'float32', 10);
     const histogram =
       output.histogram ?? createTransientView(graph, `${id}-histogram`, 'uint32', binCount);
     const cdf = createTransientView(graph, `${id}-cdf`, 'uint32', binCount);
@@ -235,8 +247,8 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     const cellInputs: WGSLKernelBinding[] = [
       {name: 'values', view: props.values, type: 'f32', access: 'read'}
     ];
-    if (props.validity) {
-      cellInputs.push({name: 'validity', view: props.validity, type: 'u32', access: 'read'});
+    if (props.mask) {
+      cellInputs.push({name: 'validity', view: props.mask, type: 'u32', access: 'read'});
     }
     const statisticsInputs: WGSLKernelBinding[] = [...cellInputs];
     if (props.regionMask) {
@@ -264,7 +276,7 @@ fn readCellValue(index: u32, value: ptr<function, f32>) -> bool {
   let sample = values[valuesOffset + index];
   *value = sample;
   var isValid = !isNoDataValue(sample);
-  ${props.validity ? 'isValid = isValid && validity[validityOffset + index] != 0u;' : ''}
+  ${props.mask ? 'isValid = isValid && validity[validityOffset + index] != 0u;' : ''}
   return isValid;
 }`;
     const statisticsWGSL = `${valueWGSL}
@@ -500,8 +512,9 @@ var<workgroup> localHistogram: array<atomic<u32>, ${binCount}>;`
         invocationCount: 1,
         declarations: `${constants}
 ${getRasterAlgebraValueWGSL(undefined)}
-// Smallest bin whose cumulative count is positive and reaches target, then linear inside it.
-fn getPercentileValue(rank: f32) -> f32 {
+// Smallest bin whose cumulative count exceeds rank. The last bin holds the total, so any rank
+// below the total is found.
+fn getRankBin(rank: u32) -> u32 {
   var low = 0u;
   var high = BIN_COUNT - 1u;
   loop {
@@ -509,25 +522,32 @@ fn getPercentileValue(rank: f32) -> f32 {
       break;
     }
     let middle = (low + high) / 2u;
-    let cumulative = cdf[cdfOffset + middle];
-    if (cumulative > 0u && f32(cumulative) >= rank) {
+    if (cdf[cdfOffset + middle] > rank) {
       high = middle;
     } else {
       low = middle + 1u;
     }
   }
-  var before = 0u;
-  if (low > 0u) {
-    before = cdf[cdfOffset + low - 1u];
-  }
-  let count = cdf[cdfOffset + low] - before;
-  var fraction = 0.0;
-  if (count > 0u) {
-    fraction = clamp((rank - f32(before)) / f32(count), 0.0, 1.0);
-  }
+  return low;
+}
+// The rank rule of the published GPURasterGlobalPercentile: the bin that holds order statistic
+// floor((total - 1) * fraction), reported at its centre. With an automatic domain the fractions 0
+// and 1 are the exact observed minimum and maximum. Needs total > 0.
+fn getPercentileValue(fraction: f32, total: u32) -> f32 {
   let domainMinimum = state[stateOffset];
   let domainMaximum = state[stateOffset + 1u];
-  return clamp(domainMinimum + (f32(low) + fraction) * state[stateOffset + 3u], domainMinimum, domainMaximum);
+  let isAutomatic = params[paramsOffset + 4u] == 0.0;
+  if (isAutomatic && fraction <= 0.0) {
+    return domainMinimum;
+  }
+  if (isAutomatic && fraction >= 1.0) {
+    return domainMaximum;
+  }
+  if (!(domainMaximum > domainMinimum)) {
+    return domainMinimum;
+  }
+  let rank = min(u32(floor(f32(total - 1u) * fraction)), total - 1u);
+  return domainMinimum + (f32(getRankBin(rank)) + 0.5) * (domainMaximum - domainMinimum) / f32(BIN_COUNT);
 }`,
         body: `let domainMinimum = state[stateOffset];
   let domainMaximum = state[stateOffset + 1u];
@@ -539,12 +559,19 @@ fn getPercentileValue(rank: f32) -> f32 {
   if (mode != 0u && total == 0u) {
     hi = lo;
   } else if (mode == 1u) {
-    lo = getPercentileValue(params[paramsOffset + 8u] * f32(total));
-    hi = getPercentileValue(params[paramsOffset + 9u] * f32(total));
+    lo = getPercentileValue(params[paramsOffset + 8u], total);
+    hi = getPercentileValue(params[paramsOffset + 9u], total);
+  }
+  // Cumulative count of the first occupied bin (rank 0 lives there); 0 without data.
+  var firstCount = 0u;
+  if (total > 0u) {
+    firstCount = cdf[cdfOffset + getRankBin(0u)];
   }
   state[stateOffset + 4u] = lo;
   state[stateOffset + 5u] = hi;
   state[stateOffset + 6u] = f32(total);
+  state[stateOffset + 8u] = f32(firstCount & 0xffffu);
+  state[stateOffset + 9u] = f32(firstCount >> 16u);
   ${
     output.statistics
       ? `let isEmpty = params[paramsOffset + 4u] == 0.0 && validCount == 0.0;
@@ -681,22 +708,22 @@ fn getStretchedValue(value: f32) -> f32 {
   }
   var unit = 0.0;
   if (u32(params[paramsOffset + 7u]) == 2u) {
+    // The rule of the published GPURasterContrast (and OpenCV equalizeHist):
+    // (cdf[bin] - cdfFirst) / (total - cdfFirst), where cdfFirst is the cumulative count of the
+    // first occupied bin. It depends only on ranks, so three equally frequent values map to 0,
+    // 0.5 and 1. When every counted cell is in one bin the mapping is the linear one.
     let domainMinimum = state[stateOffset];
     let domainMaximum = state[stateOffset + 1u];
-    if (value <= domainMinimum) {
-      unit = 0.0;
-    } else if (value >= domainMaximum) {
-      unit = 1.0;
+    let total = cdf[cdfOffset + BIN_COUNT - 1u];
+    let firstCount = u32(state[stateOffset + 8u]) | (u32(state[stateOffset + 9u]) << 16u);
+    let cumulativeWidth = total - min(total, firstCount);
+    if (cumulativeWidth > 0u) {
+      // The bin the histogram counted this value in; values outside the domain use an end bin.
+      let position = clamp((value - domainMinimum) * state[stateOffset + 2u], 0.0, f32(BIN_COUNT));
+      let cumulative = cdf[cdfOffset + min(u32(position), BIN_COUNT - 1u)];
+      unit = f32(cumulative - min(cumulative, firstCount)) / f32(cumulativeWidth);
     } else {
-      let position = (value - domainMinimum) * state[stateOffset + 2u];
-      let bin = min(u32(position), BIN_COUNT - 1u);
-      let fraction = clamp(position - f32(bin), 0.0, 1.0);
-      var before = 0u;
-      if (bin > 0u) {
-        before = cdf[cdfOffset + bin - 1u];
-      }
-      let count = cdf[cdfOffset + bin] - before;
-      unit = (f32(before) + fraction * f32(count)) / state[stateOffset + 6u];
+      unit = clamp((value - domainMinimum) / (domainMaximum - domainMinimum), 0.0, 1.0);
     }
   } else {
     unit = clamp((value - lo) / (hi - lo), 0.0, 1.0);

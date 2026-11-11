@@ -75,7 +75,7 @@ A per-feature validity bitmask for polygons and multipolygons (the four-level `G
 PostGIS `ST_IsValidDetail` and Shapely `explain_validity` as a filterable mask. Repair stays on the CPU.
 
 The bits of `GPU_GEOMETRY_VALIDITY_BIT` are `nonFinite` 1, `unclosedRing` 2 (explicit closure only),
-`shortRing` 4 (fewer than 3 distinct vertices), `repeatedVertex` 8, `selfIntersection` 16, `crossingRings`
+`shortRing` 4 (fewer than 3 vertices once a closing duplicate is dropped; rows are counted, so `A, B, B, A` does not set it and fails through `selfIntersection` instead), `repeatedVertex` 8, `selfIntersection` 16, `crossingRings`
 32 (a proper crossing or overlap between different rings of one feature; point touches are allowed),
 `holeOutsideShell` 64, `badOrientation` 128 and `uncertain` 256. `GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK` is
 every bit except `badOrientation` (a convention) and `repeatedVertex` (GEOS and OGC accept repeated
@@ -177,6 +177,12 @@ Measures the smallest distance a single vertex could move before each feature be
 
 Maximum: `geometry.positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(device)` (4,194,304 on a default device) rows, because the 32-byte segment table per vertex must fit one 128 MiB binding.
 
+`leafCapacity` (optional, a power of two) sets the BVH leaf slots over the segments and defaults to the next
+power of two of the vertex count, which never overflows. A smaller value drops the trailing segments from the BVH
+(in Morton order when `spatialSort` is on), so clearances may come out too large. To detect this, pass
+`output.status.candidateOverflow`, a one-row `uint32` view that receives `1` when segments were dropped and `0`
+otherwise. Without that view an undersized `leafCapacity` is silent.
+
 Planar only: a longitude/latitude `spatialContext` throws at construction; project first with
 `createGPULocalFrame` and `GPULocalFrameProjection`. It measures distance, so `local-lambert-equal-area` frames throw.
 
@@ -217,16 +223,25 @@ Maximum: `positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(de
 Polygon coverage validity (Shapely `coverage_is_valid`, `coverage_invalid_edges(gap_width)`). One BVH over
 all segments writes a per-segment flag word (`unmatched`, `crossing`, `gap`, `overlap`, `uncertain` bits),
 optional per-feature counts (`featureInvalidCounts`), a total (`status.invalidCount`) and `isValid`. The input is the four-level polygon layout (`positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets`); segments of one feature are never compared. `gapWidth` is per-frame through
-`getGPUCoverageValidityParameterValues`. The output has one row per vertex and cannot overflow. Rules found
-by probing GEOS: matched edges are skipped and flagged only when both interiors are on the same side, a
-T-junction touch counts, and a gap is endpoints within `gapWidth` plus a mutual projection overlap larger
-than `gapWidth` (strict). It agreed with Shapely on 28 scenes with 40 gap cases and on 158 of 160 random
-jitter cases. The misses are a vertex of an overlapping neighbor within `gapWidth` of an edge, which GEOS
-flags and this does not, and a matched edge lying inside a third polygon, which is not flagged (that
-polygon's own segments are). Every orientation sign is exact for the f32 vertices, including the winding
-number of the interior probe (`orientSign`), so a probe point exactly on a neighbor's edge is never
-misclassified by rounding; the probe is the f32 midpoint of the segment. A pair with no decidable orientation
-(non-finite input) sets the `uncertain` bit. The operator is planar: `spatialContext` defaults to native
+`getGPUCoverageValidityParameterValues`. The output has one row per vertex and cannot overflow. Matched
+edges are skipped and flagged only when both interiors are on the same side, and a T-junction touch counts.
+The gap rule is the GEOS one (`InvalidSegmentDetector::isNearlyParallel`): each segment is projected onto the
+other and clipped to it, and the pair is a gap when both clipped projections are longer than `gapWidth`
+(strict) and their matching ends are within `gapWidth` of each other (inclusive). Staggered segments that run
+side by side over only part of their length, such as `(0, 0)-(10, 0)` beside `(5, 0.0625)-(15, 0.0625)` at
+`gapWidth` 0.125, are flagged (until 2026-11-11 they were not: the rule then asked for both ends of the
+shorter segment within `gapWidth` of the longer). The rule is evaluated in float32 relative to the start of
+the tested segment, so a distance or projected length equal to `gapWidth` to within float32 rounding can fall
+on either side. With Shapely 2.2.0 (GEOS 3.14.1) the invalid segment sets are equal on the 28 curated scenes
+(40 gap cases) and on the 222 cases of `test/oracles/fixtures/coverage-validity-gaps.json` (staggered
+rectangles, disjoint pairs and jittered triangulations, near the origin and at projected-metre coordinates).
+A matched edge lying inside a third polygon is not flagged (that polygon's own segments are). Ring winding
+is the exact turn at each ring's lexicographically
+smallest vertex, so a sliver whose float32 area is zero is still oriented. Every orientation sign is exact
+for the f32 vertices, including the winding number of the interior probe, which is the shared symbolic side
+probe (the point beside the exact midpoint of the segment, classified from the exact signs of the segment's
+endpoints), so a segment of a polygon thinner than one float32 step is not read as lying inside its
+neighbor. A pair with no decidable orientation (non-finite input) sets the `uncertain` bit. The operator is planar: `spatialContext` defaults to native
 planar coordinates and `longitude-latitude` throws (project first).
 
 {/* parameters: GPUCoverageValidity generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}

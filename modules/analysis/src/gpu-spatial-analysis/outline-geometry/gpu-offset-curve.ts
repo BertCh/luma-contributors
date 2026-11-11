@@ -21,12 +21,13 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {FIND_LINE_WGSL} from './gpu-outline-geometry';
 
 /** Spatial contexts supported by this distance-measuring operation. */
@@ -190,7 +191,10 @@ export type GPUOffsetCurveProps = (
  * (`quadSegments` per quarter circle, GEOS rounding rule), a mitre point (clipped like GEOS when
  * the mitre exceeds `mitreLimit`) or a bevel pair; on the inside of a turn the single intersection
  * of the two offset segments; at line ends the plain normal offset. Positive distance offsets to the
- * left of the line direction, negative to the right. Planar coordinates only.
+ * left of the line direction, negative to the right. Planar coordinates only. Which side of a
+ * vertex is the inside of its turn is the exact orientation sign of the three vertices
+ * (`orientSign`), so it is right where the two edges nearly reverse and a float32 cross product
+ * of their directions has no sign left; the corner points themselves are float32.
  *
  * **Render-grade, not GEOS-clean.** GEOS removes the loops that form when an offset segment is
  * shorter than the inset at an inside corner, and drops pieces closer than `distance` to the input.
@@ -267,26 +271,26 @@ export class GPUOffsetCurve implements GPUCommandNodeProducer {
       1,
       GPU_OFFSET_CURVE_MAXIMUM_QUAD_SEGMENTS
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
     const offsetsName = props.geometryType === 'polygons' ? 'ringOffsets' : 'lineOffsets';
-    validatePackedView(this.boundaryOffsets, ['uint32'], `${id} ${offsetsName}`);
+    validateSinglePackedView(this.boundaryOffsets, ['uint32'], `${id} ${offsetsName}`);
     if (this.boundaryOffsets.length < 2) {
       throw new Error(`${id} ${offsetsName} needs two rows`);
     }
     if (props.geometryType === 'polygons') {
-      validatePackedView(props.featureOffsets, ['uint32'], `${id} featureOffsets`);
-      validatePackedView(props.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
+      validateSinglePackedView(props.featureOffsets, ['uint32'], `${id} featureOffsets`);
+      validateSinglePackedView(props.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_OFFSET_CURVE_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_OFFSET_CURVE_PARAMETER_LENGTH} float32 values`
       );
     }
-    validatePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
     const expectedLength = props.positions.length * this.rowsPerVertex;
     if (props.output.positions.length !== expectedLength) {
       throw new Error(`${id} output.positions must hold ${expectedLength} rows`);
@@ -295,7 +299,7 @@ export class GPUOffsetCurve implements GPUCommandNodeProducer {
       throw new Error(`${id} output is too large`);
     }
     if (props.output.counts) {
-      validatePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
+      validateSinglePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
       if (props.output.counts.length !== props.positions.length) {
         throw new Error(`${id} output.counts must hold ${props.positions.length} rows`);
       }
@@ -362,7 +366,8 @@ fn rotateVector(v: vec2<f32>, angle: f32) -> vec2<f32> {
   let s = sin(angle);
   return vec2<f32>(c * v.x - s * v.y, s * v.x + c * v.y);
 }
-${FIND_LINE_WGSL}`,
+${FIND_LINE_WGSL}
+${EXACT_ORIENTATION_WGSL}`,
         body: /* wgsl */ `let offsetDistance = parameters[parametersOffset];
   let mitreLimit = max(parameters[parametersOffset + 1u], 1.0);
   let magnitude = abs(offsetDistance);
@@ -377,6 +382,8 @@ ${FIND_LINE_WGSL}`,
   var outgoing = vec2<f32>(0.0);
   var incomingLength = 0.0;
   var outgoingLength = 0.0;
+  var previousPoint = center;
+  var nextPoint = center;
   let line = findLine(index);
   if (line != NO_LINE) {
     let lineStart = lineOffsets[lineOffsetsOffset + line];
@@ -395,7 +402,8 @@ ${FIND_LINE_WGSL}`,
       nextRow = lineStart;
     }
     if (previousRow < ROW_COUNT) {
-      let delta = center - getPosition(previousRow);
+      previousPoint = getPosition(previousRow);
+      let delta = center - previousPoint;
       let deltaLength = length(delta);
       if (deltaLength > 0.0) {
         incoming = delta / deltaLength;
@@ -404,7 +412,8 @@ ${FIND_LINE_WGSL}`,
       }
     }
     if (nextRow < ROW_COUNT) {
-      let delta = getPosition(nextRow) - center;
+      nextPoint = getPosition(nextRow);
+      let delta = nextPoint - center;
       let deltaLength = length(delta);
       if (deltaLength > 0.0) {
         outgoing = delta / deltaLength;
@@ -423,7 +432,13 @@ ${FIND_LINE_WGSL}`,
     let normalOut = getLeftNormal(outgoing);
     let a = normalIn * offsetDistance;
     let b = normalOut * offsetDistance;
-    let turn = incoming.x * outgoing.y - incoming.y * outgoing.x;
+    // Which side is the inside of the turn is an exact orientation sign of the three vertices.
+    // The f32 cross product of the two unit directions loses that sign where the edges nearly
+    // reverse (the tip of a sliver thinner than one f32 step): the join then went to the wrong
+    // side and a buffer lost its end cap there. The f32 sign is kept only for input the exact
+    // predicate cannot certify (code 2: non-finite coordinates).
+    let exactTurn = orientSign(previousPoint, center, nextPoint);
+    let turn = select(f32(exactTurn), sign(incoming.x * outgoing.y - incoming.y * outgoing.x), exactTurn == 2);
     let cosTurn = clamp(dot(incoming, outgoing), -1.0, 1.0);
     if (turn * offsetDistance > 0.0 && 1.0 + cosTurn > 1e-6) {
       // Inside of the turn: intersection of the two offset segments.

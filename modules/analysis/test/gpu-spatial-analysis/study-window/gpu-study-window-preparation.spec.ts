@@ -568,3 +568,68 @@ it('GPUStudyWindowPreparation consumes real rectangle-clip output with vanished 
     fixture.buffers.forEach(buffer => buffer.destroy());
   }
 });
+
+it('GPUStudyWindowPreparation totals a large ring and a thousand small ones exactly', async () => {
+  // One rectangle of 8192 by 4096 (area 2^25, where the float32 last place is 4) followed by
+  // 1,000 unit squares. Every ring area and length is an exact float32, and so is the total
+  // 33,555,432, but a plain float32 running sum drops every unit area (2^25 + 1 rounds back to
+  // 2^25) and reports 33,554,432. A float Kahan correction does not help on a shader compiler
+  // that reassociates: it removes the correction term. By hand: area 2^25 + 1000, perimeter
+  // 2 (8192 + 4096) + 4000, 4 + 4000 edges.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rectangle: Point[] = [
+    [0, 0],
+    [8192, 0],
+    [8192, 4096],
+    [0, 4096]
+  ];
+  const islands = Array.from({length: 1000}, (_, index): Point[][] => {
+    const x = 9000 + 2 * (index % 100);
+    const y = 2 * Math.floor(index / 100);
+    return [
+      [
+        [x, y],
+        [x + 1, y],
+        [x + 1, y + 1],
+        [x, y + 1]
+      ]
+    ];
+  });
+  const polygons = createPolygons([[[rectangle], ...islands]]);
+  const graph = new GPUCommandGraph(device);
+  const owned: Buffer[] = [];
+  const input = <Format extends 'uint32' | 'float32x2'>(
+    name: string,
+    values: Float32Array | Uint32Array,
+    format: Format,
+    length = values.length
+  ) => {
+    const buffer = createInputBuffer(device, values);
+    owned.push(buffer);
+    return importGraphBuffer(graph, name, buffer, format, length);
+  };
+  const summaryBuffer = createOutputBuffer(device, 8);
+  owned.push(summaryBuffer);
+  const preparation = new GPUStudyWindowPreparation({
+    positions: input('positions', polygons.positions, 'float32x2', polygons.positions.length / 2),
+    featureOffsets: input('features', polygons.featureOffsets, 'uint32'),
+    polygonOffsets: input('polygons', polygons.polygonOffsets, 'uint32'),
+    ringOffsets: input('rings', polygons.ringOffsets, 'uint32'),
+    samplingGrid: [16, 16],
+    output: {summary: importGraphBuffer(graph, 'summary-copy', summaryBuffer, 'float32', 8)}
+  });
+  graph.add(preparation);
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    const summary = await readFloat32(summaryBuffer, 8);
+    expect(summary[GPU_STUDY_WINDOW_SUMMARY.area]).toBe(33554432 + 1000);
+    expect(summary[GPU_STUDY_WINDOW_SUMMARY.perimeter]).toBe(2 * (8192 + 4096) + 4000);
+    expect(summary[GPU_STUDY_WINDOW_SUMMARY.edgeCount]).toBe(4004);
+  } finally {
+    compiled.destroy();
+    preparation.destroy();
+    owned.forEach(buffer => buffer.destroy());
+  }
+});

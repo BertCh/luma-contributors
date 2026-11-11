@@ -83,9 +83,14 @@ and parts of one feature are never self neighbors. This is the row space of
 `GPUZonalStatistics` and the points-in-polygons recipe, so points -> counts -> W -> Moran chain on
 one feature table without a cast.
 
-- `snapTolerance` (default 0, exact f32 equality) snaps vertices with `floor(x / tolerance + 0.5)`
-  per axis. This is a grid snap, not a distance test: two vertices closer than the tolerance can
-  fall in different cells.
+- `snapTolerance` (default 0, exact f32 equality) snaps vertices with
+  `floor((x - origin) / tolerance + 0.5)` per axis (from 2^23 steps the float32 quotient is an
+  integer and is used as it is), where the origin is the first vertex of the data, so the grid
+  depends on the extent of the data and not on its distance from the coordinate origin. It is the
+  snap key of `GPUCoverageDissolve` and `GPUCoverageSimplification`. This is a grid snap, not a distance test: two vertices closer than the tolerance can
+  fall in different cells. The extent divided by the tolerance must stay at or below
+  `GPU_CONTIGUITY_WEIGHTS_MAXIMUM_SNAP_CELLS` (2^24); pass `coordinateExtent` to have that checked
+  at construction.
 - Exact 64-bit vertex keys, stable radix sorts and run detection; no hashing, so no collisions, and
   the output is deterministic and symmetric.
 - A point shared by `m` features emits `m^2` candidate pairs, bounded by `pairCapacity` (default
@@ -250,14 +255,17 @@ own neighbor; pass `queryPositions` for a cross join. It writes a `GPUSpatialWei
   consumers can binary-search `w_ji`.
 - kNN keeps the `k` smallest `(d^2, id)` pairs, so ties go to the lowest ID. An optional
   `radius` bounds the search. Fewer valid targets give a shorter row.
-- Weights: `binary`, `inverseDistance` (`max(d, distanceFloor)^-power`), or `kernel` (gaussian,
+- Weights: `binary`, `inverseDistance` (`max(d, distanceFloor)^-power`, default floor `1e-6`,
+  the same default as `GPUNearestFeatureWeights`; two rows at the same position then weigh
+  `1e6^power` to each other and, with `rowStandardize`, take nearly all of each other's row, so pass
+  a floor on the scale of the data when positions repeat), or `kernel` (gaussian,
   triangular, epanechnikov, bisquare, uniform). The bandwidth is `radius` in radius mode and the
   row's k-th neighbor distance times 1.0000001 in kNN mode, which is libpysal `Kernel(fixed=False)`
   with the self slot removed (a row with fewer than `k` neighbors uses its farthest listed
   neighbor). `rowStandardize` divides each row by its sum. Non-finite weights are written as 0.
   Rows never hold a self slot: the kernel's self weight `K(0)` is the consumer's `selfWeight`
   (`getGPUSpatialWeightsKernelValue(kernel, 0)`). A zero-weight slot (for example a triangular
-  kernel at `d = radius`, or coincident points under inverse distance with no floor) is not a
+  kernel at `d = radius`, or coincident points under inverse distance with `distanceFloor: 0`) is not a
   neighbor: consumers skip slots whose weight is not positive.
 - Capacity: offsets are clamped to `neighbors.length`, so readers always see consistent, possibly
   truncated rows. `output.status.overflow` is set on the GPU, and `output.status.requiredCount` and
@@ -320,8 +328,16 @@ without `queryMask` and a declared non-row transform; otherwise `'unknown'`), `p
 kernel transforms require. PySAL's `min_threshold_distance` (the smallest band that leaves no
 island) is the maximum of the returned `distances` of a `k = 1` kNN run.
 
-**Dropped rows.** Targets and queries count only when their mask is nonzero, their coordinates are finite, and they
-lie inside the per-frame `bounds`; the others silently become isolates and never a neighbor.
+**Dropped rows.** Targets and self-join rows count only when their mask is nonzero, their coordinates are finite, and
+they lie inside the per-frame `bounds`; the others silently become isolates and never a neighbor. A planar
+cross-join query (`queryPositions`) needs only a nonzero `queryMask` and finite coordinates: a query outside `bounds`
+returns exactly the brute-force neighbors, so `bounds` need only cover the targets. A great-circle query outside
+`bounds` is still empty and counted. A planar query far outside `bounds` (beyond a side or corner by many lattice
+widths) cannot stop its kNN ring walk early and visits every lattice cell in one invocation: with 200,000 targets in
+a 512 x 512 lattice, k = 8 and 2,000 queries the dispatch took about 7.5 ms with the queries inside and about 25 ms
+with them 1e6 beyond a side or corner, same results. When every squared distance of a query overflows float32
+(offsets beyond about 1.8e19), all targets tie at infinity and kNN returns the lowest target IDs, as the scan does,
+on the grid and on the BVH; the written distances of those rows are infinite.
 Pass the optional `output.status.invalidCount` (one uint32) to learn how many masked rows were dropped for a
 non-finite coordinate or for lying outside `bounds` (target rows, plus the query rows of a cross
 join). A self join applies `mask` to the query rows too. Bounds,
@@ -359,11 +375,11 @@ Settings of `getGPUNeighborSearchParameterValues`:
 | Field | Type | Description |
 |---|---|---|
 | `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
-| `bounds` | `readonly [number, number, number, number]` | `[minX, minY, maxX, maxY]` extent of the search lattice. Targets and queries outside it (or with non-finite coordinates) are excluded: they become isolates and never a neighbor, so it must cover every point of interest (count the dropped rows with `invalidCount`). For a great-circle search these are degrees `[minLongitude, minLatitude, maxLongitude, maxLatitude]` with a longitude span of at most 360 (`[-180, -90, 180, 90]` for the world). |
+| `bounds` | `readonly [number, number, number, number]` | `[minX, minY, maxX, maxY]` extent of the search lattice. Targets and self-join rows outside it (or with non-finite coordinates) are excluded: they become isolates and never a neighbor, so it must cover every target of interest (count the dropped rows with `invalidCount`). The planar queries of a cross join are not clipped by it: a query outside the bounds still finds its exact neighbors. For a great-circle search these are degrees `[minLongitude, minLatitude, maxLongitude, maxLatitude]` with a longitude span of at most 360 (`[-180, -90, 180, 90]` for the world). |
 | `radius` (optional) | `number` | In the units of the spatial context (position units, or meters/kilometers of great-circle distance). Radius mode: the distance band (neighbors satisfy `d <= radius`); a non-positive or non-finite radius yields empty rows. kNN mode: an optional maximum distance; `Infinity` (the default) or any non-positive value means unbounded. |
 | `weightKind` (optional) | `GPUNeighborSearchWeightKind` | Weight function. Defaults to `'binary'`. |
 | `power` (optional) | `number` | Inverse-distance exponent. Defaults to 1. |
-| `distanceFloor` (optional) | `number` | Inverse distance uses `max(d, distanceFloor)`. Defaults to 0, in which case coincident points (`d = 0`) get weight 0 because their weight is not finite. |
+| `distanceFloor` (optional) | `number` | Inverse distance uses `max(d, distanceFloor)`, in the length unit of the distances. Defaults to `1e-6`, the default of `GPUNearestFeatureWeights` too, so coincident points (`d = 0`) get the finite weight `distanceFloor^-power` (`1e6` at power 1). An explicit 0 removes the floor: coincident points then get weight 0, because their weight is not finite, and a zero-weight slot is not a neighbor. Under the default, a coincident neighbor outweighs every ordinary neighbor by many orders of magnitude and takes nearly all of a row-standardized row; pass a floor on the scale of the data when positions repeat (see the class documentation). |
 | `kernel` (optional) | `GPUNeighborSearchKernel` | Kernel profile for `weightKind: 'kernel'`. Defaults to `'triangular'`. |
 | `rowStandardize` (optional) | `boolean` | Divides each row's weights by their sum (zero-sum rows stay zero). Defaults to false. |
 | `timeRadius` (optional) | `number` | Time window of a space-time search, in the `temporalContext` unit: a neighbor satisfies `\|t_target - t_query\| <= timeRadius`. Non-positive or non-finite makes every row empty. Required with `times`, and selects the `GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH`-word layout. |
@@ -378,8 +394,9 @@ search a space-time cylinder: a target is a neighbor only when it also satisfies
 `|t_target - t_query| <= timeRadius`, and kNN means the `k` nearest targets inside the window. A
 cross join also needs `queryTimes`. The parameter view grows to
 `GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH` (15) words holding `timeRadius` and `timeBounds`,
-packed by the same `getGPUNeighborSearchParameterValues`. A row whose time is non-finite or
-outside `timeBounds` is invalid like a row outside `bounds`, and `invalidCount` counts it.
+packed by the same `getGPUNeighborSearchParameterValues`. A target or self-join row whose time is non-finite or
+outside `timeBounds` is invalid like a row outside `bounds`, and `invalidCount` counts it; a planar cross-join query
+needs only a finite time.
 
 `timeBucketCount` (compile-time, default 1, at most `GPU_NEIGHBOR_SEARCH_MAXIMUM_TIME_BUCKETS`) also
 indexes the targets by time, so a window much shorter than `timeBounds` skips most of them. It

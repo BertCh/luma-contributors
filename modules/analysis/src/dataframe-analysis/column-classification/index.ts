@@ -7,12 +7,16 @@ export type {GPUColumnQuantilesOutput, GPUColumnQuantilesProps} from './gpu-colu
 export {
   getGPUColumnQuantilesParameterLength,
   getGPUColumnQuantilesParameterValues,
+  getGPUColumnQuantilesRationalProbabilityLength,
+  getGPUColumnQuantilesRationalProbabilityValues,
   GPU_COLUMN_QUANTILE_INTERPOLATION_CODES,
   GPU_COLUMN_QUANTILES_MAXIMUM_QUANTILE_COUNT,
+  GPU_COLUMN_QUANTILES_MAXIMUM_RATIONAL_TERM,
   GPU_COLUMN_QUANTILES_PARAMETER_HEADER_LENGTH
 } from './column-quantiles-parameters';
 export type {
   GPUColumnQuantileInterpolation,
+  GPUColumnQuantileRationalProbability,
   GPUColumnQuantilesSettings
 } from './column-quantiles-parameters';
 export {GPUClassBreaks} from './gpu-class-breaks';
@@ -68,3 +72,19 @@ export type {
   GPUScalarScaleSettings,
   GPUScalarScaleControls
 } from './scalar-scale-parameters';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {computeClassBreaksOnCPU, CPUClassBreaksOperation} from './cpu-class-breaks-operation';
+export type {CPUClassBreaksOptions, CPUClassBreaksResult} from './cpu-class-breaks-operation';
+export {
+  computeColumnQuantilesOnCPU,
+  CPUColumnQuantilesOperation
+} from './cpu-column-quantiles-operation';
+export type {
+  CPUColumnQuantilesInput,
+  CPUColumnQuantilesResult
+} from './cpu-column-quantiles-operation';
+export {GPUClassBreaksOperation} from './gpu-class-breaks-operation';
+export type {ClassBreaksOperationProps} from './gpu-class-breaks-operation';
+export {GPUColumnQuantilesOperation} from './gpu-column-quantiles-operation';
+export type {ColumnQuantilesOperationProps} from './gpu-column-quantiles-operation';

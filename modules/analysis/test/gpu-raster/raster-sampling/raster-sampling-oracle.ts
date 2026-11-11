@@ -89,6 +89,10 @@ export type OracleRaster = {
 function fetchCell(raster: OracleRaster, column: number, row: number): number {
   const cell = row * raster.width + column;
   let value = raster.values[cell];
+  // An infinity is nodata like NaN (the published band rule).
+  if (!Number.isFinite(value)) {
+    value = NaN;
+  }
   if (raster.validity && raster.validity[cell] === 0) {
     value = NaN;
   }

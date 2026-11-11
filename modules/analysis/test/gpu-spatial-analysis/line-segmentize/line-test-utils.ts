@@ -21,19 +21,24 @@ import {
 import {getHaversineDistance} from '../geometry-measures/geodesic-oracle';
 import type {FlatLineResult} from './line-segmentize-oracle';
 
-/** Read-back of a `GPULineGeometryOutput`. */
+/**
+ * Read-back of a `GPULineGeometryOutput`. `count` and `requiredCount` count lines,
+ * `vertexCount` and `requiredVertexCount` count vertices (contributor contract rule 8). With
+ * `minimalStatus` the optional scalars are not wired and read as `NaN`.
+ */
 export type LineLineReadback = {
   positions: number[][];
   lineOffsets: number[];
   count: number;
   overflow: number;
   requiredCount: number;
-  lineCount: number;
   /** Present only when the fixture was built with `withApproximation`. */
   approximation: number;
   sourceLineIndices: number[];
   sourceRows: number[];
   measures: number[];
+  vertexCount: number;
+  requiredVertexCount: number;
 };
 
 /** A compiled single-contributor graph with typed inputs, a parameter buffer and a line output. */
@@ -64,6 +69,11 @@ export function createLineLineFixture(
     withVertexColumns?: boolean;
     /** Whether to request `status.approximation` (only segmentize and arcs write it). Default false. */
     withApproximation?: boolean;
+    /**
+     * Wire only the required `status.count` and `status.overflow`, leaving out `requiredCount`,
+     * `vertexCount` and `requiredVertexCount`. Default false.
+     */
+    minimalStatus?: boolean;
     lineCapacity: number;
     createContributor: (
       inputs: Record<string, GraphDataView>,
@@ -99,11 +109,12 @@ export function createLineLineFixture(
     count: output('count', 1),
     overflow: output('overflow', 1),
     requiredCount: output('total', 1),
-    lineCount: output('line-count', 1),
     approximation: output('approximation', 1),
     sourceLineIndices: output('source-line-indexs', lineCapacity),
     sourceRows: output('source-rows', capacity),
-    measures: output('measures', capacity)
+    measures: output('measures', capacity),
+    vertexCount: output('vertex-count', 1),
+    requiredVertexCount: output('required-vertex-count', 1)
   };
   const parameterBuffer = new GPUParameterBuffer(device, {
     id: 'parameters',
@@ -123,8 +134,31 @@ export function createLineLineFixture(
       status: {
         count: importGraphBuffer(graph, 'o-count', outputs.count, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1),
-        requiredCount: importGraphBuffer(graph, 'o-total', outputs.requiredCount, 'uint32', 1),
-        lineCount: importGraphBuffer(graph, 'o-line-count', outputs.lineCount, 'uint32', 1),
+        ...(options.minimalStatus
+          ? {}
+          : {
+              requiredCount: importGraphBuffer(
+                graph,
+                'o-total',
+                outputs.requiredCount,
+                'uint32',
+                1
+              ),
+              vertexCount: importGraphBuffer(
+                graph,
+                'o-vertex-count',
+                outputs.vertexCount,
+                'uint32',
+                1
+              ),
+              requiredVertexCount: importGraphBuffer(
+                graph,
+                'o-required-vertex-count',
+                outputs.requiredVertexCount,
+                'uint32',
+                1
+              )
+            }),
         ...(options.withApproximation
           ? {
               approximation: importGraphBuffer(
@@ -164,22 +198,28 @@ export function createLineLineFixture(
     async run(parameters) {
       parameterBuffer.write(parameters);
       submitGraph(device, compiled, undefined);
-      const [count] = await readUint32(outputs.count, 1);
+      const lineOffsets = await readUint32(outputs.lineOffsets, lineCapacity + 1);
+      const readOptional = async (buffer: Buffer) =>
+        options.minimalStatus ? Number.NaN : (await readUint32(buffer, 1))[0];
+      const vertexCount = await readOptional(outputs.vertexCount);
+      // The last line offset is the clamped vertex total; it sizes the read when vertexCount is not wired.
+      const writtenVertexCount = options.minimalStatus ? lineOffsets[lineCapacity] : vertexCount;
       const flatPositions = await readFloat32(outputs.positions, 2 * capacity);
       return {
-        positions: Array.from({length: count}, (_, row) => [
+        positions: Array.from({length: writtenVertexCount}, (_, row) => [
           flatPositions[2 * row],
           flatPositions[2 * row + 1]
         ]),
-        lineOffsets: await readUint32(outputs.lineOffsets, lineCapacity + 1),
-        count,
+        lineOffsets,
+        count: (await readUint32(outputs.count, 1))[0],
         overflow: (await readUint32(outputs.overflow, 1))[0],
-        requiredCount: (await readUint32(outputs.requiredCount, 1))[0],
-        lineCount: (await readUint32(outputs.lineCount, 1))[0],
+        requiredCount: await readOptional(outputs.requiredCount),
         approximation: (await readUint32(outputs.approximation, 1))[0],
         sourceLineIndices: await readUint32(outputs.sourceLineIndices, lineCapacity),
-        sourceRows: (await readUint32(outputs.sourceRows, capacity)).slice(0, count),
-        measures: (await readFloat32(outputs.measures, capacity)).slice(0, count)
+        sourceRows: (await readUint32(outputs.sourceRows, capacity)).slice(0, writtenVertexCount),
+        measures: (await readFloat32(outputs.measures, capacity)).slice(0, writtenVertexCount),
+        vertexCount,
+        requiredVertexCount: await readOptional(outputs.requiredVertexCount)
       };
     },
     getCompileCount() {
@@ -214,8 +254,8 @@ export function expectLineLineParity(
   expectedOverflow?: number
 ): number {
   const total = expected.positions.length;
-  expect(actual.requiredCount).toBe(total);
-  expect(actual.count).toBe(Math.min(total, capacity));
+  expect(actual.requiredVertexCount).toBe(total);
+  expect(actual.vertexCount).toBe(Math.min(total, capacity));
   expect(actual.overflow).toBe(expectedOverflow ?? (total > capacity ? 1 : 0));
   expect(actual.lineOffsets).toEqual(
     expected.lineOffsets.map(offset => Math.min(offset, capacity))

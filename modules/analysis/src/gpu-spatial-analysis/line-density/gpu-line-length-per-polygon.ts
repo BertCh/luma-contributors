@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUOverflowStatusPort} from '../../analysis-core/contracts/index';
+import type {
+  GPUCandidateStatusPort,
+  GPUOverflowStatusPort
+} from '../../analysis-core/contracts/index';
 import {
   getGPUGreatCircleRadius,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
@@ -21,7 +24,7 @@ import {
   validateGraphViewsBelongToGraph,
   getStorageBindingElementLimit,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
@@ -87,9 +90,12 @@ export type GPULineLengthPerPolygonOutput = {
    * the BVH, or the per-pair crossing bound), in which case lengths can be low, else `0`.
    * `antimeridianUncertainCount` counts unprepared crossing rings; `poleUncertainCount` counts
    * uncapped pole rings. Both optional counters are rewritten every lon/lat encoding and left
-   * untouched in planar contexts.
+   * untouched in planar contexts. Optional `candidateOverflow` receives `1` when the candidate
+   * stage was incomplete (more (segment, polygon) bounding-box pairs than `pairCapacity`, or a BVH
+   * leaf overflow), else `0`; it leaves out the per-pair crossing bound, which only `overflow`
+   * reports. The output is per polygon, so there is no per-row flag: any polygon may be low.
    */
-  status: GPUOverflowStatusPort & GPULonLatPolygonStatusPort;
+  status: GPUOverflowStatusPort & GPULonLatPolygonStatusPort & GPUCandidateStatusPort;
 };
 
 /**
@@ -215,16 +221,16 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
     this.maximumCrossingCount = props.maximumCrossingCount ?? 64;
     validateCapacity(id, 'pairCapacity', this.pairCapacity);
     validateCapacity(id, 'maximumCrossingCount', this.maximumCrossingCount, 1, 1024);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 2) {
       throw new Error(`${id} needs at least two positions`);
     }
-    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    validateSinglePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
     if (props.lineOffsets.length < 2) {
       throw new Error(`${id} lineOffsets needs two rows`);
     }
     if (props.lineWeights) {
-      validatePackedView(props.lineWeights, ['float32'], `${id} lineWeights`);
+      validateSinglePackedView(props.lineWeights, ['float32'], `${id} lineWeights`);
       if (props.lineWeights.length !== props.lineOffsets.length - 1) {
         throw new Error(`${id} lineWeights must hold one row per line`);
       }
@@ -237,16 +243,16 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
       ['polygonOffsets', props.polygons.polygonOffsets],
       ['ringOffsets', props.polygons.ringOffsets]
     ] as const) {
-      validatePackedView(view, ['uint32'], `${id} polygons.${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} polygons.${name}`);
     }
-    validatePackedView(props.polygons.positions, ['float32x2'], `${id} polygons.positions`);
+    validateSinglePackedView(props.polygons.positions, ['float32x2'], `${id} polygons.positions`);
     this.polygonCount = props.polygons.featureOffsets.length - 1;
     if (this.polygonCount < 1) {
       throw new Error(`${id} polygons must contain at least one feature`);
     }
     const {lengths, weightedLengths, segmentCounts, status} = props.output;
     const {overflow} = status;
-    validatePackedView(lengths, ['float32'], `${id} output.lengths`);
+    validateSinglePackedView(lengths, ['float32'], `${id} output.lengths`);
     if (lengths.length !== this.polygonCount) {
       throw new Error(`${id} output.lengths must hold ${this.polygonCount} rows`);
     }
@@ -254,25 +260,29 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
       if (!props.lineWeights) {
         throw new Error(`${id} output.weightedLengths requires lineWeights`);
       }
-      validatePackedView(weightedLengths, ['float32'], `${id} output.weightedLengths`);
+      validateSinglePackedView(weightedLengths, ['float32'], `${id} output.weightedLengths`);
       if (weightedLengths.length !== this.polygonCount) {
         throw new Error(`${id} output.weightedLengths must hold ${this.polygonCount} rows`);
       }
     }
     if (segmentCounts) {
-      validatePackedView(segmentCounts, ['uint32'], `${id} output.segmentCounts`);
+      validateSinglePackedView(segmentCounts, ['uint32'], `${id} output.segmentCounts`);
       if (segmentCounts.length !== this.polygonCount) {
         throw new Error(`${id} output.segmentCounts must hold ${this.polygonCount} rows`);
       }
     }
-    validatePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
+    validateSinglePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
     if (overflow.length < 1) {
       throw new Error(`${id} output.status.overflow must contain one uint32 row`);
     }
-    for (const name of ['antimeridianUncertainCount', 'poleUncertainCount'] as const) {
+    for (const name of [
+      'antimeridianUncertainCount',
+      'poleUncertainCount',
+      'candidateOverflow'
+    ] as const) {
       const view = status[name];
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
         if (view.length < 1) {
           throw new Error(`${id} output.status.${name} must contain one uint32 row`);
         }
@@ -285,6 +295,7 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
         weightedLengths,
         segmentCounts,
         overflow,
+        status.candidateOverflow,
         status.antimeridianUncertainCount,
         status.poleUncertainCount
       ],
@@ -318,6 +329,7 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
       output.weightedLengths,
       output.segmentCounts,
       output.status.overflow,
+      output.status.candidateOverflow,
       output.status.antimeridianUncertainCount,
       output.status.poleUncertainCount
     ]);
@@ -677,10 +689,24 @@ const POLYGON_COUNT: u32 = ${polygonCount}u;`,
         bindings: [
           {name: 'pairOverflow', view: pairs.status.overflow, type: 'u32', access: 'read'},
           {name: 'crossingOverflow', view: crossingOverflow, type: 'u32', access: 'read'},
-          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'}
+          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'},
+          ...(output.status.candidateOverflow
+            ? [
+                {
+                  name: 'candidateOverflow',
+                  view: output.status.candidateOverflow,
+                  type: 'u32',
+                  access: 'read_write'
+                } as const
+              ]
+            : [])
         ],
         invocationCount: 1,
-        body: `overflow[overflowOffset] = select(0u, 1u, pairOverflow[pairOverflowOffset] != 0u || crossingOverflow[crossingOverflowOffset] != 0u);`
+        body: `overflow[overflowOffset] = select(0u, 1u, pairOverflow[pairOverflowOffset] != 0u || crossingOverflow[crossingOverflowOffset] != 0u);${
+          output.status.candidateOverflow
+            ? '\n  candidateOverflow[candidateOverflowOffset] = select(0u, 1u, pairOverflow[pairOverflowOffset] != 0u);'
+            : ''
+        }`
       })
     );
     return nodes;

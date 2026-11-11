@@ -18,7 +18,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../analysis-core/contracts/status';
@@ -101,7 +101,7 @@ export class GPUHealpixCellAggregation implements GPUCommandNodeProducer {
     const {output} = props;
     validateCapacity(id, 'order', props.order, 0, HEALPIX_MAXIMUM_ORDER);
     validateCapacity(id, 'cellCapacity', props.cellCapacity);
-    validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
+    validateSinglePackedView(props.cells, ['uint32x2'], `${id} cells`);
     const rows = props.cells.length;
     validateRequirement(id, rows >= 1, 'needs at least one row');
     for (const [name, view] of [
@@ -109,12 +109,12 @@ export class GPUHealpixCellAggregation implements GPUCommandNodeProducer {
       ['values', props.values]
     ] as const) {
       if (view) {
-        validatePackedView(view, [view.format], `${id} ${name}`);
+        validateSinglePackedView(view, [view.format], `${id} ${name}`);
         validateRequirement(id, view.length === rows, `${name} length must equal the row count`);
       }
     }
-    validatePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
-    validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
+    validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
+    validateSinglePackedView(output.counts, ['uint32'], `${id} output.counts`);
     validateRequirement(
       id,
       output.cells.length === props.cellCapacity && output.counts.length === props.cellCapacity,
@@ -124,7 +124,7 @@ export class GPUHealpixCellAggregation implements GPUCommandNodeProducer {
       const view = output[name];
       if (view) {
         validateRequirement(id, Boolean(props.values), `output.${name} needs values`);
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         validateRequirement(
           id,
           view.length === props.cellCapacity,

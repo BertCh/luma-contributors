@@ -210,11 +210,13 @@ for (const blocked of [false, true]) {
       await compareOutputs();
       expect(await readStatistics()).toEqual([8, 10]);
 
-      expect(() => retained.setMean(NaN)).toThrow();
-      expect(() => retained.setDrawParameters({replicateCount: 17})).toThrow();
+      expect(() => retained.setMean(NaN)).toThrow(/^\S+ mean must be a finite number/);
+      expect(() => retained.setDrawParameters({replicateCount: 17})).toThrow(
+        /^\S+ replicateCount must be an integer in \[1, 16\]/
+      );
       expect(() =>
         retained.setDrawParameters({replicateOffset: 0xffffffff, replicateCount: 2})
-      ).toThrow();
+      ).toThrow(/^\S+ replicateOffset \+ replicateCount must be at most 4294967296/);
       await compareOutputs();
       expect(await readStatistics()).toEqual([8, 10]);
     } finally {
@@ -224,6 +226,8 @@ for (const blocked of [false, true]) {
       for (const write of scope.initialWrites) expect(write.buffer.destroyed).toBe(false);
       scope.destroy();
     }
-    expect(() => retained.invalidatePreparation()).toThrow();
+    expect(() => retained.invalidatePreparation()).toThrow(
+      /^\S+ preparation controls need reusePreparation and a producer that was not destroyed/
+    );
   });
 }

@@ -39,3 +39,36 @@ export type {
   GPUTrajectoryTriplegOutput,
   GPUTrajectoryTripOutput
 } from './gpu-trajectory-segments';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeTrajectoryStaypointsOnCPU,
+  CPUTrajectoryStaypointsOperation
+} from './cpu-trajectory-staypoints-operation';
+export type {
+  CPUTrajectoryStaypointsInput,
+  CPUTrajectoryStaypointsResult
+} from './cpu-trajectory-staypoints-operation';
+export {GPUTrajectoryStaypointsOperation} from './gpu-trajectory-staypoints-operation';
+export type {TrajectoryStaypointsOperationProps} from './gpu-trajectory-staypoints-operation';
+export {
+  computeTrajectoryLocationsOnCPU,
+  CPUTrajectoryLocationsOperation
+} from './cpu-trajectory-locations-operation';
+export type {
+  CPUTrajectoryLocationsInput,
+  CPUTrajectoryLocationsResult
+} from './cpu-trajectory-locations-operation';
+export {
+  computeTrajectorySegmentsOnCPU,
+  CPUTrajectorySegmentsOperation
+} from './cpu-trajectory-segments-operation';
+export type {
+  CPUTrajectorySegmentsInput,
+  CPUTrajectorySegmentsOptions,
+  CPUTrajectorySegmentsResult
+} from './cpu-trajectory-segments-operation';
+export {GPUTrajectoryLocationsOperation} from './gpu-trajectory-locations-operation';
+export type {TrajectoryLocationsOperationProps} from './gpu-trajectory-locations-operation';
+export {GPUTrajectorySegmentsOperation} from './gpu-trajectory-segments-operation';
+export type {TrajectorySegmentsOperationProps} from './gpu-trajectory-segments-operation';

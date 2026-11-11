@@ -45,7 +45,8 @@ export function computeVariogramOnCPU(
   forEachPair(scene, frame, 'unordered', ({focus, neighbor, deltaX, deltaY, distance}) => {
     const lag = getDistanceBin(distance, frame.maximumDistance, lagCount);
     let sector = 0;
-    if (directionCount > 1) {
+    // A coincident pair has no direction and stays in sector 0.
+    if (directionCount > 1 && (deltaX !== 0 || deltaY !== 0)) {
       const angle = Math.atan2(deltaY, deltaX) - offset;
       const reduced = angle - Math.floor(angle / Math.PI) * Math.PI;
       sector = Math.min(
@@ -79,7 +80,9 @@ export function computeVariogramOnCPU(
     semivariances: pairCounts.map((count, bin) => (count ? squareSums[bin] / count : NaN)),
     meanDistances: pairCounts.map((count, bin) => (count ? distanceSums[bin] / count : NaN)),
     robustSemivariances: pairCounts.map((count, bin) =>
-      count ? (robustSums[bin] / count) ** 4 / (2 * (0.457 + 0.494 / count)) : NaN
+      count
+        ? (robustSums[bin] / count) ** 4 / (2 * (0.457 + 0.494 / count + 0.045 / (count * count)))
+        : NaN
     ),
     statistics: [n, mean, variance, minimum, maximum],
     semivarianceTolerance: (maximum - minimum) ** 2 * 2 ** -26

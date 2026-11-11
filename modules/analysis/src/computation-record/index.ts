@@ -92,10 +92,13 @@ export type {
   GPUComputationRecordedResource
 } from './computation-recorder';
 export {
+  createWGSLKernelNodeAnnotation,
   describeGPUCommandGraph,
   describeGPUCommandGraphEncoding,
   getGPUCommandGraphPassIndices
 } from './describe-command-graph';
+export {submitGPUCommandGraphWithTimings} from './submit-timed-command-graph';
+export type {GPUCommandGraphTimedSubmission} from './submit-timed-command-graph';
 export type {
   GPUCommandGraphDescription,
   DescribeGPUCommandGraphOptions

@@ -49,6 +49,37 @@ it('exactProbeCrossing matches the CPU reference on integer ties', async () => {
       kind === 0 ? createPointProbe(start) : createSideProbe(start, end, kind === 1 ? 1 : -1);
     cases.push({c, d, probe});
   }
+  // Side probes whose two heights have a midpoint that float32 cannot hold (adjacent values, or
+  // values of unlike magnitude and sign), against edges with endpoints at those heights and at
+  // the rounded midpoint. The reference decides the height at the exact midpoint with integers
+  // (math correctness review 2026-11-10, polygon-topology-01).
+  const step = 2 ** -23;
+  const heights = [
+    0,
+    1,
+    1 + step,
+    1 + 2 * step,
+    1 + 3 * step,
+    -1,
+    3,
+    4000000,
+    4000000.25,
+    4000000.5,
+    2 ** 24,
+    2 ** 24 + 2,
+    2 ** 24 + 4,
+    2 ** 24 + 8,
+    -(2 ** 24),
+    2 ** 25
+  ];
+  const height = () => heights[Math.floor(random() * heights.length)];
+  for (let index = 0; index < 4096; index++) {
+    const start: Point = [integer(), height()];
+    const end: Point = [integer(), height()];
+    const probe = createSideProbe(start, end, index % 2 === 0 ? 1 : -1);
+    const edgeHeight = () => (random() < 0.4 ? probe.point[1] : height());
+    cases.push({c: [integer(), edgeHeight()], d: [integer(), edgeHeight()], probe});
+  }
   for (const value of [NaN, Infinity, -Infinity]) {
     cases.push({c: [2, value], d: [2, 2], probe: createPointProbe([0, 1])});
   }

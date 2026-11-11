@@ -17,7 +17,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -113,8 +113,8 @@ export type GPUCellPeriodKeysProps = {
  *
  * Limits: `periodCount` at most `2^32 - 3`. Downstream, `GPUGroupStatistics` keeps at most
  * `getGPUGroupStatisticsMaximumGroupCount` (8,388,608 on a default device) distinct (cell, period)
- * groups and sums with a fixed absolute resolution of `1 / sumScale`, unlike `GPUValueCube`, whose
- * unit follows the data.
+ * groups. Its `sumValues` and `means` use a unit that follows the data, as `GPUValueCube` does;
+ * only its `sums` words have the fixed resolution `1 / sumScale`.
  */
 export class GPUCellPeriodKeys implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -144,16 +144,16 @@ export class GPUCellPeriodKeys implements GPUCommandNodeProducer {
       props.fill === 'ones' || props.fill === 'zeros',
       "fill must be 'ones' or 'zeros'"
     );
-    validatePackedView(cells, ['uint32x2'], `${id} cells`);
-    validatePackedView(periods, ['uint32'], `${id} periods`);
+    validateSinglePackedView(cells, ['uint32x2'], `${id} cells`);
+    validateSinglePackedView(periods, ['uint32'], `${id} periods`);
     this.rowCount = cells.length;
     validateRequirement(id, this.rowCount >= 1, 'needs at least one row');
     validateViewLength(id, 'periods', periods, this.rowCount);
     if (mask) {
-      validatePackedView(mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(mask, ['uint32'], `${id} mask`);
       validateViewLength(id, 'mask', mask, this.rowCount);
     }
-    validatePackedView(output.keys, ['uint32x2'], `${id} output.keys`);
+    validateSinglePackedView(output.keys, ['uint32x2'], `${id} output.keys`);
     validateViewLength(id, 'output.keys', output.keys, this.rowCount);
     validateGPUStatusPort(id, {invalidCount: output.status?.invalidCount});
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());

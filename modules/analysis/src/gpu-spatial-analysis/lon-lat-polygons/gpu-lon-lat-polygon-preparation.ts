@@ -21,7 +21,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createLinePrefixNode,
@@ -142,29 +142,29 @@ export class GPULonLatPolygonPreparation implements GPUCommandNodeProducer {
     if (props.poleRings !== undefined && !['cap', 'reject'].includes(props.poleRings)) {
       throw new Error(`${id} poleRings must be cap or reject`);
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
     for (const name of ['featureOffsets', 'polygonOffsets', 'ringOffsets'] as const) {
-      validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(props[name], ['uint32'], `${id} ${name}`);
       if (props[name].length < 2) {
         throw new Error(`${id} ${name} needs two rows`);
       }
-      validatePackedView(props.output[name], ['uint32'], `${id} output.${name}`);
+      validateSinglePackedView(props.output[name], ['uint32'], `${id} output.${name}`);
       const length = name === 'featureOffsets' ? props[name].length : 2 * props[name].length - 1;
       if (props.output[name].length !== length) {
         throw new Error(`${id} output.${name} must hold ${length} rows`);
       }
     }
     if (props.output.ringFlags) {
-      validatePackedView(props.output.ringFlags, ['uint32'], `${id} output.ringFlags`);
+      validateSinglePackedView(props.output.ringFlags, ['uint32'], `${id} output.ringFlags`);
       if (props.output.ringFlags.length !== props.ringOffsets.length - 1) {
         throw new Error(`${id} output.ringFlags must hold ${props.ringOffsets.length - 1} rows`);
       }
     }
-    validatePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LON_LAT_POLYGON_PREPARATION_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must hold 4 float32 values`);
     }
@@ -274,9 +274,8 @@ export class GPULonLatPolygonPreparation implements GPUCommandNodeProducer {
         starts: denseStarts,
         outputLineOffsets: denseOffsets,
         capacity,
-        count: words('dense-count', 1),
         overflow: words('dense-overflow', 1),
-        requiredCount: denseTotal
+        requiredVertexCount: denseTotal
       })
     );
     const capCounts = words('cap-counts', ringCount);
@@ -472,12 +471,11 @@ export class GPULonLatPolygonPreparation implements GPUCommandNodeProducer {
         id: `${id}-publish`,
         operation: OPERATION,
         capacity: output.positions.length,
-        ringCount: 2 * ringCount,
         stageFlags,
-        count: output.status.count ?? words('output-count', 1),
         overflow: output.status.overflow,
-        requiredCount: output.status.requiredCount,
-        requiredCountIndex: 4
+        vertexCount: output.status.count,
+        requiredVertexCount: output.status.requiredCount,
+        requiredVertexCountIndex: 4
       })
     );
     return nodes;

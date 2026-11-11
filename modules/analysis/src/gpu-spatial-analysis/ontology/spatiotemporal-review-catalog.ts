@@ -585,7 +585,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     tests: MOB07_TESTS,
     documentation: MOB07_HOME_RANGE_DOCUMENTATION,
     summary:
-      'Revisits, residence time and first passage time of the circles around each fix, with interpolated circle crossings (recurse and Fauchald and Tveraa definitions).',
+      'Revisits, residence time and forward-only first passage time of the circles around each fix, with interpolated circle crossings (recurse definitions; first passage time after Fauchald and Tveraa, forward leg only).',
     contract: 'GPUTrajectoryRecursionsProps'
   },
   GPUModalSplit: {
@@ -670,7 +670,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     status: ['approximation'],
     tests: `${TEST_ROOT}/stx08-spatial-methods/stx08-redcap-single-linkage.spec.ts`,
     summary:
-      'First-order single-linkage REDCAP: the contiguity-constrained single-linkage cut at a per-frame region count, from the minimum spanning tree.',
+      'Contiguity-constrained single-linkage clustering cut at a per-frame region count, from the minimum spanning tree: the tree of first-order single-linkage REDCAP with the heaviest edges removed, not its SSD partition (that is GPUSkaterRegions).',
     contract: 'GPURedcapSingleLinkageProps'
   },
   GPUCategoryPairCounts: {
@@ -717,7 +717,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     tests: `${TEST_ROOT}/stx08-spatial-methods/stx08-local-category-dependence.spec.ts`,
     documentation: `${DOCUMENTATION_ROOT}/colocation-category-dependence-adaptive-density.md`,
     summary:
-      'Local composition of local indicators for categorical data (Boots 2003; spdep licd_multi): own-category neighbour count, proportion, binomial upper tail and z score per row.',
+      'Local composition measure for categorical data after Boots (2003), focal row excluded: own-category neighbour count, local share, binomial upper tail against the global share and z score per row.',
     contract: 'GPULocalCategoryDependenceProps'
   },
   GPUAdaptiveBandwidthKernelDensity: {
@@ -787,6 +787,24 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     summary:
       'Distinct HEALPix cells in key order with row counts and per-cell sums, minima and maxima of a value column.',
     contract: 'GPUHealpixCellAggregationProps'
+  },
+  addRasterResistanceConnectivityRecipe: {
+    primaryCapability: 'coverage-landscape-ecology',
+    inputs: ['surface', 'parameters'],
+    outputs: ['attributes', 'summary'],
+    coordinateModels: ['grid'],
+    dimensionality: '2d',
+    topology: 'fixed',
+    cardinality: 'source-sized',
+    semantics: 'model-based',
+    deterministic: true,
+    status: ['converged', 'iterationLimitReached', 'invalidCount'],
+    evidence: 'partial',
+    tests: `${TEST_ROOT}/urban-ecology/raster-resistance-connectivity.spec.ts`,
+    documentation: `${DOCUMENTATION_ROOT}/landscape-ecology.md`,
+    summary:
+      'Circuit potentials and current map across a resistance raster: 4- or 8-neighbour conductances 2 / (R(a) + R(b)) / edgeLength built on the GPU, then the sparse Jacobi-PCG solve between one source and one sink cell.',
+    contract: 'GPURasterResistanceConnectivityProps'
   }
 };
 

@@ -35,7 +35,7 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
               spacing: [15, 15]
             },
             values: view('float32', sourceCount),
-            validity: view('uint32', sourceCount),
+            mask: view('uint32', sourceCount),
             normalization,
             weightMode: weightMode === 'scratch' ? undefined : weightMode,
             preparedWeights:
@@ -77,7 +77,7 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
           adjacency: view('uint32', 256 * 256),
           weights: view('float32', 256 * 256),
           mapping: view('uint32', 256),
-          status: view('uint32', 1)
+          status: {iterationLimitReached: view('uint32', 1)}
         }
       });
     }
@@ -91,7 +91,7 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
         new GPURasterTexture({
           grid: makeGPURasterMetadata({width: count, height: 1}),
           values: view('float32', count),
-          validity: view('uint32', count),
+          mask: view('uint32', count),
           levels: 32,
           radius: 8,
           offset: [8, -8],
@@ -115,7 +115,7 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
           cellCount,
           sliceCount: 256,
           values: view('float32', length),
-          validity: view('uint32', length),
+          mask: view('uint32', length),
           operation,
           windowLength: 15,
           polynomialOrder: 3,
@@ -141,7 +141,7 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
           cellCount,
           sliceCount: 256,
           values: view('float32', length),
-          validity: view('uint32', length),
+          mask: view('uint32', length),
           operation: 'savitzky-golay',
           windowLength: 15,
           polynomialOrder: 3,
@@ -181,8 +181,8 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
           grid: makeGPURasterMetadata({width: 512, height: 512}),
           reference: view('float32', 512 ** 2),
           moving: view('float32', 512 ** 2),
-          referenceValidity: view('uint32', 512 ** 2),
-          movingValidity: view('uint32', 512 ** 2),
+          referenceMask: view('uint32', 512 ** 2),
+          movingMask: view('uint32', 512 ** 2),
           maximumShift: [511, 511],
           minimumOverlapFraction: 1,
           minimumOverlapCount: 512 ** 2,
@@ -215,7 +215,7 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
             adjacency: view('uint32', 256 ** 2),
             weights: view('float32', 256 ** 2),
             mapping: view('uint32', 256),
-            status: view('uint32', 1)
+            status: {iterationLimitReached: view('uint32', 1)}
           }
         })
       );
@@ -233,7 +233,7 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
           bandCount,
           endmemberCount: 8,
           values: view('float32', cellCount * bandCount),
-          validity: view('uint32', cellCount * bandCount),
+          mask: view('uint32', cellCount * bandCount),
           endmembers: view('float32', bandCount * 8),
           constraint,
           maximumIterations: 4096,
@@ -260,7 +260,7 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
           period: 12,
           minimumSegmentLength: 3,
           values: view('float32', length),
-          validity: view('uint32', length),
+          mask: view('uint32', length),
           output: {
             coefficients: view('float32', cellCount * 5),
             components: view('float32', length * 3),
@@ -291,7 +291,7 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
               missingPolicy: 'interpolate',
               monitoring: {historyLength: 128, threshold: 4, minimumConsecutive: 3},
               values: view('float32', cellCount * 256),
-              validity: view('uint32', cellCount * 256),
+              mask: view('uint32', cellCount * 256),
               output: {
                 coefficients: view('float32', cellCount * 14),
                 components: view('float32', cellCount * 256 * 3),
@@ -332,7 +332,7 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
                   ? {historyLength, threshold: 4, minimumConsecutive: 1}
                   : undefined,
               values: view('float32', 256),
-              validity: view('uint32', 256),
+              mask: view('uint32', 256),
               output: {
                 coefficients: view('float32', columns),
                 components: view('float32', 768),

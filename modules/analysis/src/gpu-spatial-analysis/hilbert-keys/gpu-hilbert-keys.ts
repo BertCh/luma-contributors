@@ -19,7 +19,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -158,14 +158,14 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
       if (minima || maxima) {
         throw new Error(`${id} takes positions or minima and maxima, not both`);
       }
-      validatePackedView(positions, ['float32x2'], `${id} positions`);
+      validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
       this.itemCount = positions.length;
     } else {
       if (!minima || !maxima) {
         throw new Error(`${id} needs positions, or minima and maxima`);
       }
-      validatePackedView(minima, ['float32x2'], `${id} minima`);
-      validatePackedView(maxima, ['float32x2'], `${id} maxima`);
+      validateSinglePackedView(minima, ['float32x2'], `${id} minima`);
+      validateSinglePackedView(maxima, ['float32x2'], `${id} maxima`);
       if (minima.length !== maxima.length) {
         throw new Error(`${id} minima and maxima must have the same length`);
       }
@@ -175,7 +175,7 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one item`);
     }
     if (bounds) {
-      validatePackedView(bounds, ['float32'], `${id} bounds`);
+      validateSinglePackedView(bounds, ['float32'], `${id} bounds`);
       if (bounds.length < GPU_HILBERT_BOUNDS_LENGTH) {
         throw new Error(`${id} bounds must hold ${GPU_HILBERT_BOUNDS_LENGTH} float32 values`);
       }
@@ -187,7 +187,7 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
       ['sortedKeys', sortedKeys]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== this.itemCount) {
           throw new Error(`${id} output.${name} must have one row per item`);
         }

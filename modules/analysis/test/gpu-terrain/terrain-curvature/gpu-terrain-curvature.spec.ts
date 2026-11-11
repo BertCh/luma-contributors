@@ -151,6 +151,10 @@ function createFixture(
         ringCurvature: importGraphBuffer(graph, 'ring-output', ring, 'float32', PIXEL_COUNT),
         outputValidity: importGraphBuffer(graph, 'validity', validity, 'uint32', PIXEL_COUNT)
       },
+      // The TypeScript oracle of this file models the 'clamp' and 'nodata' borders, so the
+      // fixture names 'clamp'. The default 'one-sided' border is pinned by closed forms in
+      // terrain-analysis/terrain-border-row-direction.spec.ts.
+      borderMode: 'clamp',
       ...overrides
     })
   );
@@ -389,7 +393,13 @@ it('GPUTerrainCurvature handles nodata, row direction, and cell size models', as
     },
     {
       settings: {zFactor: 0.5},
-      grid: UNIT_GRID,
+      // The row direction must agree with the grid: rows advance north on this one.
+      grid: makeGPURasterMetadata({
+        width: WIDTH,
+        height: HEIGHT,
+        cellSize: 10,
+        rowDirection: 'north'
+      }),
       options: {method: 'zevenbergen-thorne', rowDirection: 'north'}
     },
     {
@@ -418,7 +428,7 @@ it('GPUTerrainCurvature handles nodata, row direction, and cell size models', as
       {
         grid,
         method: options.method,
-        borderMode: options.borderMode,
+        borderMode: options.borderMode ?? 'clamp',
         rowDirection: options.rowDirection,
         cellSizeMode: options.cellSizeMode,
         ringRadii: [2, 5]

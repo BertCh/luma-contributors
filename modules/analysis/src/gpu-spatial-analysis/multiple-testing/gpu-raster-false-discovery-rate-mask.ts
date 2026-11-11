@@ -16,7 +16,7 @@ import {
   validateFiniteNumber,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -140,29 +140,29 @@ export class GPURasterFalseDiscoveryRateMask implements GPUCommandNodeProducer {
     );
     const {output} = props;
     validateCapacity(id, 'cellCount', props.cellCount, 1, GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1);
-    validatePackedView(props.pValues, ['float32'], `${id} pValues`);
-    validatePackedView(output.significant, ['uint32'], `${id} output.significant`);
+    validateSinglePackedView(props.pValues, ['float32'], `${id} pValues`);
+    validateSinglePackedView(output.significant, ['uint32'], `${id} output.significant`);
     validateRequirement(
       id,
       props.pValues.length === props.cellCount && output.significant.length === props.cellCount,
       'pValues and output.significant must hold cellCount entries'
     );
     if (props.validity) {
-      validatePackedView(props.validity, ['uint32'], `${id} validity`);
+      validateSinglePackedView(props.validity, ['uint32'], `${id} validity`);
       validateRequirement(
         id,
         props.validity.length === props.cellCount,
         'validity must hold cellCount entries'
       );
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       props.parameters.length >= GPU_RASTER_FALSE_DISCOVERY_RATE_MASK_PARAMETER_LENGTH,
       `parameters must hold ${GPU_RASTER_FALSE_DISCOVERY_RATE_MASK_PARAMETER_LENGTH} entry`
     );
     if (output.adjustedPValues) {
-      validatePackedView(output.adjustedPValues, ['float32'], `${id} output.adjustedPValues`);
+      validateSinglePackedView(output.adjustedPValues, ['float32'], `${id} output.adjustedPValues`);
       validateRequirement(
         id,
         output.adjustedPValues.length === props.cellCount,
@@ -174,12 +174,12 @@ export class GPURasterFalseDiscoveryRateMask implements GPUCommandNodeProducer {
       ['significantCount', output.significantCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         validateRequirement(id, view.length === 1, `${name} must hold one entry`);
       }
     }
     if (output.criticalPValue) {
-      validatePackedView(output.criticalPValue, ['float32'], `${id} output.criticalPValue`);
+      validateSinglePackedView(output.criticalPValue, ['float32'], `${id} output.criticalPValue`);
       validateRequirement(
         id,
         output.criticalPValue.length === 1,
@@ -187,7 +187,7 @@ export class GPURasterFalseDiscoveryRateMask implements GPUCommandNodeProducer {
       );
     }
     if (output.histogram) {
-      validatePackedView(output.histogram, ['uint32'], `${id} output.histogram`);
+      validateSinglePackedView(output.histogram, ['uint32'], `${id} output.histogram`);
       validateCapacity(
         id,
         'output.histogram bin count',

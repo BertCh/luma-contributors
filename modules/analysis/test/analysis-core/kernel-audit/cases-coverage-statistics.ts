@@ -387,18 +387,18 @@ export const COVERAGE_STATISTICS_CASES: KernelAuditCase[] = [
           polygons: {
             kind: 'polygons',
             positions: view('float32x2', 65536),
-            featureOffsets: view('uint32', 513),
+            featureOffsets: view('uint32', 65537),
             polygonOffsets: view('uint32', 16385),
             ringOffsets: view('uint32', 16385)
           },
           tolerance: 1,
           output: {
-            offsets: view('uint32', 513),
-            neighbors: view('uint32', 512 * 511),
-            weights: view('float32', 512 * 511),
-            distances: view('float32', 512 * 511),
-            added: view('uint32', 512 * 511),
-            featureStatus: view('uint32', 512),
+            offsets: view('uint32', 65537),
+            neighbors: view('uint32', 65536 * 16),
+            weights: view('float32', 65536 * 16),
+            distances: view('float32', 65536 * 16),
+            added: view('uint32', 65536 * 16),
+            featureStatus: view('uint32', 65536),
             status: {overflow: view('uint32', 1), requiredCount: view('uint32', 1)}
           }
         })
@@ -421,6 +421,31 @@ export const COVERAGE_STATISTICS_CASES: KernelAuditCase[] = [
             attachment: view('uint32', 65535),
             added: view('uint32', 65535 * 10),
             status: {overflow: view('uint32', 1), requiredCount: view('uint32', 1)}
+          }
+        })
+      );
+    }
+  })),
+  ...(['scan', 'grid'] as const).map(nearestSearch => ({
+    exportName: 'GPUIslandAttachment',
+    name: `maximum-nearest-search-${nearestSearch}`,
+    build({graph, view, weights}: KernelAuditContext) {
+      graph.add(
+        new spatial.GPUIslandAttachment({
+          weights: weights(65535),
+          positions: view('float32x2', 65535),
+          nearestSearch,
+          output: {
+            offsets: view('uint32', 65536),
+            neighbors: view('uint32', 65535 * 10),
+            weights: view('float32', 65535 * 10),
+            attachment: view('uint32', 65535),
+            added: view('uint32', 65535 * 10),
+            status: {
+              overflow: view('uint32', 1),
+              requiredCount: view('uint32', 1),
+              uncertainCount: view('uint32', 1)
+            }
           }
         })
       );

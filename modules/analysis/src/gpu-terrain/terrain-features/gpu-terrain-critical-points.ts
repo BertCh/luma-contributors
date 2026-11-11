@@ -12,7 +12,7 @@ import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
@@ -116,18 +116,18 @@ export class GPUTerrainCriticalPoints implements GPUCommandNodeProducer {
     if (props.connectivity !== undefined && props.connectivity !== 8 && props.connectivity !== 6) {
       throw new Error(`${id} connectivity must be 8 or 6`);
     }
-    validatePackedView(output.classes, ['uint32'], `${id} output.classes`);
+    validateSinglePackedView(output.classes, ['uint32'], `${id} output.classes`);
     if (output.classes.length !== pixelCount) {
       throw new Error(`${id} output.classes must contain one value per pixel`);
     }
     if (output.signChanges) {
-      validatePackedView(output.signChanges, ['uint32'], `${id} output.signChanges`);
+      validateSinglePackedView(output.signChanges, ['uint32'], `${id} output.signChanges`);
       if (output.signChanges.length !== pixelCount) {
         throw new Error(`${id} output.signChanges must contain one value per pixel`);
       }
     }
     if (output.counts) {
-      validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
+      validateSinglePackedView(output.counts, ['uint32'], `${id} output.counts`);
       if (output.counts.length !== GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT) {
         throw new Error(`${id} output.counts must contain one value per class (6)`);
       }

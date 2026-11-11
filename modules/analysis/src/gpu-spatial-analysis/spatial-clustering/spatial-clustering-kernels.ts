@@ -46,8 +46,11 @@ export type SpatialClusteringGridViews = {
  * against `sin^2(epsilon / (2 R))`; the minimum cell height is `epsilon / R` of latitude and the
  * minimum cell width is `2 asin(sin(epsilon / (2 R)) / cos(maxAbsLatitude))` of longitude (360
  * degrees when that ratio nears 1, so close to a pole one column spans the extent). Both are
- * exact bounds for any two points inside the bounds, so the 3x3 walk stays exact. The walk does
- * not wrap at the antimeridian.
+ * exact bounds for any two points inside the bounds, so the 3x3 walk stays exact. The walk wraps
+ * at the antimeridian: besides the 3x3 cells of a point it scans the columns within one cell
+ * width of the point's images at `x - 360` and `x + 360` (see `getNeighborLoopWGSL`), so points
+ * on the two sides of +-180 are neighbors exactly when their great-circle distance says so, as
+ * in `GPUOPTICS` through `GPUNeighborSearch`.
  *
  * @internal
  */
@@ -189,6 +192,17 @@ function getNeighborLoopWGSL(
   keepGoing: string = 'true',
   temporal: boolean = false
 ): string {
+  // Scans the points of cell (cellRow, cellColumn).
+  const cellScan = `let cell = cellRow * COLUMNS + cellColumn;
+      let start = cellOffsets[cellOffsetsOffset + cell];
+      let end = cellOffsets[cellOffsetsOffset + cell + 1u];
+      for (var slot = start; slot < end && ${keepGoing}; slot++) {
+        if (isWithinEpsilon(lattice, x, y, cellPositions[cellPositionsOffset + slot * 2u],
+            cellPositions[cellPositionsOffset + slot * 2u + 1u])${temporal ? ' &&\n            isWithinTime(lattice, time, cellTimes[cellTimesOffset + slot])' : ''}) {
+          let neighbor = sortedRows[sortedRowsOffset + slot];
+          ${action}
+        }
+      }`;
   return /* wgsl */ `
   let column = getCellColumn(lattice, x);
   let row = getCellRow(lattice, y);
@@ -198,16 +212,38 @@ function getNeighborLoopWGSL(
   let lastRow = min(row + 1u, lattice.rows - 1u);
   for (var cellRow = firstRow; cellRow <= lastRow && ${keepGoing}; cellRow++) {
     for (var cellColumn = firstColumn; cellColumn <= lastColumn && ${keepGoing}; cellColumn++) {
-      let cell = cellRow * COLUMNS + cellColumn;
-      let start = cellOffsets[cellOffsetsOffset + cell];
-      let end = cellOffsets[cellOffsetsOffset + cell + 1u];
-      for (var slot = start; slot < end && ${keepGoing}; slot++) {
-        if (isWithinEpsilon(lattice, x, y, cellPositions[cellPositionsOffset + slot * 2u],
-            cellPositions[cellPositionsOffset + slot * 2u + 1u])${temporal ? ' &&\n            isWithinTime(lattice, time, cellTimes[cellTimesOffset + slot])' : ''}) {
-          let neighbor = sortedRows[sortedRowsOffset + slot];
-          ${action}
+      ${cellScan}
+    }
+  }
+  if (GEOGRAPHIC) {
+    // Longitude is periodic: a neighbor across +-180 lies within one cell width of the point's
+    // image at x - 360 or x + 360. Each image that reaches the bounds adds the columns its
+    // interval covers, less the columns already scanned, so no point is visited twice. The slack
+    // covers the rounding of x +- 360; a wider interval only adds candidates, which the haversine
+    // test (periodic in longitude by itself) still decides.
+    let imageSlack = 360.0 * 0x1p-20;
+    var otherFirst = 1u;
+    var otherLast = 0u;
+    for (var wrapSide = 0u; wrapSide < 2u && ${keepGoing}; wrapSide++) {
+      let image = x + select(-360.0, 360.0, wrapSide == 1u);
+      let imageLow = image - lattice.cellWidth - imageSlack;
+      let imageHigh = image + lattice.cellWidth + imageSlack;
+      if (imageHigh < lattice.minimumX || imageLow > lattice.maximumX) {
+        continue;
+      }
+      let wrappedFirst = getCellColumn(lattice, max(imageLow, lattice.minimumX));
+      let wrappedLast = getCellColumn(lattice, min(imageHigh, lattice.maximumX));
+      for (var cellRow = firstRow; cellRow <= lastRow && ${keepGoing}; cellRow++) {
+        for (var cellColumn = wrappedFirst; cellColumn <= wrappedLast && ${keepGoing}; cellColumn++) {
+          if ((cellColumn >= firstColumn && cellColumn <= lastColumn) ||
+              (cellColumn >= otherFirst && cellColumn <= otherLast)) {
+            continue;
+          }
+          ${cellScan}
         }
       }
+      otherFirst = wrappedFirst;
+      otherLast = wrappedLast;
     }
   }`;
 }

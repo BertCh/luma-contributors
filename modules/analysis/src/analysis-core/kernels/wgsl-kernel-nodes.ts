@@ -2,13 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  assert,
-  Buffer,
-  type Binding,
-  type BindingDeclaration,
-  type TextureView
-} from '@luma.gl/core';
+import {Buffer, type Binding, type BindingDeclaration, type TextureView} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import {
   createGPUComputeCommandNode,
@@ -515,7 +509,108 @@ fn main(
       };
     }
   });
+  // One WeakMap lookup when the graph records nothing. When it does, the entry references only
+  // values the node's compile and encode closures already hold.
+  WGSL_KERNEL_NODE_RECORDS.get(graph)?.set(props.id, {props, source, workgroupSize, layout});
   return node;
+}
+
+/** Kernel facts of one node built by {@link createWGSLKernelNode}, for computation records. */
+export type WGSLKernelNodeRecord = {
+  /** Graph-wide node ID. */
+  id: string;
+  /** Operation (contributor or operator) name from the workload estimate. */
+  operation: string;
+  /** Implementation variant from the workload estimate, when set. */
+  variant?: string;
+  /** Full generated WGSL module text, exactly as passed to the kernel. */
+  source: string;
+  /** Author-written body (`WGSLKernelProps.body`), shared by differently bound instances. */
+  body: string;
+  /** Author-written module-scope declarations, when set. */
+  declarations?: string;
+  /** Compute entry point. */
+  entryPoint: 'main';
+  /** Lanes per workgroup. */
+  workgroupSize: readonly [number, number, number];
+  /** Bounded static dispatch; the upper bound when `indirect` is true. */
+  workgroups: readonly [number, number, number];
+  /** Linear invocations the kernel guards to. */
+  invocationCount: number;
+  /** Pipeline override constants, including the generated invocation and dispatch overrides. */
+  constants: Readonly<Record<string, number>>;
+  /** Storage bindings in `@binding` order. */
+  bindings: readonly WGSLKernelBinding[];
+  /** Sampled-texture bindings, after the storage bindings. */
+  textures: readonly WGSLKernelTextureBinding[];
+  /** Whether a GPU-written indirect condition supplies the dispatch. */
+  indirect: boolean;
+};
+
+type WGSLKernelNodeRecordEntry = {
+  props: WGSLKernelProps<any>;
+  source: string;
+  workgroupSize: number;
+  layout: {x: number; y: number; z: number};
+};
+
+/**
+ * Graphs whose kernel facts are kept, keyed weakly by graph. The compiled graph publishes node ids,
+ * not node objects, and `graph.add` copies nodes, so entries are keyed by node id within a graph.
+ */
+const WGSL_KERNEL_NODE_RECORDS = new WeakMap<object, Map<string, WGSLKernelNodeRecordEntry>>();
+
+/**
+ * Keeps the kernel facts (WGSL source, entry point, workgroup size, dispatch, bindings with their
+ * access, operation name) of every node that {@link createWGSLKernelNode} creates on `graph` from
+ * now on, for {@link getWGSLKernelNodeRecord} and `describeGPUCommandGraph`. Call it right after
+ * creating a graph that will be described, before any contributor adds nodes. Graphs that never
+ * call it keep nothing. The table is held weakly by the graph and retains no string or binding that
+ * the graph's nodes do not already hold.
+ */
+export function recordWGSLKernelNodes(graph: GPUCommandGraph<any>): void {
+  if (!WGSL_KERNEL_NODE_RECORDS.has(graph)) WGSL_KERNEL_NODE_RECORDS.set(graph, new Map());
+}
+
+/** Whether {@link recordWGSLKernelNodes} was called for `graph`. */
+export function isRecordingWGSLKernelNodes(graph: GPUCommandGraph<any>): boolean {
+  return WGSL_KERNEL_NODE_RECORDS.has(graph);
+}
+
+/**
+ * Returns the kernel facts of node `nodeId` on a graph passed to {@link recordWGSLKernelNodes}, or
+ * `undefined` when the graph records nothing or the node was not built by
+ * {@link createWGSLKernelNode} (copy nodes, published `@luma.gl/graph` primitives, hand-built
+ * nodes). When two kernels were created with the same id, the last one is returned.
+ */
+export function getWGSLKernelNodeRecord(
+  graph: GPUCommandGraph<any>,
+  nodeId: string
+): WGSLKernelNodeRecord | undefined {
+  const entry = WGSL_KERNEL_NODE_RECORDS.get(graph)?.get(nodeId);
+  if (!entry) return undefined;
+  const {props, source, workgroupSize, layout} = entry;
+  return {
+    id: props.id,
+    operation: props.operation,
+    ...(props.variant ? {variant: props.variant} : {}),
+    source,
+    body: props.body,
+    ...(props.declarations ? {declarations: props.declarations} : {}),
+    entryPoint: 'main',
+    workgroupSize: [workgroupSize, 1, 1],
+    workgroups: [layout.x, layout.y, layout.z],
+    invocationCount: props.invocationCount,
+    constants: {
+      ...props.constants,
+      INVOCATION_COUNT: props.invocationCount,
+      WGSL_KERNEL_DISPATCH_X: layout.x,
+      WGSL_KERNEL_DISPATCH_Y: layout.y
+    },
+    bindings: props.bindings,
+    textures: props.textures ?? [],
+    indirect: props.condition?.source === 'gpu' && props.condition.mode === 'indirect'
+  };
 }
 
 /** Returns the WGSL sampled-texture type of one texture binding. */
@@ -796,7 +891,11 @@ export function createChangedBindingResolver(
     const nextBuffers = viewEntries.map(([, view]) => getBuffer(view));
     const nextTextureViews = textureEntries.map(([, texture]) => {
       // Texture entries are only declared by callers that also pass the graph's resolver.
-      assert(getTextureView);
+      if (!getTextureView) {
+        throw new Error(
+          'WGSL binding resolver: textures were declared, so getTextureView must be passed'
+        );
+      }
       return getTextureView(texture);
     });
     if (

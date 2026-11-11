@@ -63,9 +63,8 @@ type ReferencingReadback = {
   sides: number[];
   signedOffsets: number[];
   vertexMeasures: number[];
-  overflow: number;
-  candidateCount: number;
-  requiredCount: number;
+  candidateOverflow: number;
+  requiredCandidateCount: number;
 };
 
 function createReferencingFixture(
@@ -97,9 +96,8 @@ function createReferencingFixture(
     sides: track(createOutputBuffer(device, pointCount)),
     signedOffsets: track(createOutputBuffer(device, pointCount)),
     vertexMeasures: track(createOutputBuffer(device, rowCount)),
-    overflow: track(createOutputBuffer(device, 1)),
-    candidateCount: track(createOutputBuffer(device, 1)),
-    requiredCount: track(createOutputBuffer(device, 1))
+    candidateOverflow: track(createOutputBuffer(device, 1)),
+    requiredCandidateCount: track(createOutputBuffer(device, 1))
   };
   graph.add(
     new GPULinearReferencing({
@@ -156,18 +154,17 @@ function createReferencingFixture(
           rowCount
         ),
         status: {
-          overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1),
-          candidateCount: importGraphBuffer(
+          candidateOverflow: importGraphBuffer(
             graph,
-            'o-candidate-count',
-            outputs.candidateCount,
+            'o-candidate-overflow',
+            outputs.candidateOverflow,
             'uint32',
             1
           ),
-          requiredCount: importGraphBuffer(
+          requiredCandidateCount: importGraphBuffer(
             graph,
-            'o-required-count',
-            outputs.requiredCount,
+            'o-required-candidate-count',
+            outputs.requiredCandidateCount,
             'uint32',
             1
           )
@@ -193,9 +190,8 @@ function createReferencingFixture(
         sides: Array.from(new Int32Array(sideBytes.buffer, sideBytes.byteOffset, pointCount)),
         signedOffsets: await readFloat32(outputs.signedOffsets, pointCount),
         vertexMeasures: await readFloat32(outputs.vertexMeasures, rowCount),
-        overflow: (await readUint32(outputs.overflow, 1))[0],
-        candidateCount: (await readUint32(outputs.candidateCount, 1))[0],
-        requiredCount: (await readUint32(outputs.requiredCount, 1))[0]
+        candidateOverflow: (await readUint32(outputs.candidateOverflow, 1))[0],
+        requiredCandidateCount: (await readUint32(outputs.requiredCandidateCount, 1))[0]
       };
     },
     getCompileCount: () => compileSpy.mock.calls.length,
@@ -296,7 +292,8 @@ it('GPULinearReferencing matches brute force on random polylines and per-frame r
   const fixture = createReferencingFixture(device, lines, points, 400000);
   for (const radius of [1.5, 5, 0.25, 12]) {
     const actual = await fixture.run(radius);
-    expect(actual.overflow).toBe(0);
+    expect(actual.candidateOverflow).toBe(0);
+    expect(actual.requiredCandidateCount).toBeLessThanOrEqual(400000);
     const matched = expectReferencingParity(actual, lines, points, radius);
     expect(matched).toBeGreaterThan(0);
   }
@@ -375,10 +372,15 @@ it('GPULinearReferencing reports candidate overflow', async () => {
   const points = new Float32Array(Array.from({length: 100}, (_, index) => index / 2));
   const fixture = createReferencingFixture(device, lines, points, 8);
   const actual = await fixture.run(10);
-  expect(actual.overflow).toBe(1);
-  // `requiredCount` carries the same unclamped count as the deprecated `candidateCount`.
-  expect(actual.requiredCount).toBeGreaterThan(8);
-  expect(actual.requiredCount).toBe(actual.candidateCount);
+  // The candidate capacity is intermediate (rule 9): it sets `candidateOverflow`, and there is no
+  // `overflow`, since every query still gets its result row.
+  expect(actual.candidateOverflow).toBe(1);
+  expect(actual.requiredCandidateCount).toBeGreaterThan(8);
+  const sized = createReferencingFixture(device, lines, points, actual.requiredCandidateCount);
+  const complete = await sized.run(10);
+  expect(complete.candidateOverflow).toBe(0);
+  expect(complete.requiredCandidateCount).toBe(actual.requiredCandidateCount);
+  sized.destroy();
   fixture.destroy();
 });
 
@@ -555,4 +557,154 @@ it('GPULineLocate places events by distance and fraction, with offsets and per-f
       buffer.destroy();
     }
   }
+});
+
+async function runLineLocate(
+  device: Device,
+  lines: ReferenceLines,
+  events: {lineIndices: number[]; measures: number[]},
+  measureMode: 'distance' | 'fraction'
+): Promise<{
+  positions: number[];
+  segmentIndices: number[];
+  statuses: number[];
+  vertexMeasures: number[];
+}> {
+  const buffers: Buffer[] = [];
+  const track = (buffer: Buffer) => {
+    buffers.push(buffer);
+    return buffer;
+  };
+  const eventCount = events.lineIndices.length;
+  const rowCount = lines.positions.length / 2;
+  const graph = new GPUCommandGraph(device, {id: `line-locate-cases-${measureMode}`});
+  const outputs = {
+    positions: track(createOutputBuffer(device, 2 * eventCount)),
+    segmentIndices: track(createOutputBuffer(device, eventCount)),
+    statuses: track(createOutputBuffer(device, eventCount)),
+    vertexMeasures: track(createOutputBuffer(device, rowCount))
+  };
+  const input = <Format extends 'float32x2' | 'uint32' | 'float32'>(
+    name: string,
+    values: Float32Array | Uint32Array,
+    format: Format
+  ): GraphDataView<Format> =>
+    importGraphBuffer(
+      graph,
+      name,
+      track(createInputBuffer(device, values)),
+      format,
+      format === 'float32x2' ? values.length / 2 : values.length
+    );
+  graph.add(
+    new GPULineLocate({
+      positions: input('positions', lines.positions, 'float32x2'),
+      lineOffsets: input('line-offsets', lines.lineOffsets, 'uint32'),
+      eventLineIndices: input('event-lines', Uint32Array.from(events.lineIndices), 'uint32'),
+      eventMeasures: input('event-measures', Float32Array.from(events.measures), 'float32'),
+      measureMode,
+      output: {
+        positions: importGraphBuffer(
+          graph,
+          'o-positions',
+          outputs.positions,
+          'float32x2',
+          eventCount
+        ),
+        segmentIndices: importGraphBuffer(
+          graph,
+          'o-segments',
+          outputs.segmentIndices,
+          'uint32',
+          eventCount
+        ),
+        statuses: importGraphBuffer(graph, 'o-statuses', outputs.statuses, 'uint32', eventCount),
+        vertexMeasures: importGraphBuffer(
+          graph,
+          'o-vertex-measures',
+          outputs.vertexMeasures,
+          'float32',
+          rowCount
+        )
+      }
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const result = {
+    positions: Array.from(await readFloat32(outputs.positions, 2 * eventCount)),
+    segmentIndices: Array.from(await readUint32(outputs.segmentIndices, eventCount)),
+    statuses: Array.from(await readUint32(outputs.statuses, eventCount)),
+    vertexMeasures: Array.from(await readFloat32(outputs.vertexMeasures, rowCount))
+  };
+  compiled.destroy();
+  for (const buffer of buffers) {
+    buffer.destroy();
+  }
+  return result;
+}
+
+it('GPULineLocate reports a NaN measure as invalid (trajectories-lines-08)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // One valid line of length 10 along x. Status codes: 0 ok, 1 clamped, 2 invalid.
+  const lines = createLines([
+    [
+      [0, 0],
+      [4, 0],
+      [10, 0]
+    ]
+  ]);
+  for (const measureMode of ['distance', 'fraction'] as const) {
+    const scale = measureMode === 'fraction' ? 0.1 : 1;
+    const result = await runLineLocate(
+      device,
+      lines,
+      {
+        lineIndices: [0, 0, 0, 0, 0],
+        measures: [5 * scale, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]
+      },
+      measureMode
+    );
+    expect(result.statuses, measureMode).toEqual([0, 2, 1, 1, 1]);
+    expect(result.positions.slice(0, 2), measureMode).toEqual([5, 0]);
+    expect(result.positions[2], measureMode).toBeNaN();
+    expect(result.positions[3], measureMode).toBeNaN();
+    expect(result.segmentIndices[1], measureMode).toBe(NO_LINE);
+    // Infinite measures clamp to the line ends.
+    expect(result.positions.slice(4, 10), measureMode).toEqual([10, 0, 0, 0, 0, 0]);
+  }
+});
+
+it('GPULineLocate vertex measures stay within rounding of the exact length on a long line', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 86,400 equal segments, back and forth between two points: the measure of vertex n is
+  // n * segmentLength exactly, with no summation in the reference. With the float form of the
+  // Neumaier correction this GPU returned the plain sum, 16.4 off at vertex 86,400: the shader
+  // compiler folds the correction to zero (found while fixing trajectories-lines-03).
+  const segmentCount = 86_400;
+  const segmentLength = Math.fround(13.9);
+  const positions = new Float32Array(2 * (segmentCount + 1));
+  for (let row = 1; row <= segmentCount; row += 2) {
+    positions[2 * row] = segmentLength;
+  }
+  const result = await runLineLocate(
+    device,
+    {positions, lineOffsets: Uint32Array.of(0, segmentCount + 1)},
+    {lineIndices: [0], measures: [0.5]},
+    'fraction'
+  );
+  let largestError = 0;
+  for (let row = 0; row <= segmentCount; row++) {
+    largestError = Math.max(
+      largestError,
+      Math.abs(result.vertexMeasures[row] - row * segmentLength)
+    );
+  }
+  // One f32 spacing at 1.2 million is 0.125.
+  expect(largestError).toBeLessThan(0.25);
+  // Half the length is vertex 43,200, an even vertex, so the located point is the line start.
+  expect(result.statuses).toEqual([0]);
+  expect(Math.abs(result.positions[0])).toBeLessThan(0.25);
 });

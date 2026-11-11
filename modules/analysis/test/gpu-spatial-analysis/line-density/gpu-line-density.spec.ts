@@ -219,3 +219,91 @@ it('GPULineDensity measures spherical pieces as great-circle meters', async () =
   expectClose(result['densities'][0], result['lengths'][0] / area, 2e-3, 1e-12, 'density');
   fixture.destroy();
 });
+
+it('GPULineDensity spherical length of a long segment depends on the grid, as documented', async () => {
+  // Math correctness review, interpolation-density-10. A longitude/latitude segment is cut along
+  // the straight line in degrees and every piece is a great circle. The segment (0, 60) to
+  // (90, 60) is one great circle in one cell, and close to the 60th parallel in 1 degree cells.
+  // Expected values: haversine in float64 on the mean radius.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const radius = 6371008.8;
+  const radians = Math.PI / 180;
+  const getGreatCircleLength = (longitudeSpan: number) =>
+    2 * radius * Math.asin(Math.cos(60 * radians) * Math.sin(0.5 * longitudeSpan * radians));
+  const lines: Point[][] = [
+    [
+      [0, 60],
+      [90, 60]
+    ]
+  ];
+  const oneCell = createFixture(device, lines, {columns: 1, rows: 1, spherical: true});
+  const whole = await oneCell.run(
+    getGPULineDensityParameterValues({minX: -1, minY: 59, cellWidth: 92, cellHeight: 2})
+  );
+  oneCell.destroy();
+  expect(getGreatCircleLength(90) / 1000).toBeCloseTo(4604.5, 0);
+  expectClose(whole['lengths'][0], getGreatCircleLength(90), 1e-5, 0, 'one cell');
+
+  const degreeCells = createFixture(device, lines, {columns: 92, rows: 1, spherical: true});
+  const cut = await degreeCells.run(
+    getGPULineDensityParameterValues({minX: -1, minY: 59, cellWidth: 1, cellHeight: 2})
+  );
+  degreeCells.destroy();
+  const total = cut['lengths'].reduce((sum, value) => sum + value, 0);
+  expect((90 * getGreatCircleLength(1)) / 1000).toBeCloseTo(5003.8, 0);
+  expectClose(total, 90 * getGreatCircleLength(1), 1e-4, 0, '1 degree cells');
+  // Columns 1 to 90 hold one degree each; the two outer columns hold nothing.
+  expect(cut['lengths'][0]).toBe(0);
+  expect(cut['lengths'][91]).toBe(0);
+  expectClose(cut['lengths'][45], getGreatCircleLength(1), 1e-3, 0, 'one degree piece');
+});
+
+// Math correctness review, interpolation-density-05. The cell area used to be formed from
+// `sin(south + height) - sin(south)` in float32, which cancels for small cells: 0.6 percent off
+// for 0.001 degree cells at latitude 60.123 and 1.4 percent for 0.0001 degree cells at 45. The
+// expected area is the same closed form `R^2 dLon (sin(north) - sin(south))` in float64, at the
+// float32 grid parameters the kernel is given.
+for (const {south, height} of [
+  {south: 60.123, height: 0.001},
+  {south: 45, height: 0.0001},
+  {south: -33.3, height: 0.01},
+  {south: 0, height: 0.25}
+]) {
+  it(`GPULineDensity spherical cell area keeps float32 accuracy for ${height} degree cells at latitude ${south}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const columns = 2;
+    const rows = 4;
+    const minX = 10;
+    const cellWidth = Math.fround(height);
+    const cellHeight = Math.fround(height);
+    const minY = Math.fround(south);
+    // One line through the middle of every row, so every cell has a nonzero length.
+    const lines: Point[][] = Array.from({length: rows}, (_, row) => [
+      [minX + 0.1 * cellWidth, minY + (row + 0.5) * cellHeight] as Point,
+      [minX + 1.9 * cellWidth, minY + (row + 0.5) * cellHeight] as Point
+    ]);
+    const fixture = createFixture(device, lines, {columns, rows, spherical: true});
+    const result = await fixture.run(
+      getGPULineDensityParameterValues({minX, minY, cellWidth, cellHeight})
+    );
+    const radians = Math.PI / 180;
+    for (let row = 0; row < rows; row++) {
+      const cellSouth = minY + row * cellHeight;
+      const area =
+        6371007.180918475 ** 2 *
+        cellWidth *
+        radians *
+        (Math.sin((cellSouth + cellHeight) * radians) - Math.sin(cellSouth * radians));
+      for (let column = 0; column < columns; column++) {
+        const cell = row * columns + column;
+        expect(result['lengths'][cell]).toBeGreaterThan(0);
+        // The area the kernel divided by, recovered from its own two outputs.
+        const kernelArea = result['lengths'][cell] / result['densities'][cell];
+        expect(Math.abs(kernelArea / area - 1), `cell ${cell} area`).toBeLessThan(2e-5);
+      }
+    }
+    fixture.destroy();
+  });
+}

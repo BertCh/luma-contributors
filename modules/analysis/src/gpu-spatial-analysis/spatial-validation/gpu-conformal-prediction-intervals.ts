@@ -14,7 +14,7 @@ import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kerne
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
@@ -116,7 +116,7 @@ export class GPUConformalPredictionIntervals implements GPUCommandNodeProducer {
     const {id} = this;
     this.foldCount = props.foldCount ?? 1;
     validateCapacity(id, 'foldCount', this.foldCount, 1, 64);
-    validatePackedView(props.query.predictions, ['float32'], `${id} query.predictions`);
+    validateSinglePackedView(props.query.predictions, ['float32'], `${id} query.predictions`);
     validateCapacity(id, 'query rows', props.query.predictions.length / this.foldCount, 1);
     this.queryRows = props.query.predictions.length / this.foldCount;
     validateConformalInputs(id, props.calibration, props.query, this.foldCount, this.queryRows);
@@ -316,12 +316,12 @@ export function validateConformalOutput(
   output: Pick<GPUConformalPredictionIntervalsOutput, 'intervals' | 'status'>,
   queryRows: number
 ): void {
-  validatePackedView(parameters, ['float32'], `${id} parameters`);
+  validateSinglePackedView(parameters, ['float32'], `${id} parameters`);
   if (parameters.length < GPU_CONFORMAL_PREDICTION_PARAMETER_LENGTH) {
     throw new Error(`${id} parameters must have at least 4 values`);
   }
-  validatePackedView(output.intervals, ['float32'], `${id} output.intervals`);
+  validateSinglePackedView(output.intervals, ['float32'], `${id} output.intervals`);
   validateViewLength(id, 'output.intervals', output.intervals, queryRows * 2);
-  validatePackedView(output.status, ['uint32'], `${id} output.status`);
+  validateSinglePackedView(output.status, ['uint32'], `${id} output.status`);
   validateViewLength(id, 'output.status', output.status, queryRows);
 }

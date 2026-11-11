@@ -29,7 +29,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   CELL_COVER_SCANLINE_AUTO_MINIMUM_CANDIDATE_CAPACITY,
@@ -292,13 +292,13 @@ export class GPUCellCover implements GPUCommandNodeProducer {
     if (props.family === 'h3' && this.containment !== 'center') {
       throw new Error(`${id} h3 supports only containment 'center'`);
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     for (const [name, view] of [
       ['featureOffsets', props.featureOffsets],
       ['polygonOffsets', props.polygonOffsets],
       ['ringOffsets', props.ringOffsets]
     ] as const) {
-      validatePackedView(view, ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length < 1) {
         throw new Error(`${id} ${name} requires a terminal entry`);
       }
@@ -313,7 +313,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       validateCapacity(id, 'edgeSlabEntryCapacity', props.edgeSlabEntryCapacity);
     }
     if (props.featureIds) {
-      validatePackedView(props.featureIds, ['uint32'], `${id} featureIds`);
+      validateSinglePackedView(props.featureIds, ['uint32'], `${id} featureIds`);
       if (props.featureIds.length !== this.featureCount) {
         throw new Error(`${id} featureIds length must equal the feature count`);
       }
@@ -353,8 +353,8 @@ export class GPUCellCover implements GPUCommandNodeProducer {
     }
     const {output} = props;
     const {status} = output;
-    validatePackedView(output.featureIds, ['uint32'], `${id} output.featureIds`);
-    validatePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
+    validateSinglePackedView(output.featureIds, ['uint32'], `${id} output.featureIds`);
+    validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
     if (output.cells.length !== output.featureIds.length) {
       throw new Error(`${id} output.cells and output.featureIds must have equal lengths`);
     }
@@ -362,7 +362,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       throw new Error(`${id} output capacity must be at least 1`);
     }
     if (output.core) {
-      validatePackedView(output.core, ['uint32'], `${id} output.core`);
+      validateSinglePackedView(output.core, ['uint32'], `${id} output.core`);
       if (output.core.length !== output.featureIds.length) {
         throw new Error(`${id} output.core must have the same length as output.featureIds`);
       }
@@ -377,7 +377,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       ['status.uncertainCount', status.uncertainCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < 1) {
           throw new Error(`${id} output.${name} must contain one uint32 row`);
         }

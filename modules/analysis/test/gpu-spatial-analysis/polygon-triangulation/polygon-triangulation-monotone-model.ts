@@ -545,6 +545,12 @@ export function triangulateMonotoneModel(
     const stack: {vertex: number; chain: Chain}[] = [merged[0], merged[1]];
     const emit = (a: number, b: number, c: number) =>
       triangles.push([cleanRow[a], cleanRow[b], cleanRow[c]]);
+    // A fan triangle, which must not be clockwise (the kernel's fanStack): false when it is.
+    const emitFan = (first: number, second: number, apex: number): boolean => {
+      if (orientExactSign(position(first), position(second), position(apex)) < 0) return false;
+      emit(first, second, apex);
+      return true;
+    };
     for (let index = 2; index < merged.length - 1; index++) {
       const current = merged[index];
       const top = stack[stack.length - 1];
@@ -553,8 +559,11 @@ export function triangulateMonotoneModel(
         for (let item = 0; item + 1 < stack.length; item++) {
           const upper = stack[item].vertex;
           const lower = stack[item + 1].vertex;
-          if (top.chain === 'left') emit(upper, lower, current.vertex);
-          else emit(lower, upper, current.vertex);
+          const isCounterClockwise =
+            top.chain === 'left'
+              ? emitFan(upper, lower, current.vertex)
+              : emitFan(lower, upper, current.vertex);
+          if (!isCounterClockwise) return fail('clockwise fan triangle');
         }
         const previousTop = stack[stack.length - 1];
         stack.length = 0;
@@ -588,8 +597,11 @@ export function triangulateMonotoneModel(
     for (let item = 0; item + 1 < stack.length; item++) {
       const upper = stack[item].vertex;
       const lower = stack[item + 1].vertex;
-      if (stackChain === 'left') emit(upper, lower, bottom.vertex);
-      else emit(lower, upper, bottom.vertex);
+      const isCounterClockwise =
+        stackChain === 'left'
+          ? emitFan(upper, lower, bottom.vertex)
+          : emitFan(lower, upper, bottom.vertex);
+      if (!isCounterClockwise) return fail('clockwise fan triangle');
     }
   }
   if (triangles.length !== expectedTriangleCount) {

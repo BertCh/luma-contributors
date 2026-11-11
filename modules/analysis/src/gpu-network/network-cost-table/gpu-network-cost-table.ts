@@ -21,7 +21,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
@@ -163,16 +163,16 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
     const {output} = props;
     const {nodeCount, edgeCount} = validateGPUNetworkTopology(id, props.topology, {weights: true});
     this.nodeCount = nodeCount;
-    validatePackedView(props.costLimit, ['float32'], `${id} costLimit`);
+    validateSinglePackedView(props.costLimit, ['float32'], `${id} costLimit`);
     if (props.costLimit.length !== 1) {
       throw new Error(`${id} costLimit must contain exactly one row`);
     }
-    validatePackedView(output.offsets, ['uint32'], `${id} output.offsets`);
+    validateSinglePackedView(output.offsets, ['uint32'], `${id} output.offsets`);
     if (output.offsets.length !== nodeCount + 1) {
       throw new Error(`${id} output.offsets must contain nodeCount + 1 rows`);
     }
-    validatePackedView(output.targets, ['uint32'], `${id} output.targets`);
-    validatePackedView(output.costs, ['float32'], `${id} output.costs`);
+    validateSinglePackedView(output.targets, ['uint32'], `${id} output.targets`);
+    validateSinglePackedView(output.costs, ['float32'], `${id} output.costs`);
     this.capacity = output.targets.length;
     validateCapacity(id, 'output.targets length', this.capacity);
     if (output.costs.length !== this.capacity) {
@@ -189,7 +189,7 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
       ['converged', converged]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
         if (view.length !== 1) {
           throw new Error(`${id} output.status.${name} must contain exactly one row`);
         }

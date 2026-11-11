@@ -61,7 +61,7 @@ for (const scene of overlayCases) {
               output: {
                 score: outputs.score.view,
                 scoreRange: withRange ? outputs.scoreRange.view : undefined,
-                outputValidity: withValidity ? outputs.outputValidity.view : undefined
+                validity: withValidity ? outputs.outputValidity.view : undefined
               }
             })
           );

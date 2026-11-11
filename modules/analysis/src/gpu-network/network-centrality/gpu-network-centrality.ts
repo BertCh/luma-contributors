@@ -18,7 +18,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUNetworkTopologyViews,
@@ -95,9 +95,22 @@ export type GPUNetworkCentralityOutput = {
   status?: {
     /**
      * Optional one-row flag: 1 when every batch's reachability and, with `betweenness`, both
-     * accumulation phases finished within `maximumIterations`; 0 when a round limit stopped one.
+     * accumulation phases finished within `maximumIterations` and ordered every reached node; 0
+     * when a round limit stopped one, or when a cycle of zero-weight tight edges left nodes
+     * unordered (see `zeroWeightCycle`). With 0 the betweenness values are incomplete.
      */
     converged?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row flag, with a betweenness output: 1 when, for some pivot, shortest paths
+     * cross a cycle of edges of weight exactly zero between nodes of equal cost (for example an
+     * undirected zero-weight edge, which lists both directions). A positive weight never sets it,
+     * however small. The number of shortest paths is then not
+     * defined, the nodes on and after the cycle get no path count, the betweenness values are
+     * incomplete and `converged` is 0. Raising `maximumIterations` does not help: give such edges
+     * a positive weight or merge their end nodes. 0 otherwise, also when a round limit stopped the
+     * path-count phase first (`converged` reports that).
+     */
+    zeroWeightCycle?: GraphDataView<'uint32'>;
   };
 };
 
@@ -187,8 +200,9 @@ export type GPUNetworkCentralityProps = {
  * `GPUNetworkReachability` (lane `l`, node `u` is expanded node `l * nodeCount + u`; all lanes read
  * the one CSR), whose costs give closeness directly: one workgroup per lane reduces the reached
  * count, the cost sum and the harmonic sum in a fixed order. For betweenness the batch then runs
- * Brandes' (2001) accumulation on the tight edges, those with `cost[u] < cost[w]` and
- * `cost[u] + weight == cost[w]` in f32 exactly as the relaxation computes it:
+ * Brandes' (2001) accumulation on the tight edges, those between two different nodes with
+ * `cost[u] + weight == cost[w]` in f32 exactly as the relaxation computes it, and either
+ * `cost[u] < cost[w]` or a weight of exactly zero:
  *
  * 1. The sigma phase (shortest-path counts) is a push-ready, pull-sum frontier schedule. A node
  *    becomes ready when its last tight predecessor releases it (`atomicSub` on a per-node counter
@@ -214,20 +228,32 @@ export type GPUNetworkCentralityProps = {
  *   `closeness_centrality(G.reverse(), u=pivot, wf_improved=False)` (and `harmonic_centrality(G.reverse(), ...)`),
  *   or pass the reverse topologies (swap `topology` and `reverseTopology`) to get networkx's incoming
  *   convention. The Wasserman-Faust factor `(r - 1) / (nodeCount - 1)` is not applied.
- * - Zero-weight edges (and weights below half an ulp of the cost) are never tight, so they are
- *   excluded from path counts: a node reached only across them is treated as a root with one path.
- *   Closeness counts such nodes as reached at the cost of their predecessor; harmonic closeness skips
- *   nodes of cost 0. Parallel edges count as separate paths.
- * - Path counts are f32: exact below 2^24 paths per pair, rounded beyond, with the same relative
- *   error as the delta sums.
+ * - Edges of weight exactly zero are tight when the two end nodes have equal cost, and are counted
+ *   like any other edge on a shortest path, as networkx counts them: on the path
+ *   `s -1-> a -1-> m -0-> t -1-> u` the pivot `s` gives `a`, `m`, `t` the dependencies 3, 2, 1. A
+ *   positive weight below half an ulp of the cost, which float32 absorbs (`cost + weight == cost`:
+ *   1 at a cost of 2^24, or 3 mm at 100 km in metres), is never tight: the edge is left out of
+ *   the path counts, a node reached only across it is a root with one path, and the run still
+ *   converges. Counting zero-weight edges needs the zero-weight tight edges to form no cycle. With a cycle
+ *   (an undirected zero-weight edge listed in both directions is one) the number of shortest paths
+ *   is not defined (networkx requires positive weights for the same reason): the nodes on and
+ *   after the cycle are left out, `status.zeroWeightCycle` is 1 and `status.converged` is 0. Give
+ *   such edges a positive weight or merge their end nodes. Self-loops are never on a shortest
+ *   path. Closeness is not affected; harmonic closeness skips nodes of cost 0. Parallel edges
+ *   count as separate paths.
+ * - Path counts are a float32 mantissa with a separate base-2 exponent: exact below 2^24 paths per
+ *   pair, rounded to 24 bits beyond, and never out of range (a corner-to-corner count on a unit
+ *   lattice of 67 x 67 nodes or more exceeds the float32 range). Dependencies use only ratios of
+ *   neighbouring counts.
  *
  * Accuracy: sigma sums are exact below 2^24. Delta rounds once per division (within 2.5 ULP in
  * WGSL), addition and multiplication of a term and once per added term, with only positive terms, so a
  * node's relative error is at most `h (7 + K) 2^-24` for `h` hops along the longest tight chain and
  * a largest tight out-degree `K`; adding `P` pivots adds `(P + 2) 2^-24`.
  *
- * Scratch memory is the frontier state plus `3 * laneCount * nodeCount` words and a packed copy of
- * both CSRs, copied once per encoding.
+ * Scratch memory is the frontier state plus `4 * laneCount * nodeCount` words (path-count
+ * mantissa, counter, dependency, path-count exponent) and a packed copy of both CSRs, copied once
+ * per encoding.
  *
  * Compile cost: the rounds of every batch are unrolled, so the command node count is about
  * `batchCount * phases * min(maximumIterations, nodeCount)` (see
@@ -259,11 +285,12 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
    * Exact number of command nodes `getCommandNodes` returns. With `R = min(maximumIterations,
    * nodeCount)` and `B = batchCount`, it is the fixed nodes (seed expansion, plus one each for batch
    * info with a closeness output, adjacency packing with betweenness, one zeroing per betweenness
-   * output, and the final converged reduction) plus `B` times the per-batch nodes: `R + 2` for the
-   * reachability search (plus a finalize node with `status.converged`), one closeness reduction
+   * output, and the final status reduction) plus `B` times the per-batch nodes: `R + 2` for the
+   * reachability search (plus a finalize node with a status flag), one closeness reduction
    * with a closeness output, and with betweenness `2R + 3` (reset, two initializers, `R` sigma and
    * `R` delta rounds) plus one accumulate node per betweenness output and one status node with
-   * `status.converged`. Rejected by the constructor above 32,768.
+   * a status flag (`status.converged` or `status.zeroWeightCycle`). Rejected by the constructor
+   * above 32,768.
    */
   readonly estimatedCommandNodeCount: number;
 
@@ -283,13 +310,13 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       throw new Error(`${id} reverseTopology must have the node count of topology`);
     }
     this.nodeCount = forward.nodeCount;
-    validatePackedView(props.pivotNodes, ['uint32'], `${id} pivotNodes`);
+    validateSinglePackedView(props.pivotNodes, ['uint32'], `${id} pivotNodes`);
     this.pivotCount = props.pivotNodes.length;
     if (this.pivotCount < 1) {
       throw new Error(`${id} pivotNodes must contain at least one pivot`);
     }
     if (props.costLimit) {
-      validatePackedView(props.costLimit, ['float32'], `${id} costLimit`);
+      validateSinglePackedView(props.costLimit, ['float32'], `${id} costLimit`);
       if (props.costLimit.length !== 1) {
         throw new Error(`${id} costLimit must contain exactly one row`);
       }
@@ -312,7 +339,7 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       ['output.harmonicCloseness', output.harmonicCloseness, this.pivotCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length !== length) {
           throw new Error(
             `${id} ${name} must contain one row per ${name === 'output.betweenness' ? 'node' : name === 'output.edgeBetweenness' ? 'edge slot' : 'pivot'}`
@@ -321,18 +348,33 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       }
     }
     if (output.reachedCounts) {
-      validatePackedView(output.reachedCounts, ['uint32'], `${id} output.reachedCounts`);
+      validateSinglePackedView(output.reachedCounts, ['uint32'], `${id} output.reachedCounts`);
       if (output.reachedCounts.length !== this.pivotCount) {
         throw new Error(`${id} output.reachedCounts must contain one row per pivot`);
       }
     }
     const converged = output.status?.converged;
     if (converged) {
-      validatePackedView(converged, ['uint32'], `${id} output.status.converged`);
+      validateSinglePackedView(converged, ['uint32'], `${id} output.status.converged`);
       if (converged.length !== 1) {
         throw new Error(`${id} output.status.converged must contain exactly one row`);
       }
     }
+    const zeroWeightCycle = output.status?.zeroWeightCycle;
+    if (zeroWeightCycle) {
+      validateSinglePackedView(zeroWeightCycle, ['uint32'], `${id} output.status.zeroWeightCycle`);
+      if (zeroWeightCycle.length !== 1) {
+        throw new Error(`${id} output.status.zeroWeightCycle must contain exactly one row`);
+      }
+      if (!output.betweenness && !output.edgeBetweenness) {
+        throw new Error(
+          `${id} output.status.zeroWeightCycle needs output.betweenness or output.edgeBetweenness`
+        );
+      }
+    }
+    // Either status flag gives every batch a status slot, its search a finalize node and the
+    // betweenness phases a status node.
+    const hasStatus = Boolean(converged || zeroWeightCycle);
     this.maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
     this.localIterations = props.localIterations ?? DEFAULT_LOCAL_ITERATIONS;
     validateCapacity(
@@ -394,16 +436,14 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
     const nodeCountPerBatch =
       roundCount +
       2 +
-      Number(Boolean(converged)) +
+      Number(hasStatus) +
       Number(hasCloseness) +
-      (hasBetweenness
-        ? 2 * roundCount + 3 + betweennessOutputCount + Number(Boolean(converged))
-        : 0);
+      (hasBetweenness ? 2 * roundCount + 3 + betweennessOutputCount + Number(hasStatus) : 0);
     this.estimatedCommandNodeCount =
       1 +
       Number(hasCloseness) +
       (hasBetweenness ? 1 + betweennessOutputCount : 0) +
-      Number(Boolean(converged)) +
+      Number(hasStatus) +
       this.batchCount * nodeCountPerBatch;
     // The rounds of every batch are unrolled into command nodes, so this count is the compile cost.
     // Past the cap, lower maximumIterations or the pivot count, or raise laneCount.
@@ -416,7 +456,8 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
         output.closeness,
         output.harmonicCloseness,
         output.reachedCounts,
-        converged
+        converged,
+        zeroWeightCycle
       ],
       getInputViews(props)
     );
@@ -426,7 +467,8 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       output.closeness,
       output.harmonicCloseness,
       output.reachedCounts,
-      converged
+      converged,
+      zeroWeightCycle
     ]
       .filter(view => view !== undefined)
       .map(view => view.buffer);
@@ -454,7 +496,8 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       output.closeness,
       output.harmonicCloseness,
       output.reachedCounts,
-      output.status?.converged
+      output.status?.converged,
+      output.status?.zeroWeightCycle
     ]);
     const hasBetweenness = Boolean(output.betweenness || output.edgeBetweenness);
     const hasCloseness = Boolean(
@@ -489,14 +532,16 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       })
     );
     const costs = createTransientView(graph, `${id}-costs`, 'float32', expandedNodeCount);
-    const batchConverged = output.status?.converged
-      ? createTransientView(
-          graph,
-          `${id}-batch-converged`,
-          'uint32',
-          batchCount * CENTRALITY_ALIGNMENT_ELEMENTS
-        )
-      : undefined;
+    // One aligned slot per batch: word 0 converged, word 1 the zero-weight cycle flag.
+    const batchConverged =
+      output.status?.converged || output.status?.zeroWeightCycle
+        ? createTransientView(
+            graph,
+            `${id}-batch-converged`,
+            'uint32',
+            batchCount * CENTRALITY_ALIGNMENT_ELEMENTS
+          )
+        : undefined;
     const batchInfo = hasCloseness
       ? createTransientView(
           graph,
@@ -521,6 +566,7 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       | {
           adjacency: GraphDataView<'uint32'>;
           scratch: GraphDataView<'uint32'>;
+          exponents: GraphDataView<'uint32'>;
           layout: ReturnType<typeof getCentralityAdjacencyLayout>;
           state: ReturnType<typeof createFrontierState>;
           sigmaPhase: FrontierPhase;
@@ -549,6 +595,13 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       );
       const adjacency = createTransientView(graph, `${id}-adjacency`, 'uint32', layout.wordCount);
       const scratch = createTransientView(graph, `${id}-scratch`, 'uint32', 3 * expandedNodeCount);
+      // Base-2 exponents of the path counts, in their own binding so the scratch limit is unchanged.
+      const exponents = createTransientView(
+        graph,
+        `${id}-sigma-exponents`,
+        'uint32',
+        expandedNodeCount
+      );
       const phaseLayout = getFrontierPhaseLayout(maximumRounds);
       const sigmaPhase: FrontierPhase = {
         maxRounds: maximumRounds,
@@ -567,7 +620,7 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
         controlWordCount: 2 * phaseLayout.controlWordCount,
         dispatchSlotCount: 2 * phaseLayout.dispatchSlotCount
       });
-      betweennessState = {adjacency, scratch, layout, state, sigmaPhase, deltaPhase};
+      betweennessState = {adjacency, scratch, exponents, layout, state, sigmaPhase, deltaPhase};
       nodes.push(
         createCentralityPackNode<Parameters>(graph, {
           id: `${id}-pack-adjacency`,
@@ -627,8 +680,9 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
         );
       }
       if (betweennessState) {
-        const {adjacency, scratch, layout, state, sigmaPhase, deltaPhase} = betweennessState;
-        const phaseProps = {layout, expandedNodeCount, state, adjacency, costs, scratch};
+        const {adjacency, scratch, exponents, layout, state, sigmaPhase, deltaPhase} =
+          betweennessState;
+        const phaseProps = {layout, expandedNodeCount, state, adjacency, costs, scratch, exponents};
         nodes.push(
           createCentralityResetNode<Parameters>(graph, {
             id: `${batchId}-reset`,
@@ -696,30 +750,37 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
               betweennessScale: this.betweennessScale,
               adjacency,
               scratch,
+              exponents,
               costs,
               edgeBetweenness: output.edgeBetweenness
             })
           );
-        if (convergedSlot) {
+        if (batchConverged) {
           nodes.push(
             createCentralityBatchStatusNode<Parameters>(graph, {
               id: `${batchId}-status`,
               state,
               sigmaPhase,
               deltaPhase,
-              batchConverged: convergedSlot
+              batchStatus: getSubView(
+                graph,
+                batchConverged,
+                batch * CENTRALITY_ALIGNMENT_ELEMENTS,
+                2
+              )
             })
           );
         }
       }
     }
-    if (output.status?.converged && batchConverged) {
+    if (batchConverged) {
       nodes.push(
         createCentralityConvergedNode<Parameters>(graph, {
           id: `${id}-converged`,
           batchCount,
-          batchConverged,
-          converged: output.status.converged
+          batchStatus: batchConverged,
+          converged: output.status?.converged,
+          zeroWeightCycle: output.status?.zeroWeightCycle
         })
       );
     }

@@ -154,8 +154,9 @@ it('GPURegionPartitionEvaluation validates props and declares nodes', () => {
     'region-partition-evaluation-links',
     'region-partition-evaluation-links-fixup',
     'region-partition-evaluation-row-tiles',
-    'region-partition-evaluation-label-tiles',
+    // The overall means come first: the label tiles read them for the between sum of squares.
     'region-partition-evaluation-means',
+    'region-partition-evaluation-label-tiles',
     'region-partition-evaluation-deviation-tiles',
     'region-partition-evaluation-summary'
   ]);

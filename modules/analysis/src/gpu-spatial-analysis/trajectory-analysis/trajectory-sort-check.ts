@@ -10,7 +10,7 @@ import type {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -51,12 +51,12 @@ export function addTrajectorySortCheck<Parameters>(
 ): void {
   const id = props.id ?? 'trajectory-sort-check';
   const {invalidCount} = props.output.status;
-  validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-  validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
-  validatePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
-  validatePackedView(invalidCount, ['uint32'], `${id} status.invalidCount`);
+  validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+  validateSinglePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+  validateSinglePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
+  validateSinglePackedView(invalidCount, ['uint32'], `${id} status.invalidCount`);
   if (props.timestampsLow) {
-    validatePackedView(props.timestampsLow, ['float32'], `${id} timestampsLow`);
+    validateSinglePackedView(props.timestampsLow, ['float32'], `${id} timestampsLow`);
   }
   if (
     props.timestamps.length !== props.positions.length ||

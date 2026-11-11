@@ -100,13 +100,15 @@ import {
   GPUGeometryOrientation,
   GPULocalFrameProjection,
   GPUSegmentRingAssembly,
-  GPUVoronoiDiagram,
+  GPUVoronoiDiagram
+} from '../../../src/gpu-spatial-analysis/index';
+import {
   GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
   GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
   GPU_PLANAR_SPATIAL_CONTEXT,
   createGPULocalFrame,
   type GPUSpatialContext
-} from '../../../src/gpu-spatial-analysis/index';
+} from '../../../src/analysis-core/index';
 import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
 import {
   createLinePrefixNode,
@@ -343,7 +345,11 @@ function lineGeometryOutput(
   return {
     positions: view('float32x2', vertexCapacity, 'line-positions'),
     lineOffsets: view('uint32', lineCapacity + 1, 'line-offsets'),
-    status: {...countStatus(context), lineCount: scalar(context, 'line-count')},
+    status: {
+      ...countStatus(context),
+      vertexCount: scalar(context, 'vertex-count'),
+      requiredVertexCount: scalar(context, 'required-vertex-count')
+    },
     sourceLineIndices: view('uint32', lineCapacity, 'line-sources'),
     sourceRows: columns.sourceRows ? view('uint32', vertexCapacity, 'line-source-rows') : undefined,
     measures: columns.measures ? view('float32', vertexCapacity, 'line-measures') : undefined
@@ -358,17 +364,22 @@ function overlayOutput(
   vertices: number
 ) {
   const {view} = context;
-  const sourceIds = view('uint32', rings, 'overlay-source-ids');
+  // The overlay result has no `requiredCount` (rule 8); the ring counts carry the requirement.
+  const {requiredCount: _boundaryOnly, ...resultStatus} = topologyStatus(context);
   return {
     geometry: {
       kind: 'polygons' as const,
       positions: view('float32x2', vertices, 'overlay-positions'),
       featureOffsets: view('uint32', rings + 1, 'overlay-features'),
       polygonOffsets: view('uint32', rings + 1, 'overlay-polygons'),
-      ringOffsets: view('uint32', rings + 1, 'overlay-rings'),
-      sourceIds
+      ringOffsets: view('uint32', rings + 1, 'overlay-rings')
     },
-    status: topologyStatus(context),
+    status: {
+      ...resultStatus,
+      ringCount: scalar(context, 'ring-count'),
+      requiredRingCount: scalar(context, 'required-ring-count'),
+      nodedSegmentRequiredCount: scalar(context, 'noded-segment-required-count')
+    },
     boundary: {
       endpoints: view('float32x4', boundaryCapacity, 'boundary-endpoints'),
       operandIds: view('uint32', boundaryCapacity, 'boundary-operands'),
@@ -1924,8 +1935,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           leafCapacity: 2048,
           output: {
             runs: {
-              leftLineIds: view('uint32', 1024),
-              rightLineIds: view('uint32', 1024),
+              leftSourceIds: view('uint32', 1024),
+              rightSourceIds: view('uint32', 1024),
               forward: view('uint32', 1024),
               offsets: view('uint32', 1025),
               positions: view('float32x2', 4096)
@@ -1965,8 +1976,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             intersectionCapacity: capacity,
             output: {
               runs: {
-                leftLineIds: view('uint32', runs),
-                rightLineIds: view('uint32', runs),
+                leftSourceIds: view('uint32', runs),
+                rightSourceIds: view('uint32', runs),
                 forward: view('uint32', runs),
                 offsets: view('uint32', runs + 1),
                 positions: view('float32x2', capacity)
@@ -1998,8 +2009,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           intersectionCapacity: capacity,
           output: {
             runs: {
-              leftLineIds: view('uint32', capacity),
-              rightLineIds: view('uint32', capacity),
+              leftSourceIds: view('uint32', capacity),
+              rightSourceIds: view('uint32', capacity),
               forward: view('uint32', capacity),
               offsets: view('uint32', capacity + 1),
               positions: view('float32x2', capacity)
@@ -2332,7 +2343,14 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             output: {
               chainOffsets: view('uint32', ROWS + 1),
               positions: view('float32x2', VERTICES),
-              status: {count: scalar(context, 'count')},
+              status: {
+                count: scalar(context, 'count'),
+                requiredCount: scalar(context, 'required-count'),
+                overflow: scalar(context, 'overflow'),
+                vertexCount: scalar(context, 'vertex-count'),
+                requiredVertexCount: scalar(context, 'required-vertex-count')
+              },
+              sourceIds: view('uint32', ROWS),
               lineChains: view('uint32', ROWS),
               lineOrders: view('uint32', ROWS),
               lineReversed: view('uint32', ROWS)
@@ -2717,8 +2735,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
               signedOffsets: view('float32', ROWS),
               vertexMeasures: view('float32', VERTICES),
               status: {
-                overflow: scalar(context, 'overflow'),
-                candidateCount: scalar(context, 'candidates')
+                candidateOverflow: scalar(context, 'candidate-overflow'),
+                requiredCandidateCount: scalar(context, 'required-candidates')
               }
             }
           })
@@ -2753,8 +2771,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             sides: view('sint32', queries),
             signedOffsets: view('float32', queries),
             status: {
-              overflow: scalar(context, 'overflow'),
-              candidateCount: scalar(context, 'candidates')
+              candidateOverflow: scalar(context, 'candidate-overflow'),
+              requiredCandidateCount: scalar(context, 'required-candidates')
             }
           }
         })
@@ -2788,8 +2806,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             sides: view('sint32', queries),
             signedOffsets: view('float32', queries),
             status: {
-              overflow: scalar(context, 'overflow'),
-              candidateCount: scalar(context, 'candidates')
+              candidateOverflow: scalar(context, 'candidate-overflow'),
+              requiredCandidateCount: scalar(context, 'required-candidates')
             }
           }
         })
@@ -2823,8 +2841,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             sides: view('sint32', queries),
             signedOffsets: view('float32', queries),
             status: {
-              overflow: scalar(context, 'overflow'),
-              candidateCount: scalar(context, 'candidates')
+              candidateOverflow: scalar(context, 'candidate-overflow'),
+              requiredCandidateCount: scalar(context, 'required-candidates')
             }
           }
         })
@@ -2856,7 +2874,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             normalizedMeasures: view('float32', ROWS),
             sides: view('sint32', ROWS),
             signedOffsets: view('float32', ROWS),
-            status: {overflow: scalar(context, 'overflow')}
+            status: {candidateOverflow: scalar(context, 'candidate-overflow')}
           }
         })
       );
@@ -2887,7 +2905,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             normalizedMeasures: view('float32', ROWS),
             sides: view('sint32', ROWS),
             signedOffsets: view('float32', ROWS),
-            status: {overflow: scalar(context, 'overflow')}
+            status: {candidateOverflow: scalar(context, 'candidate-overflow')}
           }
         })
       );
@@ -2916,8 +2934,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             sides: view('sint32', queries),
             signedOffsets: view('float32', queries),
             status: {
-              overflow: scalar(context, 'overflow'),
-              candidateCount: scalar(context, 'candidates')
+              candidateOverflow: scalar(context, 'candidate-overflow'),
+              requiredCandidateCount: scalar(context, 'required-candidates')
             }
           }
         })
@@ -4019,7 +4037,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           output: {
             positions: view('float32x2', 4096),
             lineOffsets: view('uint32', fields.ringOffsets.length),
-            status: {...countStatus(context), lineCount: scalar(context, 'line-count')}
+            status: countStatus(context)
           }
         })
       );

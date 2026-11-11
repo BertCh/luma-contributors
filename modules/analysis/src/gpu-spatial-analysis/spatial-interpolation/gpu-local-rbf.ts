@@ -9,6 +9,11 @@ import type {
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -23,9 +28,21 @@ import {
 } from '../../analysis-core/kernels/gpu-prediction-utils';
 import {getEquilibratedSolveWGSL} from './equilibrated-solve-wgsl';
 
+/** Distances are planar Euclidean in the native units of the positions. */
+const PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance' as const
+});
+
 /** Bounded local radial-basis interpolation in native planar units. */
 export type GPULocalRBFProps = {
   id?: string;
+  /**
+   * Coordinate space of the positions. Compile-time. Omitted means native planar coordinates with
+   * Euclidean distance (unchanged behavior); only that is accepted, so longitude/latitude throws:
+   * project to a planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
   /** Nonfinite values/positions are omitted. */
   values: GraphDataView<'float32'>;
@@ -71,6 +88,8 @@ export type GPULocalRBFProps = {
  */
 export class GPULocalRBF implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Resolved coordinate space (native planar when `spatialContext` was omitted). */
+  readonly spatialContext: GPUSpatialContext;
   readonly props: GPULocalRBFProps;
   readonly neighborCount: number;
   readonly degree: -1 | 0 | 1 | 2;
@@ -79,6 +98,11 @@ export class GPULocalRBF implements GPUCommandNodeProducer {
   constructor(props: GPULocalRBFProps) {
     this.props = props;
     this.id = props.id ?? 'local-rbf';
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT
+    );
     this.kernel = props.kernel ?? 'thin-plate-spline';
     this.degree =
       props.degree ??

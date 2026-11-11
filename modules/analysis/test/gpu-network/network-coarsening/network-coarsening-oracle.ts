@@ -77,7 +77,7 @@ export type CoarseningOracleOptions = {
 export type CoarseningOracleResult = {
   groupVertexCount: Uint32Array;
   groupIntraEdgeCount: Uint32Array;
-  /** Exact fixed-point sums converted with the GPU's float32 steps. */
+  /** Exact sums of the terms (after the fixed rounding, if any), rounded once to float32. */
   groupIntraWeight: Float32Array;
   groupCentroid: Float32Array;
   groupBounds: Float32Array;
@@ -99,28 +99,48 @@ function roundHalfEven(value: number): number {
   return floor % 2 === 0 ? floor : floor + 1;
 }
 
-/** Mirrors the WGSL `quantize`: sign-magnitude float32 rounding to a signed integer. */
+/**
+ * A float32 term in units of `1 / scale`: rounded to the nearest unit, ties to even, and
+ * saturated with its sign at the float32 nearest 4e18 units (the documented rule of a fixed
+ * `fixedPointScale`).
+ */
 export function quantize(value: number, scale: number): bigint {
-  const magnitude = Math.min(roundHalfEven(fround(Math.abs(value) * scale)), fround(4.0e18));
+  const magnitude = Math.min(roundHalfEven(Math.abs(fround(value)) * scale), fround(4.0e18));
   const quantized = BigInt(magnitude);
   return value < 0 ? -quantized : quantized;
 }
+const quantizeToFixedScale = quantize;
 
-/** Mirrors the WGSL `dequantize` of a wrapped 64-bit sum, including its float32 rounding steps. */
+/** The float32 nearest a wrapped 64-bit fixed-point sum in units of `1 / scale`. */
 export function dequantize(sum: bigint, scale: number): number {
   const wrapped = BigInt.asUintN(64, sum);
   const negative = wrapped >> 63n === 1n;
   const magnitude = negative ? (TWO_64 - wrapped) % TWO_64 : wrapped;
-  const high = Number(magnitude >> 32n);
-  const low = Number(magnitude & 0xffffffffn);
-  const result = fround(fround(fround(high) * 4294967296) + fround(low));
-  return fround((negative ? -result : result) / scale);
+  const result = Number(magnitude) / scale;
+  return fround(negative ? -result : result);
 }
 
-/** CPU reference with the same liveness, grouping, ordering and fixed-point rules as the contributor. */
+/** Every finite float32 is a whole number of these units, so sums of them are exact integers. */
+const EXACT_UNITS_PER_ONE = 2 ** 149;
+
+/**
+ * CPU reference with the same liveness, grouping and ordering rules as the contributor. Sums:
+ * without `fixedPointScale` the exact real sum of the float32 terms (whole numbers of 2^-149 in
+ * a `bigint`), rounded once to float32, which is what a data-derived unit must reproduce up to
+ * rounding; with `fixedPointScale` every term is first rounded to `1 / fixedPointScale`.
+ */
 export function computeCoarseningOracle(options: CoarseningOracleOptions): CoarseningOracleResult {
   const {nodeCount, csr, labels, groupCapacity, directed, edgeCapacity} = options;
-  const scale = options.fixedPointScale ?? 65536;
+  const fixedScale = options.fixedPointScale;
+  const scale = fixedScale ?? EXACT_UNITS_PER_ONE;
+  const quantize = (value: number, unitsPerOne: number): bigint =>
+    fixedScale === undefined
+      ? BigInt(fround(value) * unitsPerOne)
+      : quantizeToFixedScale(value, unitsPerOne);
+  const decode = (sum: bigint): number =>
+    fixedScale === undefined
+      ? fround(Number(sum) / EXACT_UNITS_PER_ONE)
+      : dequantize(sum, fixedScale);
   const DEAD = -1;
   const OVER = -2;
   const effective = Array.from({length: nodeCount}, (_, vertex) => {
@@ -197,7 +217,7 @@ export function computeCoarseningOracle(options: CoarseningOracleOptions): Coars
       source: Math.floor(key / groupCapacity),
       target: key % groupCapacity,
       count: entry.count,
-      weight: dequantize(entry.sum, scale)
+      weight: decode(entry.sum)
     }));
   summary[7] = edges.length;
   const centroid = new Float32Array(2 * groupCapacity);
@@ -206,12 +226,12 @@ export function computeCoarseningOracle(options: CoarseningOracleOptions): Coars
   const intraWeight = new Float32Array(groupCapacity);
   for (let group = 0; group < groupCapacity; group++) {
     if (count[group] > 0) {
-      centroid[2 * group] = fround(dequantize(sums[group][0], scale) / count[group]);
-      centroid[2 * group + 1] = fround(dequantize(sums[group][1], scale) / count[group]);
+      centroid[2 * group] = fround(decode(sums[group][0]) / count[group]);
+      centroid[2 * group + 1] = fround(decode(sums[group][1]) / count[group]);
       if (options.positions) boundsOut.set(bounds[group], 4 * group);
     }
-    valueSum[group] = dequantize(sums[group][2], scale);
-    intraWeight[group] = dequantize(intraSum[group], scale);
+    valueSum[group] = decode(sums[group][2]);
+    intraWeight[group] = decode(intraSum[group]);
   }
   return {
     groupVertexCount: count,

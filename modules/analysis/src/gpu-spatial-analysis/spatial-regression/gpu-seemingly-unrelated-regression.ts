@@ -10,7 +10,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -86,8 +86,8 @@ export class GPUSeeminglyUnrelatedRegression implements GPUCommandNodeProducer {
         throw new Error(
           `${this.id}: spatial SUR requires complete aligned observations and equation outputs`
         );
-      validatePackedView(props.spatial.output.parameters, ['float32'], this.id);
-      validatePackedView(props.spatial.output.status, ['uint32'], this.id);
+      validateSinglePackedView(props.spatial.output.parameters, ['float32'], this.id);
+      validateSinglePackedView(props.spatial.output.status, ['uint32'], this.id);
       validateGraphOutputsDisjointFromInputs(
         this.id,
         [...Object.values(props.output), ...Object.values(props.spatial.output)],
@@ -116,7 +116,7 @@ export class GPUSeeminglyUnrelatedRegression implements GPUCommandNodeProducer {
       [props.output.status, 'uint32', 1]
     ] as const)
       if (view) {
-        validatePackedView(view, [format], this.id);
+        validateSinglePackedView(view, [format], this.id);
         if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
       }
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [

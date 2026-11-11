@@ -5,7 +5,6 @@
 // Every subdirectory index is re-exported whole, so the entry cannot drift from its parts and a
 // name exported by two subdirectories is a compile error.
 
-export * from '../analysis-core/contracts/index';
 export * from '../analysis-core/ring-assembly/index';
 export * from './areal-interpolation/index';
 export * from './bounds-filter/index';
@@ -99,15 +98,9 @@ export * from './trajectory-zones/index';
 export * from './vertex-snap/index';
 export * from './zonal-statistics/index';
 
-// Top-level files and shared contracts.
-export {
-  getGPUGridIndexMaximumCellCount,
-  GPUParameterBuffer
-} from '../analysis-core/kernels/gpu-contributor-utils';
-export type {
-  GPUParameterBufferProps,
-  GPUParameterFormat
-} from '../analysis-core/kernels/gpu-contributor-utils';
+// Top-level files. The contributor contract (contracts, validators, kernel helpers) is exported
+// from '@luma-contributors/analysis/analysis-core', not from this entry point.
+export {getGPUGridIndexMaximumCellCount} from '../analysis-core/kernels/gpu-contributor-utils';
 export * from './lon-lat-polygons/index';
 
 export * from './concave-hull/index';

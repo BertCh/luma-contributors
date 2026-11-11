@@ -41,8 +41,16 @@ export type GPURasterArithmeticProps = {
   a: GraphDataView<'float32'>;
   /** Optional second operand raster; the per-frame `constantB` is used when absent. */
   b?: GraphDataView<'float32'>;
-  /** Optional finite sentinel treated as nodata in `a` and `b`. */
+  /**
+   * Optional finite sentinel treated as nodata in the `a` and `b` rasters. It never applies to the
+   * per-frame `constantB`: `maximum(a, 0)` with `noDataValue: 0` is defined wherever `a` is.
+   */
   noDataValue?: number;
+  /**
+   * Optional input row filter (`uint32`, at least `cellCount` rows): nonzero keeps the cell, zero
+   * marks it no-data and the result is NaN. Combines with NaN and `noDataValue`.
+   */
+  mask?: GraphDataView<'uint32'>;
   /** Per-frame float32 view written with `getGPURasterArithmeticParameterValues`. */
   parameters: GraphDataView<'float32'>;
   /** Caller-owned output. */
@@ -78,6 +86,7 @@ export class GPURasterArithmetic implements GPUCommandNodeProducer {
     }
     validateRasterAlgebraView(id, 'a', props.a, 'float32', cellCount);
     validateRasterAlgebraView(id, 'b', props.b, 'float32', cellCount);
+    validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', cellCount);
     validateRasterAlgebraView(
       id,
       'parameters',
@@ -89,7 +98,11 @@ export class GPURasterArithmetic implements GPUCommandNodeProducer {
       throw new Error(`${id} needs output.values`);
     }
     validateRasterAlgebraView(id, 'output.values', output.values, 'float32', cellCount);
-    validateRasterAlgebraAliasing(id, [output.values], [props.a, props.b, props.parameters]);
+    validateRasterAlgebraAliasing(
+      id,
+      [output.values],
+      [props.a, props.b, props.mask, props.parameters]
+    );
   }
 
   /** Returns one per-cell kernel. */
@@ -100,12 +113,16 @@ export class GPURasterArithmetic implements GPUCommandNodeProducer {
     validateRasterAlgebraGraph(id, graph, [
       props.a,
       props.b,
+      props.mask,
       props.parameters,
       props.output.values
     ]);
     const bindings: WGSLKernelBinding[] = [
       {name: 'aValues', view: props.a, type: 'f32', access: 'read'},
       ...(props.b ? [{name: 'bValues', view: props.b, type: 'f32', access: 'read'} as const] : []),
+      ...(props.mask
+        ? [{name: 'mask', view: props.mask, type: 'u32', access: 'read'} as const]
+        : []),
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'valuesOut', view: props.output.values, type: 'f32', access: 'read_write'}
     ];
@@ -130,7 +147,9 @@ fn getPower(base: f32, exponent: f32) -> f32 {
   let aRaw = aValues[aValuesOffset + index];
   let bRaw = ${props.b ? 'bValues[bValuesOffset + index]' : 'params[paramsOffset + 5u]'};
   let isUnary = operation >= 16u;
-  let isDefined = !isNoDataValue(aRaw) && (isUnary || !isNoDataValue(bRaw));
+  // The sentinel marks raster cells only; a constant second operand that equals it is a value.
+  let bMissing = ${props.b ? 'isNoDataValue(bRaw)' : 'isNaNValue(bRaw)'};
+  let isDefined = !isNoDataValue(aRaw) && (isUnary || !bMissing)${props.mask ? ' && mask[maskOffset + index] != 0u' : ''};
   let a = aRaw * params[paramsOffset + 1u] + params[paramsOffset + 2u];
   let b = bRaw * params[paramsOffset + 3u] + params[paramsOffset + 4u];
   let nan = getNaN();

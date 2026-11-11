@@ -19,7 +19,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUNetworkReachability} from '../network-reachability/index';
 import {
@@ -55,6 +55,12 @@ export type GPUNetworkCostMatrixOutput = {
   status?: {
     /** Optional one-row flag: 1 when every batch reached a fixpoint within `maximumIterations`. */
     converged?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row flag, the named `GPUIterationStatusPort` complement of `converged`: 1 when
+     * `maximumIterations` stopped any batch before it reached a fixpoint, so some costs may be
+     * truncated; exactly `1 - converged`. It can be requested with or without `converged`.
+     */
+    iterationLimitReached?: GraphDataView<'uint32'>;
   };
 };
 
@@ -179,16 +185,18 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
     const {id} = this;
     const {costs} = props.output;
     const converged = props.output.status?.converged;
+    const iterationLimitReached = props.output.status?.iterationLimitReached;
     const {nodeCount, edgeCount} = validateGPUNetworkTopology(id, props.topology, {weights: true});
     this.nodeCount = nodeCount;
     for (const [name, view] of [
       ['startNodes', props.startNodes],
       ['startRows', props.startRows],
       ['targetNodes', props.targetNodes],
-      ['output.status.converged', converged]
+      ['output.status.converged', converged],
+      ['output.status.iterationLimitReached', iterationLimitReached]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     for (const [name, view] of [
@@ -197,7 +205,7 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
       ['output.costs', costs]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
     if (props.targetNodes && props.targetNodes.length < 1) {
@@ -222,7 +230,8 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
     }
     for (const [name, view] of [
       ['costLimit', props.costLimit],
-      ['output.status.converged', converged]
+      ['output.status.converged', converged],
+      ['output.status.iterationLimitReached', iterationLimitReached]
     ] as const) {
       if (view && view.length !== 1) {
         throw new Error(`${id} ${name} must contain exactly one row`);
@@ -267,17 +276,26 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
       Number(seedCount > 0) +
       1 +
       (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) +
-      Number(Boolean(converged));
+      Number(Boolean(converged || iterationLimitReached));
     this.estimatedCommandNodeCount =
       Number(seedCount > 0) +
       Number(copiedBatchCount > 0) +
       this.batchCount * reachabilityNodeCount +
       copiedBatchCount +
-      Number(Boolean(converged));
+      Number(Boolean(converged || iterationLimitReached));
     // The rounds of every batch are unrolled; lower maximumIterations or raise laneCount.
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
-    validateGraphOutputsDisjointFromInputs(id, [costs, converged], getInputs(props));
-    if (converged && converged.buffer === costs.buffer) {
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [costs, converged, iterationLimitReached],
+      getInputs(props)
+    );
+    for (const status of [converged, iterationLimitReached]) {
+      if (status && status.buffer === costs.buffer) {
+        throw new Error(`${id} outputs must use separate buffers`);
+      }
+    }
+    if (converged && iterationLimitReached && converged.buffer === iterationLimitReached.buffer) {
       throw new Error(`${id} outputs must use separate buffers`);
     }
   }
@@ -294,8 +312,19 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
     const {targetNodes} = props;
     const {offsets, neighbors, weights} = props.topology;
     const {costs} = props.output;
-    const converged = props.output.status?.converged;
-    validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), costs, converged]);
+    const iterationLimitReached = props.output.status?.iterationLimitReached;
+    validateGraphViewsBelongToGraph(id, graph, [
+      ...getInputs(props),
+      costs,
+      props.output.status?.converged,
+      iterationLimitReached
+    ]);
+    // The limit flag is the complement of `converged`, so it needs the reduction's flag.
+    const converged =
+      props.output.status?.converged ??
+      (iterationLimitReached
+        ? createTransientView(graph, `${id}-converged-scratch`, 'uint32', 1)
+        : undefined);
     const seedCount = props.startNodes.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
@@ -543,7 +572,17 @@ const TARGET_COUNT: u32 = ${targetNodes.length}u;`,
               view: converged,
               type: 'u32',
               access: 'read_write'
-            }
+            },
+            ...(iterationLimitReached
+              ? [
+                  {
+                    name: 'limitReached',
+                    view: iterationLimitReached,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : [])
           ],
           invocationCount: 1,
           declarations: `const BATCH_COUNT: u32 = ${batchCount}u;
@@ -552,7 +591,9 @@ const SLOT_WORDS: u32 = ${ALIGNMENT_ELEMENTS}u;`,
   for (var batch = 0u; batch < BATCH_COUNT; batch++) {
     allConverged = min(allConverged, batchConverged[batchConvergedOffset + batch * SLOT_WORDS]);
   }
-  converged[convergedOffset] = allConverged;`
+  converged[convergedOffset] = allConverged;${
+    iterationLimitReached ? '\n  limitReached[limitReachedOffset] = 1u - allConverged;' : ''
+  }`
         })
       );
     }

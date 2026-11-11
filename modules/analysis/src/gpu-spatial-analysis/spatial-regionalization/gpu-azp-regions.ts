@@ -24,7 +24,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateMaximumCount,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -221,14 +221,14 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
     );
     validateCapacity(id, 'minimumRegionSize', props.minimumRegionSize ?? 1);
     validateRegionalizationParameters(id, props.parameters, GPU_AZP_REGIONS_PARAMETER_LENGTH);
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rowCount * columnCount)
       throw new Error(`${id} values length must equal rows * columnCount`);
     if (Boolean(props.extensiveValues) !== Boolean(props.extensiveThreshold))
       throw new Error(`${id} extensiveValues and extensiveThreshold are required together`);
     if (props.extensiveValues && props.extensiveThreshold) {
-      validatePackedView(props.extensiveValues, ['float32'], `${id} extensiveValues`);
-      validatePackedView(props.extensiveThreshold, ['float32'], `${id} extensiveThreshold`);
+      validateSinglePackedView(props.extensiveValues, ['float32'], `${id} extensiveValues`);
+      validateSinglePackedView(props.extensiveThreshold, ['float32'], `${id} extensiveThreshold`);
       if (props.extensiveValues.length !== rowCount)
         throw new Error(`${id} extensiveValues length must equal the weights row count`);
       if (props.extensiveThreshold.length < 1)
@@ -239,11 +239,11 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
       ['output.labels', output.labels],
       ['output.status', output.status]
     ] as const) {
-      validatePackedView(view, ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
     }
     if (props.initialLabels.length !== rowCount || output.labels.length !== rowCount)
       throw new Error(`${id} label views must equal the weights row count`);
-    validatePackedView(output.objective, ['float32'], `${id} output.objective`);
+    validateSinglePackedView(output.objective, ['float32'], `${id} output.objective`);
     if (output.objective.length < 1) throw new Error(`${id} output.objective must hold one value`);
     if (output.status.length < GPU_AZP_STATUS.length)
       throw new Error(`${id} output.status must hold ${GPU_AZP_STATUS.length} words`);

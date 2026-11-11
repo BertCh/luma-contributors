@@ -20,7 +20,9 @@ band counts, predecessors, and a convergence flag. Relaxation is chaotic Bellman
 GPU frontier queue with a round-stamped visited set: each of the `maximumIterations` rounds is one
 indirect dispatch sized by the previous round's pushes, so converged frames dispatch nothing and
 nothing is read back. Within a round each workgroup chains up to `localIterations` (default 32)
-hops through workgroup memory, so a path of `h` hops needs about `h / localIterations` rounds; costs
+hops through workgroup memory, so a path of `h` hops needs about
+`ceil(h / (0.7 * localIterations)) + 4` rounds (the budget of `recommendReachabilityIterations`,
+which `GPUNetworkServiceAreas` and `GPUNetworkIsochrones` share); costs
 are identical for every setting. Predecessors are cycle-safe: the smallest strictly cheaper tight
 in-neighbor, or across equal-cost (zero-weight) edges the smallest tight in-neighbor one BFS level
 closer to a strict entry or a source, found in up to `maximumTieIterations` extra rounds (default 4).
@@ -119,13 +121,23 @@ Conventions (oracle `test/oracles/network-centrality.py`, networkx 3.7):
 - `costLimit` (a one-row per-frame view) is an inclusive radius: nodes beyond it and paths longer than it
   are not counted. networkx has no radius option; the oracle uses an explicit Brandes over a cutoff search
   that equals networkx when the radius is infinite.
-- Zero-weight edges (and weights below half an ulp of the cost) are never tight, so they are excluded from
-  path counts; a node reached only across them is a root with one path. Closeness counts such nodes as reached
-  at their predecessor's cost, harmonic closeness skips nodes of cost 0, and parallel edges count as separate
-  paths. Parity with networkx holds for positive weights.
+- Edges of weight exactly zero between two nodes of equal cost are tight and
+  are counted like any other edge on a shortest path: on `s -1-> a -1-> m -0-> t -1-> u` the pivot `s` gives
+  `a`, `m`, `t` the dependencies 3, 2, 1, as networkx does. A positive weight below half an ulp of the cost,
+  which float32 absorbs (1 at a cost of 2^24, 3 mm at 100 km in metres), is never tight: the edge is left out of
+  the path counts, a node reached only across it is a root with one path, and the run still converges.
+  Counting zero-weight edges needs the zero-weight tight edges to form no
+  cycle. With a cycle (an undirected zero-weight edge listed in both directions is one) the number of shortest
+  paths is not defined (networkx requires positive weights for the same reason): `status.zeroWeightCycle` is 1,
+  `status.converged` is 0 and the betweenness values are incomplete. Give such edges a positive weight or merge
+  their end nodes. Self-loops are never on a shortest path. Harmonic closeness skips nodes of cost 0, and
+  parallel edges count as separate paths.
 - Out-of-range pivots are ignored and their per-pivot rows are 0. `status.converged` is 1 when every batch's
-  reachability and, with `betweenness`, both phases finished within `maximumIterations`.
-- Sigma is exact below 2^24 paths per pair. Delta rounds once per division (within 2.5 ULP in WGSL), addition
+  reachability and, with `betweenness`, both phases finished within `maximumIterations` and ordered every
+  reached node.
+- Path counts (sigma) are a float32 mantissa with a separate base-2 exponent: exact below 2^24 paths per pair,
+  rounded to 24 bits beyond, and never out of range (the corner-to-corner count of a 67 x 67 unit lattice
+  exceeds the float32 maximum). Delta rounds once per division (within 2.5 ULP in WGSL), addition
   and multiplication and once per added term, all terms positive, so a node's relative error is at most
   `h (7 + K) 2^-24` for a longest tight chain of `h` hops and largest tight out-degree `K`, plus
   `(pivotCount + 2) 2^-24` for the sum over pivots.
@@ -168,7 +180,7 @@ Network analysis over the same directed CSR road network as `GPUNetworkReachabil
 - `GPUNetworkPathExtraction` walks a reachability predecessor array from per-frame targets. It publishes ordered (source to target) node lists and resolved CSR edge lists as `GPUCompactOutput`s, together with per-target offsets, costs, and found flags. Each walk is bounded by a compile-time `maximumPathLength`, so cyclic or garbage predecessors terminate and raise `output.status.overflow`. The per-target `lineOffsets`, `pathCosts` and `pathFound` are in `output`, and `targetCount` is a number or a one-row view. Pass the search's `output.status.converged` flag as `predecessorsComplete`: when it is 0 no target is reported found, because a chain may end at a node the truncated search never linked rather than at a source.
 - `GPUNetworkServiceAreas` assigns every node to its nearest per-frame facility. Ties go to the smallest facility row; optional `predecessors` follow only tight edges between nodes of the same assignment, so a path always ends at the facility that `assignments` names, also on cost ties. It also reports per-facility node counts and the total cost each facility serves, all in `output`. It composes `GPUNetworkReachability` with a frontier-based min-label pass over the tight shortest-path edges. `maximumLabelIterations` bounds the label rounds (default `min(maximumIterations, 32)`) and `localIterations` sets the hops chained per round in both phases (default 16), so large-diameter grids converge at the defaults.
 - `GPUNetworkNeighborhood` publishes k-hop ego networks around per-frame `startNodes` (`startCount` a number or a view), with per-frame `k` up to a compile-time `maximumHops`. `output` holds hop distances, masks, and compact node and induced-edge IDs.
-- `GPUNetworkAnalyticsColumns` publishes node-aligned `degree`, `inDegree` and weak `components` columns directly on the caller's `topology` (and optional `reverseTopology`) with analysis-owned kernels, so a transient CSR built in the same graph by `GPUCOOToCSR` works as well as imported buffers. Each column can be normalized to `[0, 1]` with a GPU extent. PageRank, core number and label propagation are luma.gl `GPUGraphAlgorithms*` operations that accept only physical topology; run them from `@luma.gl/graph/gpu-graph-algorithms`.
+- `GPUNetworkAnalyticsColumns` publishes node-aligned `degree`, `inDegree` and weak `components` columns directly on the caller's `topology` (and optional `reverseTopology`) with analysis-owned kernels, so a transient CSR built in the same graph by `GPUCOOToCSR` works as well as imported buffers. A degree counts the live slots of a row (a slot whose neighbor is `>= nodeCount` is not an edge) and a self-loop slot once, the rule of `GPUGraphAlgorithmsDegree`; `GPUNetworkStatistics` counts an undirected self-loop twice. Each column can be normalized to `[0, 1]` with a GPU extent. PageRank, core number and label propagation are luma.gl `GPUGraphAlgorithms*` operations that accept only physical topology; run them from `@luma.gl/graph/gpu-graph-algorithms`.
 
 ```ts
 graph.add(new GPUNetworkReachability({topology, startNodes: origin.importToGraph(graph),
@@ -269,7 +281,8 @@ labeling. Optional `nodeMask` and `edgeMask` restrict every statistic to live ro
 its component. Modularity is accumulated with exact integer atomics and a fixed-order f32 finish,
 so it is deterministic. On undirected graphs a self-loop adds 2 to the degree, the histograms, the
 maxima and the modularity volumes, as in networkx and `GPUGraphAlgorithmsModularity`; slot and edge counts count
-the stored slot once. The resolution
+the stored slot once. (The `degree` column of `GPUNetworkAnalyticsColumns` counts a self-loop slot once,
+as `GPUGraphAlgorithmsDegree` does, so the two differ on nodes with self-loops.) The resolution
 and linear bin width are per-frame parameters (`getGPUNetworkStatisticsParameterValues`). Read the
 summary back and decode it with `decodeGPUNetworkStatistics`. Scratch (the masked adjacency, labels
 and convergence flag) is graph transients; the contributor owns no buffers. Components run at most
@@ -390,7 +403,7 @@ const coarsening = new GPUNetworkCoarsening({
 graph.add(coarsening);
 ```
 
-Labels are dense group IDs below the compile-time `groupCapacity` (at most 65535); a live node above it is excluded and sets `edges.status.overflow`. Undirected CSRs list each edge in both directions and each edge counts once. Counts are integer exact. Weight, position and value sums use 64-bit fixed-point atomics (`fixedPointScale`, default 65536), so they are bitwise reproducible. Superedges use a stable sort and segment, so order and the kept prefix on overflow are deterministic. CSR slots past `offsets[nodeCount]` take the sentinel key and never become superedges. Inputs must be finite.
+Labels are dense group IDs below the compile-time `groupCapacity` (at most 65535); a live node above it is excluded and sets `edges.status.overflow`. Undirected CSRs list each edge in both directions and each edge counts once. Counts are integer exact. Weight, position and value sums use 64-bit fixed-point atomics, so they are bitwise reproducible. By default the unit of each sum follows the data (a power of two derived on the GPU from the largest term that is summed, the rule of the shared fixed-point accumulator), so 1,000 weights of 1e-4 sum to 0.1; pass `fixedPointScale` (a power of two, 65536 was the former default) only to pin a fixed rounding step of `1 / fixedPointScale` per addend; an addend larger than about `4e18` steps (6.1e13 at 65536) then saturates at that value. Superedges use a stable sort and segment, so order and the kept prefix on overflow are deterministic. CSR slots past `offsets[nodeCount]` take the sentinel key and never become superedges. Inputs must be finite.
 
 #### How it computes
 
@@ -570,6 +583,8 @@ Settings of `getGPUNetworkAccessibilityParameterValues`:
 
 Project point locations onto the nearest road edges and return edge rows, fractions, distances and search start costs.
 
+Without `candidateCapacity` every point scans every edge, which is exact and needs no radius, so the contributor refuses `positions` times edges above `GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK` (2^27). Above it, pass `candidateCapacity`, `maximumSnapDistance` and `output.status.overflow` to find candidate edges through a BVH; both paths return the same edges, with ties going to the smallest edge row. `maximumUnindexedWork` (default the same constant) raises the limit for a contributor that embeds the snapping and must keep accepting configurations it accepted before the limit existed; the network K function does, so its events times edges is not capped by this limit. The drive-time catchment recipe forwards its own `candidateCapacity` and so meets the limit when it is not given.
+
 ::lens{scenario=gpu-network.network-snapping rung=result caption="Compare 19 facility snaps; the longest moves about 95.8 metres onto its nearest road."}
 
 #### How it computes
@@ -713,8 +728,12 @@ omitting it accepts that truncation unchecked.
   interpolated linearly from the source node along the edge weight, and the minimum (default) or
   maximum cost is written to the pixels within the walking buffer (`bufferRadius`, with cost
   `cost + walkCostPerUnit * distance`) using integer atomics on order-preserving float bits, so the
-  result is independent of thread order. The raster feeds `GPUIsobands`: band `k` is cost in
-  `[costBreaks[k - 1], costBreaks[k])`, and the last band is beyond the last break, which includes unreached
+  result is independent of thread order. In `'max'` mode the cost of a sample is first reduced to
+  the cheaper of the two directions of its road (`min(cost[u] + t w, cost[v] + (1 - t) wReverse)`
+  when a slot `v -> u` exists), so the maximum runs over the samples and roads within the buffer of
+  a pixel and never over a road and its own reverse direction. The raster feeds `GPUIsobands`: band
+  `k` is cost in `(costBreaks[k - 1], costBreaks[k]]` (a cost exactly on a break is within it, as in
+  `GPUNetworkReachability` bands), and the last band is beyond the last break, which includes unreached
   space. The default `lastBand` is `breakCount - 1`, so unreached space gets no triangles.
 - **Cell path.** Nodes with cost at most `cellCostLimit` are keyed to H3 or Quadbin cells
   (`GPUCellAggregation`, or `GPUPointToCell` then `GPUCellAggregation`) and outlined with
@@ -783,7 +802,7 @@ Settings of `getGPUNetworkIsochronesParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `breakCount` | `number` | Number of active ascending cost breaks, at most `costBreaks.length`. `breakCount + 1` bands exist: band `k` holds cost in `[costBreaks[k - 1], costBreaks[k])`, band 0 everything below the first break and the last band everything at or above the last active break (including unreached pixels). |
+| `breakCount` | `number` | Number of active ascending cost breaks, at most `costBreaks.length`. `breakCount + 1` bands exist: band `k` holds cost in `(costBreaks[k - 1], costBreaks[k]]`, band 0 everything at or below the first break and the last band everything above the last active break (including unreached pixels). A cost exactly on a break is within it, the rule of `GPUNetworkReachability` bands. |
 | `extent` | `readonly [number, number, number, number]` | Raster extent `[minX, minY, maxX, maxY]` in the context's length unit. Row 0 is at `minY`. |
 | `bufferRadius` (optional) | `number` | Walking buffer radius in the context's length unit. Pixels within it of an edge sample get that sample's cost plus `walkCostPerUnit` times the distance. The effective radius is at least half a pixel diagonal so every sample marks its own pixel. Defaults to 0. |
 | `walkCostPerUnit` (optional) | `number` | Cost per context length unit walked off the network inside the buffer. Defaults to 0. |
@@ -811,11 +830,24 @@ Snap facilities and demand points to roads, assign drive-time catchments and cou
 
 ::lens{scenario=gpu-network.drive-time-catchment-recipe rung=result caption="Compare drive times from 100 demand points to their nearest of 4 facilities."}
 
+A snapped point lies at fraction `f` of the straight road between the two end nodes of its edge. The road is
+driven in a direction only when the topology has a passable edge that way, at the weight of the cheapest
+one, so a one-way edge is driven one way and a facility on it gets one start row (the other row of
+`startNodes` is `0xffffffff`). The demand time is the smallest of `cost[source] + f * w(source -> target)`,
+`cost[target] + (1 - f) * w(target -> source)` and, for each facility snapped to the same road, the way
+straight along it (`abs(f - f_facility) * w` on a two-way road of one cost). Demand beside its facility
+therefore gets the short way along the road, not the way out to an end node and back. The facilities are
+sorted by road and each demand point binary-searches its own, so it is compared only with the facilities
+snapped to that road. Band `k` holds the times in
+`(costBreaks[k - 1], costBreaks[k]]`: a time exactly on a break is within it, as in the bands of
+`GPUNetworkReachability` and `GPUNetworkIsochrones`. An unsnapped or unreached demand point has the time
+`+Infinity` and no band.
+
 #### How it computes
 
 {/* lens:addDriveTimeCatchmentRecipe */}
 
-::lens{scenario=gpu-network.drive-time-catchment-recipe rung=datum bind=page datum=5 caption="Inspect this demand point: its drive time is about 44.8 seconds, in band 0."}
+::lens{scenario=gpu-network.drive-time-catchment-recipe rung=datum bind=page datum=5 caption="Inspect this demand point: its drive time is about 58.6 seconds, in band 0."}
 
 ::lens{scenario=gpu-network.drive-time-catchment-recipe rung=formula}
 
@@ -840,7 +872,10 @@ is the group rank. Cells are exact up to 2^24 per axis; a wider extent sets `out
 (`positions` and `status.count`, optional `status.requiredCount`), `edges` (`fromNodes`, `toNodes`, `lengths`) and `topology`
 (`offsets`, `neighbors`, `weights`, optional `edgeIds`), with optional `output.status.overflow` and `output.status.uncertainCount`.
 The topology is undirected and feeds `GPUNetworkReachability`, `GPUNetworkServiceAreas` and the other
-contributors directly.
+contributors directly. Every edge has two entries, one in the row of each end node; a loop (a closed ring,
+or a piece whose two ends merge within the tolerance) has one entry in the row of its node, the rule of
+`GPUNetworkCoarsening`, `GPUNetworkSubgraphFilter`, `GPUNetworkStatistics` and luma.gl's
+`GPUGraphAlgorithmsTopology`.
 
 ```ts
 graph.add(new GPUNetworkNoding({
@@ -1063,8 +1098,9 @@ infeasible. Viterbi runs one thread per track.
   `GPU_MAP_MATCHING_NONE` entry separates sub-tracks after a break or an unmatched fix, so counting
   traversals skips it and invents no adjacency across the break. Each hop repeats the bounded search of the
   route kernel for the chosen candidates only, one thread per track in sequence, so it costs about one more
-  route pass over the matched hops; it needs 20 bytes per point of scratch. Edge volumes over these lists
-  are not built yet. Without `traversedEdges` nothing changes.
+  route pass over the matched hops; it needs 20 bytes per point of scratch.
+  [`GPUMapMatchedEdgeVolumes`](/docs/api/gpu-network/map-matched-edge-volumes-mob05) counts edge volumes over
+  these lists. Without `traversedEdges` nothing changes.
 - `routeTable` (optional): a `GPUNetworkCostTable` of the same network, built with `weights` equal to the
   edge lengths this contributor measures from the node positions (in the context's length unit), passed as `{offsets, targets, costs, costLimit, status?: {overflow}}`. A route search whose
   allowance (`routeFactor * straight + routeSlack` minus the tail of the source edge) is within the table's
@@ -1136,8 +1172,10 @@ against scratch memory. Unordered pairs below each of `bandCount`
 thresholds are counted with integer atomics and `K = 2 * pairs * L / n^2` (spaghetti's normalization;
 multiply by `n / (n - 1)` for the Okabe-Yamada ratio form), with `L` the per-frame `networkLength`.
 Optional envelope: `simulationCount` random patterns (Philox, an edge drawn proportional to its length
-through an integer prefix sum quantized against the GPU total of the live weights, so a wrong
-`networkLength` changes K but never the draw). Only the live CSR rows `0..offsets[nodeCount]` are snapped
+in two integer levels: edge lengths are quantized to 2^24 units of the longest live edge, a GPU
+maximum, and summed inside chunks of 128 slots; the chunk totals, scaled against the largest chunk
+total, get a second prefix sum; a draw picks a chunk and then an edge of it. Short edges keep their
+share on large networks, and a wrong `networkLength` changes K but never the draw). Only the live CSR rows `0..offsets[nodeCount]` are snapped
 to or drawn; `networkLength` is half the sum of their weights. Blocks and batches run at a fixed shape on
 64-element-aligned sub-views and read their first row from a per-block info word, so every block
 shares one set of pipelines.
@@ -1313,7 +1351,7 @@ cost of three sorts and scans per encoding (38 instead of 22 nodes). `'atomic'` 
 compare-exchange addition and serializes when rows share a pair (1M rows on one pair: 12-17 s against
 22 ms sorted); it is faster only when nearly every row has its own pair. The sorted pair sum runs one
 256-lane workgroup per stored pair, dispatched indirectly from the stored-pair count, so with weights and
-`'sorted'` `pairCapacity` is at most 2^24.
+`'sorted'` `pairCapacity` is at most 2^23.
 
 ```ts
 graph.add(new GPUFlowAggregation({

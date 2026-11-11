@@ -23,7 +23,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createSparseTransposeNodes,
@@ -228,9 +228,10 @@ function getWeightAndCoverageValidationWGSL(hasWeights: boolean, hasCoverage: bo
  *
  * `p-median` greedily adds the facility with the largest reduction in weighted nearest-facility
  * cost. `maximum-coverage` greedily adds the facility covering the greatest remaining demand
- * weight within `coverageDistance`. `set-covering` uses the same deterministic set-cover step until
- * every reachable demand row is covered or `maximumFacilityCount` is reached. Ties select the
- * lowest facility row. All assignments and stopping evidence remain GPU-resident.
+ * weight within `coverageDistance`. `set-covering` greedily adds the facility covering the most
+ * uncovered demand rows, whatever their weight (as in LSCP, `demandWeights` does not enter the
+ * choice), until every reachable demand row is covered or `maximumFacilityCount` is reached. Ties
+ * select the lowest facility row. All assignments and stopping evidence remain GPU-resident.
  *
  * Unreachable demand (a `+Infinity` cost to every selected facility) is never summed into the
  * p-median objective: the objective is the weighted cost of the reachable rows, unreachable rows
@@ -282,7 +283,7 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
     }
     validateCapacity(id, 'facilityCount', props.facilityCount);
     if (props.costs) {
-      validatePackedView(props.costs, ['float32'], `${id} costs`);
+      validateSinglePackedView(props.costs, ['float32'], `${id} costs`);
       if (
         props.costs.length < props.facilityCount ||
         props.costs.length % props.facilityCount !== 0
@@ -292,9 +293,9 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
       this.demandCount = props.costs.length / props.facilityCount;
     } else {
       const sparse = props.sparseCosts!;
-      validatePackedView(sparse.offsets, ['uint32'], `${id} sparseCosts.offsets`);
-      validatePackedView(sparse.facilities, ['uint32'], `${id} sparseCosts.facilities`);
-      validatePackedView(sparse.costs, ['float32'], `${id} sparseCosts.costs`);
+      validateSinglePackedView(sparse.offsets, ['uint32'], `${id} sparseCosts.offsets`);
+      validateSinglePackedView(sparse.facilities, ['uint32'], `${id} sparseCosts.facilities`);
+      validateSinglePackedView(sparse.costs, ['float32'], `${id} sparseCosts.costs`);
       if (sparse.offsets.length < 2) {
         throw new Error(`${id} sparseCosts.offsets must hold demand rows + 1 offsets`);
       }
@@ -332,7 +333,7 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
         requestedSwaps ?? GPU_LOCATION_ALLOCATION_DEFAULT_MAXIMUM_SWAP_ITERATIONS;
     }
     if (props.demandWeights) {
-      validatePackedView(props.demandWeights, ['float32'], `${id} demandWeights`);
+      validateSinglePackedView(props.demandWeights, ['float32'], `${id} demandWeights`);
       if (props.demandWeights.length !== this.demandCount) {
         throw new Error(`${id} demandWeights length must equal the demand row count`);
       }
@@ -341,17 +342,21 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
       if (!props.coverageDistance) {
         throw new Error(`${id} coverageDistance is required for ${props.operation}`);
       }
-      validatePackedView(props.coverageDistance, ['float32'], `${id} coverageDistance`);
+      validateSinglePackedView(props.coverageDistance, ['float32'], `${id} coverageDistance`);
       if (props.coverageDistance.length < 1) {
         throw new Error(`${id} coverageDistance must hold one value`);
       }
     } else if (props.coverageDistance) {
-      validatePackedView(props.coverageDistance, ['float32'], `${id} coverageDistance`);
+      validateSinglePackedView(props.coverageDistance, ['float32'], `${id} coverageDistance`);
     }
-    validatePackedView(output.selectedFacilities, ['uint32'], `${id} output.selectedFacilities`);
-    validatePackedView(output.assignments, ['uint32'], `${id} output.assignments`);
-    validatePackedView(output.status, ['uint32'], `${id} output.status`);
-    validatePackedView(output.objective, ['float32'], `${id} output.objective`);
+    validateSinglePackedView(
+      output.selectedFacilities,
+      ['uint32'],
+      `${id} output.selectedFacilities`
+    );
+    validateSinglePackedView(output.assignments, ['uint32'], `${id} output.assignments`);
+    validateSinglePackedView(output.status, ['uint32'], `${id} output.status`);
+    validateSinglePackedView(output.objective, ['float32'], `${id} output.objective`);
     if (output.selectedFacilities.length < props.facilityCount) {
       throw new Error(`${id} output.selectedFacilities must hold one flag per facility`);
     }
@@ -367,7 +372,7 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
       );
     }
     if (output.assignedCosts) {
-      validatePackedView(output.assignedCosts, ['float32'], `${id} output.assignedCosts`);
+      validateSinglePackedView(output.assignedCosts, ['float32'], `${id} output.assignedCosts`);
       if (output.assignedCosts.length < this.demandCount) {
         throw new Error(`${id} output.assignedCosts must hold one row per demand`);
       }
@@ -1222,9 +1227,12 @@ const SWAP_TOLERANCE: f32 = ${GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE};`;
   }
   let threshold = ${needsCoverage ? 'coverageDistance[coverageDistanceOffset]' : '0.0'};
   // p-median scores are lexicographic: (demand weight left unreachable, weighted cost of the
-  // reachable rows). Coverage modes use only the first value.
+  // reachable rows). Coverage modes use only the first value: maximum coverage the demand weight
+  // newly covered, set covering the number of rows newly covered (a row of weight 0 must still
+  // be covered), counted in u32 so the count is exact.
   var score = 0.0;
   var reachableCost = 0.0;
+  var newlyCoveredRowCount = 0u;
   ${
     sparseSetup
       ? `// Sparse: the facility only changes the rows it lists, so the score is the negated gain
@@ -1245,6 +1253,7 @@ const SWAP_TOLERANCE: f32 = ${GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE};`;
       }
     } else if (current > threshold && candidate <= threshold) {
       score += ${demandWeightExpression};
+      newlyCoveredRowCount += 1u;
     }
   }
   if (MODE == 0u) {
@@ -1263,8 +1272,12 @@ const SWAP_TOLERANCE: f32 = ${GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE};`;
       }
     } else if (current > threshold && candidate <= threshold) {
       score += ${demandWeightExpression};
+      newlyCoveredRowCount += 1u;
     }
   }`
+  }
+  if (MODE == 2u) {
+    score = f32(newlyCoveredRowCount);
   }
   scores[scoresOffset + 2u * facility] = score;
   scores[scoresOffset + 2u * facility + 1u] = reachableCost;`

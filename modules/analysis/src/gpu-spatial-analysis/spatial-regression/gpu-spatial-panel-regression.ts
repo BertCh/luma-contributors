@@ -14,7 +14,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
 import {
@@ -66,8 +66,8 @@ export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
       props.weights.neighbors.length * props.periodCount > 0xffffffff
     )
       throw new Error(`${this.id}: invalid panel shape`);
-    validatePackedView(props.predictors, ['float32'], this.id);
-    validatePackedView(props.response, ['float32'], this.id);
+    validateSinglePackedView(props.predictors, ['float32'], this.id);
+    validateSinglePackedView(props.response, ['float32'], this.id);
     if (
       props.response.length !== entities * props.periodCount ||
       props.predictors.length !== props.response.length * props.predictorCount

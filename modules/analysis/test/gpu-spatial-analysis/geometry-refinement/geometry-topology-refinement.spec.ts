@@ -243,6 +243,178 @@ it('GPU precision policies preserve collapsed lines explicitly and reconstruct s
   }
 });
 
+// Math correctness review 2026-11-10, geometry-measures-03. Nine points whose Delaunay
+// triangulation has eleven triangles and no two edge lengths closer than 1e-3. With ratio 0.2
+// the threshold is 2.594. The kernel removes, per round, every removable border triangle that is
+// the largest around its three vertices, so in round one it removes (2, 5, 4) (exposed edge 8.385)
+// and, in parallel, (1, 7, 3) (7.850), which exposes vertex 3. The largest-first order of JTS and
+// GEOS removes (2, 5, 4), then (2, 6, 8) (7.945), then (3, 8, 6) (its newly exposed edge is 8.500),
+// which exposes vertex 3 first and keeps (1, 7, 3). Both walks keep seven triangles; the areas
+// are 37.65625 (rounds) and 31.75 (largest first, from a CPU walk of the same triangulation; no
+// Shapely on the review machine). The spec pins what the class documents: a connected hull over
+// every input vertex with no removable border triangle above the threshold, not the GEOS order.
+it('GPURatioConcaveHull erodes in parallel rounds and leaves no removable border triangle', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const coordinates = [
+    11.75, 5.25, 4.5, 8.5, 14, 10, 8, 5.75, 12.5, 1.75, 12.5, 3.25, 6.75, 13.25, 9.25, 2.25, 10.75,
+    5.75
+  ];
+  const ratio = 0.2;
+  const pointCount = coordinates.length / 2;
+  const capacity = 2 * pointCount - 5;
+  const harness = createHarness(device);
+  const {graph, view} = harness;
+  const output = {
+    triangles: view('uint32x3', capacity),
+    triangleValidity: view('uint32', capacity),
+    boundaryEdges: view('uint32x2', capacity * 3),
+    edgeValidity: view('uint32', capacity * 3),
+    status: {converged: view('uint32', 1)}
+  };
+  graph.add(
+    new GPURatioConcaveHull({positions: view('float32x2', pointCount, coordinates), ratio, output})
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled);
+    expect(await harness.integers(output.status.converged)).toEqual([1]);
+    const triangleWords = await harness.integers(output.triangles);
+    const validity = await harness.integers(output.triangleValidity);
+    const getLength = (first: number, second: number) =>
+      Math.hypot(
+        coordinates[first * 2] - coordinates[second * 2],
+        coordinates[first * 2 + 1] - coordinates[second * 2 + 1]
+      );
+    const getEdgeKey = (first: number, second: number) =>
+      first < second ? `${first},${second}` : `${second},${first}`;
+    const all: number[][] = [];
+    const kept: number[][] = [];
+    for (let row = 0; row < capacity; row++) {
+      const triangle = triangleWords.slice(row * 3, row * 3 + 3);
+      // Rows past the Delaunay count are zero filled.
+      if (new Set(triangle).size === 3) {
+        all.push(triangle);
+      }
+      if (validity[row]) {
+        kept.push(triangle);
+      }
+    }
+    expect(all).toHaveLength(11);
+    expect(kept).toHaveLength(7);
+    const area = kept.reduce(
+      (sum, [first, second, third]) =>
+        sum +
+        Math.abs(
+          (coordinates[second * 2] - coordinates[first * 2]) *
+            (coordinates[third * 2 + 1] - coordinates[first * 2 + 1]) -
+            (coordinates[second * 2 + 1] - coordinates[first * 2 + 1]) *
+              (coordinates[third * 2] - coordinates[first * 2])
+        ) /
+          2,
+      0
+    );
+    expect(area).toBe(37.65625);
+    expect(kept.map(triangle => [...triangle].sort((a, b) => a - b).join(','))).not.toContain(
+      '1,3,7'
+    );
+    // Every input vertex is kept.
+    expect(new Set(kept.flat()).size).toBe(pointCount);
+    // The kept triangles are connected through shared edges.
+    const edgeOwners = new Map<string, number[]>();
+    kept.forEach((triangle, row) => {
+      for (let edge = 0; edge < 3; edge++) {
+        const key = getEdgeKey(triangle[edge], triangle[(edge + 1) % 3]);
+        edgeOwners.set(key, [...(edgeOwners.get(key) ?? []), row]);
+      }
+    });
+    const reached = new Set([0]);
+    const queue = [0];
+    while (queue.length > 0) {
+      const row = queue.pop()!;
+      for (let edge = 0; edge < 3; edge++) {
+        const key = getEdgeKey(kept[row][edge], kept[row][(edge + 1) % 3]);
+        for (const other of edgeOwners.get(key)!) {
+          if (!reached.has(other)) {
+            reached.add(other);
+            queue.push(other);
+          }
+        }
+      }
+    }
+    expect(reached.size).toBe(kept.length);
+    // No kept triangle is still removable: one exposed edge longer than the threshold with an
+    // interior opposite vertex.
+    const lengths = all.flatMap(triangle =>
+      [0, 1, 2].map(edge => getLength(triangle[edge], triangle[(edge + 1) % 3]))
+    );
+    const threshold = Math.min(...lengths) + ratio * (Math.max(...lengths) - Math.min(...lengths));
+    expect(threshold).toBeCloseTo(2.5944, 4);
+    const boundaryVertices = new Set<number>();
+    for (const [key, owners] of edgeOwners) {
+      if (owners.length === 1) {
+        key.split(',').forEach(vertex => boundaryVertices.add(Number(vertex)));
+      }
+    }
+    for (const triangle of kept) {
+      const exposedEdges = [0, 1, 2].filter(
+        edge => edgeOwners.get(getEdgeKey(triangle[edge], triangle[(edge + 1) % 3]))!.length === 1
+      );
+      if (exposedEdges.length !== 1) {
+        continue;
+      }
+      const edge = exposedEdges[0];
+      const isRemovable =
+        !boundaryVertices.has(triangle[(edge + 2) % 3]) &&
+        getLength(triangle[edge], triangle[(edge + 1) % 3]) > threshold;
+      expect(isRemovable, `triangle ${triangle.join(',')}`).toBe(false);
+    }
+  } finally {
+    compiled.destroy();
+    harness.destroy();
+  }
+});
+
+// Math correctness review 2026-11-10, geometry-measures-04. Above 2^23 grid steps every f32 is
+// an integer, and for odd ones `value + 0.5` is a tie that rounds to the even neighbour: the
+// kernel's `floor(value / grid + 0.5)` moved 8388609 (Web Mercator metres near 75 E) to 8388610.
+// The largest f32 below one half has the mirror problem: adding 0.5 rounds up to 1.
+it('GPULinePrecisionReduction leaves coordinates that are already on the grid', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createHarness(device);
+  const {graph, view} = harness;
+  const input = [
+    8388609, 8388611, -8388609, 12345677, 16777215, -16777213, 0.49999997, 2.5, -2.5, 7.25
+  ];
+  // Hand-rounded to the unit grid; exact halves go up (2.5 -> 3, -2.5 -> -2), the kernel's rule.
+  const expected = [8388609, 8388611, -8388609, 12345677, 16777215, -16777213, 0, 3, -2, 7];
+  const output = {
+    positions: view('float32x2', 5),
+    lineOffsets: view('uint32', 2),
+    status: view('uint32', 1)
+  };
+  graph.add(
+    new GPULinePrecisionReduction({
+      positions: view('float32x2', 5, input),
+      lineOffsets: view('uint32', 2, [0, 5]),
+      gridSize: 1,
+      mode: 'valid-output',
+      output
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled);
+    expect(await harness.integers(output.lineOffsets)).toEqual([0, 5]);
+    expect(await harness.integers(output.status)).toEqual([0]);
+    expect(await harness.floats(output.positions)).toEqual(expected);
+  } finally {
+    compiled.destroy();
+    harness.destroy();
+  }
+});
+
 it('GPU convex wavefront handles simultaneous rectangle events and exact inward offsets', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

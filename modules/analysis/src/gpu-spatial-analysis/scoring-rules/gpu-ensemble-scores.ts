@@ -11,11 +11,12 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {IS_NAN_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 const OPERATION = 'GPUEnsembleScores';
@@ -110,8 +111,8 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
     validateCapacity(id, 'dimension', dimension, 1, Math.floor(0xffffffff / CRPS_LANES));
     // The invocation count of the per-member kernels is memberCount * dimension.
     validateCapacity(id, 'memberCount * dimension', memberCount * dimension, 1, 0xfffffffe);
-    validatePackedView(props.ensemble, ['float32'], `${id} ensemble`);
-    validatePackedView(props.observations, ['float32'], `${id} observations`);
+    validateSinglePackedView(props.ensemble, ['float32'], `${id} ensemble`);
+    validateSinglePackedView(props.observations, ['float32'], `${id} observations`);
     if (props.ensemble.length < memberCount * dimension) {
       throw new Error(`${id} ensemble needs memberCount * dimension rows`);
     }
@@ -122,13 +123,13 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
       throw new Error(`${id} needs crps, energyScore or variogramScore output`);
     }
     if (output.crps) {
-      validatePackedView(output.crps, ['float32'], `${id} output.crps`);
+      validateSinglePackedView(output.crps, ['float32'], `${id} output.crps`);
       if (output.crps.length < dimension) {
         throw new Error(`${id} output.crps needs dimension rows`);
       }
     }
     if (output.energyScore) {
-      validatePackedView(output.energyScore, ['float32'], `${id} output.energyScore`);
+      validateSinglePackedView(output.energyScore, ['float32'], `${id} output.energyScore`);
       if (output.energyScore.length !== 1) {
         throw new Error(`${id} output.energyScore must have one row`);
       }
@@ -137,15 +138,15 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
       throw new Error(`${id} output.variogramScore and variogramPairs go together`);
     }
     if (output.variogramScore && props.variogramPairs) {
-      validatePackedView(output.variogramScore, ['float32'], `${id} output.variogramScore`);
-      validatePackedView(props.variogramPairs, ['uint32x2'], `${id} variogramPairs`);
+      validateSinglePackedView(output.variogramScore, ['float32'], `${id} output.variogramScore`);
+      validateSinglePackedView(props.variogramPairs, ['uint32x2'], `${id} variogramPairs`);
       if (output.variogramScore.length !== 1 || props.variogramPairs.length < 1) {
         throw new Error(
           `${id} output.variogramScore must have one row and variogramPairs one pair`
         );
       }
       if (props.variogramWeights) {
-        validatePackedView(props.variogramWeights, ['float32'], `${id} variogramWeights`);
+        validateSinglePackedView(props.variogramWeights, ['float32'], `${id} variogramWeights`);
         if (props.variogramWeights.length < props.variogramPairs.length) {
           throw new Error(`${id} variogramWeights needs one row per pair`);
         }
@@ -301,9 +302,13 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
             {name: 'terms', view: terms, type: 'f32', access: 'read_write'}
           ],
           invocationCount: pairCount,
-          declarations: `// |x|^p for x >= 0 with 0^p = 0; NaN stays NaN.
+          declarations: `${IS_NAN_VALUE_WGSL}
+// |x|^p for x >= 0 with 0^p = 0; NaN stays NaN. The NaN test reads the bits: a float comparison
+// with NaN is false under IEEE rules (which sent NaN to the zero branch) and unspecified under
+// the finite-math assumption WGSL allows, so neither order of a comparison keeps NaN reliably.
 fn powerOfMagnitude(magnitude: f32) -> f32 {
-  return select(0.0, pow(magnitude, f32(${order})), magnitude > 0.0);
+  if (isNanValue(magnitude)) { return magnitude; }
+  return select(pow(magnitude, f32(${order})), 0.0, magnitude == 0.0);
 }`,
           body: `let first = pairs[pairsOffset + index * 2u];
   let second = pairs[pairsOffset + index * 2u + 1u];

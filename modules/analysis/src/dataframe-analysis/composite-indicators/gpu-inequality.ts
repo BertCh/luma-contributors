@@ -19,7 +19,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH,
@@ -199,8 +199,8 @@ export class GPUInequality implements GPUCommandNodeProducer {
       MINIMUM_LORENZ_KNOT_COUNT,
       MAXIMUM_LORENZ_KNOT_COUNT
     );
-    validatePackedView(props.values, ['float32'], `${id} values`);
-    validatePackedView(props.zoneIds, ['uint32'], `${id} zoneIds`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.zoneIds, ['uint32'], `${id} zoneIds`);
     this.rowCount = props.values.length;
     if (this.rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -209,18 +209,18 @@ export class GPUInequality implements GPUCommandNodeProducer {
       throw new Error(`${id} zoneIds length must equal the row count`);
     }
     if (props.weights) {
-      validatePackedView(props.weights, ['float32'], `${id} weights`);
+      validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
       if (props.weights.length !== this.rowCount) {
         throw new Error(`${id} weights length must equal the row count`);
       }
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_INEQUALITY_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_INEQUALITY_PARAMETER_LENGTH} float32 values`
@@ -245,7 +245,7 @@ export class GPUInequality implements GPUCommandNodeProducer {
         continue;
       }
       outputCount++;
-      validatePackedView(view, [format], `${id} output.${name}`);
+      validateSinglePackedView(view, [format], `${id} output.${name}`);
       if (view.length < length) {
         throw new Error(`${id} output.${name} must hold at least ${length} values`);
       }

@@ -221,7 +221,12 @@ export type GPUHotSpotPermutationOptions = {
   parameters: GPUParameterBuffer<'uint32'>;
   /** Compile-time upper bound of the per-frame permutation count. */
   maximumPermutations: number;
-  /** Local statistic. Defaults to `'localGStar'`. */
+  /**
+   * Local statistic. Defaults to the one the Gi stage maps: `'localGStar'`, or `'localG'` when the
+   * recipe's `selfWeight` is 0. The permutation test has a fixed focal weight (1 for
+   * `'localGStar'`, none for `'localG'`), so `'localGStar'` needs `selfWeight` 1 and `'localG'`
+   * needs `selfWeight` 0; any other combination throws at construction.
+   */
   statistic?: GPULocalPermutationStatistic;
   /** Tail of the pseudo p-value. */
   alternative?: GPUInferenceAlternative;
@@ -295,6 +300,11 @@ export type GPUHotSpotAnalysisRecipeProps = GPURecipeOverrides<
       exceedances?: GraphDataView<'uint32'>;
       pseudoPValues?: GraphDataView<'float32'>;
       significant?: GraphDataView<'uint32'>;
+      /**
+       * Observed local statistic per row of the permutation test (`GPULocalPermutationTest`
+       * `output.observed`, esda scaling). Written only when given.
+       */
+      observed?: GraphDataView<'float32'>;
       status?: {overflow?: GPUStatusScalar};
     };
     color?: {
@@ -410,6 +420,8 @@ export type GPUHotSpotAnalysisRecipeResult = GPURecipeResult & {
     exceedances: GraphDataView<'uint32'>;
     pseudoPValues: GraphDataView<'float32'>;
     significant: GraphDataView<'uint32'>;
+    /** Present when `outputs.permutation.observed` was given. */
+    observed?: GraphDataView<'float32'>;
     status: {overflow: GPUStatusScalar};
   };
   /** Status words next to the per-stage `stages`. */
@@ -558,6 +570,18 @@ export function addHotSpotAnalysisRecipe<Parameters>(
     ID,
     !props.permutation || props.permutation.parameters.length >= GPU_PERMUTATION_PARAMETER_LENGTH,
     `permutation.parameters needs ${GPU_PERMUTATION_PARAMETER_LENGTH} values`
+  );
+  // The permutation test has a fixed focal weight (1 for 'localGStar', none for 'localG'), so it
+  // confirms the mapped statistic only when `selfWeight` is that weight.
+  const selfWeight = props.selfWeight ?? 1;
+  const permutationStatistic: GPULocalPermutationStatistic =
+    props.permutation?.statistic ?? (selfWeight === 0 ? 'localG' : 'localGStar');
+  assertRecipe(
+    ID,
+    !props.permutation ||
+      ((permutationStatistic !== 'localGStar' || selfWeight === 1) &&
+        (permutationStatistic !== 'localG' || selfWeight === 0)),
+    `permutation statistic '${permutationStatistic}' needs selfWeight ${permutationStatistic === 'localG' ? 0 : 1}, not ${selfWeight}: the permutation test cannot reproduce another focal weight`
   );
   const parameters = props.parameters.importToGraph(graph, `${id}-parameters`);
   let rowCount: number;
@@ -1298,6 +1322,7 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
         rowCount,
         provided.significant
       ),
+      ...(provided.observed ? {observed: provided.observed} : {}),
       status: {
         overflow: getOrCreateView(
           graph,
@@ -1315,7 +1340,7 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
         weights,
         values,
         mask,
-        statistic: permutation.statistic ?? 'localGStar',
+        statistic: permutationStatistic,
         alternative: permutationAlternative,
         parameters: permutation.parameters.importToGraph(graph, `${id}-permutation-parameters`),
         maximumPermutations: permutation.maximumPermutations,
@@ -1325,6 +1350,7 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
           exceedances: permutationOutputs.exceedances,
           pseudoPValues: permutationOutputs.pseudoPValues,
           significant: permutationOutputs.significant,
+          observed: permutationOutputs.observed,
           status: permutationOutputs.status
         }
       })

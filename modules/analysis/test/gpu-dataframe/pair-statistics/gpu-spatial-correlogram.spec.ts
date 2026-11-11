@@ -219,6 +219,39 @@ for (const bandMode of ['cumulative', 'annulus'] as const) {
   }, 120000);
 }
 
+it('GPUSpatialCorrelogram keeps the p-value of an extreme z-score positive', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A pure gradient on a 60 x 60 lattice: neighbors within 5 units are nearly equal, Moran's I
+  // is close to 1 and its z-score is far beyond 13.3, where the float32 erfc reads exactly 0.
+  // The p-value then sits at the floor shared with the spatial-autocorrelation statistics, the
+  // smallest normal float32 (2^-126), so it stays positive, ordered and safe under log().
+  const side = 60;
+  const positions = new Float32Array(side * side * 2);
+  const values = new Float32Array(side * side);
+  for (let row = 0; row < side * side; row++) {
+    const x = ((row % side) + 0.5) * (100 / side);
+    const y = (Math.floor(row / side) + 0.5) * (100 / side);
+    positions[row * 2] = x;
+    positions[row * 2 + 1] = y;
+    values[row] = x;
+  }
+  const scene = {positions, values, mask: new Uint32Array(side * side).fill(1)};
+  const harness = createHarness(device, scene, 2, 'cumulative');
+  try {
+    const result = await harness.run(
+      getGPUSpatialCorrelogramParameterValues({bounds: BOUNDS, maximumDistance: 5})
+    );
+    for (const band of [0, 1]) {
+      expect(result.moransI[band], `band ${band} I`).toBeGreaterThan(0.9);
+      expect(result.zScores[band], `band ${band} z`).toBeGreaterThan(14);
+      expect(result.pValues[band], `band ${band} p`).toBe(2 ** -126);
+    }
+  } finally {
+    harness.destroy();
+  }
+});
+
 it('GPUSpatialCorrelogram reports NaN for empty bands and too few rows', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

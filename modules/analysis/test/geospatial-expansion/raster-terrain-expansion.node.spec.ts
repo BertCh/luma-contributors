@@ -10,7 +10,10 @@ import {
   GPURasterReconstruction
 } from '../../src/raster-analysis/gpu-raster-reconstruction';
 import {GPURasterWatershedSegmentation} from '../../src/raster-analysis/gpu-raster-watershed-segmentation';
-import {GPURasterWalkingCost} from '../../src/raster-analysis/gpu-raster-walking-cost';
+import {
+  GPURasterWalkingCost,
+  GPU_RASTER_WALKING_COST_PARAMETER_LENGTH
+} from '../../src/raster-analysis/gpu-raster-walking-cost';
 import {
   GPURasterSkeleton,
   GPURasterMedialAxis
@@ -51,7 +54,7 @@ it('bounded raster expansion variants parse, preserve eight bindings and fit pri
         values: view('float32'),
         validity: view('uint32'),
         filled: view('uint32'),
-        unresolvedCount: view('uint32', 1)
+        status: {invalidCount: view('uint32', 1)}
       }
     }),
     new GPURasterRankFilter({
@@ -88,6 +91,7 @@ it('bounded raster expansion variants parse, preserve eight bindings and fit pri
       elevation: input,
       friction: input,
       sources: view('uint32'),
+      parameters: view('float32', GPU_RASTER_WALKING_COST_PARAMETER_LENGTH),
       maximumIterations: 2,
       output: {
         costs: view('float32'),
@@ -196,6 +200,7 @@ it('bounded raster iterations accept the documented largest maximumIterations an
         elevation: input,
         friction: input,
         sources: view('uint32'),
+        parameters: view('float32', GPU_RASTER_WALKING_COST_PARAMETER_LENGTH),
         maximumIterations,
         output: {costs: view('float32'), validity: view('uint32'), status: status()}
       }),

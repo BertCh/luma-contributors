@@ -13,7 +13,7 @@ import {getPanelDiagnosticNodes} from './panel-diagnostics';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -47,6 +47,11 @@ export type GPUSpatialPanelErrorMaximumLikelihoodProps = Omit<
  * Reuses bounded trace-series likelihood search and its approximation/boundary diagnostics.
  * The absorbed intercept row and information criteria are NaN. No random/time effects,
  * serial correlation, clustered inference, Hausman tests or missing panels are supported. Optional pooled-panel LM error and robust LM lag/error diagnostics use the untransformed complete panel.
+ * Those LM tests use the pooled OLS variance `RSS / (n - p)` with `n = N*T` and
+ * `p = predictorCount + 1` (spreg `panel_LMerror`, `panel_rLMlag` and `panel_rLMerror` use
+ * `ols.sig2`), where the cross-section tests of `GPUSpatialRegressionDiagnostics` use `RSS / n`
+ * (spreg `LMtests`): on the same residuals a panel LM-error is `((n - p) / n)^2` times the
+ * cross-section statistic.
  */
 export class GPUSpatialPanelErrorMaximumLikelihood implements GPUCommandNodeProducer {
   readonly id: string;
@@ -63,16 +68,16 @@ export class GPUSpatialPanelErrorMaximumLikelihood implements GPUCommandNodeProd
       0xffffffff
     );
     validateCapacity(this.id, 'predictorCount', props.predictorCount, 1, 15);
-    validatePackedView(props.predictors, ['float32'], this.id);
-    validatePackedView(props.response, ['float32'], this.id);
+    validateSinglePackedView(props.predictors, ['float32'], this.id);
+    validateSinglePackedView(props.response, ['float32'], this.id);
     if (
       props.response.length !== entities * props.periodCount ||
       props.predictors.length !== props.response.length * props.predictorCount
     )
       throw new Error(`${this.id}: balanced period-major panel required`);
     if (props.diagnostics) {
-      validatePackedView(props.diagnostics.tests, ['float32'], this.id);
-      validatePackedView(props.diagnostics.status, ['uint32'], this.id);
+      validateSinglePackedView(props.diagnostics.tests, ['float32'], this.id);
+      validateSinglePackedView(props.diagnostics.status, ['uint32'], this.id);
       if (props.diagnostics.tests.length !== 6 || props.diagnostics.status.length !== 1)
         throw new Error(`${this.id}: diagnostic shape mismatch`);
     }

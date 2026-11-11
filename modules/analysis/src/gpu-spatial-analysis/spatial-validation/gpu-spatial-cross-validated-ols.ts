@@ -12,7 +12,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
@@ -68,7 +68,7 @@ export class GPUSpatialCrossValidatedOLS implements GPUCommandNodeProducer {
       [props.output.metrics, 'float32', folds * 6],
       [props.output.metricStatus, 'uint32', folds]
     ] as const) {
-      validatePackedView(view, [format], this.id);
+      validateSinglePackedView(view, [format], this.id);
       if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
     }
     validatePredictionViews(

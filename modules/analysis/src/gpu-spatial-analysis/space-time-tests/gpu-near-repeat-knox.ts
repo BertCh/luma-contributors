@@ -17,7 +17,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateGPUStorageBindingByteLength,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -187,10 +187,10 @@ export class GPUNearRepeatKnox implements GPUCommandNodeProducer {
     if (!props.pairs.distances) {
       throw new Error(`${id} pairs.distances is required`);
     }
-    validatePackedView(props.times, ['float32'], `${id} times`);
-    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
-    validatePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
-    validatePackedView(props.output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(props.times, ['float32'], `${id} times`);
+    validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validateSinglePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
+    validateSinglePackedView(props.output.summary, ['float32'], `${id} output.summary`);
     this.temporalContext = resolveGPUSpaceTimeTemporalContext(id, props.temporalContext);
     if (this.rows < 2) {
       throw new Error(`${id} needs at least two rows`);

@@ -1,0 +1,483 @@
+{
+ "generator": "modules/analysis/test/oracles/statistics-regression-panel-lag-conditioning.py",
+ "versions": {
+  "python": "3.14.8",
+  "numpy": "2.5.4",
+  "scipy": "1.16.3",
+  "libpysal": "4.15.0",
+  "spreg": "1.9.1"
+ },
+ "entityCount": 16,
+ "periodCount": 16,
+ "seriesTermCount": 400,
+ "parameter": 0.4,
+ "effectDeviation": 0.7,
+ "scenes": [
+  {
+   "name": "ordinary",
+   "slope": 0.5,
+   "center": 0.0,
+   "deviation": 1.0,
+   "seed": 11,
+   "responseSum": -56.38956821989268,
+   "unit": {
+    "slope": 0.4723805512225391,
+    "parameter": 0.4405346182258234,
+    "standardErrors": [
+     0.056010163955130095,
+     0.046826398679722915
+    ],
+    "sigmaSquared": 0.9707002850634097,
+    "logLikelihood": -1082.660934463733,
+    "residualRatio": 0.6999502648499433
+   },
+   "random": {
+    "intercept": -0.15316568069611927,
+    "slope": 0.47807979871633244,
+    "parameter": 0.43254969205637617,
+    "phi": 0.42535751137846023,
+    "standardErrors": [
+     0.15024636821949386,
+     0.05766005459136332,
+     0.04733513540266499
+    ],
+    "sigmaSquared": 1.039789832795457,
+    "logLikelihood": -381.15688251641325,
+    "maximum": {
+     "parameter": 0.432549691332755,
+     "phi": 0.4253575256259454,
+     "sigmaSquared": 1.039789837528617,
+     "logLikelihood": -381.15688305233823
+    }
+   }
+  },
+  {
+   "name": "slope-2",
+   "slope": 2.0,
+   "center": 0.0,
+   "deviation": 0.004,
+   "seed": 32,
+   "responseSum": 108.05976862600073,
+   "unit": {
+    "slope": 1.999835085733793,
+    "parameter": 0.39997395674366426,
+    "standardErrors": [
+     0.0002255192553328094,
+     0.00013594300640453014
+    ],
+    "sigmaSquared": 1.4945695683590713e-05,
+    "logLikelihood": 338.2742032311247,
+    "residualRatio": 2.9575177437419728e-05
+   },
+   "random": {
+    "intercept": 0.09523663504716279,
+    "slope": 1.9998351550706805,
+    "parameter": 0.3999738091241035,
+    "phi": 0.0022772473220889896,
+    "standardErrors": [
+     0.10958278401850377,
+     0.00023291525709561337,
+     0.00014040129885496092
+    ],
+    "sigmaSquared": 1.5942076878173516e-05,
+    "logLikelihood": 1039.7959821221589,
+    "maximum": {
+     "parameter": 0.3999738086408471,
+     "phi": 0.0022772465282406345,
+     "sigmaSquared": 1.5942076187006188e-05,
+     "logLikelihood": 1039.795987699758
+    }
+   }
+  },
+  {
+   "name": "slope-20",
+   "slope": 20.0,
+   "center": 0.0,
+   "deviation": 0.004,
+   "seed": 31,
+   "responseSum": 990.5622792541981,
+   "unit": {
+    "slope": 19.999630126587093,
+    "parameter": 0.3999975488361058,
+    "standardErrors": [
+     0.00022493617637645838,
+     1.2846683526771245e-05
+    ],
+    "sigmaSquared": 1.5417064313520623e-05,
+    "logLikelihood": 334.29822006439724,
+    "residualRatio": 2.6405871675787505e-07
+   },
+   "random": {
+    "intercept": -0.05815284574246404,
+    "slope": 19.99963001979952,
+    "parameter": 0.39999754298988605,
+    "phi": 0.0014984243101529538,
+    "standardErrors": [
+     0.16914549186843106,
+     0.0002323130703679162,
+     1.3267996718322325e-05
+    ],
+    "sigmaSquared": 1.644486838941045e-05,
+    "logLikelihood": 1035.8200042406029,
+    "maximum": {
+     "parameter": 0.3999975433428521,
+     "phi": 0.0014984239093338305,
+     "sigmaSquared": 1.644486783687089e-05,
+     "logLikelihood": 1035.820008520764
+    }
+   }
+  },
+  {
+   "name": "slope-200-center-0-stream-21",
+   "slope": 200.0,
+   "center": 0.0,
+   "deviation": 0.004,
+   "seed": 21,
+   "responseSum": -3806.1695460528135,
+   "unit": {
+    "slope": 200.00000039428386,
+    "parameter": 0.39999855008829,
+    "standardErrors": [
+     0.00022530148800498415,
+     1.325055053432902e-06
+    ],
+    "sigmaSquared": 1.561506879354528e-05,
+    "logLikelihood": 332.66469890223357,
+    "residualRatio": 2.8092544902615e-09
+   },
+   "random": {
+    "intercept": -0.1502404173861569,
+    "slope": 200.0000004795847,
+    "parameter": 0.3999985497969893,
+    "phi": 0.0016524005702238578,
+    "standardErrors": [
+     0.15436576321226167,
+     0.000232690353290931,
+     1.3685107771295094e-06
+    ],
+    "sigmaSquared": 1.665607234245505e-05,
+    "logLikelihood": 1034.1864890787256,
+    "maximum": {
+     "parameter": 0.3999985497136732,
+     "phi": 0.0016523991693139862,
+     "sigmaSquared": 1.6656070577821285e-05,
+     "logLikelihood": 1034.1865026445907
+    }
+   }
+  },
+  {
+   "name": "slope-200-center-0-stream-22",
+   "slope": 200.0,
+   "center": 0.0,
+   "deviation": 0.004,
+   "seed": 22,
+   "responseSum": -5753.2598296403885,
+   "unit": {
+    "slope": 199.9998485626922,
+    "parameter": 0.3999994235517526,
+    "standardErrors": [
+     0.00022369671271128027,
+     1.2769892324544701e-06
+    ],
+    "sigmaSquared": 1.5109980062289303e-05,
+    "logLikelihood": 336.8734082445884,
+    "residualRatio": 2.6091282835366015e-09
+   },
+   "random": {
+    "intercept": 0.15437916641973537,
+    "slope": 199.9998486133789,
+    "parameter": 0.399999423247318,
+    "phi": 0.0016386861533422895,
+    "standardErrors": [
+     0.15311948123502914,
+     0.00023103289638262166,
+     1.318868393857167e-06
+    ],
+    "sigmaSquared": 1.6117304714137164e-05,
+    "logLikelihood": 1038.3952488404443,
+    "maximum": {
+     "parameter": 0.3999994225700324,
+     "phi": 0.0016386940318533143,
+     "sigmaSquared": 1.6117314388882605e-05,
+     "logLikelihood": 1038.3951720453042
+    }
+   }
+  },
+  {
+   "name": "slope-200-center-0-stream-23",
+   "slope": 200.0,
+   "center": 0.0,
+   "deviation": 0.004,
+   "seed": 23,
+   "responseSum": -1356.8612518310547,
+   "unit": {
+    "slope": 200.00011702042542,
+    "parameter": 0.3999996023943107,
+    "standardErrors": [
+     0.00024657405427095,
+     1.3554792461566472e-06
+    ],
+    "sigmaSquared": 1.5702556516054136e-05,
+    "logLikelihood": 331.94948386836177,
+    "residualRatio": 2.9397190879481927e-09
+   },
+   "random": {
+    "intercept": -0.2984246228753813,
+    "slope": 200.00011708326127,
+    "parameter": 0.39999960206210894,
+    "phi": 0.001690099881239566,
+    "standardErrors": [
+     0.15134469831887606,
+     0.00025466054643318855,
+     1.3999327917443918e-06
+    ],
+    "sigmaSquared": 1.6749395242689243e-05,
+    "logLikelihood": 1033.4712536528273,
+    "maximum": {
+     "parameter": 0.3999995995976705,
+     "phi": 0.0016900968776893612,
+     "sigmaSquared": 1.6749391338913117e-05,
+     "logLikelihood": 1033.4712836294188
+    }
+   }
+  },
+  {
+   "name": "slope-200-center-0-stream-24",
+   "slope": 200.0,
+   "center": 0.0,
+   "deviation": 0.004,
+   "seed": 24,
+   "responseSum": 4663.820948600769,
+   "unit": {
+    "slope": 199.99981812992328,
+    "parameter": 0.4000019423749322,
+    "standardErrors": [
+     0.0002275067445411023,
+     1.3110126494664427e-06
+    ],
+    "sigmaSquared": 1.52844149852431e-05,
+    "logLikelihood": 335.4040487255372,
+    "residualRatio": 2.74997161865611e-09
+   },
+   "random": {
+    "intercept": -0.06936139982785505,
+    "slope": 199.99981829891232,
+    "parameter": 0.40000193659316186,
+    "phi": 0.0014927325611003063,
+    "standardErrors": [
+     0.16905842860706558,
+     0.0002349679600878699,
+     1.3540081218082041e-06
+    ],
+    "sigmaSquared": 1.6303378961853864e-05,
+    "logLikelihood": 1036.9258078728822,
+    "maximum": {
+     "parameter": 0.40000193945425544,
+     "phi": 0.0014927294813661938,
+     "sigmaSquared": 1.630337445157887e-05,
+     "logLikelihood": 1036.9258431168619
+    }
+   }
+  },
+  {
+   "name": "slope-200-center-10000-stream-21",
+   "slope": 200.0,
+   "center": 10000.0,
+   "deviation": 0.004,
+   "seed": 21,
+   "responseSum": 2556193.8310546875,
+   "unit": {
+    "slope": 200.00000826444452,
+    "parameter": 0.3999985063136627,
+    "standardErrors": [
+     0.00022655549670976398,
+     1.3324301961620476e-06
+    ],
+    "sigmaSquared": 1.5789376962534756e-05,
+    "logLikelihood": 331.24377685473223,
+    "residualRatio": 2.840614168445869e-09
+   },
+   "random": {
+    "intercept": 5999.864700949408,
+    "slope": 200.00000835195777,
+    "parameter": 0.39999850597339526,
+    "phi": 0.0016615577339780237,
+    "standardErrors": [
+     0.15497996479094872,
+     0.0002339854793397247,
+     1.376127740372673e-06
+    ],
+    "sigmaSquared": 1.6841999854243908e-05,
+    "logLikelihood": 1032.7655760798107,
+    "maximum": {
+     "parameter": 0.3999985059885409,
+     "phi": 0.001661540868800123,
+     "sigmaSquared": 1.6841978485162673e-05,
+     "logLikelihood": 1032.7657384850645
+    }
+   }
+  },
+  {
+   "name": "slope-200-center-10000-stream-22",
+   "slope": 200.0,
+   "center": 10000.0,
+   "deviation": 0.004,
+   "seed": 22,
+   "responseSum": 2554246.744140625,
+   "unit": {
+    "slope": 199.99983456463494,
+    "parameter": 0.3999995037122586,
+    "standardErrors": [
+     0.00022503894483216283,
+     1.2846514403620411e-06
+    ],
+    "sigmaSquared": 1.5291850342413575e-05,
+    "logLikelihood": 335.34193831091,
+    "residualRatio": 2.6405318213640457e-09
+   },
+   "random": {
+    "intercept": 6000.159356140187,
+    "slope": 199.99983462135825,
+    "parameter": 0.399999503317699,
+    "phi": 0.001648535097944689,
+    "standardErrors": [
+     0.1536897262500874,
+     0.00023241929529328796,
+     1.3267827307306267e-06
+    ],
+    "sigmaSquared": 1.6311320401440324e-05,
+    "logLikelihood": 1036.8636156067673,
+    "maximum": {
+     "parameter": 0.3999995018290272,
+     "phi": 0.0016485097080962928,
+     "sigmaSquared": 1.631128893225855e-05,
+     "logLikelihood": 1036.8638626422394
+    }
+   }
+  },
+  {
+   "name": "slope-200-center-10000-stream-23",
+   "slope": 200.0,
+   "center": 10000.0,
+   "deviation": 0.004,
+   "seed": 23,
+   "responseSum": 2558643.1376953125,
+   "unit": {
+    "slope": 200.0000915387506,
+    "parameter": 0.399999684001469,
+    "standardErrors": [
+     0.0002473974780514961,
+     1.3600058622518445e-06
+    ],
+    "sigmaSquared": 1.5807607115676627e-05,
+    "logLikelihood": 331.09600676928494,
+    "residualRatio": 2.9593852468114696e-09
+   },
+   "random": {
+    "intercept": 5999.704686732022,
+    "slope": 200.00009122240897,
+    "parameter": 0.39999968862639007,
+    "phi": 0.0016957537328506588,
+    "standardErrors": [
+     0.15199368980110764,
+     0.00025551099576062556,
+     1.4046079713250013e-06
+    ],
+    "sigmaSquared": 1.686145201418135e-05,
+    "logLikelihood": 1032.6177551026549,
+    "maximum": {
+     "parameter": 0.39999968608306546,
+     "phi": 0.001695755986009268,
+     "sigmaSquared": 1.6861454617051578e-05,
+     "logLikelihood": 1032.617735491809
+    }
+   }
+  },
+  {
+   "name": "slope-200-center-10000-stream-24",
+   "slope": 200.0,
+   "center": 10000.0,
+   "deviation": 0.004,
+   "seed": 24,
+   "responseSum": 2564663.8203125,
+   "unit": {
+    "slope": 199.99981477024727,
+    "parameter": 0.4000019551691629,
+    "standardErrors": [
+     0.000228100581799872,
+     1.3144346558769621e-06
+    ],
+    "sigmaSquared": 1.5364309714258184e-05,
+    "logLikelihood": 334.7367087295945,
+    "residualRatio": 2.7643462038522842e-09
+   },
+   "random": {
+    "intercept": 5999.911142971016,
+    "slope": 199.99981493847505,
+    "parameter": 0.40000194940904105,
+    "phi": 0.0014966621954650152,
+    "standardErrors": [
+     0.1696007026780502,
+     0.00023558135271534516,
+     1.3575428170222114e-06
+    ],
+    "sigmaSquared": 1.6388611182788434e-05,
+    "logLikelihood": 1036.2583807041865,
+    "maximum": {
+     "parameter": 0.400001952372704,
+     "phi": 0.0014966562711866906,
+     "sigmaSquared": 1.6388602741327867e-05,
+     "logLikelihood": 1036.258446461784
+    }
+   }
+  }
+ ],
+ "opposingEffectScene": {
+  "name": "opposing-effects-3000",
+  "slope": 2.0,
+  "center": 0.0,
+  "deviation": 0.004,
+  "seed": 41,
+  "opposingEffect": 4200.0,
+  "responseSum": 165.450439453125,
+  "largestEntityMean": 3001.6911010742188,
+  "pooledMean": 0.6462907791137695,
+  "unit": {
+   "slope": 1.9998452533075306,
+   "parameter": 0.4000616414098628,
+   "standardErrors": [
+    0.000232131145645588,
+    0.0001332995667136281
+   ],
+   "sigmaSquared": 1.5950865897631776e-05,
+   "logLikelihood": 329.9376003782804,
+   "residualRatio": 2.842140657726461e-05
+  },
+  "random": {
+   "intercept": 0.2615724979626009,
+   "slope": 1.9998454158898347,
+   "parameter": 0.40006135731331127,
+   "phi": 2.4543105879615985e-07,
+   "standardErrors": [
+    1050.3817663865955,
+    0.00023973857840666092,
+    0.00013766807930784422
+   ],
+   "sigmaSquared": 1.701348784731917e-05,
+   "logLikelihood": 1031.465185356718
+  }
+ },
+ "phiBelowLimitScene": {
+  "name": "opposing-effects-16000000",
+  "slope": 2.0,
+  "center": 0.0,
+  "deviation": 0.5,
+  "seed": 43,
+  "opposingEffect": 16000000.0,
+  "effectRunLength": 2,
+  "responseSum": -115.0,
+  "random": {
+   "phi": 9.070709743050023e-09
+  }
+ }
+}

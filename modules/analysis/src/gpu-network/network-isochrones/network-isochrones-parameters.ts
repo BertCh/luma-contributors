@@ -9,8 +9,9 @@ export const GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH = 12;
 export type GPUNetworkIsochronesSettings = {
   /**
    * Number of active ascending cost breaks, at most `costBreaks.length`. `breakCount + 1` bands exist:
-   * band `k` holds cost in `[costBreaks[k - 1], costBreaks[k])`, band 0 everything below the first break
-   * and the last band everything at or above the last active break (including unreached pixels).
+   * band `k` holds cost in `(costBreaks[k - 1], costBreaks[k]]`, band 0 everything at or below the
+   * first break and the last band everything above the last active break (including unreached
+   * pixels). A cost exactly on a break is within it, the rule of `GPUNetworkReachability` bands.
    */
   breakCount: number;
   /** Raster extent `[minX, minY, maxX, maxY]` in the context's length unit. Row 0 is at `minY`. */

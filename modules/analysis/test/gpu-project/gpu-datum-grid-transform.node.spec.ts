@@ -28,7 +28,7 @@ it('GPUDatumGridTransform kernels write the named status values', () => {
   const contributor = new GPUDatumGridTransform({
     positions: createTransientView(graph, 'positions', 'float32x3', 4),
     samples: createTransientView(graph, 'samples', 'float32x3', 4),
-    validity: createTransientView(graph, 'validity', 'uint32', 4),
+    mask: createTransientView(graph, 'mask', 'uint32', 4),
     grids: [{width: 2, height: 2, sampleOffset: 0, origin: [0, 0], spacing: [1, 1]}],
     operation: 'horizontal',
     direction: 'inverse',

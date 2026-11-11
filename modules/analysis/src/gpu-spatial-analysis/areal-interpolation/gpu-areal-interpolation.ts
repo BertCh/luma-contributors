@@ -17,7 +17,7 @@ import {
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createSegmentSumNode,
@@ -84,7 +84,11 @@ export type GPUArealInterpolationDenominator = 'zone' | 'overlap';
 
 /** Denominator per variable kind. Omitted kinds use their default. */
 export type GPUArealInterpolationDenominators = {
-  /** Default `'zone'` (tobler): mass that falls outside the target system is lost and reported. */
+  /**
+   * Default `'zone'` (tobler `area_interpolate` with `allocate_total=False`): mass that falls
+   * outside the target system is lost and reported. tobler's own default, `allocate_total=True`,
+   * is `'overlap'`.
+   */
   extensive?: GPUArealInterpolationDenominator;
   /** Default `'overlap'`: a partly covered target is the mean of what covers it. */
   intensive?: GPUArealInterpolationDenominator;
@@ -196,7 +200,13 @@ export type GPUArealInterpolationProps = {
    * overlaps the other system, so extensive shares of a source sum to 1 over its targets and
    * intensive shares of a target sum to 1 over its sources.
    *
-   * Why the kinds differ. An extensive variable (counts) keeps tobler's `'zone'`: the share of a
+   * Relation to tobler `area_interpolate`. For extensive variables `'zone'` is tobler with
+   * `allocate_total=False` and `'overlap'` is tobler with `allocate_total=True`, which is tobler's
+   * own default. So this default differs from tobler's: a source that lies half outside the target
+   * system with value 100 transfers 50 here and 100 in tobler unless `'overlap'` is passed.
+   * tobler's intensive denominator is always the overlap.
+   *
+   * Why the kinds differ. An extensive variable (counts) defaults to `'zone'`: the share of a
    * source that falls outside every target is not invented onto the targets, and the lost fraction
    * is reported in `output.sourceTransferredFractions`. An intensive variable (rate, mean) must not be
    * diluted when a target is only partly covered by sources, so it defaults to `'overlap'` and is
@@ -262,9 +272,11 @@ export type GPUArealInterpolationProps = {
  * - intensive (rates, densities, means; tobler `intensive`): `w_ts = a_st / B_t`, so the value of
  *   target `t` is the area-weighted mean `sum_s w_ts x_s` of its sources.
  * - categorical: `share(t, k) = sum_{s in k} a_st / sum_s a_st` for each target, in `categories`.
- * `A_s` and `B_t` are the whole zone areas (`denominator: 'zone'`, tobler) or only their overlap
- * with the other system (`'overlap'`, which conserves mass over the shared extent). The default is
- * `'zone'` for extensive and `'overlap'` for intensive variables (see `denominator`).
+ * `A_s` and `B_t` are the whole zone areas (`denominator: 'zone'`; for extensive variables this is
+ * tobler with `allocate_total=False`) or only their overlap with the other system (`'overlap'`,
+ * which conserves mass over the shared extent; tobler's default `allocate_total=True`). The
+ * default is `'zone'` for extensive and `'overlap'` for intensive variables (see `denominator`),
+ * so extensive totals differ from tobler's default wherever a source extends beyond the targets.
  *
  * Conservation diagnostics. `output.sourceAreas` and `output.sourceTransferredFractions` report
  * per source how much of its raster area reached the targets, and `output.status.invalidCount` counts sources that rasterized
@@ -331,13 +343,13 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
     // The zone IDs and the no-zone sentinel 0xffffffff share uint32, so counts stop one below it.
     validateCapacity(id, 'sourceZoneCount', sourceCount, 1, 0xfffffffe);
     validateCapacity(id, 'targetZoneCount', targetCount, 1, 0xfffffffe);
-    validatePackedView(props.sourceZones, ['uint32'], `${id} sourceZones`);
-    validatePackedView(props.targetZones, ['uint32'], `${id} targetZones`);
+    validateSinglePackedView(props.sourceZones, ['uint32'], `${id} sourceZones`);
+    validateSinglePackedView(props.targetZones, ['uint32'], `${id} targetZones`);
     if (props.sourceZones.length !== gridCellCount || props.targetZones.length !== gridCellCount) {
       throw new Error(`${id} sourceZones and targetZones must contain one row per grid cell`);
     }
     if (props.cellWeights) {
-      validatePackedView(props.cellWeights, ['float32'], `${id} cellWeights`);
+      validateSinglePackedView(props.cellWeights, ['float32'], `${id} cellWeights`);
       if (props.cellWeights.length !== gridCellCount) {
         throw new Error(`${id} cellWeights length must equal the grid cell count`);
       }
@@ -355,7 +367,7 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       throw new Error(`${id} mode must be 'extensive' or 'intensive'`);
     }
     if (props.sourceAnchorCells) {
-      validatePackedView(props.sourceAnchorCells, ['uint32'], `${id} sourceAnchorCells`);
+      validateSinglePackedView(props.sourceAnchorCells, ['uint32'], `${id} sourceAnchorCells`);
       if (props.sourceAnchorCells.length !== sourceCount) {
         throw new Error(`${id} sourceAnchorCells must have sourceZoneCount rows`);
       }
@@ -365,7 +377,7 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       ['output.sourceTransferredFractions', output.sourceTransferredFractions]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length !== sourceCount) {
           throw new Error(`${id} ${name} must have sourceZoneCount rows`);
         }
@@ -393,7 +405,7 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       ['output.areas', output.areas]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length !== capacity) {
           throw new Error(`${id} ${name} length must equal output.weights.neighbors length`);
         }
@@ -405,7 +417,7 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       ['output.status.invalidCount', output.status.invalidCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length < 1) {
           throw new Error(`${id} ${name} must hold one uint32`);
         }
@@ -414,7 +426,7 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
     if (props.categories) {
       const {sourceCategories, categoryCount} = props.categories;
       const {categoryShares} = output;
-      validatePackedView(sourceCategories, ['uint32'], `${id} categories.sourceCategories`);
+      validateSinglePackedView(sourceCategories, ['uint32'], `${id} categories.sourceCategories`);
       validateCapacity(id, 'categories.categoryCount', categoryCount);
       if (sourceCategories.length !== sourceCount) {
         throw new Error(`${id} categories.sourceCategories must have sourceZoneCount rows`);
@@ -422,7 +434,7 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       if (!categoryShares) {
         throw new Error(`${id} categories needs output.categoryShares`);
       }
-      validatePackedView(categoryShares, ['float32'], `${id} output.categoryShares`);
+      validateSinglePackedView(categoryShares, ['float32'], `${id} output.categoryShares`);
       if (categoryShares.length !== targetCount * categoryCount) {
         throw new Error(
           `${id} output.categoryShares must have targetZoneCount * categoryCount rows`

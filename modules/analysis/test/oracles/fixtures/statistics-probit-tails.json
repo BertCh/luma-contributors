@@ -1,0 +1,504 @@
+{
+ "generator": "modules/analysis/test/oracles/statistics-probit-tails.py",
+ "versions": {
+  "python": "3.14.8",
+  "numpy": "2.5.4",
+  "scipy": "1.16.3",
+  "statsmodels": "0.15.0",
+  "libpysal": "4.15.0",
+  "spreg": "1.9.1"
+ },
+ "scenes": {
+  "control": {
+   "rowCount": 2000,
+   "predictorSum": -38.80707173142582,
+   "separationObjective": 0.0,
+   "coefficients": [
+    0.28155619017723915,
+    2.071939136466313
+   ],
+   "standardErrors": [
+    0.04157756142440014,
+    0.08495773116724492
+   ],
+   "logLikelihood": -618.0621328482383,
+   "largestLinear": 7.447918181225152,
+   "largestMisclassifiedLinear": 2.4187448314983726,
+   "statsmodels": {
+    "coefficients": [
+     0.2815561901772392,
+     2.071939136466313
+    ],
+    "logLikelihood": -618.0621328482383,
+    "converged": true,
+    "warnings": [],
+    "expectedInformationStandardErrors": [
+     0.0415775609268546,
+     0.08495772925554576
+    ]
+   }
+  },
+  "correctOutlier": {
+   "rowCount": 2001,
+   "predictorSum": -29.807071731425822,
+   "separationObjective": 0.0,
+   "coefficients": [
+    0.28155619017723915,
+    2.071939136466313
+   ],
+   "standardErrors": [
+    0.04157756142440014,
+    0.08495773116724492
+   ],
+   "logLikelihood": -618.0621328482382,
+   "largestLinear": 18.929008418374053,
+   "largestMisclassifiedLinear": 2.4187448314983726,
+   "statsmodels": {
+    "coefficients": [
+     0.28155619017723915,
+     2.071939136466313
+    ],
+    "logLikelihood": -618.0621328482383,
+    "converged": true,
+    "warnings": [],
+    "expectedInformationStandardErrors": [
+     0.04157756075480669,
+     0.08495772852972465
+    ]
+   }
+  },
+  "misclassifiedOutlier": {
+   "rowCount": 2001,
+   "predictorSum": -34.80707173142582,
+   "separationObjective": 0.0,
+   "coefficients": [
+    0.24553075375397415,
+    1.8619261099884366
+   ],
+   "standardErrors": [
+    0.039624481819932,
+    0.07519567769138608
+   ],
+   "logLikelihood": -653.9384149883581,
+   "largestLinear": 7.693235193707721,
+   "largestMisclassifiedLinear": 7.693235193707721,
+   "statsmodels": {
+    "coefficients": [
+     0.245530753753974,
+     1.8619261099884359
+    ],
+    "logLikelihood": -653.9384149883581,
+    "converged": true,
+    "warnings": [],
+    "expectedInformationStandardErrors": [
+     0.03962465103110995,
+     0.07519650333117854
+    ]
+   }
+  },
+  "grossMisclassifiedOutlier": {
+   "rowCount": 2001,
+   "predictorSum": -29.807071731425822,
+   "separationObjective": 0.0,
+   "coefficients": [
+    0.19521963151191904,
+    1.4465759433801202
+   ],
+   "standardErrors": [
+    0.03601526167059938,
+    0.058018550541309034
+   ],
+   "logLikelihood": -742.627796529108,
+   "largestLinear": 13.214403121933001,
+   "largestMisclassifiedLinear": 13.214403121933001,
+   "statsmodels": {
+    "coefficients": [
+     0.28155619017716615,
+     2.071939136465795
+    ],
+    "logLikelihood": -654.1057862373556,
+    "converged": true,
+    "warnings": []
+   }
+  },
+  "justBeyondBound": {
+   "rowCount": 400,
+   "predictorSum": 12.275554237887263,
+   "separationObjective": 0.0,
+   "coefficients": [
+    0.05108093151291257,
+    3.534305965058777
+   ],
+   "standardErrors": [
+    0.1079253671300175,
+    0.37672078639802464
+   ],
+   "logLikelihood": -88.15216845815594,
+   "largestLinear": 12.060306280755002,
+   "largestMisclassifiedLinear": 1.7626434117864143,
+   "statsmodels": {
+    "coefficients": [
+     0.05108093151291252,
+     3.534305965058777
+    ],
+    "logLikelihood": -88.15216845815593,
+    "converged": true,
+    "warnings": [],
+    "expectedInformationStandardErrors": [
+     0.10792536690743551,
+     0.37672078378102597
+    ]
+   }
+  },
+  "completeSeparation": {
+   "rowCount": 400,
+   "predictorSum": 12.863040212541819,
+   "separationObjective": 110.84055052738145,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "quasiCompleteSeparation": {
+   "rowCount": 406,
+   "predictorSum": 12.520183067768812,
+   "separationObjective": 110.82551242092971,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "steepSlope": {
+   "rowCount": 2000,
+   "predictorSum": 53.50014176592231,
+   "separationObjective": 0.0,
+   "coefficients": [
+    0.20566689096093801,
+    7.698754614727868
+   ],
+   "standardErrors": [
+    0.07483308864387485,
+    0.4995597754148246
+   ],
+   "logLikelihood": -192.64770438154054,
+   "largestLinear": 29.522969619715685,
+   "largestMisclassifiedLinear": 2.2520135286209815,
+   "statsmodels": {
+    "coefficients": [
+     0.205666890960938,
+     7.698754614727868
+    ],
+    "logLikelihood": -192.64770438154056,
+    "converged": true,
+    "warnings": [],
+    "expectedInformationStandardErrors": [
+     0.07483308847890655,
+     0.4995597719774792
+    ]
+   }
+  },
+  "indicatorOfThreeRows": {
+   "rowCount": 600,
+   "predictorSum": -3.649632014334202,
+   "predictorSums": [
+    -3.649632014334202,
+    3.0
+   ],
+   "separationObjective": 3.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "indicatorOfOneRow": {
+   "rowCount": 600,
+   "predictorSum": -3.649632014334202,
+   "predictorSums": [
+    -3.649632014334202,
+    1.0
+   ],
+   "separationObjective": 1.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "indicatorAmongElevenPredictors": {
+   "rowCount": 600,
+   "predictorSum": -3.649632014334202,
+   "predictorSums": [
+    -3.649632014334202,
+    21.278495617210865,
+    43.828351536765695,
+    15.378214625641704,
+    -37.071929591707885,
+    10.477931313216686,
+    55.027792025357485,
+    -34.42235293239355,
+    55.127508560195565,
+    14.67736567556858,
+    3.0
+   ],
+   "separationObjective": 3.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "indicatorOfEveryTwentiethRow": {
+   "rowCount": 600,
+   "predictorSum": -3.649632014334202,
+   "predictorSums": [
+    -3.649632014334202,
+    30.0
+   ],
+   "separationObjective": 30.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "indicatorOfEverySecondRow": {
+   "rowCount": 600,
+   "predictorSum": -3.649632014334202,
+   "predictorSums": [
+    -3.649632014334202,
+    300.0
+   ],
+   "separationObjective": 300.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "indicatorAsMiddleOfThree": {
+   "rowCount": 600,
+   "predictorSum": -3.649632014334202,
+   "predictorSums": [
+    -3.649632014334202,
+    3.0,
+    -4.665909394621849
+   ],
+   "separationObjective": 3.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "indicatorOfOneRowIn100000": {
+   "rowCount": 100000,
+   "predictorSum": -243.23259161785245,
+   "predictorSums": [
+    -243.23259161785245,
+    1.0
+   ],
+   "separationObjective": 1.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "indicatorOfThreeRowsIn200000": {
+   "rowCount": 200000,
+   "predictorSum": -122.02608504705131,
+   "predictorSums": [
+    -122.02608504705131,
+    3.0
+   ],
+   "separationObjective": 3.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "indicatorOfFiveRowsIn400000": {
+   "rowCount": 400000,
+   "predictorSum": -1116.2646042024717,
+   "predictorSums": [
+    -1116.2646042024717,
+    5.0
+   ],
+   "separationObjective": 5.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "indicatorOfFiveRowsIn1000000": {
+   "rowCount": 1000000,
+   "predictorSum": -2027.6297717448324,
+   "predictorSums": [
+    -2027.6297717448324,
+    5.0
+   ],
+   "separationObjective": 5.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "indicatorOfTwentyRowsIn1000000": {
+   "rowCount": 1000000,
+   "predictorSum": -2027.6297717448324,
+   "predictorSums": [
+    -2027.6297717448324,
+    20.0
+   ],
+   "separationObjective": 20.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  },
+  "indicatorWithBothOutcomesIn100000": {
+   "rowCount": 100000,
+   "predictorSum": -243.23259161785245,
+   "predictorSums": [
+    -243.23259161785245,
+    3.0
+   ],
+   "separationObjective": 0.0,
+   "coefficients": [
+    0.20673381028852653,
+    0.9946848275177291,
+    0.6234954520422529
+   ],
+   "standardErrors": [
+    0.00461973697061096,
+    0.006061347766476881,
+    0.8788778162034777
+   ],
+   "logLikelihood": -49479.610329875126,
+   "largestLinear": 4.107346693299564,
+   "largestMisclassifiedLinear": 2.428918733395015,
+   "statsmodels": {
+    "coefficients": [
+     0.20673381028852655,
+     0.9946848275177291,
+     0.623495452042253
+    ],
+    "logLikelihood": -49479.610329875126,
+    "converged": true,
+    "warnings": [],
+    "expectedInformationStandardErrors": [
+     0.004619736970569065,
+     0.006061347766461997,
+     0.8788781317983944
+    ]
+   }
+  },
+  "nearlySeparated": {
+   "rowCount": 3002,
+   "predictorSum": 1000.0,
+   "separationObjective": 0.0,
+   "coefficients": [
+    4.177547985710076e-06,
+    6.022116283022816
+   ],
+   "standardErrors": [
+    0.8861964174978184,
+    100.69534268303227
+   ],
+   "logLikelihood": -1.386393044754303,
+   "largestLinear": 6.022120460570802,
+   "largestMisclassifiedLinear": 6.43987092946237e-05,
+   "statsmodels": {
+    "coefficients": [
+     4.177547985712731e-06,
+     6.022116283022852
+    ],
+    "logLikelihood": -1.386393044754322,
+    "converged": true,
+    "warnings": [],
+    "expectedInformationStandardErrors": [
+     0.8861964153402014,
+     100.69178110253934
+    ]
+   }
+  },
+  "largeOffsetPredictor": {
+   "rowCount": 5000,
+   "predictorSum": 83886080000.0,
+   "predictorOffset": 16777216.0,
+   "separationObjective": 0.0,
+   "coefficients": [
+    0.29961283726732574,
+    0.34932909287975505
+   ],
+   "standardErrors": [
+    0.021407875819622398,
+    0.00862499302070414
+   ],
+   "logLikelihood": -2328.4960325349184,
+   "largestLinear": 1.696929208786346,
+   "largestMisclassifiedLinear": 1.696929208786346,
+   "statsmodels": {
+    "coefficients": [
+     0.2996128372673257,
+     0.3493290928797551
+    ],
+    "logLikelihood": -2328.4960325349184,
+    "converged": true,
+    "expectedInformationStandardErrors": [
+     0.021407875851440442,
+     0.008624993035813346
+    ],
+    "groupFitted": [
+     0.1361669829954248,
+     0.34492989511482675,
+     0.6177637544682495,
+     0.840926022588881,
+     0.9551449774721151
+    ],
+    "averageMarginalEffect": 0.09118714072798226
+   },
+   "spreg": {
+    "diagnostics": [
+     2621.69114481823,
+     0.0,
+     48.18137755141187,
+     0.0,
+     2070.494631445492,
+     0.0
+    ]
+   }
+  },
+  "threeValuedMiddle": {
+   "rowCount": 100002,
+   "predictorSum": 0.0,
+   "separationObjective": 2.0,
+   "statsmodels": {
+    "converged": false,
+    "warnings": [
+     "ConvergenceWarning"
+    ]
+   }
+  }
+ }
+}

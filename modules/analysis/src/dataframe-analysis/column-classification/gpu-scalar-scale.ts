@@ -12,7 +12,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -99,11 +99,11 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
       2,
       GPU_SCALAR_SCALE_MAXIMUM_DOMAIN_COUNT
     );
-    validatePackedView(props.values, ['float32', 'uint32'], `${id} values`);
-    validatePackedView(props.domain, ['float32'], `${id} domain`);
-    validatePackedView(props.range, ['float32'], `${id} range`);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
-    validatePackedView(props.output.values, ['float32'], `${id} output.values`);
+    validateSinglePackedView(props.values, ['float32', 'uint32'], `${id} values`);
+    validateSinglePackedView(props.domain, ['float32'], `${id} domain`);
+    validateSinglePackedView(props.range, ['float32'], `${id} range`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
     // Controls cover their declared capacity; output storage covers every source row.
     validateRequirement(
       id,
@@ -122,7 +122,7 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
       'output.values must hold at least one value per source row'
     );
     if (this.mask) {
-      validatePackedView(this.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(this.mask, ['uint32'], `${id} mask`);
       // The row mask follows the exact source row topology.
       validateRequirement(
         id,
@@ -131,7 +131,7 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
       );
     }
     if (props.output.validity) {
-      validatePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
+      validateSinglePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
       // Every source row receives an output validity value.
       validateRequirement(
         id,
@@ -202,12 +202,12 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
         ],
         declarations: `const MAXIMUM_DOMAIN_COUNT: u32 = ${props.maximumDomainCount}u;\n${SCALAR_SCALE_WGSL}`,
         body: `let nullValue = parameters[parametersOffset + 2u];
-  outputValues[outputValuesOffset + index] = select(0.0, nullValue, scalarIsFinite(nullValue));
+  outputValues[outputValuesOffset + index] = select(0.0, nullValue, isFiniteValue(nullValue));
   ${props.output.validity ? 'outputValidity[outputValidityOffset + index] = 0u;' : ''}
   ${this.mask ? 'if (sourceMask[sourceMaskOffset + index] == 0u) { return; }' : ''}
   let scaleParameter = parameters[parametersOffset];
   let domainCountParameter = parameters[parametersOffset + 1u];
-  if (!scalarIsFinite(scaleParameter) || !scalarIsFinite(domainCountParameter) || !scalarIsFinite(nullValue)) { return; }
+  if (!isFiniteValue(scaleParameter) || !isFiniteValue(domainCountParameter) || !isFiniteValue(nullValue)) { return; }
   if (scaleParameter < 0.0 || scaleParameter > 4.0 || floor(scaleParameter) != scaleParameter || domainCountParameter < 0.0 || domainCountParameter > f32(MAXIMUM_DOMAIN_COUNT) || floor(domainCountParameter) != domainCountParameter) { return; }
   let invertParameter = parameters[parametersOffset + 3u];
   if (invertParameter != 0.0 && invertParameter != 1.0) { return; }
@@ -220,17 +220,17 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
   let value = f32(values[valuesOffset + index]);`
       : 'let value = values[valuesOffset + index];'
   }
-  if (!scalarIsFinite(value)) { return; }
+  if (!isFiniteValue(value)) { return; }
   var mapped: f32;
   if (scale == 4u) {
     if (domainCount == 0u) { return; }
     let firstRange = range[rangeOffset];
     let secondRange = range[rangeOffset + 1u];
-    if (!scalarIsFinite(firstRange) || !scalarIsFinite(secondRange)) { return; }
+    if (!isFiniteValue(firstRange) || !isFiniteValue(secondRange)) { return; }
     var categoryIndex = MAXIMUM_DOMAIN_COUNT;
     for (var candidate = 0u; candidate < domainCount; candidate++) {
       let category = domain[domainOffset + candidate];
-      if (!scalarIsFinite(category)) { return; }
+      if (!isFiniteValue(category)) { return; }
       if (category == value && categoryIndex == MAXIMUM_DOMAIN_COUNT) { categoryIndex = candidate; }
     }
     if (categoryIndex == MAXIMUM_DOMAIN_COUNT) { return; }
@@ -240,14 +240,14 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
     if (domainCount != 2u) { return; }
     let firstDomain = domain[domainOffset];
     let secondDomain = domain[domainOffset + 1u];
-    if (!scalarIsFinite(firstDomain) || !scalarIsFinite(secondDomain)) { return; }
+    if (!isFiniteValue(firstDomain) || !isFiniteValue(secondDomain)) { return; }
     if (scale == 2u && !((firstDomain > 0.0 && secondDomain > 0.0) || (firstDomain < 0.0 && secondDomain < 0.0))) { return; }
     if (scale == 3u && invertParameter == 0.0) {
       mapped = select(value, firstDomain, firstDomain == secondDomain);
     } else {
       let firstRange = select(range[rangeOffset], secondDomain, scale == 3u);
       let secondRange = select(range[rangeOffset + 1u], firstDomain, scale == 3u);
-      if (!scalarIsFinite(firstRange) || !scalarIsFinite(secondRange)) { return; }
+      if (!isFiniteValue(firstRange) || !isFiniteValue(secondRange)) { return; }
       if (firstDomain == secondDomain) {
         mapped = select(scalarInterpolate(firstRange, secondRange, 0.5), firstDomain, scale == 3u);
       } else {
@@ -255,7 +255,7 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
         let first = scalarTransform(firstDomain, scale);
         let second = scalarTransform(secondDomain, scale);
         let transformed = scalarTransform(value, scale);
-        if (!scalarIsFinite(first) || !scalarIsFinite(second) || !scalarIsFinite(transformed) || first == second) { return; }
+        if (!isFiniteValue(first) || !isFiniteValue(second) || !isFiniteValue(transformed) || first == second) { return; }
         // Normalize large magnitudes before dividing: hardware may flush the reciprocal of
         // a near-maximum f32 denominator to zero even when the quotient is ordinary finite.
         let magnitude = max(max(abs(first), abs(second)), abs(transformed));
@@ -264,7 +264,7 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
         let scaledSecond = second * normalization;
         if (scaledFirst == scaledSecond) { return; }
         let position = (transformed * normalization - scaledFirst) / (scaledSecond - scaledFirst);
-        if (!scalarIsFinite(position)) { return; }
+        if (!isFiniteValue(position)) { return; }
         if (scale == 3u) {
           // Keep both interpolation operands normalized too: GPU algebraic optimization may
           // form their difference, which overflows for opposite near-maximum f32 endpoints.
@@ -275,7 +275,7 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
       }
     }
   }
-  if (!scalarIsFinite(mapped)) { return; }
+  if (!isFiniteValue(mapped)) { return; }
   outputValues[outputValuesOffset + index] = mapped;
   ${props.output.validity ? 'outputValidity[outputValidityOffset + index] = 1u;' : ''}`
       })

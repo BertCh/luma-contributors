@@ -12,3 +12,12 @@ export type {
   GPUTrajectoryRecursionsOutput,
   GPUTrajectoryRecursionsProps
 } from './gpu-trajectory-recursions';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeTrajectoryRecursionsOnCPU,
+  CPUTrajectoryRecursionsOperation
+} from './cpu-trajectory-recursions-operation';
+export type {CPUTrajectoryRecursionsResult} from './cpu-trajectory-recursions-operation';
+export {GPUTrajectoryRecursionsOperation} from './gpu-trajectory-recursions-operation';
+export type {TrajectoryRecursionsOperationProps} from './gpu-trajectory-recursions-operation';

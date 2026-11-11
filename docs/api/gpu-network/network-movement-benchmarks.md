@@ -1,6 +1,6 @@
 # Network and movement measurements
 
-One native Chromium WebGPU run on Apple Metal3. Times below are median wall-clock milliseconds for three warm encode/submit/queue-completion runs. Upload/preparation, compilation, cold execution and readback are recorded separately in the [JSON fixture](../../../../modules/analysis/test/oracles/fixtures/network-movement-benchmark.json).
+One native Chromium WebGPU run on Apple Metal3. Times below are median wall-clock milliseconds for three warm encode/submit/queue-completion runs. Upload/preparation, compilation, cold execution and readback are recorded separately in the [JSON fixture](../../../modules/analysis/test/oracles/fixtures/network-movement-benchmark.json).
 
 | Operation | Workload size | Warm ms |
 | --- | ---: | ---: |

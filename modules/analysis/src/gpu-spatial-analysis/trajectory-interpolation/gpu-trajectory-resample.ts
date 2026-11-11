@@ -18,7 +18,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH} from './trajectory-clock-parameters';
@@ -137,8 +137,15 @@ export type GPUTrajectoryResampleProps = Omit<GPUTrajectoryGeometryFields, 'time
  * is `b` shifted by a multiple of 360); wrap downstream if needed. Absent clock samples stay NaN.
  *
  * Composition: in arc-length mode one per-track kernel sums step lengths sequentially in row order
+ * with a Neumaier-compensated float32 sum, the same as the line family's measure prefix
  * (deterministic, but O(track length) per invocation); then one kernel with one invocation per
  * output sample.
+ *
+ * Precision: progress in `'time'` and `'clock'` spacing, and `output.sampleTimes`, are float32
+ * differences from the track's first timestamp (word timestamps are subtracted exactly, then
+ * rounded once). They are exact while a track spans fewer than 2^24 timestamp units (4.6 hours of
+ * milliseconds); beyond that a sample time is rounded to the float32 spacing at that span, 1 unit
+ * in 2^24. Arc lengths are float32 with a relative error of about 1e-6.
  */
 export class GPUTrajectoryResample implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -162,8 +169,8 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
     const id = this.id;
     const {output} = props;
     const rowCount = props.positions.length;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
     if (props.trackOffsets.length < 2) {
       throw new Error(`${id} trackOffsets must contain at least two rows`);
     }
@@ -179,7 +186,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
         throw new Error(`${id} timestamps are required for clock spacing`);
       }
       const clockFormat = props.timestamps.format === 'uint32x2' ? 'uint32' : 'float32';
-      validatePackedView(props.clock, [clockFormat], `${id} clock`);
+      validateSinglePackedView(props.clock, [clockFormat], `${id} clock`);
       if (props.clock.length < GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH) {
         throw new Error(
           `${id} clock must hold ${GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH} ${clockFormat} values`
@@ -192,11 +199,11 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
       if (this.spacing === 'arc-length') {
         throw new Error(`${id} maximumGap requires spacing 'clock' or 'time'`);
       }
-      validatePackedView(props.maximumGap, ['float32'], `${id} maximumGap`);
+      validateSinglePackedView(props.maximumGap, ['float32'], `${id} maximumGap`);
     }
     validateCapacity(id, 'sampleCount', props.sampleCount);
     if (props.timestamps) {
-      validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+      validateSinglePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
       if (props.timestamps.length !== rowCount) {
         throw new Error(`${id} timestamps length must equal positions length`);
       }
@@ -204,7 +211,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
       throw new Error(`${id} timestamps are required for time spacing and sampleTimes`);
     }
     if (props.elevations) {
-      validatePackedView(props.elevations, ['float32'], `${id} elevations`);
+      validateSinglePackedView(props.elevations, ['float32'], `${id} elevations`);
       if (props.elevations.length !== rowCount) {
         throw new Error(`${id} elevations length must equal positions length`);
       }
@@ -225,7 +232,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, [format], `${id} ${name}`);
+      validateSinglePackedView(view, [format], `${id} ${name}`);
       if (view.length !== outputLength) {
         throw new Error(`${id} ${name} length must equal trackCount * sampleCount`);
       }

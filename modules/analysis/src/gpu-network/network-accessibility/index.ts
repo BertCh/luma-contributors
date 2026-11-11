@@ -5,6 +5,7 @@
 export {
   GPUNetworkSnapping,
   getGPUNetworkSnappingMaximumCandidateEdgeCount,
+  GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK,
   GPU_NETWORK_SNAPPING_NONE,
   GPU_NETWORK_SNAPPING_NO_VALUE
 } from './gpu-network-snapping';
@@ -31,3 +32,16 @@ export type {
   GPUNetworkAccessibilitySettings,
   GPUNetworkAccessibilityProps
 } from './gpu-network-accessibility';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeNetworkCostMatrixOnCPU,
+  CPUNetworkCostMatrixOperation
+} from './cpu-network-cost-matrix-operation';
+export type {
+  CPUNetworkCostMatrixInput,
+  CPUNetworkCostMatrixOptions,
+  CPUNetworkCostMatrixResult
+} from './cpu-network-cost-matrix-operation';
+export {GPUNetworkCostMatrixOperation} from './gpu-network-cost-matrix-operation';
+export type {NetworkCostMatrixOperationProps} from './gpu-network-cost-matrix-operation';

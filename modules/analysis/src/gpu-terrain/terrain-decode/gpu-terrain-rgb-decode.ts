@@ -16,7 +16,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateRasterBuffersDistinct,
@@ -178,19 +178,19 @@ export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
       }
     }
     if (buffer) {
-      validatePackedView(buffer, ['uint32'], `${id} input buffer`);
+      validateSinglePackedView(buffer, ['uint32'], `${id} input buffer`);
       if (buffer.length !== pixelCount) {
         throw new Error(`${id} input buffer must contain one packed RGBA8 word per pixel`);
       }
     }
     if (props.validity) {
-      validatePackedView(props.validity, ['uint32'], `${id} validity`);
+      validateSinglePackedView(props.validity, ['uint32'], `${id} validity`);
       if (props.validity.length !== pixelCount) {
         throw new Error(`${id} validity must contain one value per pixel`);
       }
     }
-    validatePackedView(output.values, ['float32'], `${id} output.values`);
-    validatePackedView(output.outputValidity, ['uint32'], `${id} output.outputValidity`);
+    validateSinglePackedView(output.values, ['float32'], `${id} output.values`);
+    validateSinglePackedView(output.outputValidity, ['uint32'], `${id} output.outputValidity`);
     if (output.values.length !== pixelCount || output.outputValidity.length !== pixelCount) {
       throw new Error(`${id} outputs must contain one value per pixel`);
     }

@@ -31,7 +31,7 @@ it.each([
         endmemberCount: entry.members,
         constraint,
         values: view('float32', 257),
-        validity: view('uint32', 257),
+        mask: view('uint32', 257),
         endmembers: view('float32', 257 * entry.members),
         maximumIterations: 4096,
         output: {

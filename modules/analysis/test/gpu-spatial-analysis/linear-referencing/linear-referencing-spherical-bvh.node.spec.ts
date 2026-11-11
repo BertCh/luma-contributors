@@ -31,7 +31,10 @@ function getSphericalNodes(positionCount: number) {
       lineIndices: view('uint32', 16),
       distances: view('float32', 16),
       footPoints: view('float32x2', 16),
-      status: {overflow: view('uint32', 1), candidateCount: view('uint32', 1)}
+      status: {
+        candidateOverflow: view('uint32', 1),
+        requiredCandidateCount: view('uint32', 1)
+      }
     }
   }).getCommandNodes(graph);
 }

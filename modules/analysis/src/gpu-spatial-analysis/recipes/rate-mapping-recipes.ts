@@ -24,7 +24,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -134,7 +134,7 @@ export function addSpatialRateRecipe<Parameters>(
   }
   const rows = props.events.length;
   const spatialRates = getOrCreateView(graph, `${id}-output`, 'float32', rows, props.output);
-  validatePackedView(spatialRates, ['float32'], `${id} output`);
+  validateSinglePackedView(spatialRates, ['float32'], `${id} output`);
   if (spatialRates.length !== rows) throw new Error(`${id} output length must equal events length`);
   validateGraphOutputsDisjointFromInputs(
     id,

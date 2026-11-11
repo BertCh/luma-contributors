@@ -119,6 +119,32 @@ cases.push({
     );
   }
 });
+cases.push({
+  exportName: 'GPUOPTICS',
+  name: '65536 rows,grid reachability,256 minimum samples,256-visit batches,candidate overflow',
+  build({graph, view}) {
+    graph.add(
+      new GPUOPTICS({
+        positions: view('float32x2', 65536),
+        minimumSamples: 256,
+        maximumDistance: 10,
+        extractionDistance: 10,
+        frontierBatchSize: 256,
+        neighborIndex: 'grid',
+        neighborCapacity: 65536 * 256,
+        output: {
+          ordering: view('uint32', 65536),
+          coreDistances: view('float32', 65536),
+          reachability: view('float32', 65536),
+          predecessors: view('uint32', 65536),
+          labels: view('uint32', 65536),
+          status: view('uint32', 3),
+          ports: {status: {candidateOverflow: view('uint32', 1)}}
+        }
+      })
+    );
+  }
+});
 for (const [eventCount, queryCount] of [
   [65536, 256],
   [256, 65536]

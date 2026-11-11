@@ -33,10 +33,14 @@ fn sphericalExcessTriangle(center: vec3f, first: vec3f, second: vec3f) -> f32 {
  *   floating-point work is well conditioned: measured relative error at most 1e-6 at every
  *   resolution 0-15.
  * - Fallback (`isExact` 0): pentagons and cells crossing an icosahedron edge, from the unit vectors
- *   of {@link H3_BOUNDARY_WGSL}. The vertices are f32 unit vectors, so the triangle determinants
- *   cancel: measured worst relative error 6e-7 at resolution 0, 2e-5 at 2, 5e-5 at 3, 2.5e-4 at 4,
- *   1e-2 at 6, growing about 40x per two resolutions (unusable beyond resolution 5). These cells
- *   are under 1% of the cells of resolution 5 and rarer above.
+ *   of {@link H3_BOUNDARY_WGSL}. The vertices are f32 unit vectors. The triangle determinant is
+ *   taken from vertex differences (`cellMeasuresGetTriangleExcess`), so it does not cancel; what
+ *   limits the result is the rounding of the unit vectors, about 6e-8 over the edge length in
+ *   radians, the same limit as the edge lengths. Measured worst relative area error against
+ *   python h3: 6e-7 at resolution 0, 6e-6 at 2, 2e-5 at 4, 9e-5 at 6, 1.5e-4 at 8, 5e-3 at 9 and
+ *   10, and 0.7 at 14 (unusable beyond resolution 10). Until 2026-11-10 the determinant was
+ *   `dot(center, cross(first, second))`, which was 1e-2 off at resolution 6 and a factor of 30
+ *   off at 9. These cells are under 1% of the cells of resolution 5 and rarer above.
  *
  * @internal
  */
@@ -146,6 +150,17 @@ fn cellMeasuresGetExactHexagon(hexagon: CellMeasuresHexagon) -> CellMeasures {
   return measures;
 }
 
+// Unsigned spherical excess of the triangle (center, first, second) of unit vectors. The
+// determinant dot(center, cross(first, second)) is taken as dot(center, cross(first - center,
+// second - center)), which is the same number: the differences of nearby unit vectors are exact
+// in f32, so the triple product no longer cancels three products of order 1 down to the triangle
+// area. What remains is the rounding of the unit vectors themselves, about 6e-8 over the edge
+// length in radians.
+fn cellMeasuresGetTriangleExcess(center: vec3f, first: vec3f, second: vec3f) -> f32 {
+  let determinant = abs(dot(center, cross(first - center, second - center)));
+  return 2.0 * atan2(determinant, 1.0 + dot(first, second) + dot(second, center) + dot(center, first));
+}
+
 fn cellMeasuresGetBoundaryMeasures(cell: vec2u) -> CellMeasures {
   var measures: CellMeasures;
   measures.isExact = 0u;
@@ -160,7 +175,7 @@ fn cellMeasuresGetBoundaryMeasures(cell: vec2u) -> CellMeasures {
   for (var vertex = 0u; vertex < boundary.count; vertex++) {
     let a = boundary.units[vertex];
     let b = boundary.units[(vertex + 1u) % boundary.count];
-    area += abs(sphericalExcessTriangle(center, a, b));
+    area += cellMeasuresGetTriangleExcess(center, a, b);
     let edge = atan2(length(cross(a, b)), dot(a, b));
     measures.edges[vertex] = edge;
     perimeter += edge;

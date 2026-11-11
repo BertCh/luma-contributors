@@ -16,7 +16,7 @@ import {AnalysisRig} from '../catchment-accessibility/rig';
 const layout = GPU_SPATIAL_ENTROPY_LAYOUT;
 
 async function runEntropy(
-  csr: {offsets: number[]; neighbors: number[]},
+  csr: {offsets: number[]; neighbors: number[]; weights?: number[]},
   categories: number[],
   categoryCount: number
 ) {
@@ -27,7 +27,7 @@ async function runEntropy(
   const pairCounts = rig.output('uint32', categoryCount ** 2);
   rig.run(
     new GPUSpatialEntropy({
-      weights: rig.weights({...csr, weights: csr.neighbors.map(() => 1)}),
+      weights: rig.weights({...csr, weights: csr.weights ?? csr.neighbors.map(() => 1)}),
       categories: rig.input(new Uint32Array(categories), 'uint32'),
       categoryCount,
       output: {summary, pairCounts}
@@ -55,6 +55,36 @@ describe('GPUSpatialEntropy', () => {
     expect(single.words[layout.shannon]).toBeCloseTo(0, 6);
     expect(single.words[layout.mutualInformation]).toBeCloseTo(0, 6);
     expect(single.words[layout.relativeMutualInformation]).toBeNaN();
+  });
+
+  // spatial-statistics-05: a link is an active slot of the shared neighbor rule (positive weight,
+  // another row). Self slots used to be counted as links, which made the table of two rows of
+  // different categories 1, 1, 1, 1 and their mutual information 0.
+  it('does not count self slots or zero-weight slots as links', async () => {
+    // Rows A and B, each listing itself and the other. Links: 0>1 (A,B) and 1>0 (B,A).
+    const withSelf = await runEntropy({offsets: [0, 2, 4], neighbors: [0, 1, 0, 1]}, [0, 1], 2);
+    expect(withSelf.pairs).toEqual([0, 1, 1, 0]);
+    expect(withSelf.words[layout.linkCount]).toBe(2);
+    // p_AB = p_BA = 1/2: co-occurrence ln 2, both marginals ln 2, mutual information ln 2.
+    expect(withSelf.words[layout.cooccurrence]).toBeCloseTo(0.6931472, 6);
+    expect(withSelf.words[layout.originEntropy]).toBeCloseTo(0.6931472, 6);
+    expect(withSelf.words[layout.mutualInformation]).toBeCloseTo(0.6931472, 6);
+    // The path A A B B with a self slot on every row and one zero-weight slot 0>3: the table is
+    // that of the plain path, 2, 1, 1, 2 over 6 links, co-occurrence
+    // (2/3) ln 3 + (1/3) ln 6 = 1.3296613 and mutual information 2 ln 2 - 1.3296613 = 0.0566330.
+    const path = await runEntropy(
+      {
+        offsets: [0, 3, 6, 9, 11],
+        neighbors: [0, 1, 3, 0, 1, 2, 1, 2, 3, 2, 3],
+        weights: [1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]
+      },
+      [0, 0, 1, 1],
+      2
+    );
+    expect(path.pairs).toEqual([2, 1, 1, 2]);
+    expect(path.words[layout.linkCount]).toBe(6);
+    expect(path.words[layout.cooccurrence]).toBeCloseTo(1.3296613, 6);
+    expect(path.words[layout.mutualInformation]).toBeCloseTo(0.056633, 6);
   });
 
   it('separates the origin and destination entropies of directed links', async () => {

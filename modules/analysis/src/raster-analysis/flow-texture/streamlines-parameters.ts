@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNonZeroFiniteNumber} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 
 /** Philox key word 1 of the seed jitter and priority stream. @internal */
@@ -23,7 +24,10 @@ export const GPU_STREAMLINES_UINT32_PARAMETER_LENGTH = 4;
 
 /** Per-frame settings of {@link GPUStreamlines}. */
 export type GPUStreamlinesSettings = {
-  /** Field placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y. */
+  /**
+   * Field placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y. A cell
+   * size that is zero or not finite throws.
+   */
   fieldExtent: readonly [number, number, number, number];
   /**
    * Occupancy grid placement `[originX, originY, cellWidth, cellHeight]`. The cell size is the
@@ -61,9 +65,17 @@ export function getGPUStreamlinesParameterValues(
     );
   }
   const [, , cellWidth, cellHeight] = settings.gridExtent;
-  if (!(cellWidth > 0) || !(cellHeight > 0)) {
-    throw new Error('Streamlines grid cells must have a positive size');
+  // Tested after rounding to float32, the precision the kernel receives: 1e-50 rounds to 0 and
+  // 1e39 to Infinity, and the reciprocals packed below would then be Infinity or 0.
+  for (const gridCellSize of [Math.fround(cellWidth), Math.fround(cellHeight)]) {
+    if (!(gridCellSize > 0) || !Number.isFinite(gridCellSize)) {
+      throw new Error(
+        'GPUStreamlines gridExtent cells must have a positive size that is finite in float32'
+      );
+    }
   }
+  validateNonZeroFiniteNumber('GPUStreamlines', 'fieldExtent cellWidth', settings.fieldExtent[2]);
+  validateNonZeroFiniteNumber('GPUStreamlines', 'fieldExtent cellHeight', settings.fieldExtent[3]);
   target.set([
     ...settings.fieldExtent,
     ...settings.gridExtent,

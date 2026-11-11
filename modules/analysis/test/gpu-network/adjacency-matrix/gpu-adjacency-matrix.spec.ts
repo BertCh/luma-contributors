@@ -40,6 +40,7 @@ type FixtureOptions = {
   order?: Uint32Array;
   window?: MatrixOracleOptions['window'];
   withTexture?: boolean;
+  weightScale?: number;
 };
 
 class Fixture {
@@ -136,6 +137,7 @@ class Fixture {
       order: input('order', options.order),
       parameters: importUint('window', this.windowBuffer, 4),
       resolution,
+      weightScale: options.weightScale,
       output: {
         counts: importUint('counts', this.counts, cells),
         weightSums: importUint('weight-sums', this.weightSums, cells),
@@ -196,6 +198,7 @@ class Fixture {
       edgeMask: options.edgeMask,
       order: options.order,
       window: options.window,
+      weightScale: options.weightScale,
       ...overrides
     });
   }
@@ -445,4 +448,43 @@ it('GPUAdjacencyMatrixOrder matches the CPU helper for group and tie keys', asyn
     tieBuffer.destroy();
     orderBuffer.destroy();
   }
+});
+
+it('GPUAdjacencyMatrix rounds each fixed-point weight half up, also above 2^23', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Four directed edges 0 -> 1 -> 2 -> 3 -> 0, one per cell at resolution 4. At the default scale
+  // of 1024 the products are exact: 8388609 and 8388611 (odd integers above 2^23, where adding
+  // 0.5 in float32 rounds to the even neighbour), 1.5 and 2.5 (halves round up to 2 and 3).
+  const exact = new Fixture(device, {
+    nodeCount: 4,
+    edges: [
+      [0, 1, 8192.0009765625],
+      [1, 2, 1.5 / 1024],
+      [2, 3, 2.5 / 1024],
+      [3, 0, 8192.0029296875]
+    ],
+    resolution: 4,
+    directed: true
+  });
+  const exactResult = await exact.run();
+  expect([1, 6, 11, 12].map(cell => exactResult.weightSums[cell])).toEqual([
+    8388609, 2, 3, 8388611
+  ]);
+  expectMatches(exactResult, exact.oracle());
+  exact.destroy();
+  // At scale 1000 the product is rounded to float32 first: the float32 nearest 16.0035 is
+  // 16.00349998474121, its product 16003.49998 rounds to the float32 16003.5, and that rounds
+  // half up to 16004. The exported helper gives the same value.
+  const scaled = new Fixture(device, {
+    nodeCount: 2,
+    edges: [[0, 1, 16.0035]],
+    resolution: 2,
+    directed: true,
+    weightScale: 1000
+  });
+  const scaledResult = await scaled.run();
+  expect(scaledResult.weightSums[1]).toBe(16004);
+  expectMatches(scaledResult, scaled.oracle());
+  scaled.destroy();
 });

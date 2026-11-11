@@ -9,3 +9,46 @@ export * from './gpu-terrain-catchment-summary';
 export * from './gpu-terrain-dem-coregistration';
 export * from './gpu-terrain-tiled-flow';
 export * from './gpu-terrain-flow-fractions';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeTerrainBranchingFlowOnCPU,
+  CPUTerrainBranchingFlowOperation
+} from './cpu-terrain-branching-flow-operation';
+export type {
+  CPUTerrainBranchingFlowInput,
+  CPUTerrainBranchingFlowOptions,
+  CPUTerrainBranchingFlowResult
+} from './cpu-terrain-branching-flow-operation';
+export {computeTerrainBreachOnCPU, CPUTerrainBreachOperation} from './cpu-terrain-breach-operation';
+export type {
+  CPUTerrainBreachInput,
+  CPUTerrainBreachOptions,
+  CPUTerrainBreachResult
+} from './cpu-terrain-breach-operation';
+export {
+  computeTerrainCatchmentSummaryOnCPU,
+  CPUTerrainCatchmentSummaryOperation
+} from './cpu-terrain-catchment-summary-operation';
+export type {
+  CPUTerrainCatchmentSummaryInput,
+  CPUTerrainCatchmentSummaryOptions,
+  CPUTerrainCatchmentSummaryResult
+} from './cpu-terrain-catchment-summary-operation';
+export {
+  computeTerrainDepressionHierarchyOnCPU,
+  CPUTerrainDepressionHierarchyOperation
+} from './cpu-terrain-depression-hierarchy-operation';
+export type {
+  CPUTerrainDepressionHierarchyInput,
+  CPUTerrainDepressionHierarchyOptions,
+  CPUTerrainDepressionHierarchyResult
+} from './cpu-terrain-depression-hierarchy-operation';
+export {GPUTerrainBranchingFlowOperation} from './gpu-terrain-branching-flow-operation';
+export type {TerrainBranchingFlowOperationProps} from './gpu-terrain-branching-flow-operation';
+export {GPUTerrainBreachOperation} from './gpu-terrain-breach-operation';
+export type {TerrainBreachOperationProps} from './gpu-terrain-breach-operation';
+export {GPUTerrainCatchmentSummaryOperation} from './gpu-terrain-catchment-summary-operation';
+export type {TerrainCatchmentSummaryOperationProps} from './gpu-terrain-catchment-summary-operation';
+export {GPUTerrainDepressionHierarchyOperation} from './gpu-terrain-depression-hierarchy-operation';
+export type {TerrainDepressionHierarchyOperationProps} from './gpu-terrain-depression-hierarchy-operation';

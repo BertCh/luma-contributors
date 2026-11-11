@@ -17,7 +17,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getPairHistogramNodes,
@@ -175,10 +175,15 @@ export type GPUVariogramProps = {
  *   f32 as `sqrt(dx * dx + dy * dy)`) falls in lag `min(floor(d / maximumDistance * lagCount),
  *   lagCount - 1)` and, with `directionCount > 1`, in sector
  *   `min(floor(a / pi * directionCount), directionCount - 1)` where `a` is
- *   `atan2(dy, dx) - azimuthOffset` reduced modulo pi into `[0, pi)`.
+ *   `atan2(dy, dx) - azimuthOffset` reduced modulo pi into `[0, pi)`. A pair of coincident
+ *   points (`dx = dy = 0`) has no direction and is counted in sector 0 for every `azimuthOffset`
+ *   (lag 0), so the sector counts add up to the omnidirectional counts.
  * - Per bin with `N` pairs: `gamma = sum (z_i - z_j)^2 / (2 N)` (Matheron), mean distance
  *   `sum d / N`, and the Cressie-Hawkins estimator
- *   `gamma_CH = (sum |z_i - z_j|^(1/2) / N)^4 / (2 (0.457 + 0.494 / N))`.
+ *   `gamma_CH = (sum |z_i - z_j|^(1/2) / N)^4 / (2 (0.457 + 0.494 / N + 0.045 / N^2))`, the bias
+ *   correction of Cressie and Hawkins (1980) that scikit-gstat evaluates. Cressie (1993) prints
+ *   the two-term form `0.457 + 0.494 / N`, which is 4.7 % larger at `N = 1` and 0.09 % at
+ *   `N = 10`.
  *
  * Determinism and precision: every pair term is accumulated as an exact 64-bit integer sum of a
  * fixed-point quantization (see the shared pair histogram), so results are bitwise reproducible
@@ -255,7 +260,7 @@ export class GPUVariogram implements GPUCommandNodeProducer {
       ['output.robustSemivariances', output.robustSemivariances]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length < binCount) {
           throw new Error(`${id} ${name} must hold lagCount * directionCount rows`);
         }
@@ -268,7 +273,7 @@ export class GPUVariogram implements GPUCommandNodeProducer {
       }
     }
     if (output.statistics) {
-      validatePackedView(output.statistics, ['float32'], `${id} output.statistics`);
+      validateSinglePackedView(output.statistics, ['float32'], `${id} output.statistics`);
       if (output.statistics.length < GPU_VARIOGRAM_STATISTICS_LENGTH) {
         throw new Error(
           `${id} output.statistics must hold ${GPU_VARIOGRAM_STATISTICS_LENGTH} rows`
@@ -410,7 +415,10 @@ fn getVariogramScales() -> VariogramScales {
     let azimuthOffset = readParameter(5u);`,
       pairAction: `let lag = min(u32(pairDistance / lattice.maximumDistance * f32(LAG_COUNT)), LAG_COUNT - 1u);
             var sector = 0u;
-            if (DIRECTION_COUNT > 1u) {
+            // A coincident pair has no direction and atan2(0, 0) is indeterminate in WGSL: it
+            // stays in sector 0. A -0.0 deltaX is harmless here, because the angle is reduced
+            // modulo pi and both +pi/2 and -pi/2 reduce to pi/2.
+            if (DIRECTION_COUNT > 1u && (deltaX != 0.0 || deltaY != 0.0)) {
               let angle = atan2(deltaY, deltaX) - azimuthOffset;
               let reduced = angle - floor(angle / PI) * PI;
               sector = min(u32(max(reduced, 0.0) / PI * f32(DIRECTION_COUNT)), DIRECTION_COUNT - 1u);
@@ -485,7 +493,9 @@ ${getPairHistogramReadWGSL('accumulators', channelCount, '', binCount)}`,
     robust
       ? `let robustMean = select(0.0, readPairAccumulator(index, 3u) / scales.robust / pairCount, scales.robust > 0.0);
   let robustSquare = robustMean * robustMean;
-  let robustValue = robustSquare * robustSquare / (2.0 * (0.457 + 0.494 / pairCount));
+  // Cressie and Hawkins (1980) bias correction, with the 1 / N^2 term that matters in sparse bins.
+  let robustCorrection = 0.457 + 0.494 / pairCount + 0.045 / (pairCount * pairCount);
+  let robustValue = robustSquare * robustSquare / (2.0 * robustCorrection);
   robustSemivariances[robustSemivariancesOffset + index] = select(nan, robustValue, hasPairs);`
       : ''
   }`

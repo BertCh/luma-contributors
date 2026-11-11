@@ -82,7 +82,9 @@ it('GPULineSegmentize validates inputs and emits deterministic node IDs', () => 
   expect(ids[0]).toBe('line-segmentize-prefix');
   expect(ids).toContain('line-segmentize-count');
   expect(ids).toContain('line-segmentize-emit');
-  expect(ids.at(-1)).toBe('line-segmentize-publish');
+  expect(ids.at(-2)).toBe('line-segmentize-publish');
+  // The line counts (rule 8 `count`) are written after the vertex publish.
+  expect(ids.at(-1)).toBe('line-segmentize-line-count');
 
   // Planar is the default; an unsupported context or a bad radius throws at construction.
   expect(new GPULineSegmentize(createSegmentizeProps(graph)).coordinateSystem).toBe('planar');

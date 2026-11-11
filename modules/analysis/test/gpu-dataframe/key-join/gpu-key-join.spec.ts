@@ -409,6 +409,68 @@ for (const [name, options] of SCENES) {
   });
 }
 
+it('GPUKeyJoin sums and means of small-magnitude values are right to float32', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new Fixture(device);
+  // Keys 1 and 2 hold values far below 1 / 65536 (the unit of the `sums` words), key 3 holds
+  // values ten orders of magnitude larger, and a masked row of key 1 holds a 1e30 sentinel that
+  // must not set the unit of the sums.
+  const rightKeys = [1n, 1n, 1n, 2n, 2n, 2n, 2n, 3n, 3n, 1n];
+  const values = Float32Array.from([
+    1.0e-4, 1.2e-4, 1.4e-4, 3e-6, 4e-6, 5e-6, 6e-6, 1e6, 2e6, 1e30
+  ]);
+  const rightCount = rightKeys.length;
+  const scene: Scene = {
+    keyBits: 32,
+    leftKeys: [1n, 2n, 3n, 4n],
+    rightKeys,
+    rightMask: Uint32Array.from({length: rightCount}, (_, row) => (row === rightCount - 1 ? 0 : 1)),
+    values,
+    values2: new Float32Array(rightCount),
+    words: new Uint32Array(rightCount),
+    words2: new Uint32Array(rightCount),
+    kind: 'left',
+    capacity: 4
+  };
+  const join = createJoin(fixture, scene);
+  try {
+    const actual = await join.run();
+    const decode = (index: number) =>
+      Array.from(new Float32Array(Uint32Array.from(actual.aggregateValues[index]).buffer));
+    const sums = decode(AGGREGATES.findIndex(aggregate => aggregate.operation === 'sum'));
+    const means = decode(AGGREGATES.findIndex(aggregate => aggregate.operation === 'mean'));
+    // Float64 sums of the float32 inputs, per key.
+    const groups = [
+      [0, 1, 2],
+      [3, 4, 5, 6],
+      [7, 8]
+    ];
+    for (const [leftRow, rows] of groups.entries()) {
+      const expectedSum = rows.reduce((total, row) => total + values[row], 0);
+      expect(
+        Math.abs(sums[leftRow] - expectedSum),
+        `sum of key ${leftRow + 1}`
+      ).toBeLessThanOrEqual(2e-6 * Math.abs(expectedSum));
+      expect(
+        Math.abs(means[leftRow] - expectedSum / rows.length),
+        `mean of key ${leftRow + 1}`
+      ).toBeLessThanOrEqual((2e-6 * Math.abs(expectedSum)) / rows.length);
+    }
+    // Hand values: the mean of 1.0e-4, 1.2e-4, 1.4e-4 is 1.2e-4.
+    expect(means[0]).toBeCloseTo(1.2e-4, 9);
+    expect(sums[2]).toBe(3e6);
+    expect(Number.isNaN(sums[3])).toBe(true);
+    // The `sums` words stay in units of 1 / sumScale.
+    const sumIndex = AGGREGATES.findIndex(aggregate => aggregate.operation === 'sum');
+    const words = actual.aggregateSums[sumIndex];
+    expect((BigInt(words[2 * 2 + 1]) << 32n) | BigInt(words[2 * 2])).toBe(3_000_000n * 65536n);
+  } finally {
+    join.compiled.destroy();
+    fixture.destroy();
+  }
+});
+
 it('GPUKeyJoin inner join compacts matched rows and reports overflow', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

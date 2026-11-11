@@ -18,3 +18,27 @@ export type {
   GPURasterZonalStatisticsStatus,
   GPURasterZonalStatisticsSumOrder
 } from './gpu-raster-zonal-statistics';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeRasterFractionalZonalDistributionOnCPU,
+  CPURasterFractionalZonalDistributionOperation
+} from './cpu-raster-fractional-zonal-distribution-operation';
+export type {
+  CPURasterFractionalZonalDistributionOptions,
+  CPURasterFractionalZonalDistributionInput,
+  CPURasterFractionalZonalDistributionResult
+} from './cpu-raster-fractional-zonal-distribution-operation';
+export {GPURasterFractionalZonalDistributionOperation} from './gpu-raster-fractional-zonal-distribution-operation';
+export type {RasterFractionalZonalDistributionOperationProps} from './gpu-raster-fractional-zonal-distribution-operation';
+export {
+  computeRasterFractionalZonalStatisticsOnCPU,
+  CPURasterFractionalZonalStatisticsOperation
+} from './cpu-raster-fractional-zonal-statistics-operation';
+export type {
+  CPURasterFractionalZonalStatisticsInput,
+  CPURasterFractionalZonalStatisticsOptions,
+  CPURasterFractionalZonalStatisticsResult
+} from './cpu-raster-fractional-zonal-statistics-operation';
+export {GPURasterFractionalZonalStatisticsOperation} from './gpu-raster-fractional-zonal-statistics-operation';
+export type {RasterFractionalZonalStatisticsOperationProps} from './gpu-raster-fractional-zonal-statistics-operation';

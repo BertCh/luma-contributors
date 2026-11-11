@@ -39,7 +39,7 @@ export type GPURasterRollingMeanProps = {
   /** Cell-major chunk `cell * chunkSliceCount + slice`; nonfinite samples are missing. */
   values: GraphDataView<'float32'>;
   /** Per-observation QA; zero makes the sample missing. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Float32, see `getGPURasterStreamingAccumulatorParameterValues`. */
   parameters: GraphDataView<'float32'>;
   /** Caller-owned ring of the last `windowLength` samples per cell (float32), carried between chunks. */
@@ -77,9 +77,9 @@ export class GPURasterRollingMean implements GPUCommandNodeProducer {
     validateRequirement(
       id,
       props.values.length >= observationCount &&
-        (!props.validity || props.validity.length >= observationCount) &&
+        (!props.mask || props.mask.length >= observationCount) &&
         props.output.length >= observationCount,
-      'values, validity and output must hold cellCount times chunkSliceCount entries'
+      'values, mask and output must hold cellCount times chunkSliceCount entries'
     );
     validateRequirement(
       id,
@@ -96,8 +96,8 @@ export class GPURasterRollingMean implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, parameters} = this.props;
-    return [values, parameters, ...(validity ? [validity] : [])];
+    const {values, mask, parameters} = this.props;
+    return [values, parameters, ...(mask ? [mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -108,7 +108,7 @@ export class GPURasterRollingMean implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    const {chunkSliceCount: chunk, windowLength: window, values, validity, parameters} = props;
+    const {chunkSliceCount: chunk, windowLength: window, values, mask, parameters} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     return [
       createWGSLKernelNode<Parameters>(graph, {
@@ -119,7 +119,7 @@ export class GPURasterRollingMean implements GPUCommandNodeProducer {
         bindings: [
           rasterBinding('values', values),
           rasterBinding('parameters', parameters),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           rasterBinding('ring', props.ring, true),
           rasterBinding('seenCount', props.seenCount, true),
           rasterBinding('rolling', props.output, true)
@@ -132,7 +132,7 @@ for (var slice = 0u; slice < ${chunk}u; slice++) {
   if (slice >= activeSliceCount) { rolling[rollingOffset + index * ${chunk}u + slice] = missing(); continue; }
   let source = index * ${chunk}u + slice;
   var value = values[valuesOffset + source];
-  if (!finite(value) ${validity ? '|| validity[validityOffset + source] == 0u' : ''}) { value = missing(); }
+  if (!finite(value) ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { value = missing(); }
   ring[ringOffset + index * ${window}u + seen % ${window}u] = value;
   seen++;
   var mean = missing();

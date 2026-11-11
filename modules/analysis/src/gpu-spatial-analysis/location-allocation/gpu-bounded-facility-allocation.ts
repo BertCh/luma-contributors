@@ -11,7 +11,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createFacilityScoreReductionNodes} from './facility-score-reduction';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs,
   validateCapacity,
@@ -86,7 +86,7 @@ export class GPUBoundedFacilityAllocation implements GPUCommandNodeProducer {
       [props.output.objective, 'float32', 1],
       [props.output.status, 'uint32', 3]
     ] as const) {
-      validatePackedView(view, [format], this.id);
+      validateSinglePackedView(view, [format], this.id);
       if (view.length !== length) throw new Error('Facility allocation view length mismatch');
     }
     const outputBuffers = Object.values(props.output)

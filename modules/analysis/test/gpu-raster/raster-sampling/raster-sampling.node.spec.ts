@@ -226,7 +226,7 @@ it('GPURasterSampling and GPURasterProfile validate their inputs', () => {
     expect(() => sampling({noDataValue: NaN})).toThrow(/noDataValue/);
     expect(() => sampling({values: view(graph, 'float32', 15)})).toThrow(/values/);
     expect(() => sampling({values: view(graph, 'uint32', 16)})).toThrow(/float32/);
-    expect(() => sampling({validity: view(graph, 'uint32', 15)})).toThrow(/validity/);
+    expect(() => sampling({mask: view(graph, 'uint32', 15)})).toThrow(/mask/);
     expect(() => sampling({positions: view(graph, 'float32', 5)})).toThrow(/float32x2/);
     expect(() => sampling({parameters: view(graph, 'float32', 11)})).toThrow(/parameters/);
     expect(() => sampling({pointCount: view(graph, 'float32', 1)})).toThrow(/uint32/);
@@ -321,5 +321,43 @@ it('GPURasterSampling and GPURasterProfile create deterministic nodes', () => {
     expect(ids.filter(id => id.startsWith('p-cumulative'))).toEqual([]);
     expect(ids.at(-1)).toBe('p-finish-counts');
     expect(ids).not.toContain('p-finish-lines');
+  });
+});
+
+it('GPURasterSampling and GPURasterProfile take the contract mask', () => {
+  withGraph(graph => {
+    const parameters = view(graph, 'float32', 12);
+    const values = view(graph, 'float32', 16);
+    const positions = view(graph, 'float32x2', 5);
+    const sampling = (overrides: Record<string, unknown>) =>
+      new GPURasterSampling({
+        id: 'sampling',
+        grid: makeGPURasterMetadata({width: 4, height: 4}),
+        values,
+        positions,
+        parameters,
+        output: {values: view(graph, 'float32', 5)},
+        ...overrides
+      } as ConstructorParameters<typeof GPURasterSampling>[0]);
+    const mask = view(graph, 'uint32', 16);
+    expect(sampling({mask}).props.mask).toBe(mask);
+    expect(() => sampling({mask: view(graph, 'uint32', 15)})).toThrow(/^sampling mask/);
+    const profile = (overrides: Record<string, unknown>) =>
+      new GPURasterProfile({
+        id: 'profile',
+        grid: makeGPURasterMetadata({width: 4, height: 4}),
+        values,
+        positions: view(graph, 'float32x2', 6),
+        lineOffsets: view(graph, 'uint32', 3),
+        parameters,
+        sampleCapacity: 10,
+        output: {
+          status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)},
+          sampleValues: view(graph, 'float32', 10)
+        },
+        ...overrides
+      } as ConstructorParameters<typeof GPURasterProfile>[0]);
+    expect(profile({mask}).props.mask).toBe(mask);
+    expect(() => profile({mask: view(graph, 'uint32', 15)})).toThrow(/^profile mask/);
   });
 });

@@ -58,7 +58,8 @@ export const GPU_GEODESIC_WGS84_FLATTENING = GPU_WGS84_FLATTENING;
  *
  * @example
  * ```ts
- * import {GEODESIC_WGSL, GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+ * import {GEODESIC_WGSL} from '@luma-contributors/analysis/gpu-spatial-analysis';
+ * import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
  * const source = `${GEODESIC_WGSL}
  * fn distanceMeters(a: vec2<f32>, b: vec2<f32>) -> f32 {
  *   return geodesicHaversineDistance(a, b, ${GPU_EARTH_MEAN_RADIUS_METERS});

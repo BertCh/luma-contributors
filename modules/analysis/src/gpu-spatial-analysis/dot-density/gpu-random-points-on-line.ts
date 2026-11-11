@@ -20,7 +20,7 @@ import {
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -116,10 +116,10 @@ export class GPURandomPointsOnLine implements GPUCommandNodeProducer {
       SPATIAL_CONTEXT_SUPPORT
     );
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
-    validatePackedView(props.counts, ['uint32'], `${id} counts`);
-    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    validateSinglePackedView(props.counts, ['uint32'], `${id} counts`);
+    validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     if (props.lineOffsets.length < 2) {
       throw new Error(`${id} lineOffsets needs at least one line`);
     }
@@ -132,7 +132,7 @@ export class GPURandomPointsOnLine implements GPUCommandNodeProducer {
         `${id} parameters must contain ${GPU_DOT_DENSITY_PARAMETER_LENGTH} uint32 rows`
       );
     }
-    validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
     validateCompactOutput(id, output.points);
     const capacity = output.positions.length;
     if (capacity < 1 || output.points.ids.length !== capacity) {
@@ -141,7 +141,7 @@ export class GPURandomPointsOnLine implements GPUCommandNodeProducer {
       );
     }
     if (output.fractions) {
-      validatePackedView(output.fractions, ['float32'], `${id} output.fractions`);
+      validateSinglePackedView(output.fractions, ['float32'], `${id} output.fractions`);
       if (output.fractions.length !== capacity) {
         throw new Error(`${id} output.fractions must have capacity rows`);
       }

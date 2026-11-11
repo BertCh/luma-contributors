@@ -4,7 +4,10 @@
 
 import {PhiloxStream} from '../../../src/analysis-core/kernels/permutation-random';
 import {
+  getNetworkKFunctionChunkCount,
   getNetworkKFunctionLengthRange,
+  NETWORK_K_FUNCTION_CHUNK_EDGE_COUNT,
+  NETWORK_K_FUNCTION_EDGE_LENGTH_RANGE,
   NETWORK_K_FUNCTION_STREAM
 } from '../../../src/gpu-network/network-k-function/gpu-network-k-function';
 import {
@@ -47,9 +50,12 @@ export function snapEvents(
 }
 
 /**
- * Draws `eventCount` random events like the GPU `simulate` kernel: an edge with probability
- * proportional to its length quantized against the longest live edge, through a Philox stream keyed by `seed`, `(event, pattern)`
- * counters and the K function tag, then a uniform fraction along it.
+ * Draws `eventCount` random events like the GPU `simulate` kernel: a chunk of 128 slots and then
+ * an edge of it, each with probability proportional to its quantized length, through a Philox
+ * stream keyed by `seed`, `(event, pattern)` counters and the K function tag, then a uniform
+ * fraction along the edge. This is a mirror of the kernel's integers, so it pins the schedule and
+ * the stream, not the proportions; the spec "draws short edges in proportion to their length"
+ * checks those against the exact length shares.
  */
 export function simulateEvents(
   csr: AccessibilityCSR,
@@ -71,14 +77,37 @@ export function simulateEvents(
       maximum = Math.max(maximum, csr.weights[edge]);
     }
   }
-  const scale = Math.fround(getNetworkKFunctionLengthRange(csr.neighbors.length) / maximum);
-  const prefix = new Uint32Array(csr.neighbors.length);
-  let sum = 0;
-  for (let edge = 0; edge < prefix.length; edge++) {
+  // Two-level draw (review network-paths-04): edge lengths in 2^24 units of the longest live
+  // edge, a prefix sum inside each chunk of 128 slots, and a prefix sum over the chunk totals
+  // shifted right until the largest is below the coarse range. Both roundings are to nearest.
+  const edgeCount = csr.neighbors.length;
+  const chunkCount = getNetworkKFunctionChunkCount(edgeCount);
+  const prefix = new Uint32Array(edgeCount);
+  const chunkTotals = new Uint32Array(chunkCount);
+  for (let edge = 0; edge < edgeCount; edge++) {
+    const chunk = Math.floor(edge / NETWORK_K_FUNCTION_CHUNK_EDGE_COUNT);
     if (maximum > 0 && isLive(edge)) {
-      sum += Math.floor(Math.fround(csr.weights[edge] * scale));
+      const scaled =
+        Math.min(Math.fround(csr.weights[edge] / maximum), 1) *
+        NETWORK_K_FUNCTION_EDGE_LENGTH_RANGE;
+      const whole = Math.floor(scaled);
+      chunkTotals[chunk] += whole + (scaled - whole >= 0.5 ? 1 : 0);
     }
-    prefix[edge] = sum;
+    prefix[edge] = chunkTotals[chunk];
+  }
+  const chunkMaximum = chunkTotals.reduce((left, right) => Math.max(left, right), 0);
+  const maximumBits = 32 - Math.clz32(chunkMaximum);
+  const chunkRangeBits = Math.log2(getNetworkKFunctionLengthRange(chunkCount));
+  const shift = Math.max(maximumBits - chunkRangeBits, 0);
+  const chunkPrefix = new Float64Array(chunkCount);
+  let sum = 0;
+  for (let chunk = 0; chunk < chunkCount; chunk++) {
+    const total = chunkTotals[chunk];
+    sum +=
+      shift > 0
+        ? Math.floor(total / 2 ** shift) + (Math.floor(total / 2 ** (shift - 1)) % 2)
+        : total;
+    chunkPrefix[chunk] = sum;
   }
   const key: [number, number] = [seed % 2 ** 32, Math.floor(seed / 2 ** 32)];
   const events: KFunctionEvent[] = [];
@@ -88,9 +117,13 @@ export function simulateEvents(
       continue;
     }
     const stream = new PhiloxStream(key, event, pattern, NETWORK_K_FUNCTION_STREAM);
-    const draw = stream.nextBelow(sum);
+    const chunkDraw = stream.nextBelow(sum);
+    const chunk = chunkPrefix.findIndex(value => value > chunkDraw);
+    const firstEdge = chunk * NETWORK_K_FUNCTION_CHUNK_EDGE_COUNT;
+    const endEdge = Math.min(firstEdge + NETWORK_K_FUNCTION_CHUNK_EDGE_COUNT, edgeCount);
+    const draw = stream.nextBelow(chunkTotals[chunk]);
     const fraction = (stream.nextUint32() >>> 8) / 16777216;
-    const edge = prefix.findIndex(value => value > draw);
+    const edge = firstEdge + prefix.subarray(firstEdge, endEdge).findIndex(value => value > draw);
     const weight = csr.weights[edge];
     events.push({
       first: csr.sources[edge],

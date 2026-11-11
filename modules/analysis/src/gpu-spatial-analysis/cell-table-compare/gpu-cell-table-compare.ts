@@ -18,7 +18,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../analysis-core/contracts/status';
 import {
@@ -50,6 +50,10 @@ export type GPUCellTableCompareMeasure = 'count' | 'sum';
 /**
  * Score written to `output.zScore`: `'poisson'` is `delta / sqrt(before + after)` (0 when both
  * are 0), `'standardized'` is `(delta - mean) / sd` over the union rows.
+ *
+ * `'poisson'` is a statistic of counts. With `measure: 'sum'` it is meaningful only for sums of
+ * non-negative values: a row where `before + after` is negative, or is 0 while the two sums
+ * differ, gets NaN.
  */
 export type GPUCellTableCompareZScore = 'poisson' | 'standardized';
 
@@ -164,21 +168,21 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
       throw new Error(`${id} measure 'sum' needs sums on both before and after`);
     }
     const {output} = props;
-    validatePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
+    validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
     const capacity = output.cells.length;
     if (capacity < 1) {
       throw new Error(`${id} output.cells must hold at least one row`);
     }
     if (output.presence) {
-      validatePackedView(output.presence, ['uint32'], `${id} output.presence`);
+      validateSinglePackedView(output.presence, ['uint32'], `${id} output.presence`);
     }
     if (output.mask) {
-      validatePackedView(output.mask, ['uint32'], `${id} output.mask`);
+      validateSinglePackedView(output.mask, ['uint32'], `${id} output.mask`);
     }
     for (const name of ['before', 'after', 'delta', 'ratio', 'percentChange', 'zScore'] as const) {
       const view = output[name];
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
       }
     }
     for (const name of [
@@ -201,7 +205,7 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
       if (view.length < 1) {
         throw new Error(`${id} output.status.${name} needs one row`);
       }
@@ -586,8 +590,13 @@ ${ORDERED_KEY_WGSL}`,
   ${
     output.zScore
       ? this.zScoreKind === 'poisson'
-        ? `let denominator = beforeValue + afterValue;
-  zScoreOut[zScoreOutOffset + index] = select(nan, select(0.0, delta / sqrt(denominator), denominator != 0.0), isOccupied);`
+        ? `// A count statistic: defined for before + after > 0, and 0 when both are 0. Sums can make
+  // the denominator zero or negative with a non-zero delta; that has no value (never sqrt of a
+  // negative number, which WGSL leaves indeterminate).
+  let denominator = beforeValue + afterValue;
+  let undefinedScore = select(nan, 0.0, beforeValue == 0.0 && afterValue == 0.0);
+  let score = select(undefinedScore, delta / sqrt(max(denominator, 0.0)), denominator > 0.0);
+  zScoreOut[zScoreOutOffset + index] = select(nan, score, isOccupied);`
         : `let mean = statistics[statisticsOffset];
   let deviation = statistics[statisticsOffset + 1u];
   zScoreOut[zScoreOutOffset + index] = select(nan, select(0.0, (delta - mean) / deviation, deviation != 0.0), isOccupied);`

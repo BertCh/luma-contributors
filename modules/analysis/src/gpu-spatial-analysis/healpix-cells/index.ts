@@ -25,3 +25,11 @@ export type {
   HealpixDGGSJSONProperty,
   HealpixDGGSJSONProps
 } from './healpix-dggs-json';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeHealpixPointToCellOnCPU,
+  CPUHealpixPointToCellOperation
+} from './cpu-healpix-point-to-cell-operation';
+export {GPUHealpixPointToCellOperation} from './gpu-healpix-point-to-cell-operation';
+export type {HealpixPointToCellOperationProps} from './gpu-healpix-point-to-cell-operation';

@@ -21,7 +21,7 @@ import {
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getRectangleScanWGSL, getRingScanWGSL} from './grid-neighbor-scan';
 import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
@@ -200,8 +200,8 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       0,
       MAXIMUM_NEIGHBOR_CAPACITY
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     const sampleCount = props.values.length;
     if (sampleCount < 1) {
       throw new Error(`${id} needs at least one sample`);
@@ -210,23 +210,23 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       throw new Error(`${id} positions length must equal values length`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== sampleCount) {
         throw new Error(`${id} mask length must equal values length`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH} float32 values`
       );
     }
-    validatePackedView(props.output.values, ['float32'], `${id} output.values`);
+    validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
     if (props.output.values.length < this.cellCount) {
       throw new Error(`${id} output.values must hold grid.width * grid.height rows`);
     }
     if (props.output.counts) {
-      validatePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
+      validateSinglePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
       if (props.output.counts.length < this.cellCount) {
         throw new Error(`${id} output.counts must hold grid.width * grid.height rows`);
       }

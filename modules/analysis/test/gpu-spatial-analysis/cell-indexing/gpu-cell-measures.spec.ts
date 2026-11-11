@@ -25,10 +25,14 @@ const INVALID_CELLS = [0n, 1n, 0xffffffffffffffffn];
 /** Fallback cells (pentagons, cells across an icosahedron edge) are only asserted up to here. */
 const FALLBACK_MAXIMUM_RESOLUTION = 4;
 
+/** Fallback cell areas alone are asserted up to here, with a limit per resolution band. */
+const FALLBACK_AREA_MAXIMUM_RESOLUTION = 10;
+
 /**
  * Relative error limit. Single-face hexagons use exact lattice offsets (measured worst 9.6e-7 over
- * resolutions 0-15); fallback cells measured 6e-7 at resolution 0, 2e-5 at 2, 5e-5 at 3 and 2.5e-4
- * at 4, growing about 40x per two resolutions.
+ * resolutions 0-15); fallback cells (area, perimeter and edges together) measured 6e-7 at
+ * resolution 0, 7e-6 at 2, 5e-5 at 3 and 4e-5 at 4, limited by the edge lengths from f32 unit
+ * vectors.
  */
 function getRelativeTolerance(isExactPath: boolean): number {
   return isExactPath ? 2e-6 : 1e-3;
@@ -88,6 +92,7 @@ it('GPUCellMeasures area, perimeter, edge lengths and pentagon flags match pytho
   let worstExact = 0;
   let worstFallback = 0;
   let exactCount = 0;
+  const worstFallbackByResolution: {area: number; length: number; count: number}[] = [];
   H3_MEASURES_FIXTURES.forEach(
     ([cell, areaKm2, perimeterKm, edgeCount, isSingleFace, isPentagon, expectedEdges], row) => {
       const resolution = Number((h3ToBigInt(cell) >> 52n) & 15n);
@@ -107,6 +112,13 @@ it('GPUCellMeasures area, perimeter, edge lengths and pentagon flags match pytho
         expect(edgeLengths[row * MAXIMUM_EDGE_COUNT + edge], `${label} padding`).toBe(0);
       }
       const error = Math.max(areaError, perimeterError, edgeError);
+      if (!isExactPath) {
+        const worst = worstFallbackByResolution[resolution] ?? {area: 0, length: 0, count: 0};
+        worst.area = Math.max(worst.area, areaError);
+        worst.length = Math.max(worst.length, perimeterError, edgeError);
+        worst.count++;
+        worstFallbackByResolution[resolution] = worst;
+      }
       if (isExactPath) {
         exactCount++;
         worstExact = Math.max(worstExact, error);
@@ -130,6 +142,29 @@ it('GPUCellMeasures area, perimeter, edge lengths and pentagon flags match pytho
   console.log(
     `GPUCellMeasures ${rows} cells in ${elapsed.toFixed(0)} ms: worst relative error ${worstExact.toExponential(2)} over ${exactCount} single-face hexagons, ${worstFallback.toExponential(2)} over fallback cells of resolution <= ${FALLBACK_MAXIMUM_RESOLUTION}`
   );
+  console.log(
+    `GPUCellMeasures fallback cells, worst relative error by resolution (area / lengths / cells): ${worstFallbackByResolution
+      .map(
+        (worst, resolution) =>
+          `${resolution}: ${worst.area.toExponential(1)} / ${worst.length.toExponential(1)} / ${worst.count}`
+      )
+      .join(', ')}`
+  );
+  // Fallback areas against python h3 `cell_area`, by resolution (math review 2026-11-10: the
+  // triangle determinant is taken from vertex differences). Measured on the test GPU: at most
+  // 1.8e-5 at resolutions 0-4, 1.5e-4 at 5-8 and 5.0e-3 at 9-10. Before the change the same cells
+  // were 4.1e-3 off at resolution 5, 3e-2 at 8 and a factor of 30 at 9. Beyond 10 the f32 boundary
+  // unit vectors no longer resolve the cell (edge lengths have the same limit).
+  let assertedFallbackResolutions = 0;
+  worstFallbackByResolution.forEach((worst, resolution) => {
+    if (resolution > FALLBACK_AREA_MAXIMUM_RESOLUTION) {
+      return;
+    }
+    assertedFallbackResolutions++;
+    const limit = resolution <= 4 ? 1e-4 : resolution <= 8 ? 6e-4 : 2e-2;
+    expect(worst.area, `fallback area at resolution ${resolution}`).toBeLessThan(limit);
+  });
+  expect(assertedFallbackResolutions).toBe(FALLBACK_AREA_MAXIMUM_RESOLUTION + 1);
   compiled.destroy();
   buffers.forEach(buffer => buffer.destroy());
 }, 120_000);

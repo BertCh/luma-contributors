@@ -22,8 +22,17 @@ export const GPU_RHUMB_MAX_LATITUDE = 89.9999;
  * - East-west and short-edge limit: when the latitude difference is below `1e-4 cos(mean latitude)`
  *   rad, `dPsi = dPhi / cos(mean latitude)` and the stretch ratio `dPhi / dPsi` is
  *   `cos(mean latitude)` (relative error under `1e-8`).
- * - Longitude differences are wrapped to `[-180, 180]` (the short way across the antimeridian);
- *   destinations keep longitude continuous with the origin.
+ * - Longitude differences are wrapped to `[-180, 180]` (the short way across the antimeridian)
+ *   by `geodesicLongitudeDelta`, which subtracts on the seam side so a short separation across
+ *   +-180 keeps its bits; destinations keep longitude continuous with the origin.
+ * - `rhumbMidpoint` is the midpoint by distance: the mean latitude, and the longitude at that
+ *   latitude on the loxodrome (longitude is linear in the stretched latitude, not in distance).
+ *   Its longitude fraction is the ratio of the two half differences of stretched latitude, each
+ *   taken from the exact colatitudes for long spans, so it holds the f32 spacing of the output
+ *   for endpoints up to the latitude clamp (a float32 replica over 400,000 pairs stays within
+ *   9e-6 degrees of binary64, scaled by the cosine of the middle latitude) and is exactly the
+ *   mean longitude for a line that is symmetric across the equator. Distance and bearing still
+ *   use the clamped `atanh` and lose precision for lines that pass latitude 89.
  * - Latitudes are clamped to `GPU_RHUMB_MAX_LATITUDE`; a destination that overshoots a pole is
  *   reflected back across it (turf's rule) and its final bearing flips north/south.
  *
@@ -94,7 +103,7 @@ fn rhumbAngle(origin: vec2<f32>, targetPosition: vec2<f32>) -> f32 {
   let a = rhumbClampLatitude(origin.y);
   let b = rhumbClampLatitude(targetPosition.y);
   let deltaPhi = (b - a) * GEODESIC_DEGREES_TO_RADIANS;
-  let deltaLambda = geodesicWrapLongitudeDelta(targetPosition.x - origin.x) * GEODESIC_DEGREES_TO_RADIANS;
+  let deltaLambda = geodesicLongitudeDelta(origin.x, targetPosition.x) * GEODESIC_DEGREES_TO_RADIANS;
   let q = rhumbStretchRatio(a, b);
   return sqrt(deltaPhi * deltaPhi + q * q * deltaLambda * deltaLambda);
 }
@@ -103,17 +112,103 @@ fn rhumbAngle(origin: vec2<f32>, targetPosition: vec2<f32>) -> f32 {
 fn rhumbBearingDegrees(origin: vec2<f32>, targetPosition: vec2<f32>) -> f32 {
   let a = rhumbClampLatitude(origin.y);
   let b = rhumbClampLatitude(targetPosition.y);
-  let deltaLambda = geodesicWrapLongitudeDelta(targetPosition.x - origin.x) * GEODESIC_DEGREES_TO_RADIANS;
+  let deltaLambda = geodesicLongitudeDelta(origin.x, targetPosition.x) * GEODESIC_DEGREES_TO_RADIANS;
   var deltaPsi = rhumbStretchedDelta(a, b);
   // Keep atan2's second argument a positive zero (Metal mishandles -0.0).
   deltaPsi = select(deltaPsi, 0.0, deltaPsi == 0.0);
   return atan2(deltaLambda, deltaPsi) * GEODESIC_RADIANS_TO_DEGREES;
 }
 
-// Midpoint of the rhumb line: latitude and (unwrapped) longitude are both linear along it.
+// atanh with the odd series through x^7 below 1/8, where a native atanh that lowers to
+// log((1 + x) / (1 - x)) / 2 loses relative precision. atanh(0) is exactly 0.
+fn rhumbAtanh(argument: f32) -> f32 {
+  if (abs(argument) < 0.125) {
+    let squaredArgument = argument * argument;
+    return argument * (1.0 + squaredArgument * (1.0 / 3.0 +
+      squaredArgument * (1.0 / 5.0 + squaredArgument / 7.0)));
+  }
+  return atanh(argument);
+}
+
+// Isometric (Mercator) latitude psi = atanh(sin(latitude)) of a non-negative latitude given with
+// its colatitude, both in degrees. Below 45 degrees from the sine; above, from the colatitude as
+// -ln(tan(colatitude / 2)), because 1 - sin(latitude) has no f32 precision left near a pole
+// while 90 - latitude is exact. Absolute error about 1e-7 times max(1, psi).
+fn rhumbIsometricLatitude(absoluteLatitude: f32, colatitude: f32) -> f32 {
+  if (absoluteLatitude < 45.0) {
+    return rhumbAtanh(sin(absoluteLatitude * GEODESIC_DEGREES_TO_RADIANS));
+  }
+  return -log(tan(0.5 * colatitude * GEODESIC_DEGREES_TO_RADIANS));
+}
+
+// psi((a + b) / 2) - psi(a): the stretched-latitude difference from a to the mean latitude,
+// with a and b in degrees. The mean latitude is never rounded to f32: its cosine and colatitude
+// come from the exact colatitudes of a and b.
+// - Short and moderate spans (atanh argument below 1/2) use the difference form of
+//   rhumbStretchedDelta on a quarter of the latitude difference, which keeps relative precision
+//   down to two latitudes one f32 step apart.
+// - Long spans use psi(mean) - psi(a) from rhumbIsometricLatitude. The difference is then at least
+//   atanh(1/2) = 0.55, so the absolute error of the two terms is negligible, and nothing is
+//   clamped: an atanh argument within 1e-6 of 1 (a line that reaches latitude 89 and beyond) has
+//   only a few f32 steps of 1 - x left.
+fn rhumbStretchedHalfDelta(a: f32, b: f32) -> f32 {
+  let isSameHemisphere = a * b >= 0.0;
+  // cos of the latitude a quarter of the way from a to b, from the exact colatitude near a pole.
+  var quarterCosine = cos((a + 0.25 * (b - a)) * GEODESIC_DEGREES_TO_RADIANS);
+  if (isSameHemisphere) {
+    quarterCosine = sin(((90.0 - abs(a)) - 0.25 * (abs(b) - abs(a))) * GEODESIC_DEGREES_TO_RADIANS);
+  }
+  let halfDeltaPhi = 0.5 * (b - a) * GEODESIC_DEGREES_TO_RADIANS;
+  if (abs(halfDeltaPhi) < 1e-4 * quarterCosine) {
+    return halfDeltaPhi / quarterCosine;
+  }
+  let sinQuarterDelta = sin(0.5 * halfDeltaPhi);
+  let denominator = 2.0 * sinQuarterDelta * sinQuarterDelta +
+    geodesicCosLatitude(a) * rhumbMeanCosLatitude(a, b);
+  let argument = 2.0 * quarterCosine * sinQuarterDelta / denominator;
+  if (abs(argument) < 0.5) {
+    return rhumbAtanh(argument);
+  }
+  let meanLatitude = 0.5 * (a + b);
+  var meanColatitude = 90.0 - abs(meanLatitude);
+  var meanMagnitude = abs(meanLatitude);
+  if (isSameHemisphere) {
+    meanColatitude = (90.0 - abs(a)) - 0.5 * (abs(b) - abs(a));
+    meanMagnitude = 90.0 - meanColatitude;
+  }
+  let meanIsometric = rhumbIsometricLatitude(meanMagnitude, meanColatitude);
+  let originIsometric = rhumbIsometricLatitude(abs(a), 90.0 - abs(a));
+  return select(meanIsometric, -meanIsometric, meanLatitude < 0.0) -
+    select(originIsometric, -originIsometric, a < 0.0);
+}
+
+// Midpoint of the rhumb line by distance. Latitude is linear in distance along a loxodrome, so
+// the midpoint has the mean latitude. Longitude is linear in the stretched (Mercator) latitude
+// psi, not in distance: lambda = lambda1 + deltaLambda * (psi(mean) - psi1) / (psi2 - psi1). An
+// east-west line (psi2 == psi1) has the plain mean longitude.
+// The fraction is firstHalf / (firstHalf + secondHalf), with both halves from the same function:
+// psi(mean) - psi1 and psi2 - psi(mean). The second half is taken as the first half of the
+// mirrored line (-b to -a; psi is odd), so for a line that is symmetric across the equator the
+// two calls have identical arguments, the halves are the same f32 and the fraction is exactly
+// 1/2 whatever the GPU's sin, cos and atanh round to. (Dividing by rhumbStretchedDelta, whose
+// atanh argument is clamped at 0.999999, put the midpoint of (0, -88) to (120, 88) at longitude
+// 66.96.) The longitude holds the f32 spacing of the output up to the latitude clamp of 89.9999
+// degrees; beyond it both latitudes are clamped first.
 fn rhumbMidpoint(origin: vec2<f32>, targetPosition: vec2<f32>) -> vec2<f32> {
-  let deltaLambda = geodesicWrapLongitudeDelta(targetPosition.x - origin.x);
-  return vec2<f32>(origin.x + 0.5 * deltaLambda, origin.y + 0.5 * (targetPosition.y - origin.y));
+  let deltaLambda = geodesicLongitudeDelta(origin.x, targetPosition.x);
+  let a = rhumbClampLatitude(origin.y);
+  let b = rhumbClampLatitude(targetPosition.y);
+  let firstHalf = rhumbStretchedHalfDelta(a, b);
+  let secondHalf = rhumbStretchedHalfDelta(-b, -a);
+  let stretchedDelta = firstHalf + secondHalf;
+  var fraction = 0.5;
+  if (stretchedDelta != 0.0) {
+    fraction = clamp(firstHalf / stretchedDelta, 0.0, 1.0);
+  }
+  return vec2<f32>(
+    origin.x + fraction * deltaLambda,
+    origin.y + 0.5 * (targetPosition.y - origin.y)
+  );
 }
 
 // Destination after travelling 'angle' radians along a constant bearing.

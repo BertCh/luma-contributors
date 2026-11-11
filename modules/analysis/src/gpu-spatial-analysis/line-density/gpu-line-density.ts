@@ -27,7 +27,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
 import {createFillNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -181,12 +181,13 @@ export type GPULineDensityProps = GPULineGeometryFields & {
 };
 
 /**
- * Line length per grid cell and line density (QGIS "Line density", "Sum line lengths" per grid
- * cell, PostGIS `ST_Length(ST_Intersection(line, cell))` summed).
+ * Line length per grid cell, and that length divided by the cell area (QGIS "Sum line lengths"
+ * per grid cell, PostGIS `ST_Length(ST_Intersection(line, cell))` summed). This is not the QGIS or
+ * ArcGIS "Line density" tool, which spreads each line over a circular search radius.
  *
  * Every segment is clipped to the grid with Liang-Barsky and walked through the cells it crosses
  * (Amanatides-Woo with integer step counts), emitting one `(cell, length)` piece per crossed
- * cell; pieces sum to the clipped length exactly up to f32 rounding. Pieces are counted, scanned
+ * cell; in planar coordinates pieces sum to the clipped length exactly up to f32 rounding. Pieces are counted, scanned
  * into slots and emitted (the walk code is shared, so count and emit agree), then reduced per
  * cell by a stable sort and a fixed-order segmented sum, so lengths are bitwise reproducible. No
  * float atomics. A segment lying exactly along a cell boundary counts in the cell above or to the
@@ -195,6 +196,15 @@ export type GPULineDensityProps = GPULineGeometryFields & {
  * counted (single-vertex lines have length 0).
  *
  * For per-polygon line length (QGIS "Sum line lengths") use {@link GPULineLengthPerPolygon}.
+ *
+ * Longitude-latitude context. A segment is the straight line between its two vertices in
+ * longitude and latitude (it is cut by the grid along that line, as
+ * {@link GPULineLengthPerPolygon} cuts it), and each piece is measured as the great-circle
+ * distance between the piece's endpoints. The pieces of a long segment therefore do not add up to
+ * the great-circle length of the segment, and their total depends on the grid: the segment from
+ * (0, 60) to (90, 60) is 4,605 km as one piece and about 5,004 km (the length along the parallel)
+ * when cut by 1 degree cells. For segments short against the grid the difference vanishes, so
+ * densify long segments along the path they are meant to follow before passing them in.
  *
  * Precision: f32 grid coordinates relative to the grid origin; piece lengths come from f32
  * parameters along the segment (relative error about `1e-6` of the segment length).
@@ -236,15 +246,15 @@ export class GPULineDensity implements GPUCommandNodeProducer {
     this.cellCount = props.columns * props.rows;
     validateMaximumCount(id, 'columns x rows', this.cellCount, GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT);
     validateCapacity(id, 'recordCapacity', this.recordCapacity);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 2) {
       throw new Error(`${id} needs two positions`);
     }
-    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    validateSinglePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
     if (props.lineOffsets.length < 2) {
       throw new Error(`${id} lineOffsets needs two rows`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LINE_DENSITY_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_LINE_DENSITY_PARAMETER_LENGTH} float32 values`
@@ -252,12 +262,12 @@ export class GPULineDensity implements GPUCommandNodeProducer {
     }
     const {lengths, densities, status} = props.output;
     const {overflow, requiredCount} = status;
-    validatePackedView(lengths, ['float32'], `${id} output.lengths`);
+    validateSinglePackedView(lengths, ['float32'], `${id} output.lengths`);
     if (lengths.length !== this.cellCount) {
       throw new Error(`${id} output.lengths must hold ${this.cellCount} rows`);
     }
     if (densities) {
-      validatePackedView(densities, ['float32'], `${id} output.densities`);
+      validateSinglePackedView(densities, ['float32'], `${id} output.densities`);
       if (densities.length !== this.cellCount) {
         throw new Error(`${id} output.densities must hold ${this.cellCount} rows`);
       }
@@ -267,7 +277,7 @@ export class GPULineDensity implements GPUCommandNodeProducer {
       ['requiredCount', requiredCount]
     ] as const) {
       if (scalar) {
-        validatePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
+        validateSinglePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
         if (scalar.length < 1) {
           throw new Error(`${id} output.status.${name} must contain one uint32 row`);
         }

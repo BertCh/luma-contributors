@@ -280,9 +280,11 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;`,
   ${
     props.coordinateSystem === 'spherical'
       ? `let south = parameters[parametersOffset + 1u] + f32(row) * height;
-  // Exact area of a longitude/latitude cell on the sphere.
-  let area = AREA_RADIUS * AREA_RADIUS * width * DEGREES_TO_RADIANS *
-    (sin((south + height) * DEGREES_TO_RADIANS) - sin(south * DEGREES_TO_RADIANS));`
+  // Exact area of a longitude/latitude cell on the sphere, R^2 dLon (sin(north) - sin(south)).
+  // The sine difference is written as the product 2 cos(middle) sin(height / 2): the difference
+  // of two float32 sines cancels for small cells (6 percent off at 0.0001 degrees).
+  let area = AREA_RADIUS * AREA_RADIUS * width * DEGREES_TO_RADIANS * 2.0 *
+    cos((south + 0.5 * height) * DEGREES_TO_RADIANS) * sin(0.5 * height * DEGREES_TO_RADIANS);`
       : 'let area = width * height;'
   }
   densities[densitiesOffset + index] = lengths[lengthsOffset + index] / area;`

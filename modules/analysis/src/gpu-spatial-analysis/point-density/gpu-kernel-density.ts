@@ -18,7 +18,7 @@ import {
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -489,34 +489,34 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} indexBounds must be finite and ordered`);
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one point`);
     }
     if (props.weights) {
-      validatePackedView(props.weights, ['float32'], `${id} weights`);
+      validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
       if (props.weights.length !== props.positions.length) {
         throw new Error(`${id} weights length must equal positions length`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_KERNEL_DENSITY_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_KERNEL_DENSITY_PARAMETER_LENGTH} float32 values`
       );
     }
-    validatePackedView(props.output.values, ['float32'], `${id} output.values`);
+    validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
     if (props.output.values.length < this.cellCount) {
       throw new Error(`${id} output.values must hold grid.width * grid.height rows`);
     }
     if (props.output.weightSum) {
-      validatePackedView(props.output.weightSum, ['float32'], `${id} output.weightSum`);
+      validateSinglePackedView(props.output.weightSum, ['float32'], `${id} output.weightSum`);
       if (props.output.weightSum.length !== 1) {
         throw new Error(`${id} output.weightSum must contain exactly one float32 row`);
       }
     }
     if (props.output.status?.invalidCount) {
-      validatePackedView(
+      validateSinglePackedView(
         props.output.status.invalidCount,
         ['uint32'],
         `${id} output.status.invalidCount`
@@ -529,7 +529,7 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
       if (this.method === 'exact') {
         throw new Error(`${id} output.status.insufficientPadding needs method binned or auto`);
       }
-      validatePackedView(
+      validateSinglePackedView(
         props.output.status.insufficientPadding,
         ['uint32'],
         `${id} output.status.insufficientPadding`
@@ -541,7 +541,7 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
       }
     }
     if (props.output.bandwidth) {
-      validatePackedView(props.output.bandwidth, ['float32'], `${id} output.bandwidth`);
+      validateSinglePackedView(props.output.bandwidth, ['float32'], `${id} output.bandwidth`);
       if (props.output.bandwidth.length !== 1) {
         throw new Error(`${id} output.bandwidth must contain exactly one float32 row`);
       }

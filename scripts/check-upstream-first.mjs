@@ -46,16 +46,27 @@ for (const entry of fs.readdirSync(analysisSource, {withFileTypes: true})) {
   }
 }
 const roots = ['modules/analysis/src', 'modules/lenses/src', 'modules/kepler/src', 'modules/analysis/test', 'modules/lenses/test', 'modules/kepler/test', 'examples/deck'];
-for (const file of roots.flatMap(walk)) {
-  const imports = ts.preProcessFile(fs.readFileSync(file, 'utf8'), true, true).importedFiles;
-  for (const {fileName} of imports) {
-    const match = fileName.match(/^@luma\.gl\/([a-z0-9-]+)(\/.*)?$/);
+// A luma.gl specifier is public only when it is an explicit, wildcard-free key of the package `exports`
+// and has no `_internal` path segment. `@luma.gl/graph` lists `./_internal/arrow` as an explicit key, so
+// the exports map alone does not decide it: `_internal` is rejected for every `@luma.gl/*` package.
+export const findNonPublicLumaImports = (sourceText, fileName) => {
+  const found = [];
+  for (const {fileName: specifier} of ts.preProcessFile(sourceText, true, true).importedFiles) {
+    const match = specifier.match(/^@luma\.gl\/([a-z0-9-]+)(\/.*)?$/);
     if (!match) continue;
     const [, name, sub = ''] = match;
+    if (/\/_internal(\/|$)/.test(sub)) {
+      found.push(`${fileName}: luma.gl internal import '${specifier}'`);
+      continue;
+    }
     const exportsOfPackage = PUBLIC_EXPORTS[name];
     if (!exportsOfPackage) continue; // other @luma.gl packages are not dependencies; tsc reports them
-    if (!exportsOfPackage.has(sub ? `.${sub}` : '.')) problems.push(`${file}: non-public luma.gl import '${fileName}'`);
+    if (!exportsOfPackage.has(sub ? `.${sub}` : '.')) found.push(`${fileName}: non-public luma.gl import '${specifier}'`);
   }
+  return found;
+};
+for (const file of roots.flatMap(walk)) {
+  problems.push(...findNonPublicLumaImports(fs.readFileSync(file, 'utf8'), file));
 }
 // Re-exporting luma.gl APIs from the package source is forbidden (AGENTS.md); import the symbol where it is used.
 export const findLumaReExports = (sourceText, fileName) => {
@@ -74,10 +85,13 @@ const sourceRoots = fs.readdirSync('modules').map(name => `modules/${name}/src`)
 for (const file of sourceRoots.flatMap(walk)) {
   problems.push(...findLumaReExports(fs.readFileSync(file, 'utf8'), file));
 }
-// Guard self-test: UPSTREAM_FIRST_SCRATCH_FILE=<path> also checks a file outside the tree.
+// Guard self-test: UPSTREAM_FIRST_SCRATCH_FILE=<path> also checks a file outside the tree, with both the
+// import rule and the re-export rule (modules/analysis/test/analysis-core/upstream-first-guard.node.spec.ts).
 if (process.env.UPSTREAM_FIRST_SCRATCH_FILE) {
   const scratchFile = process.env.UPSTREAM_FIRST_SCRATCH_FILE;
-  problems.push(...findLumaReExports(fs.readFileSync(scratchFile, 'utf8'), scratchFile));
+  const scratchText = fs.readFileSync(scratchFile, 'utf8');
+  problems.push(...findNonPublicLumaImports(scratchText, scratchFile));
+  problems.push(...findLumaReExports(scratchText, scratchFile));
 }
 if (problems.length) {
   process.stdout.write(`${problems.join('\n')}\n${problems.length} upstream-first violations\n`);

@@ -9,10 +9,19 @@ import type {
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  GET_NAN_WGSL,
+  GUARDED_ATAN2_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph
@@ -22,9 +31,21 @@ import {
   validatePredictionViews
 } from '../../analysis-core/kernels/gpu-prediction-utils';
 
+/** Distances are planar Euclidean in the native units of the positions. */
+const PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance' as const
+});
+
 /** Bounded exact Sibson interpolation in 2D planar coordinates. */
 export type GPUNaturalNeighborProps = {
   id?: string;
+  /**
+   * Coordinate space of the positions. Compile-time. Omitted means native planar coordinates with
+   * Euclidean distance (unchanged behavior); only that is accepted, so longitude/latitude throws:
+   * project to a planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
   values: GraphDataView<'float32'>;
   queries: GraphDataView<'float32x2'>;
@@ -61,12 +82,19 @@ export type GPUNaturalNeighborProps = {
  */
 export class GPUNaturalNeighbor implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Resolved coordinate space (native planar when `spatialContext` was omitted). */
+  readonly spatialContext: GPUSpatialContext;
   readonly props: GPUNaturalNeighborProps;
   readonly maximumVertexCount: number;
   readonly maximumNeighborCount: number;
   constructor(props: GPUNaturalNeighborProps) {
     this.props = props;
     this.id = props.id ?? 'natural-neighbor';
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT
+    );
     this.maximumVertexCount = props.maximumVertexCount ?? 64;
     this.maximumNeighborCount = props.maximumNeighborCount ?? 32;
     validateCapacity(this.id, 'maximumNeighborCount', this.maximumNeighborCount, 3);
@@ -139,6 +167,13 @@ export class GPUNaturalNeighbor implements GPUCommandNodeProducer {
       graph,
       bindings.map(binding => binding.view)
     );
+    // Sample row of neighbour slot `slot`. The triangulation path collects real sample rows into
+    // the `sampleIndices` table. The direct path uses every sample in row order, so the slot IS
+    // the row: no table is declared there. (A local integer table whose only stores are those of
+    // a loop with a constant trip count, such as an identity loop, can read back as zeros on the
+    // test GPU; contributor contract section 11.)
+    const getSampleRowWGSL = (slot: string): string =>
+      props.triangles ? `sampleIndices[${slot}]` : slot;
     return [
       createWGSLKernelNode(graph, {
         id,
@@ -147,7 +182,7 @@ export class GPUNaturalNeighbor implements GPUCommandNodeProducer {
         bindings,
         invocationCount: props.queries.length,
         workgroupSize: 2,
-        declarations: `${getPackedPredictionAccessors({positions: 2, queries: 2}, ['results'])}\n${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}
+        declarations: `${getPackedPredictionAccessors({positions: 2, queries: 2}, ['results'])}\n${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${GUARDED_ATAN2_WGSL}
 const SAMPLE_CAPACITY: u32 = ${sampleCount}u;
 const VERTEX_CAPACITY: u32 = ${maximumVertexCount}u;
 ${props.output.weights ? `fn writeWeight(queryIndex: u32, slot: u32, sampleIndex: u32, weight: f32) { ${props.triangles ? 'weights[weightsOffset + queryIndex * SAMPLE_CAPACITY * 2u + slot * 2u] = f32(sampleIndex); weights[weightsOffset + queryIndex * SAMPLE_CAPACITY * 2u + slot * 2u + 1u] = weight;' : 'weights[weightsOffset + queryIndex * SAMPLE_CAPACITY + slot] = weight;'} }` : ''}
@@ -177,7 +212,7 @@ fn polygonArea() -> f32 {
 write_results(index, vec4<f32>(getNaN(), 0.0, 0.0, 0.0)); statuses[statusesOffset + index] = 1u;
 ${props.output.weights ? `for (var sample = 0u; sample < SAMPLE_CAPACITY; sample++) { weights[weightsOffset + index * SAMPLE_CAPACITY * ${props.triangles ? 2 : 1}u + sample * ${props.triangles ? 2 : 1}u] = ${props.triangles ? '-1.0' : '0.0'}; ${props.triangles ? 'weights[weightsOffset + index * SAMPLE_CAPACITY * 2u + sample * 2u + 1u] = 0.0;' : ''} }` : ''}
 let query = read_queries(index); if (!isFiniteValue(query.x) || !isFiniteValue(query.y)) { return; }
-var sampleIndices: array<u32, ${Math.max(sampleCapacity, 1)}>;
+${props.triangles ? `var sampleIndices: array<u32, ${Math.max(sampleCapacity, 1)}>;` : ''}
 var sampleCount = ${props.triangles ? 0 : sampleCount}u;
 ${
   props.triangles
@@ -224,21 +259,21 @@ loop {
   }
 }
 `
-    : 'for (var sample = 0u; sample < sampleCount; sample++) { sampleIndices[sample] = sample; }'
+    : ''
 }
 var points: array<vec2<f32>, ${Math.max(sampleCount, 1)}>;
 var scale = 0.0; var hitCount = 0u; var hitValue = 0.0;
 for (var sample = 0u; sample < sampleCount; sample++) {
-  let point = read_positions(sampleIndices[sample]); let value = values[valuesOffset + sampleIndices[sample]];
+  let point = read_positions(${getSampleRowWGSL('sample')}); let value = values[valuesOffset + ${getSampleRowWGSL('sample')}];
   if (!isFiniteValue(point.x) || !isFiniteValue(point.y) || !isFiniteValue(value)) { return; }
   points[sample] = point - query; scale = max(scale, length(points[sample]));
   if (all(point == query)) { hitCount++; }
 }
 if (hitCount > 0u) {
-  for (var sample = 0u; sample < sampleCount; sample++) { if (all(points[sample] == vec2<f32>(0.0))) { hitValue += values[valuesOffset + sampleIndices[sample]] / f32(hitCount); } }
+  for (var sample = 0u; sample < sampleCount; sample++) { if (all(points[sample] == vec2<f32>(0.0))) { hitValue += values[valuesOffset + ${getSampleRowWGSL('sample')}] / f32(hitCount); } }
   if (!isFiniteValue(hitValue)) { statuses[statusesOffset + index] = 2u; return; }
   write_results(index, vec4<f32>(hitValue, 0.0, 1.0, f32(hitCount))); statuses[statusesOffset + index] = 0u;
-  ${props.output.weights ? 'for (var sample = 0u; sample < sampleCount; sample++) { if (all(points[sample] == vec2<f32>(0.0))) { writeWeight(index, sample, sampleIndices[sample], 1.0 / f32(hitCount)); } }' : ''}
+  ${props.output.weights ? `for (var sample = 0u; sample < sampleCount; sample++) { if (all(points[sample] == vec2<f32>(0.0))) { writeWeight(index, sample, ${getSampleRowWGSL('sample')}, 1.0 / f32(hitCount)); } }` : ''}
   return;
 }
 if (sampleCount < 3u || !(scale > 0.0)) { statuses[statusesOffset + index] = 2u; return; }
@@ -262,8 +297,8 @@ for (var first = 0u; first < sampleCount; first++) {
 if (!noncollinear) { statuses[statusesOffset + index] = 2u; return; }
 if (edgeLength < 3.402823e38) {
   let fraction = length(points[edgeFirst]) / edgeLength;
-  write_results(index, vec4<f32>(mix(values[valuesOffset + sampleIndices[edgeFirst]], values[valuesOffset + sampleIndices[edgeSecond]], fraction), 0.0, 1.0, 2.0)); statuses[statusesOffset + index] = 0u;
-  ${props.output.weights ? 'writeWeight(index, edgeFirst, sampleIndices[edgeFirst], 1.0 - fraction); writeWeight(index, edgeSecond, sampleIndices[edgeSecond], fraction);' : ''}
+  write_results(index, vec4<f32>(mix(values[valuesOffset + ${getSampleRowWGSL('edgeFirst')}], values[valuesOffset + ${getSampleRowWGSL('edgeSecond')}], fraction), 0.0, 1.0, 2.0)); statuses[statusesOffset + index] = 0u;
+  ${props.output.weights ? `writeWeight(index, edgeFirst, ${getSampleRowWGSL('edgeFirst')}, 1.0 - fraction); writeWeight(index, edgeSecond, ${getSampleRowWGSL('edgeSecond')}, fraction);` : ''}
   return;
 }
 var queryPolygon: array<vec2<f32>, ${maximumVertexCount}>; var vertexCount = 0u;
@@ -283,8 +318,9 @@ for (var first = 0u; first < sampleCount; first++) {
 }
 if (vertexCount < 3u) { statuses[statusesOffset + index] = 2u; return; }
 for (var vertex = 1u; vertex < vertexCount; vertex++) {
-  let point = queryPolygon[vertex]; let angle = atan2(point.y, point.x); var insertion = vertex;
-  loop { if (insertion == 0u) { break; } let previous = queryPolygon[insertion - 1u]; if (atan2(previous.y, previous.x) <= angle) { break; } queryPolygon[insertion] = previous; insertion--; }
+  // Vertices are offsets from the query, so x can be -0.0: guardedAtan2 (contract section 11).
+  let point = queryPolygon[vertex]; let angle = guardedAtan2(point.y, point.x); var insertion = vertex;
+  loop { if (insertion == 0u) { break; } let previous = queryPolygon[insertion - 1u]; if (guardedAtan2(previous.y, previous.x) <= angle) { break; } queryPolygon[insertion] = previous; insertion--; }
   queryPolygon[insertion] = point;
 }
 polygonCount = vertexCount; for (var vertex = 0u; vertex < vertexCount; vertex++) { polygon[vertex] = queryPolygon[vertex]; }
@@ -297,11 +333,11 @@ for (var sample = 0u; sample < sampleCount; sample++) {
     if (!clipPolygon(points[other] - points[sample], (dot(points[other], points[other]) - dot(points[sample], points[sample])) * 0.5)) { statuses[statusesOffset + index] = 3u; return; }
     if (polygonCount < 3u) { break; }
   }
-  let area = polygonArea(); areas[sample] = area; areaSum += area; prediction += area * values[valuesOffset + sampleIndices[sample]]; if (area > 0.0) { contributing++; }
+  let area = polygonArea(); areas[sample] = area; areaSum += area; prediction += area * values[valuesOffset + ${getSampleRowWGSL('sample')}]; if (area > 0.0) { contributing++; }
 }
 if (!(areaSum > 0.0) || abs(areaSum - queryArea) > queryArea * 1e-3 || !isFiniteValue(prediction)) { statuses[statusesOffset + index] = 2u; return; }
 write_results(index, vec4<f32>(prediction / areaSum, queryArea * scale * scale, 1.0, f32(contributing))); statuses[statusesOffset + index] = 0u;
-${props.output.weights ? 'for (var sample = 0u; sample < sampleCount; sample++) { writeWeight(index, sample, sampleIndices[sample], areas[sample] / areaSum); }' : ''}`
+${props.output.weights ? `for (var sample = 0u; sample < sampleCount; sample++) { writeWeight(index, sample, ${getSampleRowWGSL('sample')}, areas[sample] / areaSum); }` : ''}`
       })
     ];
   }

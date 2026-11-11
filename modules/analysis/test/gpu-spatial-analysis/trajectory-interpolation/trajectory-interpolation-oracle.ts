@@ -230,15 +230,17 @@ export function computeResampleOracle(
   for (let track = 0; track < trackCount; track++) {
     const [start, end] = getTrackRange(tracks, track);
     if (spacing === 'arc-length' && end > start) {
+      // The reference arc length is the binary64 sum of the f32 step lengths, rounded once per
+      // row. The kernel's compensated f32 sum has to stay within rounding of it; a plain f32
+      // running sum (what this oracle emulated before review finding trajectories-lines-03) does
+      // not on long tracks.
       let total = 0;
       cumulative[start] = 0;
       for (let row = start + 1; row < end; row++) {
         const deltaX = fround(positions[2 * row] - positions[2 * row - 2]);
         const deltaY = fround(positions[2 * row + 1] - positions[2 * row - 1]);
-        total = fround(
-          total + fround(Math.sqrt(fround(fround(deltaX * deltaX) + fround(deltaY * deltaY))))
-        );
-        cumulative[row] = total;
+        total += fround(Math.sqrt(fround(fround(deltaX * deltaX) + fround(deltaY * deltaY))));
+        cumulative[row] = fround(total);
       }
     }
     const getProgress = (row: number) =>

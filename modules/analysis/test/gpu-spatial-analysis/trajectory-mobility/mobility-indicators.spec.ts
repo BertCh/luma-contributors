@@ -353,3 +353,92 @@ describe('GPUMobilityIndicators', () => {
     });
   });
 });
+
+describe('GPUModalSplit speed classes', () => {
+  // Hand-built planar triplegs of two rows each, one track. Speeds are distance over duration:
+  // 2, 10, 4 (the first break), 25 (the last break), 60 (above every break), then a tripleg of
+  // zero duration and one with a NaN position. Review finding trajectories-lines-02.
+  const TRIPLEGS = [
+    {length: 20, start: 0, finish: 10},
+    {length: 100, start: 20, finish: 30},
+    {length: 40, start: 40, finish: 50},
+    {length: 250, start: 60, finish: 70},
+    {length: 600, start: 80, finish: 90},
+    {length: 50, start: 100, finish: 100},
+    {length: Number.NaN, start: 110, finish: 120}
+  ];
+
+  async function runSpeedClasses(
+    name: string,
+    modeSpeedBreaks: number[],
+    metric: 'count' | 'distance'
+  ): Promise<{modes: number[]; split: number[]}> {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const harness = new GraphHarness(device, name);
+    const triplegCount = TRIPLEGS.length;
+    const {positions, timestamps, trackOffsets} = importTrajectory(harness, {
+      positions: TRIPLEGS.flatMap(tripleg => [
+        [Number.isNaN(tripleg.length) ? Number.NaN : 0, 0],
+        [Number.isNaN(tripleg.length) ? 50 : tripleg.length, 0]
+      ]),
+      times: Float32Array.from(TRIPLEGS.flatMap(tripleg => [tripleg.start, tripleg.finish])),
+      trackOffsets: [0, 2 * triplegCount]
+    });
+    const predictedModes = harness.output('predicted-modes', 'uint32', triplegCount);
+    const modalSplit = harness.output('modal-split', 'float32', modeSpeedBreaks.length);
+    harness.graph.add(
+      new GPUModalSplit({
+        positions,
+        timestamps,
+        trackOffsets,
+        triplegs: {
+          tracks: harness.input(
+            'tripleg-tracks',
+            new Uint32Array(triplegCount),
+            'uint32',
+            triplegCount
+          ),
+          startRows: harness.input(
+            'tripleg-starts',
+            Uint32Array.from({length: triplegCount}, (_, index) => 2 * index),
+            'uint32',
+            triplegCount
+          ),
+          endRows: harness.input(
+            'tripleg-ends',
+            Uint32Array.from({length: triplegCount}, (_, index) => 2 * index + 2),
+            'uint32',
+            triplegCount
+          ),
+          status: {count: harness.input('tripleg-count', Uint32Array.of(triplegCount), 'uint32', 1)}
+        },
+        modeSpeedBreaks,
+        modeCount: modeSpeedBreaks.length,
+        metric,
+        output: {modalSplit: modalSplit.view, predictedModes: predictedModes.view}
+      })
+    );
+    return harness.run(async () => ({
+      modes: Array.from(await readUint32(predictedModes.buffer, triplegCount)),
+      split: Array.from(await readFloat32(modalSplit.buffer, modeSpeedBreaks.length))
+    }));
+  }
+
+  it('puts a speed at or above a finite last break in the last class and leaves unusable triplegs out', async () => {
+    const {modes, split} = await runSpeedClasses('modal-split-finite-break', [4, 25], 'distance');
+    expect(modes).toEqual([0, 1, 1, 1, 1, GPU_MOVEMENT_SENTINEL, GPU_MOVEMENT_SENTINEL]);
+    // Class 0: the 20-unit tripleg. Class 1: 100 + 40 + 250 + 600. The other two are in no class.
+    expect(split).toEqual([20, 990]);
+  });
+
+  it('classifies left-closed with an infinite last break', async () => {
+    const {modes, split} = await runSpeedClasses(
+      'modal-split-infinite-break',
+      [4, 25, Number.POSITIVE_INFINITY],
+      'count'
+    );
+    expect(modes).toEqual([0, 1, 1, 2, 2, GPU_MOVEMENT_SENTINEL, GPU_MOVEMENT_SENTINEL]);
+    expect(split).toEqual([1, 2, 2]);
+  });
+});

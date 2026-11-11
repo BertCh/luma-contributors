@@ -76,7 +76,9 @@ export function computeIsolinesOnCPU(
         continue;
       }
       const v = corners.map(sample => values[sample]);
-      const centre = f(f(f(v[0] + v[1]) + f(v[2] + v[3])) * 0.25);
+      // Value of the bilinear surface through the four corners at its saddle point, in float64
+      // (the textbook asymptotic decider; NaN for a cell that is not a saddle, where it is unused).
+      const saddleValue = (v[0] * v[2] - v[1] * v[3]) / (v[0] + v[2] - v[1] - v[3]);
       const edgeIds = [
         cy * (width - 1) + cx,
         horizontalCount + cy * width + cx + 1,
@@ -94,7 +96,7 @@ export function computeIsolinesOnCPU(
           if (startHigh && !endHigh) exits.push(k);
           if (!startHigh && endHigh) entries.push(k);
         }
-        const isJoined = exits.length < 2 || centre >= level;
+        const isJoined = exits.length < 2 || saddleValue >= level;
         const crossing = (k: number): [number, number] => {
           const [a, b] = [
             [v[0], v[1]],

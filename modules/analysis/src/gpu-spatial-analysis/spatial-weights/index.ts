@@ -2,8 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPUIslandAttachment} from './gpu-island-attachment';
-export type {GPUIslandAttachmentProps} from './gpu-island-attachment';
+export {
+  GPUIslandAttachment,
+  GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT
+} from './gpu-island-attachment';
+export type {
+  GPUIslandAttachmentNearestSearch,
+  GPUIslandAttachmentProps
+} from './gpu-island-attachment';
 
 export {
   GPU_DEFAULT_ISLAND_POLICY,
@@ -30,6 +36,7 @@ export type {
 export type {GPUFloat32OrUint32Values} from './float32-values';
 export {
   GPUContiguityWeights,
+  GPU_CONTIGUITY_WEIGHTS_MAXIMUM_SNAP_CELLS,
   GPU_CONTIGUITY_WEIGHTS_PAIR_CAPACITY_FACTOR
 } from './gpu-contiguity-weights';
 export type {
@@ -124,3 +131,32 @@ export type {
   GPUChunkedSpatialWeightsAlgebraProps,
   GPUChunkedSpatialWeightsOutput
 } from './gpu-chunked-spatial-weights-algebra';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeContiguityWeightsOnCPU,
+  CPUContiguityWeightsOperation
+} from './cpu-contiguity-weights-operation';
+export type {
+  CPUContiguityWeightsInput,
+  CPUContiguityWeightsResult
+} from './cpu-contiguity-weights-operation';
+export {
+  computeSpatialWeightsValidationOnCPU,
+  CPUSpatialWeightsValidationOperation
+} from './cpu-spatial-weights-validation-operation';
+export {GPUContiguityWeightsOperation} from './gpu-contiguity-weights-operation';
+export type {ContiguityWeightsOperationProps} from './gpu-contiguity-weights-operation';
+export {GPUSpatialWeightsValidationOperation} from './gpu-spatial-weights-validation-operation';
+export type {SpatialWeightsValidationOperationProps} from './gpu-spatial-weights-validation-operation';
+export {
+  computeSpatialWeightsAlgebraOnCPU,
+  CPUSpatialWeightsAlgebraOperation
+} from './cpu-spatial-weights-algebra-operation';
+export type {
+  CPUSpatialWeightsAlgebraInput,
+  CPUSpatialWeightsAlgebraOptions,
+  CPUSpatialWeightsAlgebraResult
+} from './cpu-spatial-weights-algebra-operation';
+export {GPUSpatialWeightsAlgebraOperation} from './gpu-spatial-weights-algebra-operation';
+export type {SpatialWeightsAlgebraOperationProps} from './gpu-spatial-weights-algebra-operation';

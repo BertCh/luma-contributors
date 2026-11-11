@@ -192,6 +192,53 @@ it('GPURipleyDistanceFunctions separates clustering from complete spatial random
   expect(clustered.g[3]).toBeGreaterThan(clustered.f[3]);
 });
 
+it('GPURipleyDistanceFunctions Hanisch G counts an unresolved interior point at maximumDistance', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Window [0, 100]^2, maximumDistance 10 (radii 1, 2, ..., 10). C and D are 5 apart and far
+  // from the border: uncensored, each with weight |W| / |W eroded by 5| = 10000 / 8100. A and B
+  // are 20 from the border and have no neighbor within 10; their nearest neighbors are 30 away,
+  // beyond the border, so in the Hanisch (1984) estimator they are censored and G(r >= 5) is 1.
+  // The kernel cannot tell: a point with no neighbor within maximumDistance and a border distance
+  // of at least maximumDistance enters the denominator with the weight of d = maximumDistance,
+  // 10000 / 6400. So the documented result is 2 w(5) / (2 w(5) + 2 w(10)) = 0.4414, below 1.
+  const scene: Scene = {
+    positions: Float32Array.from([20, 50, 80, 50, 50, 50, 50, 55]),
+    mask: new Uint32Array(4).fill(1)
+  };
+  const harness = createHarness(device, scene);
+  try {
+    const result = await harness.run(
+      getGPURipleyDistanceFunctionsParameterValues({
+        bounds: BOUNDS,
+        maximumDistance: 10,
+        edgeCorrection: 'hanisch'
+      })
+    );
+    const uncensoredWeight = 10000 / (90 * 90);
+    const unresolvedWeight = 10000 / (80 * 80);
+    const expected = uncensoredWeight / (uncensoredWeight + unresolvedWeight);
+    expect(expected).toBeCloseTo(0.44138, 5);
+    // Radius index 3 is r = 4 (below the pair distance), index 4 is r = 5.
+    expect(result.g[3]).toBe(0);
+    for (const radiusIndex of [4, 7, 9]) {
+      expectClose(`G at radius index ${radiusIndex}`, result.g[radiusIndex], expected, 2e-4);
+    }
+    // With maximumDistance past every nearest-neighbor distance nothing is unresolved: A and B
+    // are censored exactly and G reaches 1 at r = 5 (radii 10, 20, ..., 100; index 0 is r = 10).
+    const resolved = await harness.run(
+      getGPURipleyDistanceFunctionsParameterValues({
+        bounds: BOUNDS,
+        maximumDistance: 100,
+        edgeCorrection: 'hanisch'
+      })
+    );
+    expectClose('resolved G', resolved.g[0], 1, 1e-6);
+  } finally {
+    harness.destroy();
+  }
+});
+
 import {createPairStatisticsWindowHarness} from './pair-statistics-harness';
 import {
   ORACLE_RECTANGLE,

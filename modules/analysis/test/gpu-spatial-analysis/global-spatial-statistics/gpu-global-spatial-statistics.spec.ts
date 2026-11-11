@@ -41,6 +41,10 @@ import {
   createKnnWeights,
   createSeededRandom,
   createWeights,
+  getGearyMoments,
+  getGeneralGVariance,
+  getMoranMoments,
+  getTwoSidedPValue,
   type CPUSpatialWeights,
   type GlobalSpatialStatisticsOracle
 } from './global-spatial-statistics-oracle';
@@ -881,4 +885,216 @@ it('General G fills both analytical inference triples, including row weights and
     }
     harness.destroy();
   }
+});
+
+/**
+ * esda's analytic moments in float64, straight from a symmetric CSR with every row included (no
+ * dense matrix, so 40,000 rows are affordable). Formulas, with `z = x - mean(x)`:
+ * - `S0 = sum w_ij`, `S1 = 1/2 sum (w_ij + w_ji)^2 = 2 sum w_ij^2`, `S2 = sum_i (2 w_i.)^2`;
+ * - Moran `I = (n / S0) sum w_ij z_i z_j / sum z_i^2`, `E = -1 / (n - 1)`, `VI_rand` as
+ *   `esda.Moran` (the oracle's `getMoranMoments`, kurtosis `n sum z^4 / (sum z^2)^2`);
+ * - Geary `C = (n - 1) sum w_ij (x_i - x_j)^2 / (2 S0 sum z_i^2)`, `E = 1`, `VC_rand` as
+ *   `esda.Geary` (`getGearyMoments`);
+ * - General G `G = sum w_ij x_i x_j / ((sum x)^2 - sum x^2)`, `E = S0 / (n (n - 1))`, `VG` from the
+ *   raw moments `b0..b4` of `esda.G` (`getGeneralGVariance`).
+ */
+function computeSymmetricEsdaReference(weights: CPUSpatialWeights, values: Float32Array) {
+  const n = values.length;
+  let sum = 0;
+  for (const value of values) {
+    sum += value;
+  }
+  const mean = sum / n;
+  let sumSquares = 0;
+  let sumFourths = 0;
+  let rawSumSquares = 0;
+  for (const value of values) {
+    const deviation = value - mean;
+    sumSquares += deviation * deviation;
+    sumFourths += deviation ** 4;
+    rawSumSquares += value * value;
+  }
+  let s0 = 0;
+  let sumWeightSquares = 0;
+  let s2 = 0;
+  let moranCross = 0;
+  let gearySum = 0;
+  let generalCross = 0;
+  for (let row = 0; row < n; row++) {
+    let rowWeight = 0;
+    for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1]; slot++) {
+      const neighbor = weights.neighbors[slot];
+      const weight = weights.weights[slot];
+      rowWeight += weight;
+      sumWeightSquares += weight * weight;
+      moranCross += weight * (values[row] - mean) * (values[neighbor] - mean);
+      gearySum += weight * (values[row] - values[neighbor]) ** 2;
+      generalCross += weight * values[row] * values[neighbor];
+    }
+    s0 += rowWeight;
+    s2 += (2 * rowWeight) ** 2;
+  }
+  const s1 = 2 * sumWeightSquares;
+  const kurtosis = (n * sumFourths) / sumSquares ** 2;
+  const [moranExpected, moranNormality, moranRandomization] = getMoranMoments(
+    n,
+    s0,
+    s1,
+    s2,
+    kurtosis
+  );
+  const [gearyNormality, gearyRandomization] = getGearyMoments(n, s0, s1, s2, kurtosis);
+  const moran = (n / s0) * (moranCross / sumSquares);
+  const geary = ((n - 1) * gearySum) / (2 * s0 * sumSquares);
+  const generalG = generalCross / (sum * sum - rawSumSquares);
+  const generalExpected = s0 / (n * (n - 1));
+  const generalVariance = getGeneralGVariance(Array.from(values), s0, s1, s2);
+  const getBlock = (
+    statistic: number,
+    expected: number,
+    normality: number,
+    randomization: number
+  ) => {
+    const zNormality = (statistic - expected) / Math.sqrt(normality);
+    const zRandomization = (statistic - expected) / Math.sqrt(randomization);
+    return {
+      statistic,
+      expected,
+      varianceNormality: normality,
+      zNormality,
+      pNormality: getTwoSidedPValue(zNormality),
+      varianceRandomization: randomization,
+      zRandomization,
+      pRandomization: getTwoSidedPValue(zRandomization)
+    };
+  };
+  return {
+    s0,
+    s1,
+    s2,
+    mean,
+    variance: sumSquares / n,
+    moran: getBlock(moran, moranExpected, moranNormality, moranRandomization),
+    geary: getBlock(geary, 1, gearyNormality, gearyRandomization),
+    getisOrdG: getBlock(generalG, generalExpected, generalVariance, generalVariance)
+  };
+}
+
+function expectBlockMatches(
+  results: number[],
+  statistic: 'moran' | 'geary' | 'getisOrdG',
+  expected: ReturnType<typeof computeSymmetricEsdaReference>['moran'],
+  label: string,
+  zTolerance = 2e-3
+): void {
+  for (const [name, field] of Object.entries(FIELD)) {
+    const tolerance = name.startsWith('p')
+      ? [zTolerance, 5 * zTolerance]
+      : name.startsWith('z')
+        ? [zTolerance, zTolerance]
+        : [0, 2e-3];
+    const actual = results[LAYOUT[statistic] + field];
+    expect(Number.isFinite(actual), `${label} ${statistic}.${name} is finite`).toBe(true);
+    expectField(
+      actual,
+      expected[name as keyof typeof expected],
+      `${label} ${statistic}.${name}`,
+      tolerance[0],
+      tolerance[1]
+    );
+  }
+}
+
+// spatial-statistics-01: 40,000 prices near 300,000 sum to 1.2e10, so the General G denominator
+// n (n - 1) mean^2 - sum z^2 is about 1.4e20 and its square left the f32 range: the variance read
+// 0 and z and p were NaN.
+it('GPUGlobalSpatialStatistics General G inference stays finite on 40,000 values near 300,000', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const columns = 200;
+  const weights = createGridWeights(columns, 200);
+  const random = createSeededRandom(41);
+  const values = Float32Array.from(
+    {length: columns * 200},
+    (_, index) =>
+      300000 +
+      60000 * (random() - 0.5) +
+      1500 * Math.sin((index % columns) * 0.05) * Math.cos(Math.floor(index / columns) * 0.04)
+  );
+  const harness = createHarness(device, {weights, values}, ['moran', 'geary', 'getisOrdG'], {
+    islands: 'keep'
+  });
+  const {results} = await harness.run();
+  const reference = computeSymmetricEsdaReference(weights, values);
+  const summary = GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY;
+  expectField(results[summary.mean], reference.mean, 'prices mean', 0, 1e-6);
+  expectField(results[summary.variance], reference.variance, 'prices variance', 0, 1e-4);
+  expect(reference.getisOrdG.varianceRandomization).toBeGreaterThan(0);
+  // One f32 ulp of G is about 5e-4 standard deviations here (E[G] = 1e-4, sd about 1e-8), so z
+  // is compared to 0.02.
+  expectBlockMatches(results, 'getisOrdG', reference.getisOrdG, 'prices', 2e-2);
+  expectBlockMatches(results, 'moran', reference.moran, 'prices');
+  expectBlockMatches(results, 'geary', reference.geary, 'prices');
+  harness.destroy();
+});
+
+// spatial-statistics-02: with a standard deviation of 5e7 over 10,000 rows the sum of squares is
+// 2.5e19 and its square left the f32 range, so the kurtosis and every randomization field of
+// Moran and Geary were NaN.
+it('GPUGlobalSpatialStatistics randomization inference stays finite for a standard deviation of 5e7', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const columns = 100;
+  const weights = createGridWeights(columns, 100);
+  const random = createSeededRandom(42);
+  const values = Float32Array.from(
+    {length: columns * 100},
+    (_, index) =>
+      2e8 +
+      1.7e8 * (random() - 0.5) +
+      2e7 * Math.sin((index % columns) * 0.09) * Math.cos(Math.floor(index / columns) * 0.06)
+  );
+  const harness = createHarness(device, {weights, values}, ['moran', 'geary', 'getisOrdG'], {
+    islands: 'keep'
+  });
+  const {results} = await harness.run();
+  const reference = computeSymmetricEsdaReference(weights, values);
+  expect(Math.sqrt(reference.variance)).toBeGreaterThan(4.5e7);
+  const summary = GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY;
+  expectField(results[summary.mean], reference.mean, 'large spread mean', 0, 1e-6);
+  expectField(results[summary.variance], reference.variance, 'large spread variance', 0, 1e-4);
+  expectBlockMatches(results, 'moran', reference.moran, 'large spread');
+  expectBlockMatches(results, 'geary', reference.geary, 'large spread');
+  expectBlockMatches(results, 'getisOrdG', reference.getisOrdG, 'large spread', 5e-3);
+  harness.destroy();
+});
+
+// spatial-statistics-02, weight side: the randomization variances divided by
+// (n - 1) (n - 2) (n - 3) S0^2, which leaves the f32 range for 1.2e7 rows with 60 binary
+// neighbors (not affordable in a test). The same product overflows for 1,024 rows whose weights
+// are 1e13 (S0 = 4e16, S0^2 n^3 = 1.7e42), and the statistics do not depend on the weight unit.
+it('GPUGlobalSpatialStatistics randomization variances do not form n^3 S0^2', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const columns = 32;
+  const unitWeights = createGridWeights(columns, 32);
+  const weights = {...unitWeights, weights: unitWeights.weights.map(() => 1e13)};
+  const random = createSeededRandom(43);
+  const values = Float32Array.from(
+    {length: columns * 32},
+    (_, index) => 20 + 6 * random() + 3 * Math.sin((index % columns) * 0.3)
+  );
+  const harness = createHarness(device, {weights, values}, ['moran', 'geary'], {islands: 'keep'});
+  const {results} = await harness.run();
+  const reference = computeSymmetricEsdaReference(weights, values);
+  const unitReference = computeSymmetricEsdaReference(unitWeights, values);
+  // The float64 reference itself is unit-free.
+  expect(reference.moran.zRandomization).toBeCloseTo(unitReference.moran.zRandomization, 9);
+  const summary = GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY;
+  expectField(results[summary.s0], reference.s0, 'heavy weights S0', 0, 1e-5);
+  expectField(results[summary.s1], reference.s1, 'heavy weights S1', 0, 1e-5);
+  expectField(results[summary.s2], reference.s2, 'heavy weights S2', 0, 1e-5);
+  expectBlockMatches(results, 'moran', reference.moran, 'heavy weights');
+  expectBlockMatches(results, 'geary', reference.geary, 'heavy weights');
+  harness.destroy();
 });

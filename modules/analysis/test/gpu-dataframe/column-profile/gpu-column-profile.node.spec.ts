@@ -404,12 +404,20 @@ it('column profile oracle estimates HyperLogLog from known register sets', () =>
   expect(fmix32(1)).toBe(0x514e28b7);
 });
 
-it('column profile oracle bins mirror the corrected f32 formula', () => {
+it('column profile oracle bins follow the official ratio rule', () => {
   const domain = resolveOracleDomain(0, 1, 10);
   expect(domain.mode).toBe(1);
-  expect(getOracleBin(0, 0, domain.width, 10)).toBe(0);
-  expect(getOracleBin(1, 0, domain.width, 10)).toBe(9);
-  expect(getOracleBin(Math.fround(0.3), 0, domain.width, 10)).toBeGreaterThanOrEqual(2);
+  expect(getOracleBin(0, 0, 1, 10)).toBe(0);
+  expect(getOracleBin(1, 0, 1, 10)).toBe(9);
+  expect(getOracleBin(Math.fround(0.3), 0, 1, 10)).toBeGreaterThanOrEqual(2);
+  // -0.875 is exactly edge 5 of 30 bins over [-3.5, 12.25] (2.625 / 15.75 = 1 / 6): bin 5.
+  expect(getOracleBin(-0.875, -3.5, 12.25, 30)).toBe(5);
+  // Values on a 0.125 grid sit 5 i / 21 bins from the minimum; integers give the exact bin.
+  for (let index = 0; index <= 126; index++) {
+    expect(getOracleBin(-3.5 + 0.125 * index, -3.5, 12.25, 30), `grid value ${index}`).toBe(
+      Math.min(Math.floor((5 * index) / 21), 29)
+    );
+  }
   expect(resolveOracleDomain(2, 2, 4).mode).toBe(2);
   expect(resolveOracleDomain(3, 2, 4).mode).toBe(0);
   expect(resolveOracleDomain(NaN, 2, 4).mode).toBe(0);

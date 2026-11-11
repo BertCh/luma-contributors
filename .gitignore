@@ -8,6 +8,8 @@ coverage-*/
 !.yarn/plugins
 .DS_Store
 .playwright-artifacts/
+__pycache__/
+*.pyc
 .typecheck/
 
 # Website build output

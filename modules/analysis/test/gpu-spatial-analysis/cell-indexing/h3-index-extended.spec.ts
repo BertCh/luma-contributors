@@ -109,6 +109,17 @@ it('GPUPointToCell H3 precision extended matches h3-js on the same f32 inputs', 
       // Verified exact through resolution 15 (headless WebGPU, Apple Metal): no mismatches.
       expect(result.mismatches, `${name} res ${resolution}`).toBe(0);
     }
+    // The double-float arithmetic of the extended path rests on error-free transformations
+    // (two-sum, Dekker product), which a fast-math shader compiler folds to zero unless the
+    // intermediates are kept opaque (`cellIndexH3ExtKeep`). If it folded them here the extended
+    // path would be the float32 path, which misses about 2% of uniform points at resolution 12
+    // and over 20% at 15. So zero mismatches above, with the plain path failing on the same
+    // points in the same run, shows on the GPU that the low words survive.
+    if (resolution >= 12) {
+      expect(plainUniform.mismatches, `float32 path res ${resolution}`).toBeGreaterThan(
+        0.005 * plainUniform.rows
+      );
+    }
     extended.destroy();
     plain.destroy();
   }

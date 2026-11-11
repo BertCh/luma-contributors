@@ -17,7 +17,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPU_PERMUTATION_PARAMETER_LENGTH} from '../permutation-inference/permutation-parameters';
 import {getPermutationParameterWGSL} from '../permutation-inference/permutation-inference-kernels';
@@ -53,7 +53,11 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
-import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  GET_NAN_WGSL,
+  IS_FINITE_BITS_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 
 /** Spatial contexts supported by this distance-measuring operation. */
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -257,7 +261,7 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
       1,
       GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     this.rowCount = props.positions.length;
     if (this.rowCount < 2 || this.rowCount > MAXIMUM_ROW_COUNT) {
       throw new Error(`${id} needs between 2 and ${MAXIMUM_ROW_COUNT} rows`);
@@ -287,52 +291,56 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
     } else {
       this.indexGridSize = null;
     }
-    validatePackedView(props.predictors, ['float32'], `${id} predictors`);
+    validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
     if (props.predictors.length !== this.rowCount * predictorCount) {
       throw new Error(`${id} predictors length must equal rows * predictorCount`);
     }
-    validatePackedView(props.response, ['float32'], `${id} response`);
+    validateSinglePackedView(props.response, ['float32'], `${id} response`);
     if (props.response.length !== this.rowCount) {
       throw new Error(`${id} response length must equal the row count`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
     }
-    validatePackedView(props.bandwidthParameters, ['float32'], `${id} bandwidthParameters`);
+    validateSinglePackedView(props.bandwidthParameters, ['float32'], `${id} bandwidthParameters`);
     const parameterLength = getGPUGeographicallyWeightedRegressionParameterLength(
       this.maximumBandwidthCount
     );
     if (props.bandwidthParameters.length < parameterLength) {
       throw new Error(`${id} bandwidthParameters must hold ${parameterLength} float32 values`);
     }
-    validatePackedView(props.selectedBandwidth, ['float32'], `${id} selectedBandwidth`);
+    validateSinglePackedView(props.selectedBandwidth, ['float32'], `${id} selectedBandwidth`);
     if (props.selectedBandwidth.length < 2) {
       throw new Error(`${id} selectedBandwidth must hold 2 float32 values`);
     }
-    validatePackedView(props.coefficients, ['float32'], `${id} coefficients`);
+    validateSinglePackedView(props.coefficients, ['float32'], `${id} coefficients`);
     if (props.coefficients.length < this.rowCount * this.coefficientCount) {
       throw new Error(`${id} coefficients must hold rows * (predictorCount + 1) values`);
     }
-    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     if (props.parameters.length < GPU_PERMUTATION_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must hold ${GPU_PERMUTATION_PARAMETER_LENGTH} uint32`);
     }
     const tableLength = this.coefficientCount * GPU_GWR_NONSTATIONARITY_TABLE_STRIDE;
-    validatePackedView(output.table, ['float32'], `${id} output.table`);
+    validateSinglePackedView(output.table, ['float32'], `${id} output.table`);
     if (output.table.length < tableLength) {
       throw new Error(`${id} output.table must hold ${tableLength} float32 values`);
     }
-    validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
     if (output.summary.length < GPU_GWR_NONSTATIONARITY_SUMMARY.length) {
       throw new Error(
         `${id} output.summary must hold ${GPU_GWR_NONSTATIONARITY_SUMMARY.length} float32 values`
       );
     }
     if (output.standardDeviations) {
-      validatePackedView(output.standardDeviations, ['float32'], `${id} output.standardDeviations`);
+      validateSinglePackedView(
+        output.standardDeviations,
+        ['float32'],
+        `${id} output.standardDeviations`
+      );
       const length = (maximumPermutations + 1) * this.coefficientCount;
       if (output.standardDeviations.length < length) {
         throw new Error(`${id} output.standardDeviations must hold ${length} float32 values`);
@@ -735,6 +743,7 @@ const TILE_GROUP_COUNT: u32 = ${tileGroupCount}u;
 const PERMUTED_WORKGROUP_SIZE: u32 = ${PERMUTED_WORKGROUP_SIZE}u;
 ${PERMUTATION_RANDOM_WGSL}
 ${getPermutationShuffleWGSL(PHILOX_PURPOSES.geographicallyWeightedRegressionNonstationarityShuffle.id)}
+${gridDeclarations ? '' : IS_FINITE_VALUE_WGSL}
 ${getCholeskyWGSL(P)}
 ${getEquilibratedCholeskyWGSL(P)}
 ${getLocalKernelWeightWGSL()}

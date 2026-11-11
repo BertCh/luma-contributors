@@ -112,6 +112,27 @@ describe('GPULocalCategoryDependence', () => {
     expect(rows[0][columns.standardizedScore]).toBeCloseTo((2 - 1.8) / Math.sqrt(3 * 0.6 * 0.4), 5);
   });
 
+  // spatial-statistics-03 and -05: the focal row is not counted, the tail is the upper one, and a
+  // zero-weight slot is not a neighbour (the shared neighbor rule).
+  it('matches the hand-computed upper tail 0.3125 and skips self and zero-weight slots', async () => {
+    // Row 0 (A) lists itself, A, A, A, B and, with weight 0, row 5 (B). Eight rows, four A and four
+    // B, so the global share is 0.5. Four neighbours, three like:
+    // P(X >= 3 | n = 4, p = 0.5) = (C(4, 3) + C(4, 4)) / 16 = 5 / 16 = 0.3125,
+    // z = (3 - 4 * 0.5) / sqrt(4 * 0.5 * 0.5) = 1.
+    const csr = {
+      offsets: [0, 6, 6, 6, 6, 6, 6, 6, 6],
+      neighbors: [0, 1, 2, 3, 4, 5],
+      weights: [1, 1, 1, 1, 1, 0]
+    };
+    const rows = await runDependence(csr, [0, 0, 0, 0, 1, 1, 1, 1], 2);
+    expect(rows[0][columns.likeCount]).toBe(3);
+    expect(rows[0][columns.neighborCount]).toBe(4);
+    expect(rows[0][columns.proportion]).toBeCloseTo(0.75, 6);
+    expect(rows[0][columns.expectedProportion]).toBeCloseTo(0.5, 6);
+    expect(rows[0][columns.upperTailProbability]).toBeCloseTo(0.3125, 5);
+    expect(rows[0][columns.standardizedScore]).toBeCloseTo(1, 5);
+  });
+
   it('gives NaN statistics for rows without a category or neighbour and ignores self links', async () => {
     const csr = {offsets: [0, 2, 2, 3], neighbors: [0, 2, 0], weights: [1, 1, 1]};
     const rows = await runDependence(csr, [0, 0, 0xffffffff], 2);

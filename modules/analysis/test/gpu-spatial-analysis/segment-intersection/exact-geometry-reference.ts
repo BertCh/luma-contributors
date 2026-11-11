@@ -88,13 +88,15 @@ function isPointProbe(probe: ExactProbe): boolean {
 }
 
 function isAboveProbe(probe: ExactProbe, v: Point): boolean {
-  const vy = Math.fround(v[1]);
-  const py = Math.fround(probe.point[1]);
-  if (vy !== py) {
-    return vy > py;
-  }
   if (isPointProbe(probe)) {
-    return true;
+    return Math.fround(v[1]) >= Math.fround(probe.point[1]);
+  }
+  // A side probe is at the exact midpoint height of its segment (integer arithmetic over the f32
+  // values), never at the f32-rounded midpoint, which can coincide with an endpoint.
+  const doubledHeight = 2n * toInteger(v[1]);
+  const doubledMidpoint = toInteger(probe.start[1]) + toInteger(probe.end[1]);
+  if (doubledHeight !== doubledMidpoint) {
+    return doubledHeight > doubledMidpoint;
   }
   return probe.side * compare(Math.fround(probe.end[0]), Math.fround(probe.start[0])) <= 0;
 }

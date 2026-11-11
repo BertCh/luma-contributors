@@ -56,3 +56,29 @@ export type {
   GPUAreaOfApplicabilityOutput,
   GPUAreaOfApplicabilityProps
 } from './gpu-area-of-applicability';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  CPU_SPATIAL_CROSS_VALIDATION_MAXIMUM_CANDIDATE_COUNT,
+  computeSpatialCrossValidationOnCPU,
+  CPUSpatialCrossValidationOperation
+} from './cpu-spatial-cross-validation-operation';
+export type {
+  CPUSpatialCrossValidationInput,
+  CPUSpatialCrossValidationOptions,
+  CPUSpatialCrossValidationResult
+} from './cpu-spatial-cross-validation-operation';
+export {GPUSpatialCrossValidationOperation} from './gpu-spatial-cross-validation-operation';
+export type {SpatialCrossValidationOperationProps} from './gpu-spatial-cross-validation-operation';
+export {
+  CPU_NESTED_INTERPOLATION_VALIDATION_MAXIMUM_ROW_COUNT,
+  computeNestedInterpolationValidationOnCPU,
+  CPUNestedInterpolationValidationOperation
+} from './cpu-nested-interpolation-validation-operation';
+export type {
+  CPUNestedInterpolationValidationInput,
+  CPUNestedInterpolationValidationOptions,
+  CPUNestedInterpolationValidationResult
+} from './cpu-nested-interpolation-validation-operation';
+export {GPUNestedInterpolationValidationOperation} from './gpu-nested-interpolation-validation-operation';
+export type {NestedInterpolationValidationOperationProps} from './gpu-nested-interpolation-validation-operation';

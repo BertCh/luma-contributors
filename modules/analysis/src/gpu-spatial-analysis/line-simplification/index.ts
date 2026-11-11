@@ -23,3 +23,16 @@ export {
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH
 } from './line-simplification-parameters';
 export type {GPULineSimplificationSettings} from './line-simplification-parameters';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeLineSimplificationOnCPU,
+  CPULineSimplificationOperation
+} from './cpu-line-simplification-operation';
+export type {
+  CPULineSimplificationInput,
+  CPULineSimplificationOptions,
+  CPULineSimplificationResult
+} from './cpu-line-simplification-operation';
+export {GPULineSimplificationOperation} from './gpu-line-simplification-operation';
+export type {LineSimplificationOperationProps} from './gpu-line-simplification-operation';

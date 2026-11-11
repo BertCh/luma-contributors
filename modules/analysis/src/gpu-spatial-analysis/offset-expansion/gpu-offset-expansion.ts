@@ -11,7 +11,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -94,22 +94,22 @@ export class GPUOffsetExpansion implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     const {output} = props;
-    validatePackedView(props.offsets, ['uint32'], `${id} offsets`);
+    validateSinglePackedView(props.offsets, ['uint32'], `${id} offsets`);
     if (props.offsets.length < 2) {
       throw new Error(`${id} offsets needs two rows`);
     }
     if (props.ownerMap) {
-      validatePackedView(props.ownerMap, ['uint32'], `${id} ownerMap`);
+      validateSinglePackedView(props.ownerMap, ['uint32'], `${id} ownerMap`);
       if (props.ownerMap.length < props.offsets.length - 1) {
         throw new Error(`${id} ownerMap must hold one row per owner`);
       }
     }
-    validatePackedView(output.owners, ['uint32'], `${id} output.owners`);
+    validateSinglePackedView(output.owners, ['uint32'], `${id} output.owners`);
     if (output.owners.length < 1) {
       throw new Error(`${id} output.owners must be non-empty`);
     }
     if (output.localIndex) {
-      validatePackedView(output.localIndex, ['uint32'], `${id} output.localIndex`);
+      validateSinglePackedView(output.localIndex, ['uint32'], `${id} output.localIndex`);
       if (output.localIndex.length !== output.owners.length) {
         throw new Error(`${id} output.localIndex length must equal output.owners length`);
       }
@@ -120,7 +120,7 @@ export class GPUOffsetExpansion implements GPUCommandNodeProducer {
       ['requiredCount', output.status.requiredCount]
     ] as const) {
       if (scalar) {
-        validatePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
+        validateSinglePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
         if (scalar.length < 1) {
           throw new Error(`${id} output.status.${name} must contain one uint32 row`);
         }

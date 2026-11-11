@@ -157,7 +157,7 @@ function createWorkloads(): Workload[] {
             'float32x3',
             Float32Array.from(Array(4).fill([-0.1, -0.2, 20]).flat())
           ),
-          validity: scope.input('validity', new Uint32Array(4).fill(1), 'uint32'),
+          mask: scope.input('validity', new Uint32Array(4).fill(1), 'uint32'),
           grids: [{width: 2, height: 2, sampleOffset: 0, origin: [0, 0], spacing: [1, 1]}],
           operation: 'combined',
           sourceVerticalReference: 'ellipsoid',

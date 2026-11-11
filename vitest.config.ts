@@ -4,11 +4,13 @@
 import {readFileSync} from 'node:fs';
 import {getVitestConfig} from '@vis.gl/dev-tools';
 
-// Specs that exercise examples/deck/kepler-compute. That example still needs
-// @deck.gl-community/gpu-layers and luma.gl engine/arrow APIs that are not published,
-// so these stay out of the default runs until the example is ported.
-const keplerComputeExampleSpecs: string[] = JSON.parse(
-  readFileSync(new URL('./test/kepler-compute-example-specs.json', import.meta.url), 'utf8')
+// Kepler specs that exercise examples/deck/kepler-compute run against the example sources in
+// place. Those whose imports reach deck.gl, other undeclared packages or luma.gl APIs that are
+// not published stay out of the runs; the JSON gives each one's reason.
+const keplerComputeExampleSpecs: string[] = Object.keys(
+  JSON.parse(
+    readFileSync(new URL('./test/kepler-compute-example-specs.json', import.meta.url), 'utf8')
+  ).excludedFromRuns
 );
 
 const excludePatterns = [

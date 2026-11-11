@@ -33,8 +33,23 @@ export type GPUPointCloudGroundProps = {
   coverage: GraphDataView<'uint32'>;
   /** Strictly increasing square-window radii in cells, each 1–32. */
   radii: readonly number[];
+  /** Elevation threshold added at every stage, in the units of z. */
   initialThreshold: number;
+  /**
+   * Terrain slope (rise over run) per cell of radius increment. Stage `k` rejects a point more
+   * than `min(maximumThreshold, initialThreshold + slope * cellSize * (radii[k] - radii[k - 1]))`
+   * above the opening, with `radii[-1] = 0`.
+   *
+   * This is not equation 7 of Zhang et al. (2003), which uses `initialThreshold` alone while the
+   * window is at most 3 cells wide and `initialThreshold + slope * (w[k] - w[k - 1]) * cellSize`
+   * afterwards, with the full window width `w = 2 * radius + 1`. Two consequences: the first
+   * stage here already adds `slope * cellSize * radii[0]`, and at later stages the same `slope` is
+   * half as permissive, because a radius increment is half a window-width increment. Pass twice
+   * the slope to match Zhang's later stages. With `radii: [1, 2]`, `cellSize: 1`, `slope: 0.1`
+   * and `initialThreshold: 0.2` the thresholds here are 0.3 and 0.3; Zhang's are 0.2 and 0.4.
+   */
   slope: number;
+  /** Upper limit of every stage's threshold. */
   maximumThreshold: number;
   groundMask: GraphDataView<'uint32'>;
   /** Ground becomes LAS class 2; rejected existing class 2 becomes class 1; other classes survive. */
@@ -53,7 +68,11 @@ export const GPU_POINT_CLOUD_GROUND_STATUS_UNSUPPORTED = 1;
 /** `GPUPointCloudGround` status bit 2: the final morphology window has incomplete support. */
 export const GPU_POINT_CLOUD_GROUND_STATUS_INCOMPLETE_WINDOW = 2;
 
-/** Bounded progressive morphological filter; a square-window PMF, not SMRF equivalence. */
+/**
+ * Bounded progressive morphological filter; a square-window PMF, not SMRF equivalence. The stage
+ * threshold grows with the radius increment, not with the window-width increment of Zhang et al.
+ * (2003): see the `slope` prop.
+ */
 export class GPUPointCloudGround implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUPointCloudGroundProps) {

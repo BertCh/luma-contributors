@@ -14,9 +14,10 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {UINT64_WGSL} from '../../analysis-core/kernels/uint64-wgsl';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {GPU_COLUMN_QUANTILES_PARAMETER_HEADER_LENGTH} from './column-quantiles-parameters';
-import {ORDER_STATISTIC_WGSL} from './order-statistic-wgsl';
+import {ORDER_STATISTIC_WGSL, RATIONAL_ORDER_STATISTIC_RANK_WGSL} from './order-statistic-wgsl';
 
 /** Caller-owned outputs of the column quantile nodes. */
 export type GPUColumnQuantilesOutput = {
@@ -44,6 +45,13 @@ export type ColumnQuantileNodesProps = {
   parameters: GraphDataView<'float32'>;
   /** Compile-time probability count, 1 to 64. */
   quantileCount: number;
+  /**
+   * Optional probabilities as exact ratios, `[numerator, denominator]` uint32 pairs per slot. When
+   * present they replace the float32 probabilities of `parameters`, and the ranks and the
+   * interpolation fraction come from the integer WGSL of `RATIONAL_ORDER_STATISTIC_RANK_WGSL`.
+   * The percentile filter ranks stay float32.
+   */
+  rationalProbabilities?: GraphDataView<'uint32'>;
   /** Caller-owned outputs. */
   output: GPUColumnQuantilesOutput;
   /**
@@ -90,10 +98,12 @@ export function getColumnQuantileNodes<Parameters>(
   props: ColumnQuantileNodesProps
 ): GPUCommandNode<Parameters>[] {
   const {id, operation, values, mask, parameters, quantileCount, output, gate} = props;
+  const {rationalProbabilities} = props;
   validateGraphViewsBelongToGraph(id, graph, [
     values,
     mask,
     parameters,
+    rationalProbabilities,
     gate?.view,
     output.quantiles,
     output.validCount,
@@ -129,6 +139,9 @@ export function getColumnQuantileNodes<Parameters>(
     type: 'u32' | 'f32' | 'atomic<u32>' = 'u32'
   ): WGSLKernelBinding => ({name, view, type, access: 'read_write'});
   const gateBindings = gate ? [read('gate', gate.view, 'u32')] : [];
+  const rationalBindings = rationalProbabilities
+    ? [read('rationalProbabilities', rationalProbabilities, 'u32')]
+    : [];
   const enabledExpression = gate ? `gate[gateOffset] == ${gate.value >>> 0}u` : 'true';
 
   const declarations = /* wgsl */ `
@@ -142,7 +155,7 @@ const STATE_ACTIVE_PREFIX: u32 = ${3 * targetCount}u;
 const STATE_ACTIVE_COUNT: u32 = ${4 * targetCount}u;
 const STATE_VALID_COUNT: u32 = ${4 * targetCount + 1}u;
 ${COLUMN_ORDERED_KEY_WGSL}
-${ORDER_STATISTIC_WGSL}
+${ORDER_STATISTIC_WGSL}${rationalProbabilities ? `\n${UINT64_WGSL}\n${RATIONAL_ORDER_STATISTIC_RANK_WGSL}` : ''}
 
 fn isMissingValue(value: f32) -> bool {
   return (bitcast<u32>(value) & 0x7f800000u) == 0x7f800000u;
@@ -186,18 +199,53 @@ fn getQuantileRanks(validCount: u32, p: f32) -> vec2<u32> {
     second = upper;
   }
   return vec2<u32>(u32(first), u32(second));
-}
+}${
+    rationalProbabilities
+      ? `
+
+// The ranks of a probability numerator / denominator, exact at any row count.
+fn getRationalQuantileRanks(validCount: u32, numerator: u32, denominator: u32) -> vec2<u32> {
+  let rank = getRationalOrderStatisticRank(validCount, numerator, denominator);
+  let upper = getRationalOrderStatisticUpperRank(rank);
+  let code = u32(params[paramsOffset]);
+  var first = rank.lower;
+  var second = rank.lower;
+  if (code == 1u) {
+    first = upper;
+    second = upper;
+  } else if (code == 2u) {
+    first = getRationalOrderStatisticNearestRank(rank, denominator);
+    second = first;
+  } else if (code == 3u) {
+    second = min(rank.lower + 1u, validCount - 1u);
+  } else if (code == 4u) {
+    second = upper;
+  }
+  return vec2<u32>(first, second);
+}`
+      : ''
+  }
 
 fn getTargetRank(targetIndex: u32, validCount: u32) -> u32 {
   if (validCount == 0u) {
     return 0u;
   }
   if (targetIndex < 2u * QUANTILE_COUNT) {
-    let p = params[paramsOffset + HEADER_LENGTH + targetIndex / 2u];
+    ${
+      rationalProbabilities
+        ? `let slot = rationalProbabilitiesOffset + 2u * (targetIndex / 2u);
+    let numerator = rationalProbabilities[slot];
+    let denominator = rationalProbabilities[slot + 1u];
+    if (!isRationalOrderStatisticProbability(numerator, denominator)) {
+      return 0u;
+    }
+    let ranks = getRationalQuantileRanks(validCount, numerator, denominator);`
+        : `let p = params[paramsOffset + HEADER_LENGTH + targetIndex / 2u];
     if (!isOrderStatisticProbability(p)) {
       return 0u;
     }
-    let ranks = getQuantileRanks(validCount, p);
+    let ranks = getQuantileRanks(validCount, p);`
+    }
     return select(ranks.x, ranks.y, (targetIndex & 1u) == 1u);
   }
   let lastIndex = f32(validCount - 1u);
@@ -308,11 +356,12 @@ var<workgroup> localHistogram: array<atomic<u32>, ${localBinCount}>;`,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-select-${pass}`,
         operation,
-        variant: `quantile-select-${pass}`,
+        variant: `quantile-select-${pass}${rationalProbabilities ? '-rational' : ''}`,
         bindings: [
           write('histogram', histogram),
           write('state', state),
           read('params', parameters, 'f32'),
+          ...rationalBindings,
           ...gateBindings
         ],
         invocationCount: WORKGROUP_SIZE,
@@ -408,6 +457,7 @@ var<workgroup> sharedValidCount: u32;`,
   const finishBindings: WGSLKernelBinding[] = [
     read('state', state, 'u32'),
     read('params', parameters, 'f32'),
+    ...rationalBindings,
     write('quantilesOut', output.quantiles, 'f32'),
     write('validCountOut', output.validCount, 'u32'),
     ...(output.filterBounds ? [write('filterBoundsOut', output.filterBounds, 'f32')] : []),
@@ -417,7 +467,7 @@ var<workgroup> sharedValidCount: u32;`,
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-finish`,
       operation,
-      variant: 'quantile-finish',
+      variant: rationalProbabilities ? 'quantile-finish-rational' : 'quantile-finish',
       bindings: finishBindings,
       invocationCount: quantileCount + 1,
       declarations: `${declarations}
@@ -428,17 +478,28 @@ ${rankDeclarations}`,
   let validCount = state[stateOffset + STATE_VALID_COUNT];
   if (index < QUANTILE_COUNT) {
     var result = getNaN();
-    let p = params[paramsOffset + HEADER_LENGTH + index];
-    if (validCount > 0u && isOrderStatisticProbability(p)) {
+    ${
+      rationalProbabilities
+        ? `let numerator = rationalProbabilities[rationalProbabilitiesOffset + 2u * index];
+    let denominator = rationalProbabilities[rationalProbabilitiesOffset + 2u * index + 1u];
+    if (validCount > 0u && isRationalOrderStatisticProbability(numerator, denominator)) {`
+        : `let p = params[paramsOffset + HEADER_LENGTH + index];
+    if (validCount > 0u && isOrderStatisticProbability(p)) {`
+    }
       let first = decodeOrderedKey(state[stateOffset + STATE_PREFIX + 2u * index]);
       let second = decodeOrderedKey(state[stateOffset + STATE_PREFIX + 2u * index + 1u]);
       result = first;
       let code = u32(params[paramsOffset]);
-      // validCount is below 2^24, so this is a runtime zero that blocks multiply-add fusion.
+      // validCount is below ${rationalProbabilities ? '2^31' : '2^24'}, so this is a runtime zero that blocks multiply-add fusion.
       let zero = validCount >> 31u;
       if (code == 3u) {
-        let h = getQuantileHeight(validCount, p);
-        result = interpolateOrderStatistic(first, second, h - floor(h), zero);
+        ${
+          rationalProbabilities
+            ? `let rank = getRationalOrderStatisticRank(validCount, numerator, denominator);
+        result = interpolateOrderStatistic(first, second, getRationalOrderStatisticFraction(rank.remainder, denominator), zero);`
+            : `let h = getQuantileHeight(validCount, p);
+        result = interpolateOrderStatistic(first, second, h - floor(h), zero);`
+        }
       } else if (code == 4u) {
         result = getOrderStatisticMidpoint(first, second, zero);
       }

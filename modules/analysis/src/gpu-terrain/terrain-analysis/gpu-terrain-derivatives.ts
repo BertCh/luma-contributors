@@ -24,8 +24,9 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
@@ -45,9 +46,13 @@ import {
   type GPURasterRowDirection,
   RASTER_DEGREES_TO_RADIANS_WGSL,
   validateRasterCellSizeMode,
-  validateRasterRowDirection,
   writeRasterGridParameterValues
 } from '../../analysis-core/raster-grid';
+import {
+  getTerrainOneSidedPaddedBandNodes,
+  getTerrainPaddedIndexWGSL,
+  resolveTerrainRowDirection
+} from '../terrain-curvature/terrain-geomorphometry-utils';
 
 /** Slope output unit. */
 export type GPUTerrainSlopeUnits = 'degrees' | 'percent';
@@ -130,10 +135,23 @@ export type GPUTerrainDerivativesProps = {
   cellSizeMode?: GPURasterCellSizeMode;
   /** Slope unit. Defaults to `'degrees'`. */
   slopeUnits?: GPUTerrainSlopeUnits;
-  /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
+  /**
+   * Direction in which the row index increases. Defaults to the direction the grid states: the
+   * sign of the row term `grid.affine[4]` (negative: `'south'`, a north-up raster; positive:
+   * `'north'`). An explicit value that contradicts the grid throws at construction.
+   */
   rowDirection?: GPURasterRowDirection;
-  /** Sobel border treatment forwarded to `GPURasterGradient`. Defaults to `'clamp'`. */
-  borderMode?: GPURasterBorderMode;
+  /**
+   * Border treatment of the Horn 3x3 stencil. Defaults to `'one-sided'`, which extends the
+   * surface by one cell with the quadratic through the three nearest in-grid samples, so the
+   * centred difference across the edge is the second-order one-sided stencil
+   * `(-3 f0 + 4 f1 - f2) / (2 h)` of luma.gl's `GPUFiniteDifference2D`: slope and aspect are exact
+   * on a plane up to the border. The other values are the border modes of the official
+   * `GPURasterGradient`, forwarded unchanged; `'clamp'` repeats the edge sample and so halves the
+   * gradient component across the edge (a plane of slope 11.31 degrees reads 5.71 degrees in its
+   * border column).
+   */
+  borderMode?: 'one-sided' | GPURasterBorderMode;
 };
 
 /**
@@ -141,7 +159,9 @@ export type GPUTerrainDerivativesProps = {
  *
  * Composes two Sobel `GPURasterGradient` passes and one fused shade kernel. Cell size, z factor,
  * sun position, and latitude band are read from `parameters` every encoding. Columns increase east
- * and, with the default `rowDirection`, rows increase south. Invalid pixels (an invalid center or
+ * and rows go where the grid affine says (`rowDirection`). Aspect and the hillshade azimuth are
+ * degrees clockwise from north, which on a rotated `'uniform'` grid is the grid's up axis. Border
+ * pixels use one-sided differences by default (`borderMode`). Invalid pixels (an invalid center or
  * 3x3 neighbor, or invalid settings) receive NaN and validity 0. For seamless tiles, pass a tile
  * with a one-pixel halo; the contributor satisfies the `GPURasterHaloStage` contract.
  */
@@ -152,6 +172,8 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
   readonly props: GPUTerrainDerivativesProps;
   /** Receptive field in pixels (`GPURasterHaloStage` contract). */
   readonly requiredHalo = 1;
+  /** Row direction the kernels use: the prop, or the direction the grid affine states. */
+  readonly rowDirection: GPURasterRowDirection;
 
   constructor(props: GPUTerrainDerivativesProps) {
     this.id = props.id ?? 'terrain-derivatives';
@@ -175,7 +197,7 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
       ['outputValidity', output.outputValidity, 'uint32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} output.${name}`);
+        validateSinglePackedView(view, [format], `${id} output.${name}`);
         if (view.length !== pixelCount) {
           throw new Error(`${id} output.${name} must contain one value per pixel`);
         }
@@ -194,7 +216,14 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
     if (!['degrees', 'percent'].includes(props.slopeUnits ?? 'degrees')) {
       throw new Error(`${id} slopeUnits must be degrees or percent`);
     }
-    validateRasterRowDirection(id, props.rowDirection);
+    this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
+    if (
+      !['one-sided', 'clamp', 'reflect', 'constant', 'nodata'].includes(
+        props.borderMode ?? 'one-sided'
+      )
+    ) {
+      throw new Error(`${id} borderMode must be one-sided, clamp, reflect, constant, or nodata`);
+    }
     validateRasterBuffersDistinct(
       id,
       [output.slope, output.aspect, output.hillshade, output.outputValidity],
@@ -218,34 +247,56 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
       output.outputValidity
     ]);
     const pixelCount = width * height;
-    const borderMode = props.borderMode ?? 'clamp';
-    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, false);
+    const borderMode = props.borderMode ?? 'one-sided';
+    const isOneSided = borderMode === 'one-sided';
+    // The one-sided ring is extrapolated from calibrated values, so that path canonicalizes first
+    // (a float32 band that already has validity and no calibration passes through).
+    const source = getRasterBufferBandNodes(
+      graph,
+      id,
+      props.elevation,
+      props.grid,
+      isOneSided ? 'reuse-canonical' : false
+    );
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
+    const padded = isOneSided
+      ? getTerrainOneSidedPaddedBandNodes(graph, {
+          id,
+          operation: 'GPUTerrainDerivatives',
+          width,
+          height,
+          band: source.band
+        })
+      : undefined;
+    nodes.push(...(padded?.nodes ?? []));
+    const gradientWidth = padded?.width ?? width;
+    const gradientHeight = padded?.height ?? height;
     const gradients = (['x', 'y'] as const).map(direction => {
       const values = createTransientView(
         graph,
         `${id}-gradient-${direction}-values`,
         'float32',
-        pixelCount
+        gradientWidth * gradientHeight
       );
       const validity = createTransientView(
         graph,
         `${id}-gradient-${direction}-validity`,
         'uint32',
-        pixelCount
+        gradientWidth * gradientHeight
       );
       nodes.push(
         ...captureGraphCommandNodes(graph, () =>
           new GPURasterGradient({
             id: `${id}-gradient-${direction}`,
-            width,
-            height,
-            input: source.band,
+            width: gradientWidth,
+            height: gradientHeight,
+            input: padded?.band ?? source.band,
             output: values,
             outputValidity: validity,
             operator: 'sobel',
             direction,
-            borderMode,
+            // Only the ring of the padded grid meets this border; no original pixel reads it.
+            borderMode: borderMode === 'one-sided' ? 'clamp' : borderMode,
             scale: 1
           }).addToGraph(graph)
         )
@@ -272,7 +323,8 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
         validity: output.outputValidity,
         cellSizeMode: props.cellSizeMode ?? 'uniform',
         slopeUnits: props.slopeUnits ?? 'degrees',
-        rowDirection: props.rowDirection ?? 'south'
+        rowDirection: this.rowDirection,
+        isPadded: isOneSided
       })
     );
     if (output.hillshadeTexture && hillshadeTarget) {
@@ -314,6 +366,8 @@ function getShadeNode<Parameters>(
     cellSizeMode: GPURasterCellSizeMode;
     slopeUnits: GPUTerrainSlopeUnits;
     rowDirection: GPURasterRowDirection;
+    /** The gradients live on the one-cell padded grid of the one-sided border. */
+    isPadded: boolean;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -346,7 +400,7 @@ function getShadeNode<Parameters>(
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: 'GPUTerrainDerivatives',
-    variant: `shade-${props.cellSizeMode}`,
+    variant: `shade-${props.cellSizeMode}${props.isPadded ? '-padded' : ''}`,
     bindings,
     invocationCount: props.width * props.height,
     declarations: `const WIDTH: u32 = ${props.width}u;
@@ -356,10 +410,12 @@ ${RASTER_DEGREES_TO_RADIANS_WGSL}
 const RADIANS_TO_DEGREES: f32 = 57.29577951308232;
 ${getRasterRowNorthSignWGSL(props.rowDirection)}
 ${RASTER_WGSL_HELPERS}
+${props.aspect ? GUARDED_ATAN2_WGSL : ''}
 ${getRasterGroundCellSizeWGSL(props.cellSizeMode, TERRAIN_DERIVATIVES_GRID_SLOTS)}`,
     body: `let row = index / WIDTH;
-  let rawX = gradientX[gradientXOffset + index];
-  let rawY = gradientY[gradientYOffset + index];
+  ${getTerrainPaddedIndexWGSL(props.isPadded)}
+  let rawX = gradientX[gradientXOffset + gradientIndex];
+  let rawY = gradientY[gradientYOffset + gradientIndex];
   let groundCell = getGroundCellSize(row);
   let zFactor = settings[settingsOffset + 2u];
   // Sobel responds 8 to a unit-per-pixel ramp, so Horn's derivative is raw / (8 * cell).
@@ -372,7 +428,7 @@ ${getRasterGroundCellSizeWGSL(props.cellSizeMode, TERRAIN_DERIVATIVES_GRID_SLOTS
     let ratio = smaller / larger;
     gradientMagnitude = larger * sqrt(1.0 + ratio * ratio);
   }
-  let isValid = gradientValidity[gradientValidityOffset + index] != 0u &&
+  let isValid = gradientValidity[gradientValidityOffset + gradientIndex] != 0u &&
     isFiniteValue(rawX) && isFiniteValue(rawY) && groundCell.x > 0.0 && groundCell.y > 0.0 &&
     isFiniteValue(eastGradient) && isFiniteValue(northGradient) && isFiniteValue(gradientMagnitude);
   let invalidValue = bitcast<f32>(0x7fc00000u | (index & 0u));
@@ -386,7 +442,8 @@ ${getRasterGroundCellSizeWGSL(props.cellSizeMode, TERRAIN_DERIVATIVES_GRID_SLOTS
     props.aspect
       ? `var aspect = -1.0;
   if (gradientMagnitude > 0.0) {
-    aspect = atan2(-eastGradient, -northGradient) * RADIANS_TO_DEGREES;
+    // -northGradient is -0.0 on a pure east or west slope with north row order (FX-17).
+    aspect = guardedAtan2(-eastGradient, -northGradient) * RADIANS_TO_DEGREES;
     if (aspect < 0.0) { aspect += 360.0; }
     if (aspect >= 360.0) { aspect -= 360.0; }
   }

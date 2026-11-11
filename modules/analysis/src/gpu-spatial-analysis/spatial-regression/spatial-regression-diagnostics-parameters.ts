@@ -62,7 +62,7 @@ export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT = 12;
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_OK = 0;
 /** `status` value: the (centered) design is singular or ill-conditioned. */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_SINGULAR = 1;
-/** `status` value: too few analyzed rows, `n <= predictorCount + 1` (also a failed OLS fit). */
+/** `status` value: too few analyzed rows, `n <= predictorCount + 2` (also a failed OLS fit). */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_TOO_FEW_ROWS = 2;
 /** `status` value: degenerate weights (`S0 <= 0` or `T <= 0`, for example no neighbors at all). */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_DEGENERATE_WEIGHTS = 3;

@@ -15,7 +15,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPU_TERRAIN_VISIBILITY} from '../terrain-analysis/gpu-terrain-viewshed';
 import {
@@ -88,14 +88,18 @@ export type GPUPointHorizonVisibilityOutput = {
  * observers, and flags those on the skyline, following mt-image's `classifyPeak`.
  *
  * Per target the contributor computes the distance and bearing from the observer without cancellation
- * (planar: metres offsets; Web Mercator: a spherical inverse written in haversine form with
+ * (planar: metres offsets; Web Mercator: the spherical arc scaled to WGS84 ground metres at the
+ * observer latitude, `sqrt((N sinA)^2 + (M cosA)^2) / R` per sphere metre, the row scale of the
+ * raster-grid contributors, from a spherical inverse written in haversine form with
  * `Δm = -2πΔrow/worldPixelSize` (derived from the grid by the packer) and `Δλ = 2πΔcolumn/worldPixelSize`, series for small `sinh`,
  * `sin` and `asin`), marches the full ray along that bearing with the same march as
  * `GPUPointHorizonProfile`, and records the running maximum tangent `tQ` before
  * `q = dP - max(targetIgnoreDistance, targetIgnoreFraction * dP)` and the skyline `tSky`. With
  * `αP = atan(tP)`, `αOcc = atan(tQ)`, `αSky = atan(tSky)` (accurate series, degrees) and
  * `tol = toleranceDegrees + (sigmaZ / dP) * 180 / π`:
- * `hidden` if `αP < αOcc - tol`; `marginal` if `|αP - αOcc| < tol`; otherwise `visible`. `onSkyline`
+ * `hidden` if `αP < αOcc - tol`; `marginal` if `αOcc - tol <= αP < αOcc + tol`; otherwise
+ * `visible`. The three classes are ordered with no gap: a target exactly `tol` below the occluder
+ * is `marginal`, as in the tolerance band of `GPUTerrainLineOfSight`. `onSkyline`
  * is `(visible or marginal) and αP >= αSky - skylineToleranceDegrees`.
  */
 export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
@@ -124,7 +128,7 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
     if (props.observers.length < 1) {
       throw new Error(`${id} requires at least one observer`);
     }
-    validatePackedView(output.visibility, ['uint32'], `${id} output.visibility`);
+    validateSinglePackedView(output.visibility, ['uint32'], `${id} output.visibility`);
     if (output.visibility.length !== props.targets.length) {
       throw new Error(`${id} output.visibility must contain one value per target`);
     }
@@ -193,15 +197,19 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
   let cosHalfLambda = cosAny(halfLambda);
   let sinhHalfM = sinhS(halfM);
   let haversine = eye.cosP * cosP2 * (sinhHalfM * sinhHalfM + sinHalfLambda * sinHalfLambda);
-  let distance = 2.0 * EARTH_RADIUS * asinS(sqrt(min(haversine, 1.0)));
+  let sphereDistance = 2.0 * EARTH_RADIUS * asinS(sqrt(min(haversine, 1.0)));
   let sinDeltaPhi = 2.0 * coshS(meanM) * sinhHalfM * eye.cosP * cosP2;
   let north = sinDeltaPhi + eye.sinP * cosP2 * 2.0 * sinHalfLambda * sinHalfLambda;
   let east = 2.0 * sinHalfLambda * cosHalfLambda * cosP2;
   let rho = sqrt(north * north + east * east);
   let sinA = east / max(rho, 1.0e-30);
   let cosA = north / max(rho, 1.0e-30);
-  // One Web Mercator pixel at the target's latitude, in meters (isotropic).
-  let targetPixelLength = 2.0 * PI * EARTH_RADIUS * cosP2 / worldPixelSize;`
+  // Ground meters per sphere meter along this ray: the WGS84 metric at the eye, the row scale
+  // of the raster-grid contributors (see POINT_HORIZON_GROUND_SCALE_WGSL).
+  let groundScale = getRayGroundScale(eye, sinA, cosA);
+  let distance = sphereDistance * groundScale;
+  // One Web Mercator pixel along the ray at the target's latitude, in ground meters.
+  let targetPixelLength = 2.0 * PI * EARTH_RADIUS * cosP2 / worldPixelSize * groundScale;`
       : `let deltaX = deltaColumn * settings[settingsOffset + 1u];
   let deltaY = deltaRow * settings[settingsOffset + 2u];
   let distance = sqrt(deltaX * deltaX + deltaY * deltaY);
@@ -274,7 +282,7 @@ fn classifyTarget(index: u32) -> Classification {
   ${geometry}
   let maximumFrame = settings[settingsOffset + 3u];
   let maximumDistance = select(MAXIMUM_DISTANCE, min(maximumFrame, MAXIMUM_DISTANCE), maximumFrame > 0.0);
-  if (distance > maximumDistance) {
+  if (distance > maximumDistance${mercator ? ' || sphereDistance > MAXIMUM_DISTANCE' : ''}) {
     return Classification(OUT_OF_RANGE, notANumber);
   }
   if (!(distance > 0.0)) {
@@ -294,7 +302,9 @@ fn classifyTarget(index: u32) -> Classification {
   var code = VISIBLE;
   if (targetAngle < occluderAngle - tolerance) {
     code = HIDDEN;
-  } else if (abs(targetAngle - occluderAngle) < tolerance) {
+  } else if (targetAngle - occluderAngle < tolerance) {
+    // Not hidden, so the target is at or above the lower edge of the band: the band is
+    // [occluder - tolerance, occluder + tolerance), with no gap at its lower edge.
     code = MARGINAL;
   }
   let onSkyline = code != HIDDEN && targetAngle >= skylineAngle - settings[settingsOffset + 7u];

@@ -83,7 +83,9 @@ it('GPULinearReferencing great-circle A/B: 50k arcs x 100k points', async () => 
       radius: radius.importToGraph(graph),
       output: {
         lineIndices: importGraphBuffer(graph, 'lines', linesBuffer, 'uint32', POINT_COUNT),
-        status: {overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)}
+        status: {
+          candidateOverflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        }
       }
     })
   );

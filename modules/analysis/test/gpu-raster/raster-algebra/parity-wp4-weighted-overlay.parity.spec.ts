@@ -47,7 +47,7 @@ for (const scene of overlayCases) {
         maximumBreakCount: 4,
         output: {
           score: outputs.score.view,
-          outputValidity: outputs.outputValidity.view,
+          validity: outputs.outputValidity.view,
           scoreRange: outputs.scoreRange.view
         }
       })

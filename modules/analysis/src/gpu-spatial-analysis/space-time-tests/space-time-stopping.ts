@@ -12,7 +12,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLDispatchGate,
@@ -88,7 +88,7 @@ export function validateSpaceTimeStopping(
   if (!permutationCount) {
     throw new Error(`${id} stopAfterExceedances needs output.permutationCount`);
   }
-  validatePackedView(permutationCount, ['uint32'], `${id} output.permutationCount`);
+  validateSinglePackedView(permutationCount, ['uint32'], `${id} output.permutationCount`);
   if (permutationCount.length < 1) {
     throw new Error(`${id} output.permutationCount needs 1 row`);
   }

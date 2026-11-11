@@ -15,7 +15,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -225,7 +225,7 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
     const {timeBuckets, maximumNeighbors, maximumWindowLength, maximumReplicates, parameters} =
       props;
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     this.zones = props.positions.length;
     validateCapacity(id, 'zones', this.zones);
     validateCapacity(id, 'timeBuckets', timeBuckets);
@@ -251,11 +251,11 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
       GPU_EXPECTATION_BASED_SCAN_MAXIMUM_REPLICATES
     );
     const cells = this.zones * timeBuckets;
-    validatePackedView(props.cases, ['uint32'], `${id} cases`);
+    validateSinglePackedView(props.cases, ['uint32'], `${id} cases`);
     validateViewLength(id, 'cases', props.cases, cells);
-    validatePackedView(props.baseline, ['float32'], `${id} baseline`);
+    validateSinglePackedView(props.baseline, ['float32'], `${id} baseline`);
     validateViewLength(id, 'baseline', props.baseline, cells);
-    validatePackedView(parameters, ['uint32'], `${id} parameters`);
+    validateSinglePackedView(parameters, ['uint32'], `${id} parameters`);
     validateRequirement(
       id,
       parameters.length >= GPU_EXPECTATION_BASED_SCAN_PARAMETER_LENGTH,
@@ -282,21 +282,21 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
     );
     this.estimatedCommandNodeCount = 3 * this.batchCount + 7;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
-    validatePackedView(output.clusterZones, ['uint32'], `${id} clusterZones`);
+    validateSinglePackedView(output.clusterZones, ['uint32'], `${id} clusterZones`);
     validateViewLength(id, 'clusterZones', output.clusterZones, maximumNeighbors);
-    validatePackedView(output.clusterStatistics, ['float32'], `${id} clusterStatistics`);
+    validateSinglePackedView(output.clusterStatistics, ['float32'], `${id} clusterStatistics`);
     validateViewLength(
       id,
       'clusterStatistics',
       output.clusterStatistics,
       GPU_EXPECTATION_BASED_SCAN_STATISTIC_WORDS
     );
-    validatePackedView(output.statistics, ['float32'], `${id} statistics`);
+    validateSinglePackedView(output.statistics, ['float32'], `${id} statistics`);
     validateViewLength(id, 'statistics', output.statistics, maximumReplicates + 1);
-    validatePackedView(output.summary, ['uint32'], `${id} summary`);
+    validateSinglePackedView(output.summary, ['uint32'], `${id} summary`);
     validateViewLength(id, 'summary', output.summary, GPU_EXPECTATION_BASED_SCAN_SUMMARY_LENGTH);
     if (output.zoneStatistics) {
-      validatePackedView(output.zoneStatistics, ['float32'], `${id} zoneStatistics`);
+      validateSinglePackedView(output.zoneStatistics, ['float32'], `${id} zoneStatistics`);
       validateViewLength(id, 'zoneStatistics', output.zoneStatistics, this.zones);
     }
     validateGraphOutputsDisjointFromInputs(

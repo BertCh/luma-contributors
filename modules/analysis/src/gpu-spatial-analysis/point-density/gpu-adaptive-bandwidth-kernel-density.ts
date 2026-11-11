@@ -19,7 +19,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -241,31 +241,31 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
         minY <= maxY,
       'indexBounds must be finite and ordered'
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateRequirement(id, props.positions.length >= 1, 'needs at least one point');
     const pointCount = props.positions.length;
     if (props.weights) {
-      validatePackedView(props.weights, ['float32'], `${id} weights`);
+      validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
       validateRequirement(
         id,
         props.weights.length === pointCount,
         'weights length must equal positions length'
       );
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       props.parameters.length >= GPU_ADAPTIVE_BANDWIDTH_KERNEL_DENSITY_PARAMETER_LENGTH,
       `parameters must hold ${GPU_ADAPTIVE_BANDWIDTH_KERNEL_DENSITY_PARAMETER_LENGTH} float32 values`
     );
-    validatePackedView(props.output.values, ['float32'], `${id} output.values`);
+    validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
     validateRequirement(
       id,
       props.output.values.length >= this.cellCount,
       'output.values must hold grid.width * grid.height rows'
     );
     if (props.output.weightSum) {
-      validatePackedView(props.output.weightSum, ['float32'], `${id} output.weightSum`);
+      validateSinglePackedView(props.output.weightSum, ['float32'], `${id} output.weightSum`);
       validateRequirement(
         id,
         props.output.weightSum.length === 1,
@@ -275,7 +275,7 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
     for (const name of ['pointBandwidths', 'pilotDensities'] as const) {
       const view = props.output[name];
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         validateRequirement(
           id,
           view.length >= pointCount,

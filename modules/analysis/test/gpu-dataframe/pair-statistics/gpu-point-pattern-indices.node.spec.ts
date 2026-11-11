@@ -536,7 +536,10 @@ it('polygon quadrat oracle drops empty cells and uses unequal expected counts', 
   expect(result.quadratStatistics[4]).toBeCloseTo(chiSquare, 12);
 });
 
-// SHA-256 fingerprints verified against the pre-W-3 kernels from HEAD, using this fixture.
+// SHA-256 fingerprints verified against the pre-W-3 kernels from HEAD, using this fixture, and
+// taken again on 2026-11-11 when the float test took its shared name: renaming `isFiniteValue`
+// back to `isFiniteFloat` and restoring the two multi-line helper declarations reproduces the
+// earlier fingerprints exactly, so the kernel bodies are unchanged.
 it('legacy rectangle WGSL stays byte-identical', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -548,11 +551,11 @@ it('legacy rectangle WGSL stays byte-identical', () => {
     }
   });
   const expected = {
-    'legacy-nearest': '7a8e5399a613fcddf8a50920e7e61c36210595658d0f8bd0d53dc14edf7a0922',
-    'legacy-nearest-terms': '3fbb6d0525b0a93774d2917e48b1e624dcc6cdc241d5ac4bd1e7cfe29f14a0e6',
-    'legacy-clark-evans': '4d9acfe2aac6da75ea05fc9175105f49ad89a581fc0555905cc802f51a9f2d39',
-    'legacy-quadrat-counts': '2cf3bdad00e120eedee9b7c5aa8304e50a01cacd120b0984b675ba1137251f46',
-    'legacy-quadrat-statistics': 'fa7af12d83d405bff9a11e0a2becc2b141f229b4db66079e75d8f62056a52110'
+    'legacy-nearest': 'bf04848737ef23840aa506d6b334bd2593c7b395f31414351b1d8513c02bce4b',
+    'legacy-nearest-terms': 'eb3501fafdb1c1a9e977531e1ea301d6598dc3e6e8fac7a1588562247956712c',
+    'legacy-clark-evans': '8b3c888ea558c5ca4f945128c095affa921508e83af1f62f2491ac83f1bea030',
+    'legacy-quadrat-counts': 'aa73fad263b49392151b24143e3d97f36244feba63b964906b8e762a21b0c20b',
+    'legacy-quadrat-statistics': '5b70f4ecea17fd8501897f18687c563e3d7bd5f716dca511c171bd73e0fb9553'
   };
   const sources = getGPUCommandNodeKernelSources(
     new GPUPointPatternIndices(props).getCommandNodes(graph)

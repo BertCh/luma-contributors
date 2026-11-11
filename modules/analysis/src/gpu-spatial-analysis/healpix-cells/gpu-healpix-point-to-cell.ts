@@ -13,7 +13,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -104,21 +104,21 @@ export class GPUHealpixPointToCell implements GPUCommandNodeProducer {
       GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT
     );
     validateCapacity(id, 'order', props.order, 0, HEALPIX_MAXIMUM_ORDER);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     validateRequirement(id, rows >= 1, 'needs at least one row');
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       validateRequirement(id, props.mask.length === rows, 'mask length must equal the row count');
     }
-    validatePackedView(props.output.cells, ['uint32x2'], `${id} output.cells`);
+    validateSinglePackedView(props.output.cells, ['uint32x2'], `${id} output.cells`);
     validateRequirement(
       id,
       props.output.cells.length === rows,
       'output.cells length must equal the row count'
     );
     if (props.output.validity) {
-      validatePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
+      validateSinglePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
       validateRequirement(
         id,
         props.output.validity.length === rows,

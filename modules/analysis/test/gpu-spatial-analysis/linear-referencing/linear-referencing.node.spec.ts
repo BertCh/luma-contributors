@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {getGPUSphereRadius} from '../../../src/analysis-core/contracts/spatial-context';
 import {
@@ -43,7 +43,7 @@ function createReferencingProps(
     output: {
       measures: view(graph, 'float32', 8),
       sides: view(graph, 'sint32', 8),
-      status: {overflow: view(graph, 'uint32', 1)}
+      status: {candidateOverflow: view(graph, 'uint32', 1)}
     },
     ...overrides
   };
@@ -79,7 +79,9 @@ it('GPULinearReferencing composes the nearest-feature join and validates outputs
   expect(
     () =>
       new GPULinearReferencing(
-        createReferencingProps(graph, {output: {status: {overflow: view(graph, 'uint32', 1)}}})
+        createReferencingProps(graph, {
+          output: {status: {candidateOverflow: view(graph, 'uint32', 1)}}
+        })
       )
   ).toThrow(/at least one output/);
   expect(
@@ -88,7 +90,7 @@ it('GPULinearReferencing composes the nearest-feature join and validates outputs
         createReferencingProps(graph, {
           output: {
             measures: view(graph, 'float32', 3),
-            status: {overflow: view(graph, 'uint32', 1)}
+            status: {candidateOverflow: view(graph, 'uint32', 1)}
           }
         })
       )
@@ -99,7 +101,7 @@ it('GPULinearReferencing composes the nearest-feature join and validates outputs
         createReferencingProps(graph, {
           output: {
             vertexMeasures: view(graph, 'float32', 8),
-            status: {overflow: view(graph, 'uint32', 1)}
+            status: {candidateOverflow: view(graph, 'uint32', 1)}
           }
         })
       )
@@ -181,28 +183,37 @@ it('linear referencing selects planar or great-circle through spatialContext', (
   }
 });
 
-it('GPULinearReferencing writes requiredCount through a final copy node, with or without candidateCount', () => {
+it('GPULinearReferencing writes requiredCandidateCount in place, with no copy node', () => {
   for (const coordinateSpace of ['planar', 'longitude-latitude'] as const) {
-    for (const withCandidateCount of [false, true]) {
-      const graph = new GPUCommandGraph(createNullWebGPUDevice());
-      const requiredCount = view(graph, 'uint32', 1);
-      const nodes = new GPULinearReferencing(
-        createReferencingProps(graph, {
-          spatialContext:
-            coordinateSpace === 'planar'
-              ? undefined
-              : {coordinateSpace, metric: 'great-circle', units: 'meters'},
-          output: {
-            measures: view(graph, 'float32', 8),
-            status: {
-              overflow: view(graph, 'uint32', 1),
-              requiredCount,
-              ...(withCandidateCount ? {candidateCount: view(graph, 'uint32', 1)} : {})
-            }
-          }
-        })
-      ).getCommandNodes(graph);
-      expect(nodes[nodes.length - 1].id).toMatch(/-required-count$/);
-    }
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    const candidateOverflow = view(graph, 'uint32', 1);
+    const requiredCandidateCount = view(graph, 'uint32', 1);
+    const nodes = new GPULinearReferencing(
+      createReferencingProps(graph, {
+        spatialContext:
+          coordinateSpace === 'planar'
+            ? undefined
+            : {coordinateSpace, metric: 'great-circle', units: 'meters'},
+        output: {
+          measures: view(graph, 'float32', 8),
+          status: {candidateOverflow, requiredCandidateCount}
+        }
+      })
+    ).getCommandNodes(graph);
+    // The join (planar) or the segment table (great circle) writes both status words directly.
+    const writers = (target: GraphDataView) =>
+      nodes.filter(node =>
+        node.resources?.some(
+          resource =>
+            'buffer' in resource &&
+            resource.buffer === target &&
+            resource.usage === 'storage-read-write'
+        )
+      );
+    expect(writers(requiredCandidateCount).length, coordinateSpace).toBeGreaterThan(0);
+    expect(writers(candidateOverflow).length, coordinateSpace).toBeGreaterThan(0);
+    expect(
+      nodes.some(node => /^linear-referencing-(required-count|candidate-overflow)$/.test(node.id))
+    ).toBe(false);
   }
 });

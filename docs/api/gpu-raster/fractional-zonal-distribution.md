@@ -18,7 +18,9 @@ The input buffers and all outputs belong to the caller.
 | `coverage` | The complete existing fractional-coverage output object: `zoneIds`, `cellIds`, `fractions`, `zoneValidity`, and `status.count`, `status.requiredCount`, `status.overflow`. Tuple capacity is 1 through 65,536; the active count may be zero. |
 | `probabilities` | A float32 view of 1 through 32 probabilities. Values may change between encodings. Each must be finite and in `[0,1]`; invalid probabilities yield NaN and zero quantile validity. |
 | `observationWeights` | Optional packed float32 cell column. Finite nonnegative reliability weights; zero excludes a cell from distribution statistics but retains its valid area. Negative/nonfinite weights invalidate the zone. Default one. |
-| `cellAreas` | Optional packed float32 cell column. Positive finite areas supplied by the caller, including geographic/geodesic areas. Default absolute planar affine determinant. Areas never silently become statistical weights. |
+| `cellAreas` | Optional packed float32 cell column. Positive finite areas supplied by the caller, including geographic/geodesic areas. Default absolute planar affine determinant, or ground area with `cellSizeMode`. Areas never silently become statistical weights. |
+| `cellSizeMode` | `'uniform'` (default, planar coordinate units), `'geographic'` (degrees) or `'web-mercator'` (EPSG:3857 meters). The latter two multiply the default cell area by the WGS84 ground area per world area of the cell's row (row edges evaluated at the row center), so `coveredArea` and `validArea` are ground square meters. The row edges are read from `parameters` (slots 1 and 5) on every encoding when it is given, else baked from `grid.affine`. Needs an axis-aligned grid; rejected together with `cellAreas`. The mode is compile-time. |
+| `parameters` | Optional. The per-frame georeference view given to `GPURasterFractionalCoverage` (`getGPURasterFractionalCoverageParameterValues`). Without `cellAreas`, the cell area is then read from it on every encoding as the absolute determinant, so the area outputs follow a georeference repacked for another cell size. With neither `cellAreas` nor `parameters` the cell area is the determinant of `grid.affine` fixed at compile time. |
 | `quantileMethod` | `'exactextract'` (default) distinct-value interpolation, or `'inverse-cdf'` without interpolation. Both sort the exact observed float32 values; neither bins a continuous range. |
 | `output` | Caller-owned, nonaliasing buffers described below. |
 
@@ -30,7 +32,8 @@ all zones because its intended destination cannot be recovered.
 
 The input band, fractions, IDs, probabilities, counts, validity and overflow words are read again on
 every encoding. There is no prepared cache to invalidate. Sizes, calibration and the grid affine
-are construction-time settings.
+are construction-time settings, except the cell area when `parameters` is supplied (see above):
+pass it whenever the coverage georeference is rewritten between encodings.
 
 ## Outputs and definitions
 

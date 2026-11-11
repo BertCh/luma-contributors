@@ -28,6 +28,8 @@ async function run(
     populations: Float32Array;
     offsets: number[];
     neighbors: number[];
+    /** Weight per slot; every slot has weight 1 when omitted. */
+    weights?: number[];
     mask?: Uint32Array;
   }
 ) {
@@ -40,7 +42,10 @@ async function run(
     createInputBuffer(device, input.populations),
     createInputBuffer(device, Uint32Array.from(input.offsets)),
     createInputBuffer(device, neighbors),
-    createInputBuffer(device, new Float32Array(slots).fill(1)),
+    createInputBuffer(
+      device,
+      input.weights ? Float32Array.from(input.weights) : new Float32Array(slots).fill(1)
+    ),
     input.mask && createInputBuffer(device, input.mask)
   ];
   const outputs = {
@@ -182,4 +187,28 @@ it('GPUSpatialEmpiricalBayesRates clamps local prior variance like esda on low-d
       1e-6 + 2e-4 * expected
     );
   }
+});
+
+// spatial-statistics-05: neighbors are the active slots of the shared rule (positive weight,
+// another row). A slot stored with weight 0 used to be pooled into the neighborhood.
+it('GPUSpatialEmpiricalBayesRates does not pool a zero-weight slot', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Row 0 lists row 1 (weight 1) and row 2 (weight 0); rows 1 and 2 list nothing.
+  // Row 0: members {0, 1}: E = 1 + 3 = 4, B = 10 + 10 = 20, rate 0.2. Pooling row 2 as well gave
+  // (1 + 3 + 100) / 30 = 3.4667.
+  const result = await run(device, {
+    events: Float32Array.from([1, 3, 100]),
+    populations: Float32Array.from([10, 10, 10]),
+    offsets: [0, 2, 2, 2],
+    neighbors: [1, 2],
+    weights: [1, 0]
+  });
+  expect(result.spatialRate[0]).toBeCloseTo(0.2, 6);
+  expect(result.priorMean[0]).toBeCloseTo(0.2, 6);
+  // s2 = (10 (0.1 - 0.2)^2 + 10 (0.3 - 0.2)^2) / 20 = 0.01; a = 0.01 - 0.2 / (20 / 2) = -0.01,
+  // clamped to 0, so the smoothed rate is the prior mean.
+  expect(result.priorVariance[0]).toBe(0);
+  expect(result.smoothed[0]).toBeCloseTo(0.2, 6);
+  expect(result.spatialRate[2]).toBeCloseTo(10, 5);
 });

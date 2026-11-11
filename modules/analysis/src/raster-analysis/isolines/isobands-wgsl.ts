@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {ISOLINES_SADDLE_WGSL} from './isolines-utils';
+
 /**
  * Shared WGSL for the {@link GPUIsobands} count and scatter kernels. It implements the "Band
  * regions" construction of the marching-squares definition: per cell and band, a combinatorial
@@ -22,7 +24,7 @@
  * @internal
  */
 export function getIsobandsCellWGSL(hasValidity: boolean): string {
-  return /* wgsl */ `
+  return /* wgsl */ `${ISOLINES_SADDLE_WGSL}
 const CELL_COLUMNS: u32 = WIDTH - 1u;
 const NO_EVENT: u32 = 0xffffffffu;
 
@@ -137,7 +139,8 @@ fn isEdgeCrossed(mask: u32, edge: u32) -> bool {
 }
 
 // Other endpoint of the level segment through the crossing on 'edge'. Saddles (high corners on one
-// diagonal) pair edges by the centre rule: joined cuts off the low corners, separated the high.
+// diagonal) pair edges by the bilinear saddle rule (isSaddleJoined): joined cuts off the low
+// corners, separated the high.
 fn getPartnerEdge(level: u32, edge: u32) -> u32 {
   let mask = bandMasks[level];
   if (mask == 5u || mask == 10u) {
@@ -299,9 +302,9 @@ fn setupBand(band: u32, breakCount: u32) -> bool {
   bandIsSliver = isSliverBand(cornerValues);
   bandMasks[0] = lowMask;
   bandMasks[1] = highMask;
-  let centre = ((cornerValues[0] + cornerValues[1]) + (cornerValues[2] + cornerValues[3])) * 0.25;
-  bandJoined[0] = centre >= bandLow;
-  bandJoined[1] = centre >= bandHigh;
+  let saddleCorners = vec4<f32>(cornerValues[0], cornerValues[1], cornerValues[2], cornerValues[3]);
+  bandJoined[0] = isSaddleJoined(saddleCorners, bandLow);
+  bandJoined[1] = isSaddleJoined(saddleCorners, bandHigh);
   return true;
 }
 

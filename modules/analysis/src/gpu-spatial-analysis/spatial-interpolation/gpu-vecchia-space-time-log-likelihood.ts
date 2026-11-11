@@ -75,6 +75,8 @@ export type GPUVecchiaSpaceTimeLogLikelihoodProps = {
  * `SpaceTimeVariogramModel` covariance of `GPUSpaceTimeKriging`. A site's conditioning set comes
  * straight from `neighborhoods` (no search), and it solves the same equilibrated small system as
  * kriging; the likelihood terms and sum are the shared spatial ones, with the same failure rule.
+ * A site with no usable conditioning row (an empty set, or every listed row excluded or
+ * non-finite) contributes its marginal term.
  *
  * Bindings are limited to the core eight storage buffers per stage by reading site positions and
  * times directly; there is no separate query view.
@@ -189,7 +191,16 @@ for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + i
   rows[retained] = sample;
   retained++;
 }
-if (retained == 0u) { return; }
+if (retained == 0u) {
+  // No usable conditioning row (an empty set, or every listed row excluded): the site is marginal,
+  // as in GPUVecchiaFisherScoring. Mean 0, variance C(0, 0), no system solved.
+  let marginalVariance = spaceTimeCovariance(0.0, 0.0, true, true);
+  if (isFiniteValue(marginalVariance)) {
+    write_results(index, vec4<f32>(0.0, marginalVariance, 1.0, 0.0));
+    statuses[statusesOffset + index] = 0u;
+  }
+  return;
+}
 var crossValues: array<f32, ${neighborCount}>;
 for (var row = 0u; row < retained; row++) {
   let position = read_positions(rows[row]);

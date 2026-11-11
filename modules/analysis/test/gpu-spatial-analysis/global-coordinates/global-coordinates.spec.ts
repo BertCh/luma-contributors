@@ -109,7 +109,7 @@ async function runDatum(
         'float32x3',
         options.samples ?? [0.1, 0.2, -10, 0.2, 0.2, -20, 0.1, 0.3, -30, 0.2, 0.3, -40]
       ),
-      validity: fixture.input('uint32', options.validity ?? [1, 1, 1, 1]),
+      mask: fixture.input('uint32', options.validity ?? [1, 1, 1, 1]),
       grids: [{width: 2, height: 2, sampleOffset: 0, origin: [0, 0], spacing: [1, 1]}],
       operation: options.operation ?? 'combined',
       direction: options.direction,
@@ -473,16 +473,7 @@ it('datum grid selection honors priority and signed height units without nodata 
           ...Array(4).fill([0.1, 0.2, -10]).flat(),
           ...Array(4).fill([0.3, 0.4, -20]).flat()
         ]),
-        validity: fixture.input('uint32', [
-          firstValid,
-          firstValid,
-          firstValid,
-          firstValid,
-          1,
-          1,
-          1,
-          1
-        ]),
+        mask: fixture.input('uint32', [firstValid, firstValid, firstValid, firstValid, 1, 1, 1, 1]),
         grids: [
           {width: 2, height: 2, sampleOffset: 0, origin: [0, 0], spacing: [1, 1]},
           {width: 2, height: 2, sampleOffset: 4, origin: [0, 0], spacing: [1, 1]}
@@ -654,7 +645,7 @@ it('datum transforms preserve small shifts and inverse residuals using split coo
   const validity = fixture.input('uint32', [1, 1, 1, 1]);
   const common = {
     samples,
-    validity,
+    mask: validity,
     grids: [
       {
         width: 2,
@@ -717,6 +708,62 @@ it('datum transforms preserve small shifts and inverse residuals using split coo
   }
 });
 
+// Math correctness review 2026-11-10, geometry-measures-05. With the default tolerance the
+// inverse used to test the residual before its first update. That residual is the grid shift
+// itself, so any shift under the old default of 1e-5 degrees (1.1 m) was reported as converged
+// with the input returned unchanged. Expected values are closed forms:
+// - a constant shift s inverts to q - s;
+// - a shift a + b (x - x0) that is linear in longitude inverts to q - (a + b (q - x0)) / (1 + b):
+//   with a = 2e-6, b = 4e-6 per degree and q - x0 = 0.5, the offset is -4e-6 / 1.000004.
+it('datum inverse applies shifts smaller than a meter with the default tolerance', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = makeFixture(device);
+  const high = fixture.output('float32x3', 2);
+  const low = fixture.output('float32x3', 2);
+  const status = fixture.output('uint32', 2);
+  const constantShift = [5e-6, -3e-6, 0];
+  fixture.graph.add(
+    new GPUDatumGridTransform({
+      samples: fixture.input('float32x3', [
+        ...constantShift,
+        ...constantShift,
+        ...constantShift,
+        ...constantShift,
+        ...[2e-6, 0, 0],
+        ...[6e-6, 0, 0],
+        ...[2e-6, 0, 0],
+        ...[6e-6, 0, 0]
+      ]),
+      mask: fixture.input('uint32', [1, 1, 1, 1, 1, 1, 1, 1]),
+      grids: [
+        {width: 2, height: 2, sampleOffset: 0, origin: [10, 20], spacing: [1, 1]},
+        {width: 2, height: 2, sampleOffset: 4, origin: [30, 20], spacing: [1, 1]}
+      ],
+      operation: 'horizontal',
+      direction: 'inverse',
+      positions: fixture.input('float32x3', [10.5, 20.5, 0, 30.5, 20.5, 0]),
+      positionsLow: fixture.input('float32x3', [0, 0, 0, 0, 0, 0]),
+      output: {positions: high.view, positionsLow: low.view, status: status.view}
+    })
+  );
+  const compiled = fixture.graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(status.buffer, 2)).toEqual([0, 0]);
+    expect(await readFloat32(high.buffer, 6)).toEqual([10.5, 20.5, 0, 30.5, 20.5, 0]);
+    const lower = await readFloat32(low.buffer, 6);
+    expect(Math.abs(lower[0] - -5e-6)).toBeLessThan(1e-11);
+    expect(Math.abs(lower[1] - 3e-6)).toBeLessThan(1e-11);
+    // One update leaves a residual of b * shift = 1.6e-11 degrees, inside the default tolerance.
+    expect(Math.abs(lower[3] - -4e-6 / 1.000004)).toBeLessThan(1e-10);
+    expect(lower[4]).toBe(0);
+  } finally {
+    compiled.destroy();
+    fixture.destroy();
+  }
+});
+
 it('datum transforms reject sub-ulp latitude excursions at both poles', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -732,7 +779,7 @@ it('datum transforms reject sub-ulp latitude excursions at both poles', async ()
           positions: fixture.input('float32x3', [0, pole, 0, 0, pole, 0, 0, pole, 0]),
           positionsLow: fixture.input('float32x3', [0, residual, 0, 0, -residual, 0, 0, 0, 0]),
           samples: fixture.input('float32x3', Array.from({length: 4}, () => [0, shift, 0]).flat()),
-          validity: fixture.input('uint32', [1, 1, 1, 1]),
+          mask: fixture.input('uint32', [1, 1, 1, 1]),
           grids: [{width: 2, height: 2, sampleOffset: 0, origin: [-1, -90], spacing: [2, 180]}],
           operation: 'horizontal',
           output: {positions: high.view, positionsLow: low.view, status: status.view}
@@ -847,13 +894,12 @@ it('spherical general overlay matches direct S2 nonconvex and holed Boolean area
             positions: positions.view,
             ringOffsets: ringOffsets.view,
             polygonOffsets: polygonOffsets.view,
-            featureOffsets: featureOffsets.view,
-            sourceIds: fixture.output('uint32', 16).view
+            featureOffsets: featureOffsets.view
           },
           complement: complement.view,
           status: {
             count: count.view,
-            requiredCount: required.view,
+            requiredRingCount: required.view,
             overflow: overflow.view,
             candidateOverflow: candidate.view
           },
@@ -1084,7 +1130,7 @@ it('split horizontal grid priority, inverse and bounds agree with direct PROJ hg
           'float32x3',
           datumReference.grids.flatMap(grid => grid.samples)
         ),
-        validity: fixture.input('uint32', new Array(sampleOffset).fill(1)),
+        mask: fixture.input('uint32', new Array(sampleOffset).fill(1)),
         grids,
         operation: 'horizontal',
         direction,

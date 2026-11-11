@@ -16,11 +16,15 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  GET_NAN_WGSL,
+  IS_FINITE_BITS_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 import {getCholeskyWGSL} from './spatial-regression-solve';
 import {
   getRegressionTileLayout,
@@ -61,7 +65,7 @@ export type GPUInstrumentalVariablesCovarianceProps = {
  * Inputs contain only estimation rows, with no automatic deletion/imputation. This is a covariance
  * stage, never a new estimator or an OLS sandwich applied incorrectly to endogenous regressors.
  *
- * Every row sum is a row-tile reduction with a compensated, fixed-order tile merge (the pattern of
+ * Every row sum is a row-tile reduction with a fixed-order pairwise tile merge (the pattern of
  * `GPUOrdinaryLeastSquares`): the column means, the centered moments H'H, H'Z and diag(Z'Z), and
  * the meat matrix. One invocation solves the small projection system from the moments. The HAC
  * kernel is applied row-parallel over its CSR neighbors (one invocation per row smooths the
@@ -90,7 +94,7 @@ export class GPUInstrumentalVariablesCovariance implements GPUCommandNodeProduce
       [props.output.covariance, 'float32', (props.coefficientCount + 1) ** 2],
       [props.output.status, 'uint32', 1]
     ] as const) {
-      validatePackedView(view, [format], this.id);
+      validateSinglePackedView(view, [format], this.id);
       if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
     }
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
@@ -313,7 +317,7 @@ for (var instrument = 0u; instrument < ${instruments}u; instrument++) { var righ
  choleskySolve_${columns}(&normal, &right);
  for (var column = 0u; column < ${columns}u; column++) { projection[projectionOffset + column * ${instruments}u + instrument] = right[column] * designScale[column] * instrumentScale[instrument]; }
 }`,
-        `${getCholeskyWGSL(instruments)}\n${columns === instruments ? '' : getCholeskyWGSL(columns)}`
+        `${IS_FINITE_VALUE_WGSL}\n${getCholeskyWGSL(instruments)}\n${columns === instruments ? '' : getCholeskyWGSL(columns)}`
       ),
       node(
         'scores',

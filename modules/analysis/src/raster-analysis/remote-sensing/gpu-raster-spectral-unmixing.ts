@@ -29,7 +29,7 @@ export type GPURasterSpectralUnmixingProps = {
   /** Pixel-major spectra and endmember-major spectra, respectively. NaN bands are omitted. */
   values: GraphDataView<'float32'>;
   endmembers: GraphDataView<'float32'>;
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   constraint?: 'unconstrained' | 'nonnegative' | 'simplex';
   maximumIterations?: number;
   tolerance?: number;
@@ -118,8 +118,8 @@ export class GPURasterSpectralUnmixing implements GPUCommandNodeProducer {
     );
     validateRequirement(
       this.id,
-      !props.validity || props.validity.length >= props.cellCount * props.bandCount,
-      'validity must hold cellCount times bandCount entries'
+      !props.mask || props.mask.length >= props.cellCount * props.bandCount,
+      'mask must hold cellCount times bandCount entries'
     );
     validateRequirement(
       this.id,
@@ -135,7 +135,7 @@ export class GPURasterSpectralUnmixing implements GPUCommandNodeProducer {
     );
     validateRasterViews(
       this.id,
-      [props.values, props.endmembers, ...(props.validity ? [props.validity] : [])],
+      [props.values, props.endmembers, ...(props.mask ? [props.mask] : [])],
       Object.values(props.output)
     );
   }
@@ -149,7 +149,7 @@ export class GPURasterSpectralUnmixing implements GPUCommandNodeProducer {
     validateRasterGraph(
       id,
       graph,
-      [props.values, props.endmembers, ...(props.validity ? [props.validity] : [])],
+      [props.values, props.endmembers, ...(props.mask ? [props.mask] : [])],
       Object.values(props.output)
     );
     return [
@@ -161,7 +161,7 @@ export class GPURasterSpectralUnmixing implements GPUCommandNodeProducer {
         bindings: [
           rasterBinding('values', props.values),
           rasterBinding('endmembers', props.endmembers),
-          ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+          ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
           ...Object.entries(props.output).map(([name, view]) => rasterBinding(name, view, true))
         ],
         declarations:
@@ -169,7 +169,7 @@ export class GPURasterSpectralUnmixing implements GPUCommandNodeProducer {
         body: `var design: array<f32, ${bands * members}>; var response: array<f32, ${bands}>; var coefficients: array<f32, ${members}>; var count = 0u;
 for (var band = 0u; band < ${bands}u; band++) {
   let source = index * ${bands}u + band; let value = values[valuesOffset + source];
-  if (!finite(value) ${props.validity ? '|| validity[validityOffset + source] == 0u' : ''}) { continue; }
+  if (!finite(value) ${props.mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
   var valid = true;
   for (var member = 0u; member < ${members}u; member++) { valid = valid && finite(endmembers[endmembersOffset + member * ${bands}u + band]); }
   if (!valid) { continue; }

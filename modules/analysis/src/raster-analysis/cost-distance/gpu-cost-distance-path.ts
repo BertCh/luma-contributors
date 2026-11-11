@@ -15,7 +15,7 @@ import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterBuffersDistinct, validateRasterGrid} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -104,7 +104,7 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
       ['output.status.iterationLimitReached', iterationLimitReached]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     if (props.backLinks.length !== cellCount) {

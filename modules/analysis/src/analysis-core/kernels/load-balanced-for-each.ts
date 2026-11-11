@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {validateRequirement} from './gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from './wgsl-kernel-nodes';
 
 /**
@@ -145,7 +145,12 @@ export function createLoadBalancedSegmentSumNodes<Parameters>(
   const scalarType = accumulatorType.includes('f32') ? 'f32' : 'u32';
   const rowCount = props.offsets.length - 1;
   // The walk and the fixup write `(row * laneCount + lane) * C + c` for every row and lane.
-  assert(props.output.length >= rowCount * shape.laneCount * componentCount);
+  const requiredOutputLength = rowCount * shape.laneCount * componentCount;
+  validateRequirement(
+    props.id,
+    props.output.length >= requiredOutputLength,
+    `output must hold at least ${requiredOutputLength} elements (rows x lanes x components), got ${props.output.length}`
+  );
   const carryStride = 1 + componentCount;
   const carries = createTransientView(
     graph,

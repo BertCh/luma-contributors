@@ -13,7 +13,8 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUClassifiedValuesPort} from '../../analysis-core/contracts/index';
 
@@ -21,6 +22,20 @@ const OPERATION = 'GPUClassAssignment';
 
 /** Class value written for a masked row or a NaN value. */
 export const GPU_CLASS_ASSIGNMENT_NO_CLASS = 0xffffffff;
+
+/**
+ * Which end of a class interval is closed, that is, which class a value equal to an inner edge
+ * belongs to. It depends on what the edges are:
+ * - `'left'`: classes are `[e[j], e[j + 1])`. An edge is the lower edge of the class above it, so a
+ *   value equal to an edge belongs to the upper class. Use it for lower edges: the
+ *   `'natural-breaks'` edges of `GPUClassBreaks` (each is the smallest value of its class), d3
+ *   threshold and quantile scales (`bisectRight`), and to reproduce `GPUClassBreaks.classCounts`.
+ * - `'right'`: classes are `(e[j], e[j + 1]]`. An edge is the upper bound of the class below it, so
+ *   a value equal to an edge belongs to the lower class, and the minimum belongs to the first
+ *   class. Use it for upper-bound bins: mapclassify classifiers and giddy, which classifies with
+ *   them (`numpy.digitize(values, bins, right=True)`).
+ */
+export type GPUClassIntervalClosure = 'left' | 'right';
 
 /**
  * Properties for {@link GPUClassAssignment}.
@@ -44,15 +59,32 @@ export type GPUClassAssignmentProps = {
   classCount: GraphDataView<'uint32'>;
   /** Optional per-row selection (same length as `values`): zero rows get {@link GPU_CLASS_ASSIGNMENT_NO_CLASS}. */
   mask?: GraphDataView<'uint32'>;
+  /**
+   * Compile-time side on which class intervals are closed, see {@link GPUClassIntervalClosure}.
+   * Defaults to `'left'` (lower edges, the rule of `GPUClassBreaks.classCounts`). Pass `'right'`
+   * when the edges are upper-bound bins and the classes must equal mapclassify's or giddy's.
+   */
+  intervalClosure?: GPUClassIntervalClosure;
   /** Caller-owned class per row, `0..k-1`. */
   output: GraphDataView<'uint32'>;
 };
 
 /**
- * Assigns each row of a column the class of the shared breaks: the number of inner edges
- * `e[1..k-1]` that are less than or equal to the value, clamped to `k - 1`. This is the class rule
- * of `GPUClassBreaks.classCounts` (infinities clamp to the end classes). NaN and masked rows get
- * {@link GPU_CLASS_ASSIGNMENT_NO_CLASS}. When `k` is 0 every row gets that value.
+ * Assigns each row of a column the class of the shared breaks, clamped to `0..k-1` (infinities
+ * clamp to the end classes). NaN and masked rows get {@link GPU_CLASS_ASSIGNMENT_NO_CLASS}. When
+ * `k` is 0 every row gets that value.
+ *
+ * The class is a count of inner edges `e[1..k-1]`, and `intervalClosure` decides what happens to
+ * a value equal to an edge:
+ * - `'left'` (default): the number of inner edges less than or equal to the value, so the value
+ *   goes to the upper class. This is the class rule of `GPUClassBreaks.classCounts` and of d3
+ *   `bisectRight`, and the right one for lower edges such as `'natural-breaks'`.
+ * - `'right'`: the number of inner edges strictly less than the value, so the value stays in the
+ *   lower class. This is the rule of mapclassify (`x <= upper bound`) and therefore of giddy.
+ *
+ * The two differ only for rows exactly equal to an inner edge. Quantile edges land exactly on data
+ * values whenever the data are tied at the quantile (rounded rates) or the quantile position is a
+ * whole number, so with `'quantile'` breaks pass `'right'` to count the transitions giddy counts.
  *
  * Running one `GPUClassBreaks` over the pooled column of all periods and assigning every period
  * with these breaks keeps a single legend across a time slider, as giddy's pooled classification
@@ -77,8 +109,14 @@ export class GPUClassAssignment implements GPUCommandNodeProducer {
       mask: props.mask,
       classCount: props.classCount
     };
-    validatePackedView(props.values, ['float32'], `${id} values`);
-    validatePackedView(props.breaks, ['float32'], `${id} breaks`);
+    const intervalClosure = props.intervalClosure ?? 'left';
+    validateRequirement(
+      id,
+      intervalClosure === 'left' || intervalClosure === 'right',
+      "intervalClosure must be 'left' or 'right'"
+    );
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.breaks, ['float32'], `${id} breaks`);
     validatePackedUint32View(props.classCount, `${id} classCount`);
     validatePackedUint32View(props.output, `${id} output`);
     if (props.classCount.length < 1) {
@@ -110,10 +148,16 @@ export class GPUClassAssignment implements GPUCommandNodeProducer {
     const {id, props} = this;
     const {values, breaks, classCount, mask, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [values, breaks, classCount, mask, output]);
+    // 'left': an edge at or below the value is below it. 'right': only an edge strictly below it.
+    const isRightClosed = props.intervalClosure === 'right';
+    const edgeIsBelowWGSL = isRightClosed
+      ? 'breaks[breaksOffset + edge] < value'
+      : 'breaks[breaksOffset + edge] <= value';
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-assign`,
         operation: OPERATION,
+        ...(isRightClosed ? {variant: 'right-closed'} : {}),
         bindings: [
           {name: 'values', view: values, type: 'f32', access: 'read'},
           {name: 'breaks', view: breaks, type: 'f32', access: 'read'},
@@ -133,7 +177,7 @@ export class GPUClassAssignment implements GPUCommandNodeProducer {
   if (count > 0u && !isNaN && ${mask ? 'mask[maskOffset + index] != 0u' : 'true'}) {
     var below = 0u;
     for (var edge = 1u; edge < count; edge++) {
-      if (breaks[breaksOffset + edge] <= value) {
+      if (${edgeIsBelowWGSL}) {
         below++;
       }
     }

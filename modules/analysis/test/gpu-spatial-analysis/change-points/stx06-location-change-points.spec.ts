@@ -180,6 +180,75 @@ describe('GPULocationChangePoints against the binary64 reference', () => {
   }
 });
 
+describe('GPULocationChangePoints variance costs do not depend on the unit of the values', () => {
+  // Math review point-process-clustering-01. 60 slices alternating +-1 for 30 slices, then +-5,
+  // times a unit. About the series mean (0) the first half has variance exactly unit^2 and the
+  // second exactly 25 unit^2, in every sub-segment of even length, so by hand:
+  //   one segment:  60 (ln(2 pi) + ln(13 unit^2) + 1)
+  //   split at 30:  60 (ln(2 pi) + 1) + 30 ln(unit^2) + 30 ln(25 unit^2) + penalty
+  // The split wins by 60 ln 13 - 30 ln 25 - penalty = 57.3 - penalty, and no further split of a
+  // half can gain the penalty back. The partition must not depend on the unit; the old kernel
+  // clamped every segment variance to 1e-11 in data units and found no change point at 1e-6.
+  const penalty = 2 * Math.log(60);
+  const pattern = (unit: number) =>
+    Float32Array.from(
+      {length: 60},
+      (_, slice) => unit * (slice % 2 === 0 ? 1 : -1) * (slice < 30 ? 1 : 5)
+    );
+  for (const cost of ['variance', 'mean-variance'] as const) {
+    it(`${cost} finds slice 30 in units of 1, 1e-3, 1e-6 and 1e-7`, async () => {
+      const units = [1, 1e-3, 1e-6, 1e-7];
+      const result = await runChangePoints({
+        rows: units.map(pattern),
+        layout: 'cell-major',
+        cost,
+        penalty,
+        minimumSegmentLength: 2,
+        maximumChangePoints: 4
+      });
+      if (!result.count) return;
+      units.forEach((unit, cell) => {
+        expect(result.count[cell], `unit ${unit}`).toBe(1);
+        expect(result.points[cell * 4], `unit ${unit}`).toBe(30);
+        const expectedCost =
+          60 * (Math.log(2 * Math.PI) + 1) +
+          30 * Math.log(unit * unit) +
+          30 * Math.log(25 * unit * unit) +
+          penalty;
+        expect(Math.abs(result.cost[cell] - expectedCost), `unit ${unit}`).toBeLessThan(
+          2e-3 * Math.abs(expectedCost)
+        );
+      });
+    });
+  }
+
+  it('keeps a quiet half that a plain float32 prefix sum would lose', async () => {
+    // 512 slices: +-1000 for 256 slices, then +-1. Standardized, the squares are 2 and 2e-6, so
+    // after the loud half the prefix of squares is 512 and its last place is 6e-5: a plain float32
+    // prefix sum does not move for any quiet slice and the quiet variance reads as 0. By hand the
+    // optimum is one change at 256 with
+    //   512 (ln(2 pi) + 1) + 256 ln(1e6) + 256 ln(1) + penalty.
+    const loudAndQuiet = Float32Array.from(
+      {length: 512},
+      (_, slice) => (slice % 2 === 0 ? 1 : -1) * (slice < 256 ? 1000 : 1)
+    );
+    const quietPenalty = 2 * Math.log(512);
+    const result = await runChangePoints({
+      rows: [loudAndQuiet],
+      layout: 'cell-major',
+      cost: 'variance',
+      penalty: quietPenalty,
+      minimumSegmentLength: 2,
+      maximumChangePoints: 4
+    });
+    if (!result.count) return;
+    expect(result.count[0]).toBe(1);
+    expect(result.points[0]).toBe(256);
+    const expectedCost = 512 * (Math.log(2 * Math.PI) + 1) + 256 * Math.log(1e6) + quietPenalty;
+    expect(Math.abs(result.cost[0] - expectedCost)).toBeLessThan(2e-3 * expectedCost);
+  });
+});
+
 describe('GPULocationChangePoints behavior', () => {
   it('keeps the earliest change points and reports overflow past the capacity', async () => {
     const values = new Float32Array(40);

@@ -17,7 +17,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCapacity,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {GPUGeometryMeasures} from '../geometry-measures/index';
@@ -213,12 +213,12 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
     for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
-      validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(props[name], ['uint32'], `${id} ${name}`);
       if (props[name].length < 2) {
         throw new Error(`${id} ${name} must contain at least two rows`);
       }
@@ -252,7 +252,7 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
           (declaresLargeFeature ||
             props.positions.length >=
               GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_AVERAGE_VERTICES * this.featureCount)));
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH} float32 values`
@@ -263,7 +263,7 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
       throw new Error(`${id} requires at least one output column`);
     }
     for (const [name, view] of columns) {
-      validatePackedView(
+      validateSinglePackedView(
         view as GraphDataView,
         name === 'clockwise' || name === 'sliver' ? ['uint32'] : ['float32'],
         `${id} output.${name}`

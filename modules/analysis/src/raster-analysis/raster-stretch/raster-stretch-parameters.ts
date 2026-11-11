@@ -46,8 +46,11 @@ export type GPURasterStretchSettings = {
    */
   domain?: 'auto' | readonly [number, number];
   /**
-   * `'linear'` (default) maps the domain to `[0, 1]`, `'percentile'` maps the `percentiles` of the
-   * histogram, `'equalize'` maps through the histogram CDF.
+   * `'linear'` (default) maps the domain to `[0, 1]`. `'percentile'` maps the `percentiles` of the
+   * histogram, each taken as the centre of the bin that holds order statistic `floor((N - 1) * p)`
+   * (the rule of the published `GPURasterGlobalPercentile`). `'equalize'` maps through the
+   * histogram CDF as `(cdf[bin] - cdfFirst) / (total - cdfFirst)` (the rule of the published
+   * `GPURasterContrast`).
    */
   mode?: GPURasterStretchMode;
   /** Percentile mode: `[low, high]` in percent, `0 <= low <= high <= 100`. Defaults to `[2, 98]`. */

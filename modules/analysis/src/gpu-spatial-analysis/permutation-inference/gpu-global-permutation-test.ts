@@ -22,7 +22,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPUInferenceAlternative,
@@ -409,7 +409,7 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       validatePackedUint32View(output.status.invalidCount, `${id} output.status.invalidCount`);
       validateCapacity(id, 'output.status.invalidCount length', output.status.invalidCount.length);
     }
-    validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
     validateCapacity(
       id,
       'output.summary length',
@@ -417,7 +417,7 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       GPU_GLOBAL_PERMUTATION_SUMMARY.length
     );
     if (output.referenceDistribution) {
-      validatePackedView(
+      validateSinglePackedView(
         output.referenceDistribution,
         ['float32'],
         `${id} output.referenceDistribution`
@@ -1077,7 +1077,7 @@ fn reduceCount(local: u32, value: u32) -> u32 {
     results[resultsOffset + ${R.simulatedMean}u] = select(mean, getQuietNaN(2u), invalidInput);
     results[resultsOffset + ${R.simulatedStandardDeviation}u] = select(standardDeviation, getQuietNaN(3u), invalidInput);
     results[resultsOffset + ${R.zSimulated}u] = select(getQuietNaN(1u), zSimulated, validZ && tested);
-    results[resultsOffset + ${R.pZSimulated}u] = select(getQuietNaN(1u), 0.5 * getTwoSidedPValue(zSimulated), validZ && tested);
+    results[resultsOffset + ${R.pZSimulated}u] = select(getQuietNaN(1u), max(0.5 * getTwoSidedPValue(zSimulated), ANALYTIC_P_VALUE_FLOOR), validZ && tested);
     results[resultsOffset + ${R.minimum}u] = select(getQuietNaN(4u), minimum, permutations > 0u && !invalidInput);
     results[resultsOffset + ${R.maximum}u] = select(getQuietNaN(4u), maximum, permutations > 0u && !invalidInput);
     results[resultsOffset + ${R.islandCount}u] = f32(islandCount[islandCountOffset]);

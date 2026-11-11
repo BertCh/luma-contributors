@@ -93,8 +93,18 @@ zone/category/tuple scan. These are bounded experimental workloads, not measured
 claims. Category, coverage and area calculations use float32 support sums; tie decisions apply
 to these sums. No tolerance merges nearly equal categories.
 
-Areas are squared coordinate units from the affine determinant. Geographic degree grids do not
-produce square meters. Missing area describes nodata inside the supplied raster footprint; it
+Areas are squared coordinate units from the affine determinant. By default that is the
+determinant of `grid.affine`, fixed at compile time. Pass the optional `parameters` prop (the
+per-frame georeference view given to `GPURasterFractionalCoverage`) to read the determinant on
+every encoding instead, so `classAreas`, `coveredArea`, `validArea` and `missingArea` follow a
+georeference repacked for another cell size. By default geographic degree grids do not
+produce square meters; set `cellSizeMode: 'geographic'` (degrees) or `'web-mercator'` (EPSG:3857
+meters) for WGS84 ground square meters. Each coverage fraction is then weighted by the ground area
+per world area of its row (row edges from `grid.affine`, evaluated at the row center, so
+`coverageSums` holds weighted coverage and `proportions` are area proportions). The row edges are
+read from `parameters` (origin y and row step y, slots 1 and 5) on every encoding when it is given,
+so the ground scale follows a repacked georeference together with the cell area; without
+`parameters` they are baked from `grid.affine`. The grid must be axis-aligned. The default `'uniform'` keeps planar coordinate units. Missing area describes nodata inside the supplied raster footprint; it
 does not estimate a polygon's area outside that footprint. This API does not add observation
 weights, spherical areas, category dictionary discovery, or implicit tile stitching.
 

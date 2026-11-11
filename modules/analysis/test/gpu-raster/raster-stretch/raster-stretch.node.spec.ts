@@ -95,7 +95,7 @@ it('raster-stretch parameter packer lays out settings and validates ranges', () 
 });
 
 it('raster-stretch oracle replicates the documented definitions', () => {
-  // Histogram, CDF, percentile interpolation and degenerate mapping on a tiny raster.
+  // Histogram, CDF, percentile rank rule and degenerate mapping on a tiny raster.
   const scene = {
     values: Float32Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, NaN, Infinity]),
     width: 13,
@@ -112,7 +112,7 @@ it('raster-stretch oracle replicates the documented definitions', () => {
   expect([stats.domainMinimum, stats.domainMaximum]).toEqual([0, 10]);
   expect(stats.total).toBe(11);
   expect(stats.cdf[15]).toBe(11);
-  // 0th percentile is the lower edge of the first occupied bin, 100th the upper edge of the last.
+  // With an automatic domain the 0th and 100th percentiles are the exact minimum and maximum.
   expect(stats.lo).toBe(0);
   expect(stats.hi).toBeCloseTo(10, 5);
   expect(stretchValueOnCPU(5, parameters, stats, 16)).toBeCloseTo(0.5, 5);
@@ -240,7 +240,7 @@ it('GPURasterStretch wires deterministic nodes within the binding limit', () => 
       id: 'stretch',
       values: view(graph, 'float32', 12),
       grid: makeGPURasterMetadata({width: 4, height: 3}),
-      validity: view(graph, 'uint32', 12),
+      mask: view(graph, 'uint32', 12),
       regionMask: view(graph, 'uint32', 12),
       parameters: view(graph, 'float32', GPU_RASTER_STRETCH_PARAMETER_LENGTH),
       palette: view(graph, 'uint32', 5),
@@ -345,5 +345,22 @@ it('GPURasterStretch passes the workgroup size its cooperative WGSL assumes', ()
     for (const {source} of privateHistogram) {
       expect(source).toContain('@workgroup_size(256)');
     }
+  });
+});
+
+it('GPURasterStretch takes the contract mask', () => {
+  withGraph(graph => {
+    const mask = view(graph, 'uint32', 12);
+    const stretch = (overrides: Record<string, unknown>) =>
+      new GPURasterStretch({
+        id: 'stretch',
+        values: view(graph, 'float32', 12),
+        grid: makeGPURasterMetadata({width: 4, height: 3}),
+        parameters: view(graph, 'float32', GPU_RASTER_STRETCH_PARAMETER_LENGTH),
+        output: {stretched: view(graph, 'float32', 12)},
+        ...overrides
+      } as ConstructorParameters<typeof GPURasterStretch>[0]);
+    expect(stretch({mask}).props.mask).toBe(mask);
+    expect(() => stretch({mask: view(graph, 'uint32', 11)})).toThrow(/^stretch mask/);
   });
 });

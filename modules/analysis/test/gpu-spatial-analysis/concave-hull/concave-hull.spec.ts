@@ -171,7 +171,15 @@ it('alpha hull rejects a radius beyond f32 and degenerate collinear input retain
         maximumCircumradius: 1e39,
         output: {} as never
       })
-  ).toThrow();
+  ).toThrow(/^concave-hull maximumCircumradius must be a finite number in \[0, Infinity\]/);
+  expect(
+    () =>
+      new GPUConcaveHull({
+        positions: {length: 3} as GraphDataView<'float32x2'>,
+        maximumCircumradius: 0,
+        output: {} as never
+      })
+  ).toThrow(/^concave-hull maximumCircumradius must be greater than 0/);
   const result = await runHull(3, [0, 0, 1, 1, 2, 2], 100);
   expect(result.triangleValidity.reduce((sum, value) => sum + value, 0)).toBe(0);
   expect(result.edgeValidity.reduce((sum, value) => sum + value, 0)).toBe(0);
@@ -284,4 +292,41 @@ it('group alpha hulls of spatially interleaved groups equal the hull of each gro
     expect(expected.size).toBeGreaterThan(3);
     expect(actual, `group ${group}`).toEqual(expected);
   }
+});
+
+it('alpha hulls reject undersized outputs and invalid group counts with named limits', () => {
+  const view = (length: number) => ({length, buffer: {}}) as unknown as GraphDataView<'uint32'>;
+  const capacity = getDelaunayMaximumTriangleCount(6);
+  const createOutput = (triangleCapacity: number) => ({
+    triangles: view(triangleCapacity) as unknown as GraphDataView<'uint32x3'>,
+    triangleValidity: view(triangleCapacity),
+    boundaryEdges: view(3 * triangleCapacity) as unknown as GraphDataView<'uint32x2'>,
+    edgeValidity: view(3 * triangleCapacity),
+    status: {converged: view(1)}
+  });
+  const positions = {length: 6} as GraphDataView<'float32x2'>;
+  expect(
+    () =>
+      new GPUConcaveHull({positions, maximumCircumradius: 1, output: createOutput(capacity - 1)})
+  ).toThrow(new RegExp(`^concave-hull output.triangles must have ${capacity} rows`));
+  expect(
+    () =>
+      new GPUGroupConcaveHull({
+        positions,
+        groupIds: view(6),
+        groupCount: 0,
+        maximumCircumradius: 1,
+        output: createOutput(capacity)
+      })
+  ).toThrow(/^group-concave-hull groupCount must be an integer in \[1, 4294967295\]/);
+  expect(
+    () =>
+      new GPUGroupConcaveHull({
+        positions,
+        groupIds: view(6),
+        groupCount: 2,
+        maximumCircumradius: 1,
+        output: createOutput(2 * capacity)
+      })
+  ).toThrow(/^group-concave-hull output.status.converged must have at least 2 rows/);
 });

@@ -58,3 +58,16 @@ export {
   GPU_SPHERICAL_ARC_OVERLAY_STATUS_CAPACITY,
   GPU_SPHERICAL_ARC_OVERLAY_STATUS_UNRESOLVED
 } from './gpu-spherical-arc-overlay';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeSphericalArcOverlayOnCPU,
+  CPUSphericalArcOverlayOperation
+} from './cpu-spherical-arc-overlay-operation';
+export type {
+  CPUSphericalArcOverlayInput,
+  CPUSphericalArcOverlayOptions,
+  CPUSphericalArcOverlayResult
+} from './cpu-spherical-arc-overlay-operation';
+export {GPUSphericalArcOverlayOperation} from './gpu-spherical-arc-overlay-operation';
+export type {SphericalArcOverlayOperationProps} from './gpu-spherical-arc-overlay-operation';

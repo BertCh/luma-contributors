@@ -6,7 +6,7 @@ import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GraphEmbeddingMatrix} from '@luma.gl/graph/gpu-vector-search';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
@@ -40,27 +40,27 @@ export function validateRasterEmbeddingShape(
   );
 }
 
-/** Validates a float32 `pixelCount * dimensions` view and an optional `pixelCount` validity view. */
+/** Validates a float32 `pixelCount * dimensions` view and an optional `pixelCount` mask view. */
 export function validateRasterEmbeddingVectors(
   id: string,
   name: string,
   vectors: GraphDataView<'float32'>,
   pixelCount: number,
   dimensions: number,
-  validity?: GraphDataView<'uint32'>
+  mask?: GraphDataView<'uint32'>
 ): void {
-  validatePackedView(vectors, ['float32'], `${id} ${name}`);
+  validateSinglePackedView(vectors, ['float32'], `${id} ${name}`);
   validateRequirement(
     id,
     vectors.length === pixelCount * dimensions,
     `${name} must hold pixelCount times dimensions entries`
   );
-  if (validity) {
-    validatePackedView(validity, ['uint32'], `${id} ${name} validity`);
+  if (mask) {
+    validateSinglePackedView(mask, ['uint32'], `${id} ${name} mask`);
     validateRequirement(
       id,
-      validity.length === pixelCount,
-      `${name} validity must hold pixelCount entries`
+      mask.length === pixelCount,
+      `${name} mask must hold pixelCount entries`
     );
   }
 }
@@ -73,7 +73,7 @@ export function validateRasterEmbeddingQuantized(
   pixelCount: number,
   dimensions: number
 ): void {
-  validatePackedView(quantized, ['uint32'], `${id} ${name}`);
+  validateSinglePackedView(quantized, ['uint32'], `${id} ${name}`);
   validateRequirement(
     id,
     quantized.length === Math.ceil((pixelCount * dimensions) / 4),
@@ -102,7 +102,7 @@ fn getEmbeddingValue(byte: i32) -> f32 {
 }
 
 /**
- * Describes one float32 `pixelCount * dimensions` view (and optional validity) as the single-chunk
+ * Describes one float32 `pixelCount * dimensions` view (and optional mask) as the single-chunk
  * `GraphEmbeddingMatrix` that the published `@luma.gl/graph/gpu-vector-search` classes consume.
  *
  * @internal
@@ -111,7 +111,7 @@ export function createRasterEmbeddingMatrix(
   vectors: GraphDataView<'float32'>,
   pixelCount: number,
   dimensions: number,
-  validity?: GraphDataView<'uint32'>
+  mask?: GraphDataView<'uint32'>
 ): GraphEmbeddingMatrix {
   return {
     dimensions,
@@ -123,7 +123,7 @@ export function createRasterEmbeddingMatrix(
         rowStride: dimensions,
         byteOffset: vectors.byteOffset,
         sourceRowOffset: 0,
-        validity
+        validity: mask
       }
     ]
   };

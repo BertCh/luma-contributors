@@ -72,17 +72,17 @@ export function addBuildingAdjacencyRecipe<Parameters>(
   );
   validateViewLength(
     id,
-    'sharedPaths.runs.rightLineIds',
-    runs.rightLineIds,
-    runs.leftLineIds.length
+    'sharedPaths.runs.rightSourceIds',
+    runs.rightSourceIds,
+    runs.leftSourceIds.length
   );
-  validateViewLength(id, 'sharedPaths.runs.offsets', runs.offsets, runs.leftLineIds.length + 1);
+  validateViewLength(id, 'sharedPaths.runs.offsets', runs.offsets, runs.leftSourceIds.length + 1);
   const output = props.output;
   const lengths = getRecipeView(
     graph,
     `${id}-run-lengths`,
     'float32',
-    runs.leftLineIds.length,
+    runs.leftSourceIds.length,
     output?.lengths
   );
   const pairs = getRecipeView(graph, `${id}-pairs`, 'float32x4', count * count, output?.pairs);
@@ -116,14 +116,14 @@ export function addBuildingAdjacencyRecipe<Parameters>(
           : []),
         {name: 'complete', view: complete, type: 'u32', access: 'read_write'}
       ],
-      body: `complete[completeOffset]=u32(count[countOffset]<=${runs.leftLineIds.length}u${status.overflow ? '&&overflow[overflowOffset]==0u' : ''}${status.uncertainCount ? '&&uncertain[uncertainOffset]==0u' : ''});`
+      body: `complete[completeOffset]=u32(count[countOffset]<=${runs.leftSourceIds.length}u${status.overflow ? '&&overflow[overflowOffset]==0u' : ''}${status.uncertainCount ? '&&uncertain[uncertainOffset]==0u' : ''});`
     })
   );
   graph.add(
     createRecipeKernelNode(graph, {
       id: `${id}-measure-paths`,
       operation: id,
-      invocationCount: runs.leftLineIds.length,
+      invocationCount: runs.leftSourceIds.length,
       bindings: [
         {name: 'positions', view: runs.positions, type: 'f32', access: 'read'},
         {name: 'offsets', view: runs.offsets, type: 'u32', access: 'read'},
@@ -140,8 +140,8 @@ export function addBuildingAdjacencyRecipe<Parameters>(
       invocationCount: count * count,
       declarations: IS_FINITE_VALUE_WGSL,
       bindings: [
-        {name: 'left', view: runs.leftLineIds, type: 'u32', access: 'read'},
-        {name: 'right', view: runs.rightLineIds, type: 'u32', access: 'read'},
+        {name: 'left', view: runs.leftSourceIds, type: 'u32', access: 'read'},
+        {name: 'right', view: runs.rightSourceIds, type: 'u32', access: 'read'},
         {name: 'owners', view: props.lineBuildingIds, type: 'u32', access: 'read'},
         {name: 'lengths', view: lengths, type: 'f32', access: 'read'},
         {name: 'orientations', view: props.orientations, type: 'f32', access: 'read'},
@@ -149,7 +149,7 @@ export function addBuildingAdjacencyRecipe<Parameters>(
         {name: 'output', view: pairs, type: 'f32', access: 'read_write'}
       ],
       body: `let first=index/${count}u;let second=index%${count}u;var sharedLength=0.0;var valid=complete[completeOffset]!=0u;
-for(var run=0u;run<${runs.leftLineIds.length}u;run++){
+for(var run=0u;run<${runs.leftSourceIds.length}u;run++){
  let leftLine=left[leftOffset+run];let rightLine=right[rightOffset+run];if(leftLine==0xffffffffu&&rightLine==0xffffffffu){continue;}
  if(leftLine>=${props.lineBuildingIds.length}u||rightLine>=${props.lineBuildingIds.length}u){valid=false;continue;}
  let leftOwner=owners[ownersOffset+leftLine];let rightOwner=owners[ownersOffset+rightLine];valid=valid&&leftOwner<${count}u&&rightOwner<${count}u&&isFiniteValue(lengths[lengthsOffset+run]);

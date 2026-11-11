@@ -33,7 +33,11 @@ export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_RESIDUAL_SUM_OF_SQUARES
 /** `summary` slot: pseudo R squared, the squared correlation of `y` and `y - u` (spreg `pr2`). */
 export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PSEUDO_R_SQUARED = 3;
 
-/** `summary` slot: Moran's I of the structural residuals, `(n / S0) u'Wu / u'u` (spreg `AKtest` `mi`). */
+/**
+ * `summary` slot: Moran's I of the structural residuals, `(n / S0) u'Wu / u'u` (spreg `AKtest`
+ * `mi`). NaN when the total weight `S0` is zero (signed weights); the Anselin-Kelejian statistic
+ * is still defined there.
+ */
 export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MORAN_I = 4;
 /** `summary` slot: Anselin-Kelejian statistic for residual spatial autocorrelation (chi-square, 1 df). */
 export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN = 5;
@@ -95,7 +99,10 @@ export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_PARTIAL_R_S
 
 /** `status` value: fit succeeded. */
 export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_STATUS_OK = 0;
-/** `status` value: the instruments or the projected regressors are singular or ill-conditioned. */
+/**
+ * `status` value: the instruments or the projected regressors are singular or ill-conditioned,
+ * which includes a predictor that is constant at float32 resolution.
+ */
 export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_STATUS_SINGULAR = 1;
 /** `status` value: too few rows, `n <= predictorCount + 2`. */
 export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_STATUS_TOO_FEW_ROWS = 2;

@@ -111,7 +111,7 @@ async function runProjection(
     normalizedMeasures: helpers.output('o-normalized', 'float32', pointCount),
     sides: helpers.output('o-side', 'sint32', pointCount)
   };
-  const overflow = helpers.output('o-overflow', 'uint32', 1);
+  const candidateOverflow = helpers.output('o-candidate-overflow', 'uint32', 1);
   helpers.graph.add(
     new GPULinearReferencing({
       spatialContext:
@@ -125,7 +125,7 @@ async function runProjection(
       candidateCapacity: coordinateSystem === 'planar' ? 4096 : undefined,
       output: {
         ...Object.fromEntries(Object.entries(columns).map(([name, column]) => [name, column.view])),
-        status: {overflow: overflow.view}
+        status: {candidateOverflow: candidateOverflow.view}
       }
     })
   );
@@ -143,7 +143,7 @@ async function runProjection(
     measures: await readFloat32(columns.measures.buffer, pointCount),
     normalizedMeasures: await readFloat32(columns.normalizedMeasures.buffer, pointCount),
     sides: Array.from(new Int32Array(sideBytes.buffer, sideBytes.byteOffset, pointCount)),
-    overflow: (await readUint32(overflow.buffer, 1))[0]
+    candidateOverflow: (await readUint32(candidateOverflow.buffer, 1))[0]
   };
   compiled.destroy();
   radius.destroy();
@@ -160,7 +160,7 @@ it('GPULinearReferencing spherical matches pyproj Geod closest points on great-c
   const started = performance.now();
   const actual = await runProjection(device, 'spherical', positions, lineOffsets, points, 1e9);
   const elapsed = performance.now() - started;
-  expect(actual.overflow).toBe(0);
+  expect(actual.candidateOverflow).toBe(0);
   let worst = {distance: 0, measure: 0, foot: 0, normalized: 0};
   SPHERICAL_PROJECTIONS.forEach((expected, row) => {
     const label = `point ${row}`;
@@ -441,7 +441,7 @@ it('GPULinearReferencing spherical arc BVH matches a brute-force scan on 5000 ar
       new Float32Array(points.flat()),
       searchRadius
     );
-    expect(actual.overflow).toBe(0);
+    expect(actual.candidateOverflow).toBe(0);
     let ambiguous = 0;
     points.forEach((point, index) => {
       const {best, secondDistance, competingLineDistance} = getNearestArcCandidates(

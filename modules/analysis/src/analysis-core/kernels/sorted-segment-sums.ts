@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   GPUSort,
@@ -12,6 +11,7 @@ import {
   type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {validateMaximumCount} from './gpu-contributor-utils';
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
 import {getSortedSegmentOffsetNodes} from './sorted-segment-offsets';
 
@@ -252,8 +252,13 @@ export function createSegmentSumNode<Parameters>(
 ): GPUCommandNode<Parameters> {
   // The offsets and output views must cover every segment; the kernel reads and
   // write `segmentCount + 1` offsets and `segmentCount` sums without bounds checks of their own.
-  assert(props.segmentOffsets.length >= props.segmentCount + 1);
-  assert(props.output.length >= props.segmentCount);
+  validateMaximumCount(
+    props.id,
+    'segmentCount + 1',
+    props.segmentCount + 1,
+    props.segmentOffsets.length
+  );
+  validateMaximumCount(props.id, 'segmentCount', props.segmentCount, props.output.length);
   return createSegmentSumKernelNode(graph, props);
 }
 

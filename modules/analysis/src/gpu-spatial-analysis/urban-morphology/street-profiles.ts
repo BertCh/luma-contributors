@@ -11,13 +11,16 @@ import {
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT,
+  URBAN_RAY_STACK_CAPACITY,
   addUrbanObstacleBVH,
   getUrbanRayBVHBindings,
   getUrbanRayDeclarations,
   resolveUrbanObstacleIndex,
-  type UrbanObstacleIndex
+  type UrbanObstacleIndex,
+  type UrbanRayBVH
 } from './urban-ray-utils';
 
 /**
@@ -29,6 +32,72 @@ export const STREET_PROFILES_MAXIMUM_FACADE_SEGMENT_COUNT = 1024;
 
 /** Events a facade interval keeps besides the three it adds per obstacle segment. */
 const FACADE_EVENT_FIXED_COUNT = 8;
+
+/**
+ * Relative part of the two facade tolerances, about 100 float32 rounding steps. A wall whose
+ * extent along the street is within `tolerance + slack * wall length` is edge-on and shows no
+ * length. The walls whose sightline distance is within
+ * `tolerance + slack * max(street length, maximumDistance)` of the nearest hit are the same stretch
+ * of wall, and the lowest row among them owns it.
+ */
+const FACADE_RELATIVE_SLACK = 1e-5;
+
+/**
+ * WGSL of the facade visibility predicate. The facade point is at `facadeDistance` along the
+ * sightline by construction, so its own row is never tested. `nearest` is the smallest hit
+ * distance on the sightline, the wall's own included. The wall owns the stretch when it is within
+ * `slack` of `nearest` and no lower row is. Ownership is decided against the one nearest hit, so
+ * it is transitive: the set of walls within `slack` of `nearest` is never empty and has one lowest
+ * row, whatever their number. No two separately rounded distances are compared for equality.
+ *
+ * Both obstacle indices give the same result bit for bit. The decision depends only on the hits
+ * within `slack` of the nearest one, minima do not depend on the visiting order, and the BVH never
+ * prunes such a segment: a segment that blocks at distance `d` (0 when it is within `tolerance` of
+ * the sightline origin, even behind it) has a point within `2 * tolerance` of the sightline
+ * between 0 and `d`, and its box is padded by `2 * tolerance` plus the float32 rounding of the
+ * coordinates (`addUrbanObstacleBVH`), so the sightline enters the box no later than `d`.
+ */
+function getFacadeVisibilityDeclarations(
+  segmentCount: number,
+  maximumDistance: number,
+  tolerance: number,
+  obstacleBVH?: UrbanRayBVH
+): string {
+  const hitTest = `let blocked=getSegmentCandidate(origin,direction,${getWGSLFloatLiteral(maximumDistance)},other);
+  if(blocked.y>0.0){nearest=min(nearest,blocked.x);if(other<row){nearestLowerRow=min(nearestLowerRow,blocked.x);}}`;
+  const decision = `let reach=nearest+slack;
+ return facadeDistance<=reach&&nearestLowerRow>reach;`;
+  if (!obstacleBVH) {
+    return `
+fn isFacadeIntervalVisible(origin:vec2<f32>,direction:vec2<f32>,facadeDistance:f32,slack:f32,row:u32)->bool{
+ var nearest=facadeDistance;var nearestLowerRow=3.0e38;
+ for(var other=0u;other<${segmentCount}u;other++){
+  if(other==row){continue;}
+  ${hitTest}
+ }
+ ${decision}
+}`;
+  }
+  return `
+fn isFacadeIntervalVisible(origin:vec2<f32>,direction:vec2<f32>,facadeDistance:f32,slack:f32,row:u32)->bool{
+ var nearest=facadeDistance;var nearestLowerRow=3.0e38;
+ var stack:array<u32,${URBAN_RAY_STACK_CAPACITY}>;var depth=1u;stack[0u]=0u;
+ loop{
+  if(depth==0u){break;}
+  depth--;let node=stack[depth];
+  // Only a hit within slack of the nearest one can change the result. Rounding slack on the
+  // pruning distance keeps every such segment in the search.
+  let pruning=nearest+slack;
+  let limit=pruning+pruning*1.0e-5+${getWGSLFloatLiteral(4 * tolerance)};
+  if(getBoxEntry(node,origin,direction,limit)>=3.0e38){continue;}
+  if(node<${obstacleBVH.internalNodeCount}u){stack[depth]=node*2u+2u;stack[depth+1u]=node*2u+1u;depth+=2u;continue;}
+  let other=leafIds[leafIdsOffset+node-${obstacleBVH.internalNodeCount}u];
+  if(other>=${segmentCount}u||other==row){continue;}
+  ${hitTest}
+ }
+ ${decision}
+}`;
+}
 
 export type GPUStreetProfilesOutput = {
   /** `float32x4`, one row per sample: left and right distance, left and right height. */
@@ -58,7 +127,16 @@ export type GPUStreetProfilesProps = {
   maximumDistance: number;
   sampleSpacing: number;
   tolerance?: number;
-  /** Optional straight street start/end segment for exact visible facade arc length in its rectangular corridor. */
+  /**
+   * Optional straight street start/end segment for exact visible facade arc length in its
+   * rectangular corridor. A stretch of wall is visible when no other segment crosses the
+   * perpendicular from the street axis before it. The kernel works relative to the street start,
+   * so projected-metre coordinates lose nothing beyond their own float32 rounding. A wall
+   * perpendicular to the street (within `tolerance` plus 1e-5 of its length) is edge-on and shows
+   * no length. Where segments coincide (their sightline distances are within `tolerance` plus 1e-5
+   * of the larger of the street length and `maximumDistance` of the nearest one), the lowest row
+   * among them owns the stretch and the others show no length there.
+   */
   streetSegment?: GraphDataView<'float32x4'>;
   /**
    * How rays find obstacle segments. 'brute-force' tests every segment for every ray, 'bvh' builds
@@ -339,7 +417,10 @@ output[outputOffset+4u*index+3u]=select(missing,width,(flags&12u)==0u);`
         operation: id,
         invocationCount: segmentCount,
         workgroupSize: 2,
-        declarations: `${rayDeclarations}
+        // The facade kernel computes its sightline origins, so it works relative to the street
+        // start: the same geometry gives the same lengths at any distance from the origin.
+        declarations: `${IS_FINITE_VALUE_WGSL}${getUrbanRayDeclarations(segmentCount, tolerance, obstacleBVH, 'local')}
+${getFacadeVisibilityDeclarations(segmentCount, props.maximumDistance, tolerance, obstacleBVH)}
 const EVENT_STRIDE:u32=${eventStride}u;
 fn setEvent(row:u32,slot:u32,value:f32){facadeEvents[facadeEventsOffset+row*EVENT_STRIDE+slot]=value;}
 fn getEvent(row:u32,slot:u32)->f32{return facadeEvents[facadeEventsOffset+row*EVENT_STRIDE+slot];}`,
@@ -353,23 +434,28 @@ fn getEvent(row:u32,slot:u32)->f32{return facadeEvents[facadeEventsOffset+row*EV
         ],
         // Each segment owns a thread that sorts its own events: cost grows with segments squared,
         // which is why streetSegment is limited to STREET_PROFILES_MAXIMUM_FACADE_SEGMENT_COUNT.
-        body: `let streetStart=vec2<f32>(street[streetOffset],street[streetOffset+1u]);
-let streetEnd=vec2<f32>(street[streetOffset+2u],street[streetOffset+3u]);
-let streetLength=distance(streetStart,streetEnd);
-let axis=(streetEnd-streetStart)/streetLength;
+        body: `urbanFrameOrigin=vec2<f32>(street[streetOffset],street[streetOffset+1u]);
+let streetVector=vec2<f32>(street[streetOffset+2u],street[streetOffset+3u])-urbanFrameOrigin;
+let streetLength=length(streetVector);
+let axis=streetVector/streetLength;
 let normal=vec2<f32>(-axis.y,axis.x);
+// Every coordinate below is relative to the street start.
 let segment=readSegment(index);
 let start=segment.xy;
 let end=segment.zw;
 let displacement=end-start;
-let projectedStart=dot(start-streetStart,axis);
+let facadeLength=length(displacement);
+let projectedStart=dot(start,axis);
 let projectedDelta=dot(displacement,axis);
-let sideStart=dot(start-streetStart,normal);
+let sideStart=dot(start,normal);
 let sideDelta=dot(displacement,normal);
+// A wall seen edge-on from the street has no visible length.
+let edgeOn=abs(projectedDelta)<=${tolerance}+${FACADE_RELATIVE_SLACK}*facadeLength;
+let slack=${tolerance}+${FACADE_RELATIVE_SLACK}*max(streetLength,${getWGSLFloatLiteral(props.maximumDistance)});
 setEvent(index,0u,0.0);
 setEvent(index,1u,1.0);
 var size=2u;
-if(abs(projectedDelta)>${tolerance}){
+if(!edgeOn){
   setEvent(index,size,clamp(-projectedStart/projectedDelta,0.0,1.0));size++;
   setEvent(index,size,clamp((streetLength-projectedStart)/projectedDelta,0.0,1.0));size++;
 }
@@ -380,9 +466,9 @@ if(abs(sideDelta)>${tolerance}){
 }
 for(var other=0u;other<${segmentCount}u;other++){
   let obstacle=readSegment(other);
-  if(abs(projectedDelta)>${tolerance}){
-    setEvent(index,size,clamp((dot(obstacle.xy-streetStart,axis)-projectedStart)/projectedDelta,0.0,1.0));size++;
-    setEvent(index,size,clamp((dot(obstacle.zw-streetStart,axis)-projectedStart)/projectedDelta,0.0,1.0));size++;
+  if(!edgeOn){
+    setEvent(index,size,clamp((dot(obstacle.xy,axis)-projectedStart)/projectedDelta,0.0,1.0));size++;
+    setEvent(index,size,clamp((dot(obstacle.zw,axis)-projectedStart)/projectedDelta,0.0,1.0));size++;
   }
   let otherDelta=obstacle.zw-obstacle.xy;
   let denominator=displacement.x*otherDelta.y-displacement.y*otherDelta.x;
@@ -407,12 +493,14 @@ for(var event=1u;event<size;event++){
   let middle=0.5*(getEvent(index,event)+getEvent(index,event-1u));
   let longitudinal=projectedStart+middle*projectedDelta;
   let lateral=sideStart+middle*sideDelta;
-  if(longitudinal<0.0||longitudinal>streetLength||abs(lateral)<=${tolerance}||abs(lateral)>${props.maximumDistance}){continue;}
-  let origin=streetStart+longitudinal*axis;
-  let hit=castRay(origin,normal*sign(lateral),${props.maximumDistance});
-  if(abs(hit.x-abs(lateral))<=${tolerance}&&u32(max(hit.y,0.0))==index){
+  if(edgeOn||longitudinal<0.0||longitudinal>streetLength||abs(lateral)<=${tolerance}||abs(lateral)>${props.maximumDistance}){continue;}
+  // The sightline leaves the street axis at the foot of the perpendicular through the interval
+  // midpoint, so it reaches this wall at abs(lateral). The lowest row within a slack of the
+  // nearest hit owns the stretch; the slack scales with the corridor, and no two distances are
+  // compared for equality.
+  if(isFacadeIntervalVisible(longitudinal*axis,normal*sign(lateral),abs(lateral),slack,index)){
     let side=u32(lateral<0.0);
-    total[side]+=(getEvent(index,event)-getEvent(index,event-1u))*length(displacement);
+    total[side]+=(getEvent(index,event)-getEvent(index,event-1u))*facadeLength;
   }
 }
 let valid=isFiniteValue(streetLength)&&streetLength>${tolerance}&&nonFiniteCount[nonFiniteCountOffset]==0u;

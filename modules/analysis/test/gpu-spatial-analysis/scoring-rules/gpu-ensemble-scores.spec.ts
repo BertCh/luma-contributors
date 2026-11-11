@@ -180,6 +180,41 @@ it('a sample CRPS ensemble converges to the Gaussian CRPS', async () => {
   expect(Math.abs(result.crps![0] - closed.crps)).toBeLessThan(2e-3);
 });
 
+it('GPUEnsembleScores variogram score is NaN for a NaN observation or member, and 0^p is 0', async () => {
+  // Math correctness review, interpolation-density-04: `|difference|^p` was guarded by
+  // `magnitude > 0`, which is false for NaN, so a NaN input scored as a zero difference.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const options = {variogramPairs: [[0, 1]], variogramOrder: 0.5};
+  // The report's case: with the NaN read as 0 the score was (0 - |1 - 2|^0.5)^2 = 1.
+  const nanObservation = await runEnsembleScores(
+    device,
+    {memberCount: 1, dimension: 2, ensemble: [1, 2], observations: [Number.NaN, 2]},
+    options
+  );
+  expect(Number.isNaN(nanObservation.variogramScore)).toBe(true);
+  // With the NaN read as 0 the score was (|1 - 3|^0.5 - 1 / 2)^2 = 0.8358.
+  const nanMember = await runEnsembleScores(
+    device,
+    {memberCount: 2, dimension: 2, ensemble: [1, 2, Number.NaN, 5], observations: [1, 3]},
+    options
+  );
+  expect(Number.isNaN(nanMember.variogramScore)).toBe(true);
+  const infiniteMember = await runEnsembleScores(
+    device,
+    {memberCount: 1, dimension: 2, ensemble: [Number.POSITIVE_INFINITY, 5], observations: [1, 3]},
+    options
+  );
+  expect(Number.isFinite(infiniteMember.variogramScore)).toBe(false);
+  // Equal observations: |2 - 2|^0.5 = 0 (not NaN), forecast |1 - 3|^0.5 = sqrt(2), score 2.
+  const equalObservations = await runEnsembleScores(
+    device,
+    {memberCount: 1, dimension: 2, ensemble: [1, 3], observations: [2, 2]},
+    options
+  );
+  expect(equalObservations.variogramScore).toBeCloseTo(2, 5);
+});
+
 /** High-precision erf by the Taylor series (the test's own, independent of the GPU kernel). */
 function erf(x: number): number {
   let term = x;

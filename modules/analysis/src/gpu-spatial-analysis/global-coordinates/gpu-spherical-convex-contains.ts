@@ -9,7 +9,7 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
@@ -74,9 +74,9 @@ export class GPUSphericalConvexContains implements GPUCommandNodeProducer {
       GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
     );
     for (const view of [props.positions, props.queries])
-      validatePackedView(view, ['float32x3'], this.id);
+      validateSinglePackedView(view, ['float32x3'], this.id);
     for (const view of [props.offsets, props.polygonIndices, ...Object.values(props.output)])
-      validatePackedView(view, ['uint32'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
     // One polygon selector and output per query; polygons contain at most 32 vertices.
     validateRequirement(this.id, props.offsets.length >= 1, 'offsets must hold at least one entry');
     validateRequirement(

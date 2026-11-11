@@ -17,7 +17,7 @@ import {
   validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUIterationStatusPort} from '../../analysis-core/contracts/status';
@@ -113,8 +113,10 @@ export type GPURedcapSingleLinkageOutput = {
 };
 
 /**
- * REDCAP with single linkage on the contiguity graph (first-order SLK-REDCAP; Guo 2008), the
- * region count chosen per frame.
+ * Contiguity-constrained single-linkage clustering: the single-linkage dendrogram of the
+ * contiguity graph cut at `k` regions, the region count chosen per frame. This is the first step
+ * of first-order single-linkage REDCAP (Guo 2008), the tree, with a different second step, so it
+ * is not the REDCAP partition (see "What this is not").
  *
  * The minimum spanning tree of the contiguity graph under attribute dissimilarity
  * ({@link GPUSpatialWeightsMinimumSpanningTree}, squared Euclidean distance of the standardised
@@ -124,6 +126,21 @@ export type GPURedcapSingleLinkageOutput = {
  * slot)` with a stable radix sort, the heaviest are dropped from a masked copy of the weights, and
  * the regions are the weak components of what remains. Every step is parallel; there is no
  * per-edge loop. Region counts are a prefix family: the regions for `k` refine those for `k - 1`.
+ *
+ * **What this is not.** REDCAP as Guo (2008) describes it has two steps: build a spatially
+ * contiguous tree by constrained agglomerative clustering, then partition that tree top-down,
+ * each time removing the edge whose removal reduces the within-region sum of squared deviations
+ * (SSD) the most. For first-order single linkage the tree is the minimum spanning tree used here,
+ * and the SSD partition of it is what {@link GPUSkaterRegions} computes (GeoDa documents
+ * first-order single-linkage REDCAP as identical to SKATER). This class keeps the tree and cuts
+ * its `k - c` heaviest edges instead, which looks only at the dissimilarity across one edge and
+ * not at the regions the cut leaves. The two differ on ordinary data. On a path of six rows with
+ * values `[0, 1, 2.1, 3.3, 4.6, 6.0]` and `k = 2` the heaviest edge is the last one, so this class
+ * returns `{0..4}, {5}` (within-region SSD 13.26); the SSD partition is `{0, 1, 2}, {3, 4, 5}`
+ * (5.85). Single linkage also chains: it tends to peel off single outlying rows. For REDCAP
+ * regions use `GPUSpatialWeightsMinimumSpanningTree` followed by `GPUSkaterRegions`. The class
+ * name is kept for compatibility. (The description of Guo's second step is from the literature as
+ * recalled in the 2026-11-10 math review, not re-read against the paper.)
  *
  * **Non-goals.** Minimum region size or bound (the GeoDa and spopt style floor) is not supported,
  * and neither are the full-order, average and complete linkage REDCAP variants, which need the
@@ -152,13 +169,13 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
     const rows = validateGPUSpatialWeights(id, props.weights);
     const columnCount = props.columnCount ?? 1;
     validateCapacity(id, 'columnCount', columnCount, 1, GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS);
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     validateRequirement(
       id,
       props.values.length === rows * columnCount,
       'values length must equal rows * columnCount'
     );
-    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     validateRequirement(
       id,
       props.parameters.length >= GPU_REDCAP_SINGLE_LINKAGE_PARAMETER_LENGTH,
@@ -171,7 +188,7 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
       1,
       GPU_REDCAP_SINGLE_LINKAGE_MAXIMUM_COMPONENT_ITERATIONS
     );
-    validatePackedView(props.output.labels, ['uint32'], `${id} output.labels`);
+    validateSinglePackedView(props.output.labels, ['uint32'], `${id} output.labels`);
     validateRequirement(
       id,
       props.output.labels.length === rows,

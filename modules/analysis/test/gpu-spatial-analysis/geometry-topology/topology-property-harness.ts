@@ -167,7 +167,14 @@ export type MakeValidResult = {
 export async function runMakeValid(
   device: Device,
   rings: readonly (readonly Point[])[],
-  capacity: {segments: number; intersections: number; rings: number; vertices: number}
+  capacity: {
+    segments: number;
+    intersections: number;
+    rings: number;
+    vertices: number;
+    /** Vertex identity distance of the ring assembly; defaults to 1e-5. */
+    vertexTolerance?: number;
+  }
 ): Promise<MakeValidResult> {
   const graph = new GPUCommandGraph(device, {id: 'make-valid-property'});
   const io = new GraphBuffers(device, graph);
@@ -222,7 +229,11 @@ export async function runMakeValid(
   graph.add(
     new GPUMakeValid({
       intersectionCapacity: capacity.intersections,
-      precision: {vertexTolerance: 1e-5, predicates: 'exact-or-uncertain', storage: 'float32'},
+      precision: {
+        vertexTolerance: capacity.vertexTolerance ?? 1e-5,
+        predicates: 'exact-or-uncertain',
+        storage: 'float32'
+      },
       polygons: {
         kind: 'polygons',
         positions: io.input(

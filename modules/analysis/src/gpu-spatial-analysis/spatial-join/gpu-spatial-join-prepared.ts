@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Buffer, assert} from '@luma.gl/core';
+import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -13,7 +13,8 @@ import {
 import {
   importGraphBuffer,
   validateGraphViewsBelongToGraph,
-  validatePowerOfTwo
+  validatePowerOfTwo,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateGPUPartitionDescriptor,
@@ -431,8 +432,9 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
       return latched;
     };
     return nodes.map(node => {
-      // The bounds, ring and BVH build nodes are created above without conditions.
-      assert(!node.condition);
+      // The bounds, ring and BVH build nodes are created above without conditions; the rebuild
+      // condition replaces none.
+      validateRequirement(id, !node.condition, 'build nodes must be unconditional');
       return {
         ...node,
         condition: {id: `${id}-rebuild`, source: 'cpu', evaluate}

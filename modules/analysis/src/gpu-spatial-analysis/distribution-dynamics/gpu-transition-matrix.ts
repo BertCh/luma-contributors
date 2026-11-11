@@ -14,7 +14,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUTransitionDiagnostics,
@@ -163,7 +163,7 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
       throw new Error(`${id} output.counts is too short`);
     }
     if (output.probabilities) {
-      validatePackedView(output.probabilities, ['float32'], `${id} output.probabilities`);
+      validateSinglePackedView(output.probabilities, ['float32'], `${id} output.probabilities`);
       if (output.probabilities.length < cellCount) {
         throw new Error(`${id} output.probabilities is too short`);
       }

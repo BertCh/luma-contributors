@@ -129,7 +129,13 @@ export function compareCellTablesOnCPU(
     let zScore: number;
     if (options.zScore === 'poisson') {
       const denominator = f(row.before + row.after);
-      zScore = denominator === 0 ? 0 : f(row.delta / f(Math.sqrt(denominator)));
+      // Defined for a positive denominator, 0 when both values are 0, otherwise no value.
+      zScore =
+        denominator > 0
+          ? f(row.delta / f(Math.sqrt(denominator)))
+          : row.before === 0 && row.after === 0
+            ? 0
+            : NaN;
     } else {
       zScore = deviation === 0 ? 0 : f(f(row.delta - mean) / deviation);
     }

@@ -19,7 +19,8 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {
@@ -28,7 +29,7 @@ import {
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights
 } from '../spatial-weights/gpu-chunked-spatial-weights';
-import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {GET_NAN_WGSL, IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 const OPERATION = 'GPURegionPartitionEvaluation';
 /** Rows or labels reduced by one thread of a summary tile pass. */
@@ -77,7 +78,13 @@ export const GPU_REGION_PARTITION_EVALUATION_LAYOUT = {
   regionCount: 0,
   /** Sum over regions of the within-region sum of squared deviations from the region mean. */
   withinSumOfSquares: 1,
-  /** `totalSumOfSquares - withinSumOfSquares`: the sum of squares explained by the partition. */
+  /**
+   * The sum of squares explained by the partition, `sum over regions of n_r |mean_r - mean|^2`
+   * with `mean` the mean of the used rows. It equals `totalSumOfSquares - withinSumOfSquares` up
+   * to float32 rounding and is computed directly, so it keeps its digits when the partition
+   * explains a small share of the total. Its accuracy is that of `mean_r - mean`: center the
+   * table when the overall mean is large against the differences between region means.
+   */
   betweenSumOfSquares: 2,
   /** Sum of squared deviations from the global mean over the labelled rows. */
   totalSumOfSquares: 3,
@@ -90,7 +97,11 @@ export const GPU_REGION_PARTITION_EVALUATION_LAYOUT = {
    * regions: 0 for a partition with no boundary, higher for ragged regions. 0 without `weights`.
    */
   crossLinkFraction: 6,
-  /** Rows whose label is `0xffffffff` or at least `labelCapacity`, left out of every statistic. */
+  /**
+   * Rows left out of every statistic: those whose label is `0xffffffff` or at least
+   * `labelCapacity`, and labelled rows with a NaN or infinite value in any column (the latter are
+   * also counted by the optional `output.invalidRowCount`).
+   */
   ignoredRows: 7,
   /**
    * Pseudo-F (Calinski-Harabasz) statistic
@@ -113,7 +124,11 @@ export const GPU_REGION_PARTITION_EVALUATION_LAYOUT = {
 export type GPURegionPartitionEvaluationProps = {
   /** Prefix for generated node IDs. Defaults to `'region-partition-evaluation'`. */
   id?: string;
-  /** Attribute table, row-major with `columnCount` columns (`rows * columnCount` entries). */
+  /**
+   * Attribute table, row-major with `columnCount` columns (`rows * columnCount` entries). A row
+   * with a NaN or infinite value in any column is left out of every statistic, as an unlabelled
+   * row is, and counted in `summary.ignoredRows` and `output.invalidRowCount`.
+   */
   values: GraphDataView<'float32'>;
   /** Number of attribute columns. Defaults to 1; at most 32. */
   columnCount?: number;
@@ -151,6 +166,11 @@ export type GPURegionPartitionEvaluationOutput = {
    * for an empty label. The geographical detector reads these for its non-centrality.
    */
   regionMeans?: GraphDataView<'float32'>;
+  /**
+   * Optional one-row count of rows that carry a label in `[0, labelCapacity)` but were left out
+   * because one of their values is NaN or infinite. They are part of `summary.ignoredRows`.
+   */
+  invalidRowCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -169,6 +189,11 @@ export type GPURegionPartitionEvaluationOutput = {
  * only on the labels and offsets, so the result is bitwise reproducible and matches a sequential
  * CPU evaluation within f32 rounding. Work is `O(rows + links)` plus the sort, independent of
  * `labelCapacity` and of the region size distribution.
+ *
+ * **Missing values.** A labelled row with a NaN or infinite value in any column is treated as
+ * unlabelled: it enters no sum, size, link count or mean, it is counted in `ignoredRows`, and
+ * `output.invalidRowCount` says how many such rows there were. One missing value therefore
+ * removes one row instead of turning every statistic into NaN.
  */
 export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -189,8 +214,8 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
       1,
       GPU_REGION_PARTITION_EVALUATION_MAXIMUM_COLUMNS
     );
-    validatePackedView(props.values, ['float32'], `${id} values`);
-    validatePackedView(props.labels, ['uint32'], `${id} labels`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.labels, ['uint32'], `${id} labels`);
     const rows = props.labels.length;
     if (rows < 1 || props.values.length !== rows * columnCount) {
       throw new Error(`${id} values length must equal labels.length * columnCount`);
@@ -200,20 +225,20 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
     if (props.weights && validateGPUSpatialWeightsOrChunks(id, props.weights) !== rows) {
       throw new Error(`${id} weights row count must equal labels.length`);
     }
-    validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
     if (output.summary.length < GPU_REGION_PARTITION_EVALUATION_LAYOUT.length) {
       throw new Error(
         `${id} output.summary must hold ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.length} words`
       );
     }
     if (output.regionSizes) {
-      validatePackedView(output.regionSizes, ['uint32'], `${id} output.regionSizes`);
+      validateSinglePackedView(output.regionSizes, ['uint32'], `${id} output.regionSizes`);
       if (output.regionSizes.length < labelCapacity) {
         throw new Error(`${id} output.regionSizes must hold labelCapacity entries`);
       }
     }
     if (output.regionWithinSumOfSquares) {
-      validatePackedView(
+      validateSinglePackedView(
         output.regionWithinSumOfSquares,
         ['float32'],
         `${id} output.regionWithinSumOfSquares`
@@ -223,14 +248,28 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
       }
     }
     if (output.regionMeans) {
-      validatePackedView(output.regionMeans, ['float32'], `${id} output.regionMeans`);
+      validateSinglePackedView(output.regionMeans, ['float32'], `${id} output.regionMeans`);
       if (output.regionMeans.length < labelCapacity * columnCount) {
         throw new Error(`${id} output.regionMeans must hold labelCapacity * columnCount entries`);
       }
     }
+    if (output.invalidRowCount) {
+      validateSinglePackedView(output.invalidRowCount, ['uint32'], `${id} output.invalidRowCount`);
+      validateRequirement(
+        id,
+        output.invalidRowCount.length >= 1,
+        'output.invalidRowCount must hold one row'
+      );
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.summary, output.regionSizes, output.regionWithinSumOfSquares, output.regionMeans],
+      [
+        output.summary,
+        output.regionSizes,
+        output.regionWithinSumOfSquares,
+        output.regionMeans,
+        output.invalidRowCount
+      ],
       [
         props.values,
         props.labels,
@@ -252,6 +291,7 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
       output.regionSizes,
       output.regionWithinSumOfSquares,
       output.regionMeans,
+      output.invalidRowCount,
       ...(weights ? getGPUSpatialWeightsOrChunksViews(weights) : [])
     ]);
     const rows = labels.length;
@@ -313,7 +353,11 @@ const LABELS: u32 = ${labelCapacity}u;`;
     const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rows);
     const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', rows);
     const sortedRows = createTransientView(graph, `${id}-sorted-rows`, 'uint32', rows);
-    // Key `labelCapacity` collects the ignored rows (out of range or unlabelled).
+    // The label every later kernel reads: the row's label when the row is used, 0xffffffff when
+    // it is unlabelled, out of range, or has a non-finite value in some column. A NaN that reached
+    // a sum would turn every statistic into NaN.
+    const usedLabels = createTransientView(graph, `${id}-used-labels`, 'uint32', rows);
+    // Key `labelCapacity` collects the ignored rows (out of range, unlabelled or non-finite).
     const keyBits = Math.max(1, Math.ceil(Math.log2(labelCapacity + 1)));
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
@@ -322,13 +366,21 @@ const LABELS: u32 = ${labelCapacity}u;`;
         variant: 'sort-keys',
         bindings: [
           {name: 'labels', view: labels, type: 'u32', access: 'read'},
+          {name: 'values', view: values, type: 'f32', access: 'read'},
           {name: 'sortKeys', view: sortKeys, type: 'u32', access: 'read_write'},
+          {name: 'usedLabels', view: usedLabels, type: 'u32', access: 'read_write'},
           {name: 'rowIds', view: rowIds, type: 'u32', access: 'read_write'}
         ],
         invocationCount: rows,
-        declarations,
+        declarations: `${declarations}
+${IS_FINITE_FLOAT_WGSL}`,
         body: `let label = labels[labelsOffset + index];
-  sortKeys[sortKeysOffset + index] = select(LABELS, label, label < LABELS);
+  var isUsed = label < LABELS;
+  for (var column = 0u; column < COLUMNS; column++) {
+    isUsed = isUsed && isFiniteFloat(values[valuesOffset + index * COLUMNS + column]);
+  }
+  sortKeys[sortKeysOffset + index] = select(LABELS, label, isUsed);
+  usedLabels[usedLabelsOffset + index] = select(0xffffffffu, label, isUsed);
   rowIds[rowIdsOffset + index] = index;`
       }),
       ...new GPUSort({
@@ -473,7 +525,8 @@ ${GET_NAN_WGSL}`,
             output: chunkLinks,
             bindings: [
               {name: 'neighbors', view: dispatch.weights.neighbors, type: 'u32', access: 'read'},
-              {name: 'labels', view: labels, type: 'u32', access: 'read'}
+              // The used labels: a link to or from a left-out row is not counted.
+              {name: 'labels', view: usedLabels, type: 'u32', access: 'read'}
             ],
             declarations: `${declarations}${dispatch.constantsWGSL ? `\n${dispatch.constantsWGSL}` : ''}
 fn getLoadBalancedContribution(row: u32, item: u32, lane: u32) -> vec2<u32> {
@@ -509,7 +562,8 @@ fn getLoadBalancedContribution(row: u32, item: u32, lane: u32) -> vec2<u32> {
     // the deviations about those means, and a short merge over the tiles.
     const rowTileCount = Math.ceil(rows / SUMMARY_TILE);
     const labelTileCount = Math.ceil(labelCapacity / SUMMARY_TILE);
-    const rowCounts = createTransientView(graph, `${id}-row-counts`, 'uint32', rowTileCount * 4);
+    // Per row tile: used rows, ignored rows, cross links, links, and ignored rows that had a label.
+    const rowCounts = createTransientView(graph, `${id}-row-counts`, 'uint32', rowTileCount * 5);
     const rowSums = createTransientView(
       graph,
       `${id}-row-sums`,
@@ -523,6 +577,12 @@ fn getLoadBalancedContribution(row: u32, item: u32, lane: u32) -> vec2<u32> {
       labelTileCount * 3
     );
     const labelWithin = createTransientView(graph, `${id}-label-within`, 'float32', labelTileCount);
+    const labelBetween = createTransientView(
+      graph,
+      `${id}-label-between`,
+      'float32',
+      labelTileCount
+    );
     const means = createTransientView(graph, `${id}-means`, 'float32', columnCount);
     const deviations = createTransientView(
       graph,
@@ -541,7 +601,8 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
         variant: 'row-tiles',
         bindings: [
           {name: 'values', view: values, type: 'f32', access: 'read'},
-          {name: 'labels', view: labels, type: 'u32', access: 'read'},
+          {name: 'labels', view: usedLabels, type: 'u32', access: 'read'},
+          {name: 'sourceLabels', view: labels, type: 'u32', access: 'read'},
           ...(links
             ? [{name: 'links', view: links, type: 'u32' as const, access: 'read' as const}]
             : []),
@@ -552,6 +613,7 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
         declarations: tileDeclarations,
         body: `var labelled = 0u;
   var ignored = 0u;
+  var invalid = 0u;
   var cross = 0u;
   var total = 0u;
   var sums: array<f32, ${columnCount}>;
@@ -565,47 +627,21 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
       }
     } else {
       ignored += 1u;
+      // Labelled in the input, so it was left out for a non-finite value.
+      invalid += select(0u, 1u, sourceLabels[sourceLabelsOffset + row] < LABELS);
     }
   }
-  rowCounts[rowCountsOffset + 4u * index] = labelled;
-  rowCounts[rowCountsOffset + 4u * index + 1u] = ignored;
-  rowCounts[rowCountsOffset + 4u * index + 2u] = cross;
-  rowCounts[rowCountsOffset + 4u * index + 3u] = total;
+  rowCounts[rowCountsOffset + 5u * index] = labelled;
+  rowCounts[rowCountsOffset + 5u * index + 1u] = ignored;
+  rowCounts[rowCountsOffset + 5u * index + 2u] = cross;
+  rowCounts[rowCountsOffset + 5u * index + 3u] = total;
+  rowCounts[rowCountsOffset + 5u * index + 4u] = invalid;
   for (var column = 0u; column < COLUMNS; column++) {
     rowSums[rowSumsOffset + index * COLUMNS + column] = sums[column];
   }`
       }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-label-tiles`,
-        operation: OPERATION,
-        variant: 'label-tiles',
-        bindings: [
-          {name: 'sizes', view: sizes, type: 'u32', access: 'read'},
-          {name: 'within', view: within, type: 'f32', access: 'read'},
-          {name: 'labelCounts', view: labelCounts, type: 'u32', access: 'read_write'},
-          {name: 'labelWithin', view: labelWithin, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: labelTileCount,
-        declarations: tileDeclarations,
-        body: `var regionCount = 0u;
-  var withinSsd = 0.0;
-  var minimumSize = 0xffffffffu;
-  var maximumSize = 0u;
-  let firstLabel = index * SUMMARY_TILE;
-  for (var label = firstLabel; label < min(firstLabel + SUMMARY_TILE, LABELS); label++) {
-    let size = sizes[sizesOffset + label];
-    if (size > 0u) {
-      regionCount += 1u;
-      withinSsd += within[withinOffset + label];
-      minimumSize = min(minimumSize, size);
-      maximumSize = max(maximumSize, size);
-    }
-  }
-  labelCounts[labelCountsOffset + 3u * index] = regionCount;
-  labelCounts[labelCountsOffset + 3u * index + 1u] = minimumSize;
-  labelCounts[labelCountsOffset + 3u * index + 2u] = maximumSize;
-  labelWithin[labelWithinOffset + index] = withinSsd;`
-      }),
+      // The overall column means come before the label tiles, which need them for the
+      // between-region sum of squares.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-means`,
         operation: OPERATION,
@@ -620,10 +656,56 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
         body: `var labelled = 0u;
   var sum = 0.0;
   for (var tile = 0u; tile < ROW_TILES; tile++) {
-    labelled += rowCounts[rowCountsOffset + 4u * tile];
+    labelled += rowCounts[rowCountsOffset + 5u * tile];
     sum += rowSums[rowSumsOffset + tile * COLUMNS + index];
   }
   means[meansOffset + index] = sum / max(f32(labelled), 1.0);`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-label-tiles`,
+        operation: OPERATION,
+        variant: 'label-tiles',
+        bindings: [
+          {name: 'sizes', view: sizes, type: 'u32', access: 'read'},
+          {name: 'within', view: within, type: 'f32', access: 'read'},
+          {name: 'regionSums', view: regionSums, type: 'f32', access: 'read'},
+          {name: 'means', view: means, type: 'f32', access: 'read'},
+          {name: 'labelCounts', view: labelCounts, type: 'u32', access: 'read_write'},
+          {name: 'labelWithin', view: labelWithin, type: 'f32', access: 'read_write'},
+          {name: 'labelBetween', view: labelBetween, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: labelTileCount,
+        declarations: tileDeclarations,
+        body: `var regionCount = 0u;
+  var withinSsd = 0.0;
+  var betweenSsd = 0.0;
+  var minimumSize = 0xffffffffu;
+  var maximumSize = 0u;
+  let firstLabel = index * SUMMARY_TILE;
+  for (var label = firstLabel; label < min(firstLabel + SUMMARY_TILE, LABELS); label++) {
+    let size = sizes[sizesOffset + label];
+    if (size > 0u) {
+      regionCount += 1u;
+      withinSsd += within[withinOffset + label];
+      // Between-region sum of squares in its direct form, n_k |mean_k - mean|^2. As
+      // total - within it is a difference of two large sums and is lost when the partition
+      // explains little.
+      let count = f32(size);
+      var squaredDistance = 0.0;
+      for (var column = 0u; column < COLUMNS; column++) {
+        let delta = regionSums[regionSumsOffset + label * COLUMNS + column] / count - means[meansOffset + column];
+        squaredDistance += delta * delta;
+      }
+      betweenSsd += count * squaredDistance;
+      minimumSize = min(minimumSize, size);
+      maximumSize = max(maximumSize, size);
+    }
+  }
+  labelCounts[labelCountsOffset + 3u * index] = regionCount;
+  labelCounts[labelCountsOffset + 3u * index + 1u] = minimumSize;
+  labelCounts[labelCountsOffset + 3u * index + 2u] = maximumSize;
+  labelWithin[labelWithinOffset + index] = withinSsd;
+  labelBetween[labelBetweenOffset + index] = betweenSsd;`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-deviation-tiles`,
@@ -631,7 +713,7 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
         variant: 'deviation-tiles',
         bindings: [
           {name: 'values', view: values, type: 'f32', access: 'read'},
-          {name: 'labels', view: labels, type: 'u32', access: 'read'},
+          {name: 'labels', view: usedLabels, type: 'u32', access: 'read'},
           {name: 'means', view: means, type: 'f32', access: 'read'},
           {name: 'deviations', view: deviations, type: 'f32', access: 'read_write'}
         ],
@@ -659,30 +741,46 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
           {name: 'rowCounts', view: rowCounts, type: 'u32', access: 'read'},
           {name: 'labelCounts', view: labelCounts, type: 'u32', access: 'read'},
           {name: 'labelWithin', view: labelWithin, type: 'f32', access: 'read'},
+          {name: 'labelBetween', view: labelBetween, type: 'f32', access: 'read'},
           {name: 'deviations', view: deviations, type: 'f32', access: 'read'},
-          {name: 'summary', view: output.summary, type: 'f32', access: 'read_write'}
+          {name: 'summary', view: output.summary, type: 'f32', access: 'read_write'},
+          ...(output.invalidRowCount
+            ? [
+                {
+                  name: 'invalidRowCount',
+                  view: output.invalidRowCount,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
         ],
         invocationCount: 1,
         declarations: `${tileDeclarations}
 ${GET_NAN_WGSL}`,
         body: `var regionCount = 0u;
   var withinSsd = 0.0;
+  var between = 0.0;
   var minimumSize = 0xffffffffu;
   var maximumSize = 0u;
   for (var tile = 0u; tile < LABEL_TILES; tile++) {
     regionCount += labelCounts[labelCountsOffset + 3u * tile];
     withinSsd += labelWithin[labelWithinOffset + tile];
+    between += labelBetween[labelBetweenOffset + tile];
     minimumSize = min(minimumSize, labelCounts[labelCountsOffset + 3u * tile + 1u]);
     maximumSize = max(maximumSize, labelCounts[labelCountsOffset + 3u * tile + 2u]);
   }
   var ignored = 0u;
+  var invalid = 0u;
   var cross = 0u;
   var total = 0u;
   for (var tile = 0u; tile < ROW_TILES; tile++) {
-    ignored += rowCounts[rowCountsOffset + 4u * tile + 1u];
-    cross += rowCounts[rowCountsOffset + 4u * tile + 2u];
-    total += rowCounts[rowCountsOffset + 4u * tile + 3u];
+    ignored += rowCounts[rowCountsOffset + 5u * tile + 1u];
+    cross += rowCounts[rowCountsOffset + 5u * tile + 2u];
+    total += rowCounts[rowCountsOffset + 5u * tile + 3u];
+    invalid += rowCounts[rowCountsOffset + 5u * tile + 4u];
   }
+  ${output.invalidRowCount ? 'invalidRowCount[invalidRowCountOffset] = invalid;' : ''}
   var totalSsd = 0.0;
   for (var column = 0u; column < COLUMNS; column++) {
     for (var tile = 0u; tile < ROW_TILES; tile++) {
@@ -691,7 +789,7 @@ ${GET_NAN_WGSL}`,
   }
   summary[summaryOffset + 0u] = f32(regionCount);
   summary[summaryOffset + 1u] = withinSsd;
-  summary[summaryOffset + 2u] = max(totalSsd - withinSsd, 0.0);
+  summary[summaryOffset + 2u] = between;
   summary[summaryOffset + 3u] = totalSsd;
   summary[summaryOffset + 4u] = f32(select(minimumSize, 0u, regionCount == 0u));
   summary[summaryOffset + 5u] = f32(maximumSize);
@@ -700,7 +798,6 @@ ${GET_NAN_WGSL}`,
   // Calinski-Harabasz: undefined below two regions or without more rows than regions.
   let labelledRows = f32(ROWS - ignored);
   let regions = f32(regionCount);
-  let between = max(totalSsd - withinSsd, 0.0);
   var pseudoF = getNaN();
   if (regionCount >= 2u && labelledRows > regions) {
     pseudoF = select(between * (labelledRows - regions) / (withinSsd * (regions - 1.0)), 1.0, withinSsd == 0.0);

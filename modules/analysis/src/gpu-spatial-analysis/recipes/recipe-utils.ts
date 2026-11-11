@@ -19,7 +19,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUCellFamily, GPUCellTable} from '../cell-aggregation/index';
 import {GPUCellTopology, getCellTopologyStride} from '../cell-topology/index';
@@ -144,7 +144,7 @@ export function addRecipeCountNodes<Parameters>(
     props.bindings.map(binding => binding.view)
   );
   for (const binding of props.bindings)
-    validatePackedView(binding.view, [binding.view.format], props.id);
+    validateSinglePackedView(binding.view, [binding.view.format], props.id);
   validateGraphOutputsDisjointFromInputs(
     props.id,
     props.bindings.filter(binding => binding.access !== 'read').map(binding => binding.view),

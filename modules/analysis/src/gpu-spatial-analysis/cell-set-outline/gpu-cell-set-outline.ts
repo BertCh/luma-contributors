@@ -20,7 +20,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {H3_BOUNDARY_WGSL} from '../cell-indexing/h3-boundary-wgsl';
@@ -206,7 +206,7 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
     };
     this.interiorSide = props.family === 'h3' ? 'left' : 'right';
     const {output} = props;
-    validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
+    validateSinglePackedView(props.cells, ['uint32x2'], `${id} cells`);
     const rows = props.cells.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one cell row`);
@@ -238,9 +238,9 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
     if (capacity < 1) {
       throw new Error(`${id} output capacity must be at least 1`);
     }
-    validatePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
+    validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
     validatePackedUint32View(output.edgeIndices, `${id} output.edgeIndices`);
-    validatePackedView(output.endpoints, ['float32x4'], `${id} output.endpoints`);
+    validateSinglePackedView(output.endpoints, ['float32x4'], `${id} output.endpoints`);
     for (const [name, length] of [
       ['cells', output.cells.length],
       ['edgeIndices', output.edgeIndices.length],

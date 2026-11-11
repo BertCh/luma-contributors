@@ -63,6 +63,8 @@ export function getGeneralizedSelectionNodes<Parameters>(
         inference: undefined,
         leaveOneOut: true,
         predictExcluded: false,
+        // The Bernoulli deviance is taken from the linear predictor (see the deviance node).
+        fittedScale: props.family === 'logistic' ? 'link' : 'response',
         parameters,
         output: {coefficients, fitted, status: {codes, iterationCount}}
       }).getCommandNodes(graph)
@@ -81,7 +83,15 @@ export function getGeneralizedSelectionNodes<Parameters>(
           {name: 'scores', view: fittedScore, type: 'f32', access: 'read_write'}
         ],
         declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,
-        body: `scores[scoresOffset + index] = getNaN(); if (codes[codesOffset + index] != 0u) { return; } let observed = response[responseOffset + index]; let mean = fitted[fittedOffset + index]; if (!isFiniteBits(mean) || !(mean > 0.0) ${props.family === 'logistic' ? '|| !(mean < 1.0)' : ''}) { return; } scores[scoresOffset + index] = ${props.family === 'poisson' ? '2.0 * (select(0.0, observed * log(max(observed, 1.0e-30) / mean), observed > 0.0) - observed + mean)' : '-2.0 * select(log(1.0 - mean), log(mean), observed == 1.0)'};`
+        // Poisson: unit deviance from the fitted mean. Logistic: `fitted` holds the linear
+        // predictor eta and the Bernoulli deviance is 2 log(1 + exp(-eta)) for a response of 1
+        // and 2 log(1 + exp(eta)) for 0, finite for every finite eta. The float32 fitted mean
+        // rounds to exactly 1 from eta of about 17, where -2 log(1 - mean) is infinite and
+        // -2 log(mean) is 0, so a mean cannot carry a confident prediction.
+        body:
+          props.family === 'poisson'
+            ? `scores[scoresOffset + index] = getNaN(); if (codes[codesOffset + index] != 0u) { return; } let observed = response[responseOffset + index]; let mean = fitted[fittedOffset + index]; if (!isFiniteBits(mean) || !(mean > 0.0)) { return; } scores[scoresOffset + index] = 2.0 * (select(0.0, observed * log(max(observed, 1.0e-30) / mean), observed > 0.0) - observed + mean);`
+            : `scores[scoresOffset + index] = getNaN(); if (codes[codesOffset + index] != 0u) { return; } let observed = response[responseOffset + index]; let linear = fitted[fittedOffset + index]; if (!isFiniteBits(linear)) { return; } let opposed = select(linear, -linear, observed == 1.0); scores[scoresOffset + index] = 2.0 * (max(opposed, 0.0) + log(1.0 + exp(-abs(opposed))));`
       })
     );
     nodes.push(

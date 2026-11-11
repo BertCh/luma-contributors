@@ -26,7 +26,7 @@ import {
   getStorageBindingElementLimit,
   validateCapacity,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -434,8 +434,8 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     const topologyShape = validateGPUNetworkTopology(id, props.topology, {
       nodePositions: true
     });
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     for (const [name, view] of [
       ['trackOffsets', props.trackOffsets],
       ['output.matchedEdges', output.matchedEdges],
@@ -449,7 +449,7 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
       ['output.traversedEdges.status.overflow', output.traversedEdges?.status?.overflow]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     for (const [name, view] of [
@@ -459,11 +459,15 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
       ['output.trackLogLikelihoods', output.trackLogLikelihoods]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
     if (output.snappedPositions) {
-      validatePackedView(output.snappedPositions, ['float32x2'], `${id} output.snappedPositions`);
+      validateSinglePackedView(
+        output.snappedPositions,
+        ['float32x2'],
+        `${id} output.snappedPositions`
+      );
     }
     this.pointCount = props.positions.length;
     this.trackCount = props.trackOffsets.length - 1;
@@ -548,11 +552,11 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
         ['routeTable.status.overflow', routeTable.status?.overflow]
       ] as const) {
         if (view) {
-          validatePackedView(view, ['uint32'], `${id} ${name}`);
+          validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         }
       }
-      validatePackedView(routeTable.costs, ['float32'], `${id} routeTable.costs`);
-      validatePackedView(routeTable.costLimit, ['float32'], `${id} routeTable.costLimit`);
+      validateSinglePackedView(routeTable.costs, ['float32'], `${id} routeTable.costs`);
+      validateSinglePackedView(routeTable.costLimit, ['float32'], `${id} routeTable.costLimit`);
       if (routeTable.offsets.length !== this.nodeCount + 1) {
         throw new Error(`${id} routeTable.offsets must contain nodeCount + 1 rows`);
       }

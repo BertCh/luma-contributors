@@ -7,16 +7,27 @@ description: Per-patch shape metrics and small-patch removal over dense label ra
 
 `GPURasterPatchMetrics` and `GPURasterSieve` are companions to upstream `GPURasterConnectedComponents` and
 `GPURasterDenseComponents` (`@luma.gl/graph/gpu-raster`). Both read dense labels (`0` is background) and take the same optional
-`validity`, `converged`, `componentCount`, and `overflow` guards as
-`GPURasterRegionMeasurements`; the sparse labels of `GPURasterConnectedComponents` must go through
+`mask` (an input row filter: zero turns the pixel into background), `converged`, `componentCount`,
+and `overflow` guards, the last three as in `GPURasterRegionMeasurements`; the sparse labels of `GPURasterConnectedComponents` must go through
 `GPURasterDenseComponents` first.
 
 - `GPURasterPatchMetrics` writes per-patch columns, where row `r` is label `r + 1`: `pixelCounts`,
   `areas`, `perimeterFaceCounts`, `perimeters` (length in CRS units through `grid.affine`), and the
   inclusive bounding box `minColumns`, `minRows`, `maxColumns`, `maxRows`. Faces on the raster
-  edge count as perimeter unless `countRasterBorder` is `false`. It also repeats the pixel count and
-  area so shape ratios (FRAGSTATS patch metrics, GRASS `r.object.geometry`) need one node set. All
-  sums are integer atomics, so results are exact and deterministic.
+  edge count as perimeter unless `countRasterBorder` is `false`. `cellSizeMode: 'geographic'` (degrees)
+  or `'web-mercator'` (EPSG:3857 meters) turns `areas` and `perimeters` into WGS84 ground square
+  meters and meters, with the scale taken at each row center (axis-aligned grids only; the
+  default `'uniform'` keeps CRS units). The optional `parameters` view (layout of
+  `getGPURasterFractionalCoverageParameterValues`; slots 1 and 5 are read, only with a non-uniform
+  `cellSizeMode`) supplies the row edges per frame; without it they are baked from `grid.affine`. It
+  also repeats the pixel count and area so shape ratios (FRAGSTATS patch metrics, GRASS
+  `r.object.geometry`) need one node set. Counts, extents and perimeter faces are integer atomics, so
+  they are exact. The ground sums are 64-bit fixed-point atomics, deterministic and independent of
+  pixel order, but **not exact**: each row's weight is rounded to a multiple of 2^-26 of the largest
+  scale the model can reach (equator for x, pole for y), a relative error of at most 2^-27 over the
+  row's weight, about 1e-7 at 60 degrees latitude and about 1e-5 at 89.95 degrees. A perimeter face
+  along a parallel is counted at its pixel's row center, so it differs from the geodesic length by a
+  second-order term (below 1e-4 for one-degree cells).
 - `GPURasterSieve` (GDAL `gdal_sieve`, GRASS `r.reclass.area`) removes patches smaller than
   `minimumPixels`. `mode: 'remove'` (default) turns them into background. `mode: 'merge'` gives each
   small patch the label of its largest neighbor that is not small (lowest label on ties; `connectivity`
@@ -28,7 +39,7 @@ description: Per-patch shape metrics and small-patch removal over dense label ra
 
 ```ts
 graph.add(new GPURasterPatchMetrics({
-  grid: rasterMetadata, labels: denseLabels, validity,
+  grid: rasterMetadata, labels: denseLabels, mask,
   status: {converged, componentCount, overflow}, // the labeling passes' status scalars
   output: {pixelCounts, areas, perimeters, minColumns, minRows, maxColumns, maxRows}
 }));

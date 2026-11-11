@@ -18,7 +18,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -107,7 +107,16 @@ export type GPUGeographicallyWeightedRegressionOutput = {
    * adjusted alpha corrects for the number of effective parameters (Da Silva and Fotheringham 2016).
    */
   significant?: GraphDataView<'uint32'>;
-  /** Optional local weighted R^2 per row (`1 - weighted RSS / weighted TSS`); NaN when undefined. */
+  /**
+   * Optional local weighted R^2 per row (`1 - weighted RSS / weighted TSS`); NaN when undefined.
+   * Both sums run over the rows `j` in the kernel of row `i` with the kernel weights of row `i`:
+   * the residual sum uses the prediction of local model `i` at row `j`,
+   * `sum_j w_ij (y_j - x_j' beta_i)^2`, and the total sum the weighted mean of `y` under the
+   * same weights. This is the definition of Fotheringham, Brunsdon and Charlton (2002) as
+   * implemented by spgwr; a definition that uses each row's own GWR residual `y_j - yhat_j`
+   * gives different values, so do not expect this output to equal another package's local R^2
+   * without checking which definition it uses.
+   */
   localR2?: GraphDataView<'float32'>;
   /** Optional fitted value `x_i^T beta_i` per row; NaN for excluded or singular rows. */
   fitted?: GraphDataView<'float32'>;
@@ -508,7 +517,7 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     this.candidateTableRowCount = isGoldenSection
       ? this.maximumSearchIterations + 1
       : (1 + this.refinementPassCount) * this.maximumBandwidthCount;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     this.rowCount = props.positions.length;
     if (this.rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -568,21 +577,21 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
         `${id} row state exceeds one storage binding; reduce rows, predictors or inference outputs`
       );
     }
-    validatePackedView(props.predictors, ['float32'], `${id} predictors`);
+    validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
     if (props.predictors.length !== this.rowCount * predictorCount) {
       throw new Error(`${id} predictors length must equal rows * predictorCount`);
     }
-    validatePackedView(props.response, ['float32'], `${id} response`);
+    validateSinglePackedView(props.response, ['float32'], `${id} response`);
     if (props.response.length !== this.rowCount) {
       throw new Error(`${id} response length must equal the row count`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     const parameterLength = getGPUGeographicallyWeightedRegressionParameterLength(
       this.maximumBandwidthCount
     );
@@ -622,9 +631,13 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
         continue;
       }
       if (uint32Outputs.has(name)) {
-        validatePackedView(view as GraphDataView<'uint32'>, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(
+          view as GraphDataView<'uint32'>,
+          ['uint32'],
+          `${id} output.${name}`
+        );
       } else {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
       }
       if (view.length < length) {
         throw new Error(`${id} output.${name} must hold at least ${length} values`);

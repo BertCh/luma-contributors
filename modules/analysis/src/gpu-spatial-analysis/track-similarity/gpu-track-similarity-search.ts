@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   doGraphDataViewsOverlap,
@@ -33,9 +32,13 @@ import {
   type TrackSimilaritySearchBoundMetric
 } from './track-similarity-search-bounds';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph,
-  validateGraphOutputsDisjointFromInputs
+  validateGraphOutputsDisjointFromInputs,
+  validateCapacity,
+  validateFiniteNumber,
+  validateRequirement,
+  validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Spatial contexts of the search: the same as {@link GPUTrackSimilarity}. */
@@ -142,51 +145,93 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
       props.metric === 'longest-common-subsequence'
         ? props.output.upperBound
         : props.output.lowerBound;
-    assert(value && bound);
+    validateRequirement(
+      this.id,
+      value !== undefined && bound !== undefined,
+      props.metric === 'longest-common-subsequence'
+        ? 'output.similarity and output.upperBound are required for longest-common-subsequence'
+        : 'output.distance and output.lowerBound are required'
+    );
     this.value = value;
     this.bound = bound;
-    assert(
-      Number.isFinite(Math.fround(props.lcssTolerance ?? 1)) && (props.lcssTolerance ?? 1) >= 0
-    );
+    validateFiniteNumber(this.id, 'lcssTolerance', props.lcssTolerance ?? 1, 0);
     for (const lines of [props.linesA, props.linesB ?? props.linesA]) {
-      validatePackedView(lines.positions, ['float32x2'], this.id);
-      validatePackedView(lines.lineOffsets, ['uint32'], this.id);
-      assert(lines.lineOffsets.length >= 1);
+      validateSinglePackedView(lines.positions, ['float32x2'], this.id);
+      validateSinglePackedView(lines.lineOffsets, ['uint32'], this.id);
+      validateRequirement(
+        this.id,
+        lines.lineOffsets.length >= 1,
+        'lineOffsets must have at least 1 row'
+      );
     }
-    for (const view of [props.pairA, props.pairB, props.output.matched, props.output.status]) {
-      validatePackedView(view, ['uint32'], this.id);
-      assert(view.length === props.pairA.length);
+    for (const [name, view] of [
+      ['pairA', props.pairA],
+      ['pairB', props.pairB],
+      ['output.matched', props.output.matched],
+      ['output.status', props.output.status]
+    ] as const) {
+      validateSinglePackedView(view, ['uint32'], this.id);
+      validateViewLength(this.id, name, view, props.pairA.length);
     }
-    for (const view of [this.value, this.bound]) {
-      validatePackedView(view, ['float32'], this.id);
-      assert(view.length === props.pairA.length);
+    const isSimilarity = props.metric === 'longest-common-subsequence';
+    for (const [name, view] of [
+      [isSimilarity ? 'output.similarity' : 'output.distance', this.value],
+      [isSimilarity ? 'output.upperBound' : 'output.lowerBound', this.bound]
+    ] as const) {
+      validateSinglePackedView(view, ['float32'], this.id);
+      validateViewLength(this.id, name, view, props.pairA.length);
     }
-    const capacity = props.survivorCapacity ?? props.pairA.length;
-    assert(Number.isInteger(capacity) && capacity >= 0 && capacity <= props.pairA.length);
+    validateCapacity(
+      this.id,
+      'survivorCapacity',
+      props.survivorCapacity ?? props.pairA.length,
+      0,
+      props.pairA.length
+    );
     if (props.output.survivorSummary) {
-      validatePackedView(props.output.survivorSummary, ['uint32'], this.id);
-      assert(props.output.survivorSummary.length === 3);
+      validateSinglePackedView(props.output.survivorSummary, ['uint32'], this.id);
+      validateViewLength(this.id, 'output.survivorSummary', props.output.survivorSummary, 3);
     }
     if (props.topK !== undefined) {
-      assert(Number.isInteger(props.topK) && props.topK > 0 && props.topK <= 1024);
-      assert(props.output.topKIndices && props.output.topKSummary);
-      validatePackedView(props.output.topKIndices, ['uint32'], this.id);
-      validatePackedView(props.output.topKSummary, ['uint32x2'], this.id);
-      assert(
-        props.output.topKIndices.length === (props.linesA.lineOffsets.length - 1) * props.topK
+      validateCapacity(this.id, 'topK', props.topK, 1, 1024);
+      validateRequirement(
+        this.id,
+        props.output.topKIndices !== undefined && props.output.topKSummary !== undefined,
+        'topK needs output.topKIndices and output.topKSummary'
       );
-      assert(props.output.topKSummary.length === props.linesA.lineOffsets.length - 1);
+      validateSinglePackedView(props.output.topKIndices, ['uint32'], this.id);
+      validateSinglePackedView(props.output.topKSummary, ['uint32x2'], this.id);
+      validateViewLength(
+        this.id,
+        'output.topKIndices',
+        props.output.topKIndices,
+        (props.linesA.lineOffsets.length - 1) * props.topK
+      );
+      validateViewLength(
+        this.id,
+        'output.topKSummary',
+        props.output.topKSummary,
+        props.linesA.lineOffsets.length - 1
+      );
     } else {
-      assert(!props.output.topKIndices && !props.output.topKSummary);
+      validateRequirement(
+        this.id,
+        !props.output.topKIndices && !props.output.topKSummary,
+        'output.topKIndices and output.topKSummary need topK'
+      );
     }
-    validatePackedView(props.threshold, ['float32'], this.id);
-    assert(props.threshold.length === 1);
+    validateSinglePackedView(props.threshold, ['float32'], this.id);
+    validateViewLength(this.id, 'threshold', props.threshold, 1);
     // Separate passes cannot preserve independently named outputs in overlapping storage.
     const outputs = Object.values(props.output).filter(
       (view): view is NonNullable<typeof view> => view !== undefined
     );
     for (const [index, output] of outputs.entries()) {
-      assert(!outputs.slice(0, index).some(previous => doGraphDataViewsOverlap(previous, output)));
+      validateRequirement(
+        this.id,
+        !outputs.slice(0, index).some(previous => doGraphDataViewsOverlap(previous, output)),
+        'outputs must not overlap each other'
+      );
     }
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.linesA.positions,

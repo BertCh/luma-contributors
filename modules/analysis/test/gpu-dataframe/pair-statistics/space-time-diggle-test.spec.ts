@@ -142,7 +142,10 @@ async function runDiggleTest(scene: SpaceTimeKScene, shape: Shape) {
  * Binary64 reference of the documented definition: the included events in row order, the swap-or-not
  * shuffle (its TypeScript twin, key `(seedLow, seedHigh)`, permutation number `p + 1`, the Diggle
  * Philox purpose) applied to their times, `K` of every permuted pattern from the K reference, and
- * the standardised residual sum.
+ * the sum of `D` over the classes, the statistic of splancs `stmctest`.
+ * `space-time-diggle-splancs.node.spec.ts` ties this K reference to a port of the splancs source,
+ * and `space-time-diggle-splancs.spec.ts` compares the kernel with that port directly. The mean
+ * and standard deviation per class are the optional diagnostic outputs.
  */
 function getDiggleReference(scene: SpaceTimeKScene, shape: Shape) {
   const options = {
@@ -152,7 +155,9 @@ function getDiggleReference(scene: SpaceTimeKScene, shape: Shape) {
     maximumTimeLag: MAXIMUM_TIME_LAG,
     distanceClassCount: shape.distanceClassCount,
     timeClassCount: shape.timeClassCount,
-    edgeCorrection: shape.edgeCorrection
+    edgeCorrection: shape.edgeCorrection,
+    // The Diggle test follows splancs at exact ties (the scenes here have none).
+    tieRule: 'splancs' as const
   };
   const observed = getSpaceTimeKReference({scene, ...options});
   const bins = shape.distanceClassCount * shape.timeClassCount;
@@ -191,15 +196,7 @@ function getDiggleReference(scene: SpaceTimeKScene, shape: Shape) {
         (shape.permutationCount - 1)
     );
   }
-  const getStatistic = (d: number[]) => {
-    let total = 0;
-    for (let bin = 0; bin < bins; bin++) {
-      if (deviation[bin] > 0) {
-        total += (d[bin] - mean[bin]) / deviation[bin];
-      }
-    }
-    return total;
-  };
+  const getStatistic = (d: number[]) => d.reduce((total, value) => total + value, 0);
   const statistics = [observed.d, ...permutedD].map(getStatistic);
   const permuted = statistics.slice(1);
   return {
@@ -209,7 +206,8 @@ function getDiggleReference(scene: SpaceTimeKScene, shape: Shape) {
     statistics,
     greater: permuted.filter(value => value >= statistics[0]).length,
     lesser: permuted.filter(value => value <= statistics[0]).length,
-    usedClasses: deviation.filter(value => value > 0).length
+    // The statistic sums every class.
+    usedClasses: bins
   };
 }
 
@@ -224,11 +222,21 @@ function expectDiggleMatches(
       1e-4 * scale
     );
   });
-  const statisticScale = Math.max(...reference.statistics.map(Math.abs));
+  // Each statistic is a sum of `bins` float32 differences `K - K_s K_t`.
   reference.statistics.forEach((value, index) => {
     expect(Math.abs(actual.statistics[index] - value), `statistic ${index}`).toBeLessThanOrEqual(
-      3e-3 * statisticScale
+      1e-4 * scale * actual.d.length
     );
+  });
+  // The diagnostic outputs: mean and sample standard deviation of D over the permutations.
+  reference.mean.forEach((value, bin) => {
+    expect(Math.abs(actual.permutationMean[bin] - value), `mean ${bin}`).toBeLessThanOrEqual(
+      1e-4 * scale
+    );
+    expect(
+      Math.abs(actual.permutationStandardDeviation[bin] - reference.deviation[bin]),
+      `standard deviation ${bin}`
+    ).toBeLessThanOrEqual(1e-4 * scale);
   });
   const summary = actual.summary;
   const permutations = shape.permutationCount;
@@ -305,9 +313,8 @@ it('GPUSpaceTimeDiggleTest is reproducible for a seed, changes with it and ignor
   expect(second.statistics).toEqual(first.statistics);
   const other = await runDiggleTest(scene, {...shape, seed: shape.seed + 1});
   expect(other.statistics.slice(1)).not.toEqual(first.statistics.slice(1));
-  // The observed statistic uses the permutation moments, which depend on the seed only through
-  // the permutations, so only its sign and size are comparable here.
-  expect(Number.isFinite(other.statistics[0])).toBe(true);
+  // The observed statistic is the sum of the observed D: it does not depend on the seed.
+  expect(other.statistics[0]).toBe(first.statistics[0]);
   // Row order changes which event is which rank, so permutations differ, but the observed D does not.
   const rows = scene.times.length;
   const order = Array.from({length: rows}, (_, index) => (index * 13 + 5) % rows);

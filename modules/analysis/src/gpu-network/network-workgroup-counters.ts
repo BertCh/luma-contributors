@@ -11,8 +11,8 @@ export type WorkgroupCounter = {
   target: string;
   /** Word of `target`, relative to its view. */
   word: number;
-  /** `'add'` (default) sums the rows' values; `'min'` keeps their minimum. */
-  operation?: 'add' | 'min';
+  /** `'add'` (default) sums the rows' values; `'min'` keeps their minimum, `'max'` their maximum. */
+  operation?: 'add' | 'min' | 'max';
 };
 
 /** Properties of {@link getWorkgroupCounterKernelSource}. @internal */
@@ -23,8 +23,8 @@ export type WorkgroupCounterKernelSourceProps = {
   rowCount: string;
   /**
    * WGSL statements of `fn processRow(index: u32)`. They may `return` early and call
-   * `addCounter(counter: u32, value: u32)` or `minCounter(counter: u32, value: u32)` instead of
-   * an atomic on a global word.
+   * `addCounter(counter: u32, value: u32)`, `minCounter(counter: u32, value: u32)` or
+   * `maxCounter(counter: u32, value: u32)` instead of an atomic on a global word.
    */
   rowSource: string;
 };
@@ -55,7 +55,12 @@ export function getWorkgroupCounterKernelSource(props: WorkgroupCounterKernelSou
     .join('\n    ');
   const flushes = counters
     .map((counter, index) => {
-      const atomic = counter.operation === 'min' ? 'atomicMin' : 'atomicAdd';
+      const atomic =
+        counter.operation === 'min'
+          ? 'atomicMin'
+          : counter.operation === 'max'
+            ? 'atomicMax'
+            : 'atomicAdd';
       return `let total${index} = atomicLoad(&workgroupCounters[${index}]);
     if (total${index} != ${getEmptyValue(counter)}) {
       ${atomic}(&${counter.target}[${counter.target}Offset + ${counter.word}u], total${index});
@@ -72,6 +77,11 @@ fn addCounter(counter: u32, value: u32) {
 }
 fn minCounter(counter: u32, value: u32) {
   atomicMin(&workgroupCounters[counter], value);
+}
+fn maxCounter(counter: u32, value: u32) {
+  if (value > 0u) {
+    atomicMax(&workgroupCounters[counter], value);
+  }
 }
 fn processRow(index: u32) {
   ${props.rowSource}

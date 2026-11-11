@@ -51,8 +51,8 @@ it('GPUSharedPaths#reports forward and backward runs along the left line', async
     ]
   );
   expect(result.count).toBe(2);
-  expect(result.leftLineIds).toEqual([0, 1]);
-  expect(result.rightLineIds).toEqual([0, 1]);
+  expect(result.leftSourceIds).toEqual([0, 1]);
+  expect(result.rightSourceIds).toEqual([0, 1]);
   expect(result.forward).toEqual([0, 1]);
   expect(result.runs).toEqual([
     [
@@ -87,8 +87,8 @@ it('GPUSharedPaths#matches Shapely shared_paths on lattice walks', async () => {
       const mine: Point[][] = [];
       result.runs.forEach((run, index) => {
         if (
-          result.leftLineIds[index] === reference.left &&
-          result.rightLineIds[index] === reference.right &&
+          result.leftSourceIds[index] === reference.left &&
+          result.rightSourceIds[index] === reference.right &&
           result.forward[index] === direction
         ) {
           mine.push(run);
@@ -162,11 +162,16 @@ it('GPUSharedPaths#reports overflow and keeps a consistent prefix', async () => 
   expect(limited.count).toBe(1);
   expect(limited.requiredCount).toBe(2);
   expect(limited.overflow).toBe(1);
+  // Run capacity is final: no candidate overflow.
+  expect(limited.candidateOverflow).toBe(0);
   const pairs = await runSharedPaths(device, left, right, {intersectionCapacity: 1});
   expect(pairs.overflow).toBe(1);
+  // The pair list is intermediate, so rule 9 reports it as candidateOverflow as well.
+  expect(pairs.candidateOverflow).toBe(1);
   const vertices = await runSharedPaths(device, left, right, {vertexCapacity: 3});
   expect(vertices.count).toBe(1);
   expect(vertices.overflow).toBe(1);
+  expect(vertices.candidateOverflow).toBe(0);
 });
 
 it('GPUSharedPaths#compiles within the default storage buffer limit', async () => {
@@ -212,7 +217,7 @@ it('GPUSharedPaths#sizes and writes long chains and shared tails without walking
   });
   expect(result.overflow).toBe(0);
   expect(result.count).toBe(2);
-  expect(result.rightLineIds).toEqual([0, 1]);
+  expect(result.rightSourceIds).toEqual([0, 1]);
   expect(result.forward).toEqual([1, 0]);
   expect(result.vertexCount).toBe(1200);
   for (const run of result.runs) {

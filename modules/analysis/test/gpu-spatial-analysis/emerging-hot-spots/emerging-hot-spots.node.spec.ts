@@ -313,6 +313,8 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
   expect(ids).toEqual([
     'eh-block-sums',
     'eh-mean',
+    'eh-block-deviations',
+    'eh-mean-correction',
     'eh-block-squares',
     'eh-deviation',
     'eh-gi-star',
@@ -330,8 +332,9 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
     createProps(defaultGraph, {id: 'eh'})
   ).getCommandNodes(defaultGraph);
   const defaultIds = defaultNodes.map(node => node.id);
-  expect(defaultIds.slice(0, 5)).toEqual(ids.slice(0, 5));
-  expect(defaultIds[5]).toBe('eh-p-values');
+  // Seven shared front nodes: sums, mean, deviations, mean correction, squares, deviation, Gi*.
+  expect(defaultIds.slice(0, 7)).toEqual(ids.slice(0, 7));
+  expect(defaultIds[7]).toBe('eh-p-values');
   expect(defaultIds.at(-2)).toBe('eh-slice-counts');
   expect(defaultIds.at(-1)).toBe('eh-mann-kendall');
   expect(defaultIds.length).toBeGreaterThan(7);
@@ -378,7 +381,8 @@ it('GPUEmergingHotSpots creates deterministic nodes', () => {
       values: createTransientView(countsGraph, 'counts', 'uint32', 60)
     })
   );
-  expect(counts.getCommandNodes(countsGraph)).toHaveLength(7);
+  // Seven nodes plus the two of the second-pass mean (block deviations, mean correction).
+  expect(counts.getCommandNodes(countsGraph)).toHaveLength(9);
   device.destroy();
 });
 

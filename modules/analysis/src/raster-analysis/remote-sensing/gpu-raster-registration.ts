@@ -23,7 +23,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo,
   validateRequirement,
   validateGraphViewsBelongToGraph,
@@ -50,8 +50,8 @@ export type GPURasterRegistrationProps = {
   moving: GraphDataView<'float32'>;
   /** Default periodic phase correlation, or zero-padded masked normalized correlation. */
   mode?: 'periodic' | 'masked-linear';
-  referenceValidity?: GraphDataView<'uint32'>;
-  movingValidity?: GraphDataView<'uint32'>;
+  referenceMask?: GraphDataView<'uint32'>;
+  movingMask?: GraphDataView<'uint32'>;
   /** Masked mode searches these nonnegative integer column/row shift bounds. */
   maximumShift?: readonly [number, number];
   minimumOverlapFraction?: number;
@@ -135,11 +135,8 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
     }
     validateRequirement(
       this.id,
-      !props.referenceValidity &&
-        !props.movingValidity &&
-        !props.maximumShift &&
-        !props.output.overlap,
-      "referenceValidity, movingValidity, maximumShift and output.overlap require mode 'masked-linear'"
+      !props.referenceMask && !props.movingMask && !props.maximumShift && !props.output.overlap,
+      "referenceMask, movingMask, maximumShift and output.overlap require mode 'masked-linear'"
     );
     validateRequirement(
       this.id,
@@ -178,7 +175,7 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
       props.moving,
       ...Object.values(props.output).filter(view => view !== undefined)
     ]) {
-      validatePackedView(view, [view.format], this.id);
+      validateSinglePackedView(view, [view.format], this.id);
       validateRequirement(this.id, view.length > 0, 'input and output views must not be empty');
     }
     const outputs = Object.values(props.output).filter(view => view !== undefined);

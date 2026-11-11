@@ -603,3 +603,19 @@ it.skipIf(!RUN_BENCHMARK)(
     expectIdenticalRuns(filtered, unfiltered, 'benchmark scene');
   }
 );
+
+// Math correctness review 2026-11-10, geometry-measures-09. The extent is 1000, so the lattice
+// scale is 2^19 and x = 16 + 2^-19 is the odd lattice value 2^23 + 1. The three points of row 0,
+// 1 and 2 are exactly collinear ((0, 0), (x, 3), (2x, 6)), so row 1 is not a hull vertex. The
+// kernel's `floor(d * scale + 0.5)` rounded 2^23 + 1.5 to the even 2^23 + 2 in f32, which pushed
+// row 1 one lattice step outside the edge and into the hull.
+it('GPUGroupConvexHull snaps odd lattice values above 2^23 to themselves', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const x = 16 + 2 ** -19;
+  const positions = new Float32Array([0, 0, x, 3, 2 * x, 6, 1000, 500]);
+  expect(Array.from(positions.subarray(2, 6))).toEqual([x, 3, 2 * x, 6]);
+  const result = await runHull(device, positions, new Uint32Array(4), 1);
+  expect(result.overflow).toBe(0);
+  expect(result.hulls[0]).toEqual([0, 2, 3]);
+});

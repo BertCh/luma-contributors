@@ -18,7 +18,10 @@ Floating catchment accessibility on any `GPUSpatialWeights` (the `access` packag
 `method: '2sfca'` or `'3sfca'`, with `supply`, `demand`, `facilityWeights` (row `j` lists the demand
 points `i` with weight `f(cost)`), optional `demandWeights` (row `i` lists facilities; it defaults to
 `facilityWeights`, which is only valid for symmetric self-join weights and is not checked) and the
-caller-owned `output: {accessibility, ratios?, reachableFacilities?}` (`GPUCatchmentAccessibilityOutput`).
+caller-owned `output: {accessibility, ratios?, reachableFacilities?, validity?}` (`GPUCatchmentAccessibilityOutput`).
+A demand row whose `demand` is NaN or infinite is missing: it adds nothing to any facility's ratio, and
+the optional `validity` output (`uint32` per demand row) is 0 for it and 1 otherwise, as in
+`GPUHuffTradeAreas`. Its own accessibility does not read its demand and stays valid.
 
 - 2SFCA: `R_j = S_j / sum_i P_i w_ji`, `A_i = sum_j w_ij R_j`.
 - 3SFCA (Wan, Zou and Sternberg 2012; PySAL `access` `three_stage_fca`) applies the selection weight
@@ -75,7 +78,10 @@ one row per facility), `demandWeights` (row `i` lists the facilities of demand `
 `output` (`GPUHuffTradeAreasOutput`) with the required `tradeArea` (`uint32` per demand row). Optional
 outputs are `probabilities` (one per `demandWeights` slot, aligned with `demandWeights.neighbors`),
 `tradeAreaProbability` (per demand row) and `expectedDemand`, `expectedDemand_j = sum_i P_i p_ij`, which
-needs `facilityWeights` (the transpose of `demandWeights`) and `demand`. Like `GPUCatchmentAccessibility` it reads weights only and has no
+needs `facilityWeights` (the transpose of `demandWeights`) and `demand`. A demand row whose `demand` is
+NaN or infinite is missing: as in `GPUCatchmentAccessibility` it adds nothing to `expectedDemand`, and
+the optional `validity` output (`uint32` per demand row, needs `demand`) is 0 for it and 1 otherwise.
+Like `GPUCatchmentAccessibility` it reads weights only and has no
 `spatialContext`. When both `demandWeights` and `facilityWeights` carry `spatialContext`, the contexts
 must be compatible; otherwise construction throws.
 
@@ -131,9 +137,12 @@ raster) and pass the two zone views, so H3 or hexagon rasters work too.
   Rows are targets and neighbors are sources, so the CSR invariants hold; it is a cross weights matrix.
 - Denominators (default change). `denominator` is one value for both kinds or
   `{extensive?, intensive?}`, and the default is `{extensive: 'zone', intensive: 'overlap'}`. `'zone'`
-  divides by the whole zone (tobler): the part of a source that falls outside the target system is not
+  divides by the whole zone (for extensive variables, tobler `area_interpolate` with
+  `allocate_total=False`): the part of a source that falls outside the target system is not
   moved onto the targets, and is now reported (below). `'overlap'` divides by the part overlapping the
-  other system. The intensive default is `'overlap'` because a target only partly covered by sources
+  other system (tobler's own default, `allocate_total=True`; tobler's intensive denominator is always
+  the overlap). The extensive default therefore differs from tobler's: a source half outside the
+  target system with value 100 transfers 50 here and 100 in tobler, unless `'overlap'` is passed. The intensive default is `'overlap'` because a target only partly covered by sources
   should be the mean of what covers it, not diluted toward zero; earlier versions used `'zone'` for both.
   Pass `denominator: 'zone'` to restore the old intensive result.
 - Mass-conservation diagnostics. `output.sourceAreas` (`sourceZoneCount` rows) is the raster area of each source
@@ -171,7 +180,7 @@ raster) and pass the two zone views, so H3 or hexagon rasters work too.
 
 Transfer the values with `GPUSpatialLag` over the area shares (its source count is the `values` row
 count, `sourceZoneCount`; `columnCount` transfers several variables at once). The tobler `area_interpolate` extensive and intensive results match to 1e-5 on
-grid-aligned zones.
+grid-aligned zones when `allocate_total` is set to match the denominator (`False` for `'zone'`, `True` for `'overlap'`).
 
 ```ts
 graph.add(new GPUArealInterpolation({
@@ -269,7 +278,8 @@ Segregation indices from a unit-by-group count table, aspatial or spatial (PySAL
   `[K * K]`) and optional per-unit views (`localEnvironment`, `localEntropy`, `localDissimilarity`,
   `localTheil`, per scale; they sum to the global indices).
 - `spatialForm: 'environment'` (default) is the Reardon and O'Sullivan (2004) form: `pi_im = x~_im / t~_i`
-  with `x~_im = selfWeight x_im + sum_j w_ij x_jm` replaces `p_im`, and the sums keep the unit populations
+  with `x~_im = selfWeight x_im + sum_j w_ij x_jm` (`j` over the active slots: positive weight, another
+  unit; a self slot in the weights is not read, so a unit is never counted twice) replaces `p_im`, and the sums keep the unit populations
   `t_i`. `'smoothed-population'` replaces the whole table by the smoothed table `x~` and runs the aspatial
   formulas on it, which equals PySAL's spatially implicit indices (PySAL also rounds the smoothed counts).
 - With `P_m = X_m / T`, `E = sum P ln(1 / P)`, `E_i = sum pi ln(1 / pi)` and `I = sum P (1 - P)`: Theil

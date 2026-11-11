@@ -362,7 +362,7 @@ const SCALE_COUNT: f32 = ${radii.lastIndex - radii.firstIndex}.0;`,
   let isValid = isFiniteValue(coarseValue);
   let fineValue = ${fine ? 'fine[fineOffset + index]' : '0.0'};
   let value = settings[settingsOffset] * (coarseValue - fineValue) / SCALE_COUNT;
-  relief[reliefOffset + index] = select(getNaN(index), value, isValid);
+  relief[reliefOffset + index] = select(getQuietNaN(index), value, isValid);
   ${output.outputValidity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
       })
     );

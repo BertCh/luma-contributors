@@ -20,7 +20,7 @@ import {
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createPublishNode,
@@ -173,11 +173,11 @@ export class GPUBoundsFilter implements GPUCommandNodeProducer {
     if (!['intersects', 'within', 'contains'].includes(this.mode)) {
       throw new Error(`${id} mode must be 'intersects', 'within' or 'contains'`);
     }
-    validatePackedView(props.bounds, ['float32x4'], `${id} bounds`);
+    validateSinglePackedView(props.bounds, ['float32x4'], `${id} bounds`);
     if (props.bounds.length < 1) {
       throw new Error(`${id} needs at least one bounds row`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_BOUNDS_FILTER_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_BOUNDS_FILTER_PARAMETER_LENGTH} float32 values`
@@ -188,7 +188,7 @@ export class GPUBoundsFilter implements GPUCommandNodeProducer {
       throw new Error(`${id} output.ids must contain at least one row`);
     }
     if (props.output.outputMask) {
-      validatePackedView(props.output.outputMask, ['uint32'], `${id} output.outputMask`);
+      validateSinglePackedView(props.output.outputMask, ['uint32'], `${id} output.outputMask`);
       if (props.output.outputMask.length !== props.bounds.length) {
         throw new Error(`${id} output.outputMask length must equal bounds length`);
       }

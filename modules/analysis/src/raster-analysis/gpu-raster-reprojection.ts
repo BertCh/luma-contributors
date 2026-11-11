@@ -45,8 +45,16 @@ export type GPURasterReprojectionProps = {
  * Destination-driven grid alignment/reprojection. Generates destination centers, projects them,
  * inverts the source affine, and samples one explicitly supplied complete source tile. Invalid
  * projection domains and absent source support remain nodata. Rotated/sheared affines are supported.
- * The optional projection uses float32 coordinates; use local coordinates for large projected
- * origins. The source tile must contain the entire requested interpolation support. This adapter
+ *
+ * Precision. Without `inverseProjection` the two affine origins are differenced in float64 on the
+ * CPU and the kernels work relative to the source origin, so grids with large projected origins
+ * (UTM northings) resolve the source pixel to float32 accuracy of the offset inside the tile, not
+ * of the absolute coordinate. With `inverseProjection` the destination centres are the float32
+ * input of the projection, so give `destinationGrid` a local frame (a small origin, with the
+ * offset to the absolute frame inside the projection program) and set the projection's
+ * `destinationOrigin` near the source grid origin: the projected result is relative to that
+ * origin and the kernel adds `destinationOrigin - sourceGrid origin`, differenced in float64.
+ * The source tile must contain the entire requested interpolation support. This adapter
  * does not select/fetch source tiles. Call destroy after the compiled graph to release projection
  * parameters when an inverseProjection is provided.
  */
@@ -121,6 +129,20 @@ export class GPURasterReprojection implements GPUCommandNodeProducer {
     const projectedValidity = props.inverseProjection
       ? createTransientView(graph, `${id}-projection-validity`, 'uint32', count)
       : undefined;
+    // Float32 holds a UTM northing to 0.5 m, so no absolute coordinate may reach the shader when
+    // it can be avoided. The origin differences are taken here in float64 and only the small
+    // remainder is written as a literal.
+    // - Same CRS: the destination centres are generated relative to the source origin.
+    // - With a projection: the centres are the projection's input, so they stay in the destination
+    //   frame (the caller keeps that frame local); the projected result is relative to
+    //   `destinationOrigin`, and the sampler adds `destinationOrigin - sourceOrigin` in one step.
+    const projectionOrigin = props.inverseProjection?.destinationOrigin;
+    const gridOrigin = projectionOrigin
+      ? [destination.affine[2], destination.affine[5]]
+      : [destination.affine[2] - source.affine[2], destination.affine[5] - source.affine[5]];
+    const sampleShift = projectionOrigin
+      ? [projectionOrigin[0] - source.affine[2], projectionOrigin[1] - source.affine[5]]
+      : [0, 0];
     const nodes: GPUCommandNode<Parameters>[] = [
       ...band.nodes,
       createWGSLKernelNode(graph, {
@@ -130,7 +152,7 @@ export class GPURasterReprojection implements GPUCommandNodeProducer {
         bindings: [
           {name: 'positions', view: destinationPositions, type: 'f32', access: 'read_write'}
         ],
-        body: `let column=f32(index%${destination.width}u)+${destination.pixelInterpretation === 'area' ? '0.5' : '0.0'};let row=f32(index/${destination.width}u)+${destination.pixelInterpretation === 'area' ? '0.5' : '0.0'};positions[positionsOffset+index*2u]=${destination.affine[0]}*column+${destination.affine[1]}*row+${destination.affine[2]};positions[positionsOffset+index*2u+1u]=${destination.affine[3]}*column+${destination.affine[4]}*row+${destination.affine[5]};`
+        body: `let column=f32(index%${destination.width}u)+${destination.pixelInterpretation === 'area' ? '0.5' : '0.0'};let row=f32(index/${destination.width}u)+${destination.pixelInterpretation === 'area' ? '0.5' : '0.0'};positions[positionsOffset+index*2u]=(${destination.affine[0]})*column+(${destination.affine[1]})*row+(${gridOrigin[0]});positions[positionsOffset+index*2u+1u]=(${destination.affine[3]})*column+(${destination.affine[4]})*row+(${gridOrigin[1]});`
       })
     ];
     if (props.inverseProjection) {
@@ -143,8 +165,9 @@ export class GPURasterReprojection implements GPUCommandNodeProducer {
       });
       nodes.push(...captureGraphCommandNodes(graph, () => this.projection!.addToGraph(graph)));
     }
+    // Every number below is parenthesized: a negative value after a minus sign would otherwise
+    // read as the WGSL decrement token (for example `x--120` for a western-hemisphere origin).
     const determinant = source.affine[0] * source.affine[4] - source.affine[1] * source.affine[3];
-    const origin = props.inverseProjection?.destinationOrigin ?? [0, 0];
     nodes.push(
       createWGSLKernelNode(graph, {
         id: `${id}-sample`,
@@ -168,7 +191,7 @@ export class GPURasterReprojection implements GPUCommandNodeProducer {
           {name: 'validity', view: props.output.validity, type: 'u32', access: 'read_write'}
         ],
         declarations: IS_FINITE_VALUE_WGSL,
-        body: `let x=positions[positionsOffset+index*2u]+${origin[0]}-${source.affine[2]};let y=positions[positionsOffset+index*2u+1u]+${origin[1]}-${source.affine[5]};let column=(${source.affine[4]}*x-${source.affine[1]}*y)/${determinant}-${source.pixelInterpretation === 'area' ? '0.5' : '0.0'};let row=(-${source.affine[3]}*x+${source.affine[0]}*y)/${determinant}-${source.pixelInterpretation === 'area' ? '0.5' : '0.0'};
+        body: `let x=positions[positionsOffset+index*2u]+(${sampleShift[0]});let y=positions[positionsOffset+index*2u+1u]+(${sampleShift[1]});let column=((${source.affine[4]})*x-(${source.affine[1]})*y)/(${determinant})-${source.pixelInterpretation === 'area' ? '0.5' : '0.0'};let row=(-(${source.affine[3]})*x+(${source.affine[0]})*y)/(${determinant})-${source.pixelInterpretation === 'area' ? '0.5' : '0.0'};
 var valid=isFiniteValue(column)&&isFiniteValue(row)${projectedValidity ? '&&projectionValidity[projectionValidityOffset+index]!=0u' : ''};var total=0.0;var weightSum=0.0;
 ${props.method === 'nearest' ? `let sampleColumn=i32(floor(column+0.5));let sampleRow=i32(floor(row+0.5));if(sampleColumn<0||sampleRow<0||sampleColumn>=${source.width}||sampleRow>=${source.height}){valid=false;}else{let sampleIndex=u32(sampleRow)*${source.width}u+u32(sampleColumn);valid=valid&&sourceValidity[sourceValidityOffset+sampleIndex]!=0u;total=source[sourceOffset+sampleIndex];weightSum=1.0;}` : `let baseColumn=i32(floor(column));let baseRow=i32(floor(row));let fraction=vec2<f32>(fract(column),fract(row));for(var rowOffset=0;rowOffset<2;rowOffset++){for(var columnOffset=0;columnOffset<2;columnOffset++){let weight=select(1.0-fraction.x,fraction.x,columnOffset==1)*select(1.0-fraction.y,fraction.y,rowOffset==1);if(weight==0.0){continue;}let sampleColumn=baseColumn+columnOffset;let sampleRow=baseRow+rowOffset;var sampleValid=sampleColumn>=0&&sampleRow>=0&&sampleColumn<${source.width}&&sampleRow<${source.height};if(sampleValid){let sampleIndex=u32(sampleRow)*${source.width}u+u32(sampleColumn);sampleValid=sourceValidity[sourceValidityOffset+sampleIndex]!=0u;if(sampleValid){total+=weight*source[sourceOffset+sampleIndex];weightSum+=weight;}}${props.noDataPolicy === 'renormalize' ? '' : 'valid=valid&&sampleValid;'}}}`}
 valid=valid&&weightSum>0.0;let result=total/max(weightSum,1.0e-30);valid=valid&&isFiniteValue(result);values[valuesOffset+index]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),result,valid);validity[validityOffset+index]=u32(valid);`

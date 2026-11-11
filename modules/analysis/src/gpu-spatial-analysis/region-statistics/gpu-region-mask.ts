@@ -22,7 +22,7 @@ import {
   getGraphViewChunks,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateGPUStatusPort,
@@ -81,6 +81,10 @@ export type GPURegionMaskProps = {
 /**
  * Writes a 0/1 source-aligned mask of points inside a per-frame rectangle or even-odd lasso
  * polygon, in world space or in screen pixels through a view-projection transform.
+ *
+ * Both region kinds are inclusive, as published `GPUPointSpatialQuery` is for bounds and polygons:
+ * a point exactly on the rectangle boundary, or on a lasso edge or vertex, is selected. The lasso
+ * decides "on an edge" and the side of an edge with exact orientation signs.
  */
 export class GPURegionMask implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -107,7 +111,7 @@ export class GPURegionMask implements GPUCommandNodeProducer {
     const {id} = this;
     const {positions, region, output} = props;
     for (const chunk of getGraphViewChunks(positions)) {
-      validatePackedView(chunk, ['float32x2'], `${id} positions`);
+      validateSinglePackedView(chunk, ['float32x2'], `${id} positions`);
     }
     validatePackedUint32View(output.mask, `${id} output.mask`);
     if (output.mask.length !== positions.length) {
@@ -118,12 +122,12 @@ export class GPURegionMask implements GPUCommandNodeProducer {
       throw new Error(`${id} output.status.overflow is required`);
     }
     if (region.kind === 'rectangle') {
-      validatePackedView(region.bounds, ['float32'], `${id} bounds`);
+      validateSinglePackedView(region.bounds, ['float32'], `${id} bounds`);
       if (region.bounds.length !== 4) {
         throw new Error(`${id} bounds must contain four float32 values`);
       }
     } else {
-      validatePackedView(region.vertices, ['float32x2'], `${id} vertices`);
+      validateSinglePackedView(region.vertices, ['float32x2'], `${id} vertices`);
       if (region.vertices.length < 3) {
         throw new Error(`${id} vertices must hold at least three vertices`);
       }
@@ -133,7 +137,7 @@ export class GPURegionMask implements GPUCommandNodeProducer {
       }
     }
     if (region.screenTransform) {
-      validatePackedView(region.screenTransform, ['float32'], `${id} screenTransform`);
+      validateSinglePackedView(region.screenTransform, ['float32'], `${id} screenTransform`);
       if (region.screenTransform.length !== GPU_REGION_SCREEN_TRANSFORM_LENGTH) {
         throw new Error(`${id} screenTransform must contain 20 float32 values`);
       }
@@ -230,10 +234,13 @@ fn readVertex(vertexIndex: u32) -> vec2f {
   return vec2f(shape[shapeOffset + vertexIndex * 2u], shape[shapeOffset + vertexIndex * 2u + 1u]);
 }
 ${EXACT_ORIENTATION_WGSL}
-// Even-odd crossing test (PNPOLY, half-open in y) with an exact side test: an edge that straddles
-// the point's y is crossed when the point lies strictly left of the upward edge (right of a
-// downward one), decided by the sign of the exact orientation rather than an f32 crossing x.
-// Points on an edge, and edges whose sign cannot be certified, count no crossing.
+// Inclusive even-odd test, the boundary rule of the rectangle region and of published
+// GPUPointSpatialQuery: a point on an edge or a vertex is inside. Elsewhere it is the crossing
+// test (PNPOLY, half-open in y) with an exact side test: an edge that straddles the point's y is
+// crossed when the point lies strictly left of the upward edge (right of a downward one), decided
+// by the sign of the exact orientation rather than an f32 crossing x. A point is on an edge when
+// it is inside the edge's bounding box and the exact orientation is zero. Edges whose sign cannot
+// be certified count no crossing and no boundary.
 fn isInsideRegion(point: vec2f) -> bool {
   let activeCount = min(vertexCount[vertexCountOffset], ${vertexCapacity}u);
   if (activeCount < 3u) { return false; }
@@ -241,9 +248,12 @@ fn isInsideRegion(point: vec2f) -> bool {
   var previous = readVertex(activeCount - 1u);
   for (var vertexIndex = 0u; vertexIndex < activeCount; vertexIndex++) {
     let current = readVertex(vertexIndex);
-    if ((current.y > point.y) != (previous.y > point.y)) {
+    let straddles = (current.y > point.y) != (previous.y > point.y);
+    let inBox = all(point >= min(previous, current)) && all(point <= max(previous, current));
+    if (straddles || inBox) {
       let sign = orientSign(previous, current, point);
-      if (sign != 2 && sign != 0 && (sign > 0) == (current.y > previous.y)) { inside = !inside; }
+      if (inBox && sign == 0) { return true; }
+      if (straddles && sign != 2 && sign != 0 && (sign > 0) == (current.y > previous.y)) { inside = !inside; }
     }
     previous = current;
   }

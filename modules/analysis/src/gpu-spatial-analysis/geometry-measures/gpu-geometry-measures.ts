@@ -14,7 +14,9 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView,
+  validatePowerOfTwo,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createFillNode,
@@ -42,7 +44,6 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {createSortedSegmentOffsetsNode} from '../../analysis-core/kernels/sorted-segment-offsets';
-import {assert} from '@luma.gl/core';
 import {COOPERATIVE_RING_ROWS} from './feature-measures-cooperative';
 import {
   createFeatureMeasuresNode,
@@ -201,7 +202,9 @@ export type GPUGeometryMeasuresProps = GPUGeometryMeasuresSharedProps &
  * **Geographic modes.** With linear edges, spherical area uses Chamberlain-Duquette (turf
  * parity), an approximation of degree-straight edges with second-order error in latitude span.
  * With `edgeModel: 'great-circle'` and metric `'great-circle'`, area uses signed spherical excess
- * on the context sphere (`sphere-polygon`). Perimeter uses great-circle chords in both modes.
+ * on the context sphere (`sphere-polygon`), summed per edge as the Lambert chord term from the
+ * feature origin less the bulge of the great-circle arc over that chord, so small rings keep
+ * the relative precision of large ones. Perimeter uses great-circle chords in both modes.
  * Ellipsoidal modes retain `ellipsoidalEdgeModel`. Polygon centroids use the straight Lambert
  * equal-area edges even when area follows great circles or ellipsoidal geodesics.
  *
@@ -285,20 +288,22 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       throw new Error(`${id} geometryType must be 'lines', 'polygons' or 'points'`);
     }
     validateCapacity(id, 'cooperativeRingRows', this.cooperativeRingRows, 0);
-    // The radius comes from a validated spatial context.
-    assert(
+    validateRequirement(
+      id,
       props.geodesicAreaTolerance === undefined ||
-        (Number.isFinite(props.geodesicAreaTolerance) && props.geodesicAreaTolerance > 0)
+        (Number.isFinite(props.geodesicAreaTolerance) && props.geodesicAreaTolerance > 0),
+      'geodesicAreaTolerance must be a positive finite number'
     );
+    // The per-edge subdivision is a power-of-two private array of at most 256 segments.
     const maximumSegments = props.geodesicAreaMaximumSegments ?? 256;
-    assert(
-      Number.isInteger(maximumSegments) &&
-        maximumSegments >= 2 &&
-        maximumSegments <= 256 &&
-        (maximumSegments & (maximumSegments - 1)) === 0
+    validatePowerOfTwo(id, 'geodesicAreaMaximumSegments', maximumSegments, 2, 256);
+    // The radius comes from a validated spatial context.
+    validateRequirement(
+      id,
+      Number.isFinite(this.radius) && this.radius > 0,
+      'spatialContext sphere radius must be a positive finite number'
     );
-    assert(Number.isFinite(this.radius) && this.radius > 0);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
@@ -306,7 +311,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     for (const name of ['ringOffsets', 'featureOffsets', 'polygonOffsets'] as const) {
       const view = layout[name];
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length < 2) {
           throw new Error(`${id} ${name} must contain at least two rows`);
         }
@@ -321,7 +326,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     validateMeasureColumns(id, 'output', output, this.featureCount, isPolygon);
     const hasGroupOutput = Object.values(groupOutput).some(Boolean);
     if (props.groupIds) {
-      validatePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
+      validateSinglePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
       if (props.groupIds.length !== this.featureCount) {
         throw new Error(`${id} groupIds length must equal the feature count`);
       }
@@ -335,7 +340,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     }
     const invalidCount = status?.invalidCount;
     if (invalidCount) {
-      validatePackedView(invalidCount, ['uint32'], `${id} output.status.invalidCount`);
+      validateSinglePackedView(invalidCount, ['uint32'], `${id} output.status.invalidCount`);
       if (invalidCount.length < 1) {
         throw new Error(`${id} output.status.invalidCount must contain one uint32 row`);
       }
@@ -657,7 +662,7 @@ function validateMeasureColumns(
     if (!(column in formats) || (name === 'groupOutput' && column === 'extremeVertices')) {
       throw new Error(`${id} ${name}.${column} is not a measure column`);
     }
-    validatePackedView(view, [formats[column]], `${id} ${name}.${column}`);
+    validateSinglePackedView(view, [formats[column]], `${id} ${name}.${column}`);
     if (view.length !== rowCount) {
       throw new Error(`${id} ${name}.${column} must hold ${rowCount} rows`);
     }

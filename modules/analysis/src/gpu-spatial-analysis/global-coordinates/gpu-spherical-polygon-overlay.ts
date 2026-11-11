@@ -18,7 +18,7 @@ import {
 } from '../polygon-overlay/gpu-polygon-overlay';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
@@ -109,8 +109,8 @@ export class GPUSphericalPolygonOverlay implements GPUCommandNodeProducer {
       props.right.positions,
       props.output.geometry.positions
     ])
-      validatePackedView(view, ['float32x3'], this.id);
-    validatePackedView(props.output.complement, ['uint32'], this.id);
+      validateSinglePackedView(view, ['float32x3'], this.id);
+    validateSinglePackedView(props.output.complement, ['uint32'], this.id);
     validateRequirement(
       this.id,
       props.output.complement.length === 1,
@@ -122,7 +122,6 @@ export class GPUSphericalPolygonOverlay implements GPUCommandNodeProducer {
       geometry.ringOffsets,
       geometry.polygonOffsets,
       geometry.featureOffsets,
-      geometry.sourceIds,
       ...Object.values(props.output.status),
       props.output.boundary.endpoints,
       props.output.boundary.operandIds,

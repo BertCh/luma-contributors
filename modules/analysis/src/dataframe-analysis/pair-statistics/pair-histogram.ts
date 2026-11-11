@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
+import {
+  validateCapacity,
+  validateMaximumCount
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -122,8 +125,8 @@ export function validatePairHistogramShape(
   channelCount: number
 ): void {
   // Contributors validate their own counts before building a histogram.
-  assert(Number.isInteger(slotCount) && slotCount >= 1);
-  assert(Number.isInteger(channelCount) && channelCount >= 1);
+  validateCapacity(id, 'slotCount', slotCount, 1);
+  validateCapacity(id, 'channelCount', channelCount, 1);
   if (slotCount * channelCount > PAIR_HISTOGRAM_MAXIMUM_ACCUMULATORS) {
     throw new Error(
       `${id} needs at most ${PAIR_HISTOGRAM_MAXIMUM_ACCUMULATORS} histogram accumulators (bins x channels)`
@@ -165,7 +168,7 @@ export function getPairHistogramNodes<Parameters>(
   validatePairHistogramShape(id, slotCount, channelCount);
   const extraBindings = props.extraBindings ?? [];
   // The kernel declares three extra binding slots.
-  assert(extraBindings.length <= 3);
+  validateMaximumCount(id, 'extraBindings length', extraBindings.length, 3);
   const accumulatorCount = slotCount * channelCount;
   const accumulators = createTransientView(
     graph,

@@ -1617,7 +1617,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   GPUSpaceTimeDiggleTest: {
     package: `${PACKAGE}/dataframe-analysis`,
     summary:
-      'Diggle, Chetwynd, Haggkvist and Morris (1995) Monte Carlo test for space-time interaction: the standardised sum of D(u, v) over random relabellings of the event times.',
+      'Diggle, Chetwynd, Haggkvist and Morris (1995) Monte Carlo test for space-time interaction: the sum of D(u, v) over the grid of distance and time classes, compared with random relabellings of the event times.',
     tests: 'modules/analysis/test/gpu-dataframe/pair-statistics/space-time-diggle-test.spec.ts',
     documentation: 'docs/api/gpu-spatial-analysis/space-time-density-and-k-function.md',
     dimensionality: '2d+time'

@@ -20,10 +20,14 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
+  FIXED_POINT_WGSL,
+  getFixedPointHeadroomBits
+} from '../../analysis-core/kernels/fixed-point-accumulator';
+import {
   getStorageBindingElementLimit,
   validateCapacity,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
@@ -156,8 +160,12 @@ export type GPUNetworkCoarseningProps = {
    */
   groupCapacity: number;
   /**
-   * Power-of-two scale of the 64-bit fixed-point accumulators used for weight, position and value
-   * sums. Default 65536. Each addend is rounded to a multiple of `1 / fixedPointScale`.
+   * Optional fixed unit of the 64-bit fixed-point accumulators used for weight, position and value
+   * sums: a power of two, and each addend is rounded to a multiple of `1 / fixedPointScale`.
+   * Omitted (the default), the unit of each family of sums follows the data, as in the shared
+   * fixed-point accumulator: it is a power of two derived on the GPU from the largest term that
+   * is summed, so small weights (kilometres, hours, probabilities) are not rounded away. Set it
+   * only to pin the rounding step, for example 65536 for the step this contributor used before.
    */
   fixedPointScale?: number;
   /** Caller-owned outputs. */
@@ -200,34 +208,60 @@ const GROUP_ACC_STRIDE = 10;
 /** Sorted slots folded per invocation when accumulating superedge counts and weights. */
 const SEGMENT_RUN_LENGTH = 16;
 const WORD = GPU_NETWORK_COARSENING_SUMMARY_WORD;
+/**
+ * Words of the internal statistics view after the summary words: the largest biased float32
+ * exponent of the terms of each family of sums, from which the unit of that family follows.
+ */
+const SCALE_WORD = {
+  positions: GPU_NETWORK_COARSENING_SUMMARY_LENGTH,
+  values: GPU_NETWORK_COARSENING_SUMMARY_LENGTH + 1,
+  weights: GPU_NETWORK_COARSENING_SUMMARY_LENGTH + 2
+} as const;
+const STATISTICS_LENGTH = GPU_NETWORK_COARSENING_SUMMARY_LENGTH + 3;
+/** Biased float32 exponent of 1.0, the only term of an unweighted sum. */
+const UNIT_WEIGHT_EXPONENT_BITS = 127;
 
-/** Shared WGSL for the 64-bit signed fixed-point accumulators. */
-function getFixedPointSource(scale: number): string {
-  return `const SCALE: f32 = ${scale}.0;
-const TWO_32: f32 = 4294967296.0;
-const FIXED_LIMIT: f32 = 4.0e18;
-fn quantize(value: f32) -> vec2<u32> {
-  let negative = value < 0.0;
-  let x = min(round(abs(value) * SCALE), FIXED_LIMIT);
-  let highFloat = floor(x / TWO_32);
-  var low = u32(x - highFloat * TWO_32);
-  var high = u32(highFloat);
-  if (negative) {
-    low = ~low + 1u;
-    high = ~high + select(0u, 1u, low == 0u);
+/**
+ * Shared WGSL for the 64-bit signed fixed-point accumulators. Quantizing, the unit and decoding
+ * are those of the shared fixed-point accumulator (`FIXED_POINT_WGSL`: integer bit manipulation,
+ * round to nearest with ties to even, correctly rounded decode). A sum is stored in two words
+ * here instead of three, so the unit is 2^32 times the shared one: every term is below
+ * 2^(63 - headroomBits) units and no sum of at most 2^headroomBits - 1 terms can overflow.
+ */
+function getFixedPointSource(saturates: boolean): string {
+  // With a data-derived unit no term can leave the two stored words. With a fixed unit
+  // (`fixedPointScale`) a large term can: it saturates at the float32 nearest 4e18 units, with
+  // its sign, as this contributor's fixed scale always did, instead of wrapping into the sign
+  // bit or vanishing. An infinite term saturates too; NaN adds nothing.
+  const saturationUnits = BigInt(Math.fround(4.0e18));
+  const quantizeSource = saturates
+    ? `const SATURATION_LOW: u32 = ${saturationUnits & 0xffffffffn}u;
+const SATURATION_HIGH: u32 = ${saturationUnits >> 32n}u;
+fn quantize(value: f32, unitExponent: i32) -> vec2<u32> {
+  let wide = quantizeFixedPoint(abs(value), unitExponent);
+  var magnitude = wide.xy;
+  let isInfinite = (bitcast<u32>(value) & 0x7fffffffu) == 0x7f800000u;
+  if (isInfinite || wide.z != 0u || wide.y > SATURATION_HIGH ||
+      (wide.y == SATURATION_HIGH && wide.x > SATURATION_LOW)) {
+    magnitude = vec2<u32>(SATURATION_LOW, SATURATION_HIGH);
   }
-  return vec2<u32>(low, high);
+  if (value < 0.0) {
+    let low = ~magnitude.x + 1u;
+    magnitude = vec2<u32>(low, ~magnitude.y + select(0u, 1u, low == 0u));
+  }
+  return magnitude;
+}`
+    : `fn quantize(value: f32, unitExponent: i32) -> vec2<u32> {
+  return quantizeFixedPoint(value, unitExponent).xy;
+}`;
+  return `${FIXED_POINT_WGSL}
+fn getSumUnitExponent(maximumExponentBits: u32, headroomBits: u32) -> i32 {
+  return getFixedPointUnitExponent(maximumExponentBits, headroomBits) + 32;
 }
-fn dequantize(low: u32, high: u32) -> f32 {
-  let negative = (high & 0x80000000u) != 0u;
-  var magnitudeLow = low;
-  var magnitudeHigh = high;
-  if (negative) {
-    magnitudeLow = ~low + 1u;
-    magnitudeHigh = ~high + select(0u, 1u, magnitudeLow == 0u);
-  }
-  let magnitude = f32(magnitudeHigh) * TWO_32 + f32(magnitudeLow);
-  return select(magnitude, -magnitude, negative) / SCALE;
+${quantizeSource}
+fn dequantize(low: u32, high: u32, unitExponent: i32) -> f32 {
+  let signWord = select(0u, 0xffffffffu, (high & 0x80000000u) != 0u);
+  return getFixedPointFloat(vec3<u32>(low, high, signWord), unitExponent);
 }
 ${GET_ORDERED_KEY_WGSL}${DECODE_ORDERED_KEY_WGSL}`;
 }
@@ -257,12 +291,21 @@ function getFixedPointAddSource(array: string, index: string, quantized: string)
  *
  * Exactness. Node, intra and edge counts are `u32` atomics, so they are integer exact. Every sum
  * (weights, positions, values) is accumulated as a two-word signed 64-bit fixed-point integer
- * (`round(value * fixedPointScale)`, carry propagated between two `atomicAdd`s). Integer addition
- * is order independent, so sums are bitwise reproducible; they differ from an exact real sum only
- * by the per-addend rounding to `1 / fixedPointScale` and clamp at about `4e18 / fixedPointScale`.
- * The single final conversion to `float32` (`sum / scale`, then `/ count` for centroids) is
- * identical on every run. Bounds use ordered-integer `atomicMin`/`atomicMax`, so they are exact.
- * Inputs must be finite. Sums wrap at `2^63 / fixedPointScale` in total.
+ * (carry propagated between two `atomicAdd`s). Integer addition is order independent, so sums are
+ * bitwise reproducible. The unit, the rounding of each addend (nearest, ties to even, by integer
+ * bit manipulation) and the correctly rounded conversion back to `float32` are those of the
+ * shared fixed-point accumulator (`analysis-core/kernels/fixed-point-accumulator.ts`); only the
+ * storage is two words instead of three. By default the unit of each family of sums is
+ * `2^(E + 1 + h - 63)`, where `2^(E + 1)` bounds the largest term that is summed (reduced on the
+ * GPU over the live nodes, or over the counted slots between valid groups) and `h` is the bit
+ * length of the node or slot count, so no sum can overflow. A term keeps all 24 significand bits
+ * while it is at least `2^(h - 39)` of the largest; a smaller one is rounded to the unit, an
+ * error of at most `2^(h - 63)` of the largest term per addend. With `fixedPointScale` the unit
+ * is the fixed `1 / fixedPointScale` instead: each addend is rounded to that step and saturates,
+ * with its sign, at the float32 nearest `4e18` steps (about `6.1e13` at 65536; an infinite addend
+ * saturates too), and sums wrap at `2^63 / fixedPointScale` in total. Centroids divide the
+ * decoded sum by the count. Bounds use ordered-integer `atomicMin`/`atomicMax`, so they are
+ * exact. NaN inputs add nothing; with a data-derived unit infinite inputs add nothing either.
  *
  * Superedges use sort-and-segment: each counted inter-group slot gets the key `a * groupCapacity +
  * b` (`a < b` for undirected edges), keys sort with the stable radix `GPUSort`, a scan numbers the
@@ -291,7 +334,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     const {id} = this;
     const {output} = props;
     const topologyShape = validateGPUNetworkTopology(id, props.topology);
-    validatePackedView(props.labels, ['uint32'], `${id} labels`);
+    validateSinglePackedView(props.labels, ['uint32'], `${id} labels`);
     this.nodeCount = topologyShape.nodeCount;
     const {nodeCount} = this;
     if (topologyShape.edgeCount < 1) {
@@ -306,8 +349,9 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       1,
       GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY
     );
-    const scale = props.fixedPointScale ?? 65536;
-    validatePowerOfTwo(id, 'fixedPointScale', scale, 1, 2 ** 24);
+    if (props.fixedPointScale !== undefined) {
+      validatePowerOfTwo(id, 'fixedPointScale', props.fixedPointScale, 1, 2 ** 24);
+    }
     const rowChecks: [string, GraphDataView | undefined, number, readonly string[]][] = [
       ['nodeMask', props.nodeMask, nodeCount, ['uint32']],
       ['labels', props.labels, nodeCount, ['uint32']],
@@ -324,7 +368,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, formats as any, `${id} ${name}`);
+      validateSinglePackedView(view, formats as any, `${id} ${name}`);
       if (view.length !== length) {
         throw new Error(`${id} ${name} must contain exactly ${length} rows`);
       }
@@ -350,13 +394,13 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, formats as any, `${id} ${name}`);
+      validateSinglePackedView(view, formats as any, `${id} ${name}`);
       if (view.length !== this.edgeCapacity) {
         throw new Error(`${id} ${name} must match output.edges.ids length`);
       }
     }
     if (props.output.summary) {
-      validatePackedView(props.output.summary, ['uint32'], `${id} output.summary`);
+      validateSinglePackedView(props.output.summary, ['uint32'], `${id} output.summary`);
       if (props.output.summary.length !== GPU_NETWORK_COARSENING_SUMMARY_LENGTH) {
         throw new Error(
           `${id} output.summary must contain exactly ${GPU_NETWORK_COARSENING_SUMMARY_LENGTH} rows`
@@ -412,7 +456,35 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     }
     const slotCount = props.topology.neighbors.length;
     const directed = Boolean(props.directed);
-    const scale = props.fixedPointScale ?? 65536;
+    // Unit of the fixed-point sums. Without `fixedPointScale` it follows the data: the largest
+    // exponent of the terms that are summed is reduced on the GPU into a scale word. With
+    // `fixedPointScale` it is the fixed `1 / fixedPointScale`.
+    const usesDataUnit = props.fixedPointScale === undefined;
+    const fixedUnitExponent = usesDataUnit ? 0 : -Math.log2(props.fixedPointScale as number);
+    const needsWeightScale = usesDataUnit && Boolean(props.topology.weights);
+    /** WGSL `i32` expression of the unit exponent of one family of sums. */
+    const getUnitExponentSource = (
+      scaleWord: number | undefined,
+      maximumTermCount: number,
+      statsAccess: 'atomic' | 'plain'
+    ): string => {
+      if (!usesDataUnit) {
+        return `${fixedUnitExponent}`;
+      }
+      const exponentBits =
+        scaleWord === undefined
+          ? `${UNIT_WEIGHT_EXPONENT_BITS}u`
+          : statsAccess === 'atomic'
+            ? `atomicLoad(&stats[statsOffset + ${scaleWord}u])`
+            : `stats[statsOffset + ${scaleWord}u]`;
+      return `getSumUnitExponent(${exponentBits}, ${getFixedPointHeadroomBits(maximumTermCount)}u)`;
+    };
+    const getWeightUnitExponentSource = (statsAccess: 'atomic' | 'plain') =>
+      getUnitExponentSource(
+        props.topology.weights ? SCALE_WORD.weights : undefined,
+        props.topology.neighbors.length,
+        statsAccess
+      );
     const sentinelKey = groupCapacity * groupCapacity;
     const hasPositions = Boolean(props.topology.nodePositions);
     const hasValues = Boolean(props.nodeValues);
@@ -425,7 +497,10 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     const effectiveLabels = u32('effective-labels', nodeCount);
     const groupAcc = u32('group-acc', groupCapacity * GROUP_ACC_STRIDE);
     const intraAcc = hasIntra ? u32('intra-acc', groupCapacity * 3) : undefined;
-    const stats = props.output.summary ?? u32('stats', GPU_NETWORK_COARSENING_SUMMARY_LENGTH);
+    // The summary words, then the scale words of the sums. The kernels that sum already bind this
+    // view (and the device limit of storage buffers), so the scale words ride in it; the summary
+    // words are copied to `output.summary` at the end.
+    const stats = u32('stats', STATISTICS_LENGTH);
     const sortKeys = u32('sort-keys', slotCount);
     const sortIndices = u32('sort-indices', slotCount);
     const sortedKeys = u32('sorted-keys', slotCount);
@@ -493,6 +568,65 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
   groupAcc[groupAccOffset + base + 9u] = 0u;`
       })
     );
+
+    // Scale words of the position and value sums: the largest exponent over the nodes that are
+    // summed (live, with a label below the group capacity). A masked or overflowed node, however
+    // large its coordinates, does not coarsen the unit.
+    if (usesDataUnit && (hasPositions || hasValues)) {
+      const scaleBindings: WGSLKernelBinding[] = [
+        {name: 'labels', view: props.labels, type: 'u32', access: 'read'}
+      ];
+      if (props.nodeMask) {
+        scaleBindings.push({name: 'vertexMask', view: props.nodeMask, type: 'u32', access: 'read'});
+      }
+      if (props.topology.nodePositions) {
+        scaleBindings.push({
+          name: 'positions',
+          view: props.topology.nodePositions,
+          type: 'f32',
+          access: 'read'
+        });
+      }
+      if (props.nodeValues) {
+        scaleBindings.push({name: 'values', view: props.nodeValues, type: 'f32', access: 'read'});
+      }
+      scaleBindings.push({name: 'stats', view: stats, type: 'atomic<u32>', access: 'read_write'});
+      const nodeScaleCounters = getWorkgroupCounterKernelSource({
+        counters: [
+          {target: 'stats', word: SCALE_WORD.positions, operation: 'max'},
+          {target: 'stats', word: SCALE_WORD.values, operation: 'max'}
+        ],
+        rowCount: 'NODE_COUNT',
+        rowSource: `${props.nodeMask ? 'if (vertexMask[vertexMaskOffset + index] == 0u) { return; }' : ''}
+  if (labels[labelsOffset + index] >= GROUP_CAPACITY) {
+    return;
+  }
+  ${
+    hasPositions
+      ? `maxCounter(0u, max(
+    getFixedPointExponentBits(positions[positionsOffset + 2u * index]),
+    getFixedPointExponentBits(positions[positionsOffset + 2u * index + 1u])));`
+      : ''
+  }
+  ${hasValues ? 'maxCounter(1u, getFixedPointExponentBits(values[valuesOffset + index]));' : ''}`
+      });
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-node-sum-scale`,
+          operation: OPERATION,
+          variant: 'node-sum-scale',
+          bindings: scaleBindings,
+          invocationCount: nodeCount,
+          workgroupSize: WORKGROUP_COUNTER_WORKGROUP_SIZE,
+          guardIndex: false,
+          declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
+const GROUP_CAPACITY: u32 = ${groupCapacity}u;
+${FIXED_POINT_WGSL}
+${nodeScaleCounters.declarations}`,
+          body: nodeScaleCounters.body
+        })
+      );
+    }
 
     // Vertices: liveness, label validation, counts, position/value sums and bounds.
     const vertexBindings: WGSLKernelBinding[] = [
@@ -571,8 +705,9 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
   ${
     hasPositions
       ? `let position = vec2<f32>(positions[positionsOffset + 2u * index], positions[positionsOffset + 2u * index + 1u]);
-  let quantizedX = quantize(position.x);
-  let quantizedY = quantize(position.y);
+  let positionUnitExponent = ${getUnitExponentSource(SCALE_WORD.positions, nodeCount, 'atomic')};
+  let quantizedX = quantize(position.x, positionUnitExponent);
+  let quantizedY = quantize(position.y, positionUnitExponent);
   ${getFixedPointAddSource('groupAcc', 'groupAccOffset + base', 'quantizedX')}
   ${getFixedPointAddSource('groupAcc', 'groupAccOffset + base + 2u', 'quantizedY')}
   atomicMin(&groupAcc[groupAccOffset + base + 6u], getOrderedKey(position.x));
@@ -583,7 +718,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
   }
   ${
     hasValues
-      ? `let quantizedValue = quantize(values[valuesOffset + index]);
+      ? `let quantizedValue = quantize(values[valuesOffset + index], ${getUnitExponentSource(SCALE_WORD.values, nodeCount, 'atomic')});
   ${getFixedPointAddSource('groupAcc', 'groupAccOffset + base + 4u', 'quantizedValue')}`
       : ''
   }`
@@ -601,11 +736,79 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
 const GROUP_CAPACITY: u32 = ${groupCapacity}u;
 const DEAD: u32 = 0xffffffffu;
 const OVERFLOWED: u32 = 0xfffffffeu;
-${getFixedPointSource(scale)}
+${getFixedPointSource(!usesDataUnit)}
 ${vertexCounters.declarations}`,
         body: vertexCounters.body
       })
     );
+    // Scale word of the weight sums: the largest exponent over the slots whose weight is summed
+    // (the counted slots between two valid groups, by the rules of the slots kernel below). Slots
+    // past the last row, masked slots and sentinel weights do not coarsen the unit.
+    const sumsWeights = hasIntraWeight || Boolean(props.output.edgeWeights);
+    if (needsWeightScale && sumsWeights && props.topology.weights) {
+      const weightScaleBindings: WGSLKernelBinding[] = [
+        {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
+        {name: 'neighbors', view: props.topology.neighbors, type: 'u32', access: 'read'},
+        {name: 'effectiveLabels', view: effectiveLabels, type: 'u32', access: 'read'},
+        {name: 'weights', view: props.topology.weights, type: 'f32', access: 'read'}
+      ];
+      if (props.edgeMask) {
+        weightScaleBindings.push({
+          name: 'edgeMask',
+          view: props.edgeMask,
+          type: 'u32',
+          access: 'read'
+        });
+      }
+      weightScaleBindings.push({
+        name: 'stats',
+        view: stats,
+        type: 'atomic<u32>',
+        access: 'read_write'
+      });
+      const weightScaleCounters = getWorkgroupCounterKernelSource({
+        counters: [{target: 'stats', word: SCALE_WORD.weights, operation: 'max'}],
+        rowCount: 'NODE_COUNT',
+        rowSource: `let sourceLabel = effectiveLabels[effectiveLabelsOffset + index];
+  if (sourceLabel >= GROUP_CAPACITY) {
+    return;
+  }
+  let rowEnd = min(offsets[offsetsOffset + index + 1u], SLOT_COUNT);
+  let rowBegin = min(offsets[offsetsOffset + index], rowEnd);
+  var exponentBits = 0u;
+  for (var slot = rowBegin; slot < rowEnd; slot++) {
+    let targetVertex = neighbors[neighborsOffset + slot];
+    if (targetVertex >= NODE_COUNT) {
+      continue;
+    }
+    var live = effectiveLabels[effectiveLabelsOffset + targetVertex] < GROUP_CAPACITY;
+    ${props.edgeMask ? 'if (live) { live = edgeMask[edgeMaskOffset + slot] != 0u; }' : ''}
+    ${directed ? '' : 'live = live && index <= targetVertex;'}
+    if (live) {
+      exponentBits = max(exponentBits, getFixedPointExponentBits(weights[weightsOffset + slot]));
+    }
+  }
+  maxCounter(0u, exponentBits);`
+      });
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-weight-sum-scale`,
+          operation: OPERATION,
+          variant: 'weight-sum-scale',
+          bindings: weightScaleBindings,
+          invocationCount: nodeCount,
+          workgroupSize: WORKGROUP_COUNTER_WORKGROUP_SIZE,
+          guardIndex: false,
+          declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
+const SLOT_COUNT: u32 = ${slotCount}u;
+const GROUP_CAPACITY: u32 = ${groupCapacity}u;
+${FIXED_POINT_WGSL}
+${weightScaleCounters.declarations}`,
+          body: weightScaleCounters.body
+        })
+      );
+    }
+
     // Slots: classify each counted slot, count intra-group edges and emit inter-group keys.
     const slotBindings: WGSLKernelBinding[] = [
       {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
@@ -673,6 +876,7 @@ ${vertexCounters.declarations}`,
   var inter = 0u;
   var intraWeightLow = 0u;
   var intraWeightHigh = 0u;
+  ${hasIntraWeight ? `let weightUnitExponent = ${getWeightUnitExponentSource('atomic')};` : ''}
   for (var slot = rowBegin; slot < rowEnd; slot++) {
     var key = SENTINEL_KEY;
     let targetVertex = neighbors[neighborsOffset + slot];
@@ -689,7 +893,7 @@ ${vertexCounters.declarations}`,
           intra++;
           ${
             hasIntraWeight
-              ? `let quantizedWeight = quantize(${props.topology.weights ? 'weights[weightsOffset + slot]' : '1.0'});
+              ? `let quantizedWeight = quantize(${props.topology.weights ? 'weights[weightsOffset + slot]' : '1.0'}, weightUnitExponent);
           let previousLow = intraWeightLow;
           intraWeightLow += quantizedWeight.x;
           intraWeightHigh += quantizedWeight.y + select(0u, 1u, intraWeightLow < previousLow);`
@@ -740,7 +944,7 @@ const GROUP_CAPACITY: u32 = ${groupCapacity}u;
 const SENTINEL_KEY: u32 = ${sentinelKey}u;
 const DEAD: u32 = 0xffffffffu;
 const OVERFLOWED: u32 = 0xfffffffeu;
-${getFixedPointSource(scale)}
+${getFixedPointSource(!usesDataUnit)}
 ${slotCounters.declarations}`,
         body: slotCounters.body
       })
@@ -858,61 +1062,22 @@ ${slotCounters.declarations}`,
         access: 'read_write'
       }
     ];
-    if (segmentWeightAcc) {
-      segmentBindings.push(
-        {
-          name: 'sortedIndices',
-          view: sortedIndices,
-          type: 'u32',
-          access: 'read'
-        },
-        {
-          name: 'segmentWeightAcc',
-          view: segmentWeightAcc,
-          type: 'atomic<u32>',
-          access: 'read_write'
-        }
-      );
-      if (props.topology.weights) {
-        segmentBindings.push({
-          name: 'weights',
-          view: props.topology.weights,
-          type: 'f32',
-          access: 'read'
-        });
-      }
-    }
     // Each invocation owns SEGMENT_RUN_LENGTH consecutive sorted slots and folds every run of one
-    // key locally (count and 64-bit fixed-point weight), flushing one atomic set per run. A heavy
-    // superedge then costs one atomic set per run instead of one per slot on a single address;
-    // integer addition is associative, so counts and weights are unchanged.
-    const flushRun = `if (runCount > 0u) {
-      atomicAdd(&edgeCounts[edgeCountsOffset + runSegment], runCount);
-      ${
-        segmentWeightAcc
-          ? `let runWeight = vec2<u32>(runWeightLow, runWeightHigh);
-      ${getFixedPointAddSource('segmentWeightAcc', 'segmentWeightAccOffset + 2u * runSegment', 'runWeight')}`
-          : ''
-      }
-    }`;
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-segments`,
-        operation: OPERATION,
-        variant: 'segments',
-        bindings: segmentBindings,
-        invocationCount: Math.ceil(slotCount / SEGMENT_RUN_LENGTH),
-        declarations: `const SENTINEL_KEY: u32 = ${sentinelKey}u;
-const GROUP_CAPACITY: u32 = ${groupCapacity}u;
-const EDGE_CAPACITY: u32 = ${edgeCapacity}u;
-const SLOT_COUNT: u32 = ${slotCount}u;
-${getFixedPointSource(scale)}`,
-        body: `let first = index * ${SEGMENT_RUN_LENGTH}u;
+    // key locally, flushing one atomic per run. A heavy superedge then costs one atomic per run
+    // instead of one per slot on a single address; integer addition is associative, so counts and
+    // weights are unchanged. Counts and weights are two kernels over the same runs: together with
+    // the scale word of the weights they would bind more storage buffers than a device allows.
+    const getRunSegmentSource = (
+      declareRun: string,
+      resetRun: string,
+      flushRun: string,
+      addSlot: string
+    ) =>
+      `let first = index * ${SEGMENT_RUN_LENGTH}u;
   let last = min(first + ${SEGMENT_RUN_LENGTH}u, SLOT_COUNT);
   var runSegment = 0xffffffffu;
   var runCount = 0u;
-  var runWeightLow = 0u;
-  var runWeightHigh = 0u;
+  ${declareRun}
   for (var position = first; position < last; position++) {
     let key = sortedKeys[sortedKeysOffset + position];
     if (key == SENTINEL_KEY) {
@@ -924,34 +1089,88 @@ ${getFixedPointSource(scale)}`,
     }
     let segment = segmentScan[segmentScanOffset + position] + select(0u, 1u, isStart) - 1u;
     if (segment != runSegment) {
-      ${flushRun}
+      if (runCount > 0u) {
+        ${flushRun}
+      }
       runSegment = segment;
       runCount = 0u;
-      runWeightLow = 0u;
-      runWeightHigh = 0u;
+      ${resetRun}
     }
     if (segment >= EDGE_CAPACITY) {
       continue;
     }
-    if (isStart) {
+    runCount++;
+    ${addSlot}
+  }
+  if (runCount > 0u) {
+    ${flushRun}
+  }`;
+    const segmentDeclarations = `const SENTINEL_KEY: u32 = ${sentinelKey}u;
+const GROUP_CAPACITY: u32 = ${groupCapacity}u;
+const EDGE_CAPACITY: u32 = ${edgeCapacity}u;
+const SLOT_COUNT: u32 = ${slotCount}u;`;
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-segments`,
+        operation: OPERATION,
+        variant: 'segments',
+        bindings: segmentBindings,
+        invocationCount: Math.ceil(slotCount / SEGMENT_RUN_LENGTH),
+        declarations: segmentDeclarations,
+        body: getRunSegmentSource(
+          '',
+          '',
+          'atomicAdd(&edgeCounts[edgeCountsOffset + runSegment], runCount);',
+          `if (isStart) {
       edgeIds[edgeIdsOffset + segment] = key / GROUP_CAPACITY;
       edgeTargets[edgeTargetsOffset + segment] = key % GROUP_CAPACITY;
-    }
-    runCount++;
-    ${
-      segmentWeightAcc
-        ? `let quantizedWeight = quantize(${props.topology.weights ? 'weights[weightsOffset + sortedIndices[sortedIndicesOffset + position]]' : '1.0'});
-    let previousLow = runWeightLow;
-    runWeightLow += quantizedWeight.x;
-    runWeightHigh += quantizedWeight.y + select(0u, 1u, runWeightLow < previousLow);`
-        : ''
-    }
-  }
-  ${flushRun}`
+    }`
+        )
       })
     );
     if (segmentWeightAcc && props.output.edgeWeights) {
+      const segmentWeightBindings: WGSLKernelBinding[] = [
+        {name: 'sortedKeys', view: sortedKeys, type: 'u32', access: 'read'},
+        {name: 'segmentScan', view: segmentScan, type: 'u32', access: 'read'},
+        {
+          name: 'segmentWeightAcc',
+          view: segmentWeightAcc,
+          type: 'atomic<u32>',
+          access: 'read_write'
+        }
+      ];
+      if (props.topology.weights) {
+        segmentWeightBindings.push(
+          {name: 'sortedIndices', view: sortedIndices, type: 'u32', access: 'read'},
+          {name: 'weights', view: props.topology.weights, type: 'f32', access: 'read'}
+        );
+      }
+      const weightStatsBinding: WGSLKernelBinding[] = needsWeightScale
+        ? [{name: 'stats', view: stats, type: 'u32', access: 'read'}]
+        : [];
       nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-segment-weights`,
+          operation: OPERATION,
+          variant: 'segment-weights',
+          bindings: [...segmentWeightBindings, ...weightStatsBinding],
+          invocationCount: Math.ceil(slotCount / SEGMENT_RUN_LENGTH),
+          declarations: `${segmentDeclarations}
+${getFixedPointSource(!usesDataUnit)}`,
+          body: `let weightUnitExponent = ${getWeightUnitExponentSource('plain')};
+  ${getRunSegmentSource(
+    `var runWeightLow = 0u;
+  var runWeightHigh = 0u;`,
+    `runWeightLow = 0u;
+      runWeightHigh = 0u;`,
+    `let runWeight = vec2<u32>(runWeightLow, runWeightHigh);
+        ${getFixedPointAddSource('segmentWeightAcc', 'segmentWeightAccOffset + 2u * runSegment', 'runWeight')}`,
+    `let quantizedWeight = quantize(${props.topology.weights ? 'weights[weightsOffset + sortedIndices[sortedIndicesOffset + position]]' : '1.0'}, weightUnitExponent);
+    let previousLow = runWeightLow;
+    runWeightLow += quantizedWeight.x;
+    runWeightHigh += quantizedWeight.y + select(0u, 1u, runWeightLow < previousLow);`
+  )}`
+        }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-edge-weights`,
           operation: OPERATION,
@@ -968,13 +1187,15 @@ ${getFixedPointSource(scale)}`,
               view: props.output.edgeWeights,
               type: 'f32',
               access: 'read_write'
-            }
+            },
+            ...weightStatsBinding
           ],
           invocationCount: edgeCapacity,
-          declarations: getFixedPointSource(scale),
+          declarations: getFixedPointSource(!usesDataUnit),
           body: `edgeWeights[edgeWeightsOffset + index] = dequantize(
     segmentWeightAcc[segmentWeightAccOffset + 2u * index],
-    segmentWeightAcc[segmentWeightAccOffset + 2u * index + 1u]);`
+    segmentWeightAcc[segmentWeightAccOffset + 2u * index + 1u],
+    ${getWeightUnitExponentSource('plain')});`
         })
       );
     }
@@ -997,8 +1218,9 @@ ${getFixedPointSource(scale)}`,
         type: 'f32',
         access: 'read_write'
       });
-      finishStatements.push(`centroidOut[centroidOutOffset + 2u * index] = select(0.0, dequantize(groupAcc[groupAccOffset + base], groupAcc[groupAccOffset + base + 1u]) / f32(count), count > 0u);
-  centroidOut[centroidOutOffset + 2u * index + 1u] = select(0.0, dequantize(groupAcc[groupAccOffset + base + 2u], groupAcc[groupAccOffset + base + 3u]) / f32(count), count > 0u);`);
+      finishStatements.push(`let positionUnitExponent = ${getUnitExponentSource(SCALE_WORD.positions, nodeCount, 'plain')};
+  centroidOut[centroidOutOffset + 2u * index] = select(0.0, dequantize(groupAcc[groupAccOffset + base], groupAcc[groupAccOffset + base + 1u], positionUnitExponent) / f32(count), count > 0u);
+  centroidOut[centroidOutOffset + 2u * index + 1u] = select(0.0, dequantize(groupAcc[groupAccOffset + base + 2u], groupAcc[groupAccOffset + base + 3u], positionUnitExponent) / f32(count), count > 0u);`);
     }
     if (props.output.groupBounds) {
       finishBindings.push({
@@ -1020,38 +1242,55 @@ ${getFixedPointSource(scale)}`,
         access: 'read_write'
       });
       finishStatements.push(
-        'valueOut[valueOutOffset + index] = dequantize(groupAcc[groupAccOffset + base + 4u], groupAcc[groupAccOffset + base + 5u]);'
+        `valueOut[valueOutOffset + index] = dequantize(groupAcc[groupAccOffset + base + 4u], groupAcc[groupAccOffset + base + 5u], ${getUnitExponentSource(SCALE_WORD.values, nodeCount, 'plain')});`
       );
     }
+    if (usesDataUnit && (props.output.groupCentroid || props.output.groupValueSum)) {
+      finishBindings.push({name: 'stats', view: stats, type: 'u32', access: 'read'});
+    }
+    // The intra-group outputs are their own kernel: with the scale word of the weights one
+    // kernel for every group output would bind more storage buffers than a device allows.
     if (intraAcc) {
-      finishBindings.push({
-        name: 'intraAcc',
-        view: intraAcc,
-        type: 'u32',
-        access: 'read'
-      });
+      const intraBindings: WGSLKernelBinding[] = [
+        {name: 'intraAcc', view: intraAcc, type: 'u32', access: 'read'}
+      ];
+      const intraStatements: string[] = [];
       if (props.output.groupIntraEdgeCount) {
-        finishBindings.push({
+        intraBindings.push({
           name: 'intraCountOut',
           view: props.output.groupIntraEdgeCount,
           type: 'u32',
           access: 'read_write'
         });
-        finishStatements.push(
+        intraStatements.push(
           'intraCountOut[intraCountOutOffset + index] = intraAcc[intraAccOffset + 3u * index];'
         );
       }
       if (props.output.groupIntraWeight) {
-        finishBindings.push({
+        intraBindings.push({
           name: 'intraWeightOut',
           view: props.output.groupIntraWeight,
           type: 'f32',
           access: 'read_write'
         });
-        finishStatements.push(
-          'intraWeightOut[intraWeightOutOffset + index] = dequantize(intraAcc[intraAccOffset + 3u * index + 1u], intraAcc[intraAccOffset + 3u * index + 2u]);'
+        if (needsWeightScale) {
+          intraBindings.push({name: 'stats', view: stats, type: 'u32', access: 'read'});
+        }
+        intraStatements.push(
+          `intraWeightOut[intraWeightOutOffset + index] = dequantize(intraAcc[intraAccOffset + 3u * index + 1u], intraAcc[intraAccOffset + 3u * index + 2u], ${getWeightUnitExponentSource('plain')});`
         );
       }
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-intra-groups`,
+          operation: OPERATION,
+          variant: 'intra-groups',
+          bindings: intraBindings,
+          invocationCount: groupCapacity,
+          declarations: getFixedPointSource(!usesDataUnit),
+          body: intraStatements.join('\n  ')
+        })
+      );
     }
     if (finishStatements.length > 0) {
       nodes.push(
@@ -1061,7 +1300,7 @@ ${getFixedPointSource(scale)}`,
           variant: 'groups',
           bindings: finishBindings,
           invocationCount: groupCapacity,
-          declarations: getFixedPointSource(scale),
+          declarations: getFixedPointSource(!usesDataUnit),
           body: `let base = index * ${GROUP_ACC_STRIDE}u;
   let count = groupCounts[groupCountsOffset + index];
   ${finishStatements.join('\n  ')}`
@@ -1078,6 +1317,21 @@ ${getFixedPointSource(scale)}`,
         overflowSources: [overflowFlag]
       })
     );
+    if (props.output.summary) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-summary`,
+          operation: OPERATION,
+          variant: 'summary',
+          bindings: [
+            {name: 'stats', view: stats, type: 'u32', access: 'read'},
+            {name: 'summary', view: props.output.summary, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: GPU_NETWORK_COARSENING_SUMMARY_LENGTH,
+          body: 'summary[summaryOffset + index] = stats[statsOffset + index];'
+        })
+      );
+    }
     return nodes;
   }
 }

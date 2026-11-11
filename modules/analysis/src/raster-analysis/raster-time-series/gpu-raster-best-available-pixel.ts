@@ -108,7 +108,7 @@ export type GPURasterBestAvailablePixelProps = {
   /** Observations `(cell * sliceCount + slice) * bandCount + band`; required when `bandCount > 0`. */
   values?: GraphDataView<'float32'>;
   /** Per-observation QA `cell * sliceCount + slice`; zero (for example a cloud or shadow) rejects the observation. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /**
    * Distance in pixels from each observation to the nearest cloud or shadow pixel of its slice,
    * `cell * sliceCount + slice`, for example from `GPUDistanceField` run on each slice's mask.
@@ -164,9 +164,9 @@ export class GPURasterBestAvailablePixel implements GPUCommandNodeProducer {
     validateRequirement(
       id,
       (!props.values || props.values.length >= observationCount * props.bandCount) &&
-        (!props.validity || props.validity.length >= observationCount) &&
+        (!props.mask || props.mask.length >= observationCount) &&
         (!props.cloudDistance || props.cloudDistance.length >= observationCount),
-      'values must hold cellCount times sliceCount times bandCount entries; validity and cloudDistance cellCount times sliceCount'
+      'values must hold cellCount times sliceCount times bandCount entries; mask and cloudDistance cellCount times sliceCount'
     );
     validateRequirement(
       id,
@@ -190,12 +190,12 @@ export class GPURasterBestAvailablePixel implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, cloudDistance, sliceAttributes, parameters} = this.props;
+    const {values, mask, cloudDistance, sliceAttributes, parameters} = this.props;
     return [
       sliceAttributes,
       parameters,
       ...(values ? [values] : []),
-      ...(validity ? [validity] : []),
+      ...(mask ? [mask] : []),
       ...(cloudDistance ? [cloudDistance] : [])
     ];
   }
@@ -213,7 +213,7 @@ export class GPURasterBestAvailablePixel implements GPUCommandNodeProducer {
       sliceCount: slices,
       bandCount: bands,
       values,
-      validity,
+      mask,
       cloudDistance,
       sliceAttributes,
       parameters,
@@ -228,7 +228,7 @@ export class GPURasterBestAvailablePixel implements GPUCommandNodeProducer {
         workgroupSize: 64,
         bindings: [
           ...(values ? [rasterBinding('values', values)] : []),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           ...(cloudDistance ? [rasterBinding('cloudDistance', cloudDistance)] : []),
           rasterBinding('sliceAttributes', sliceAttributes),
           rasterBinding('parameters', parameters),
@@ -239,7 +239,7 @@ export class GPURasterBestAvailablePixel implements GPUCommandNodeProducer {
         declarations: `${RASTER_FINITE_WGSL}
 fn isObservationValid(cell: u32, slice: u32) -> bool {
   let source = cell * ${slices}u + slice;
-  ${validity ? `if (validity[validityOffset + source] == 0u) { return false; }` : ''}
+  ${mask ? `if (mask[maskOffset + source] == 0u) { return false; }` : ''}
   ${
     values
       ? `for (var band = 0u; band < ${bands}u; band++) {

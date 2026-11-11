@@ -23,7 +23,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -183,7 +183,7 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
     );
     const {id} = this;
     const {geometry} = props;
-    validatePackedView(geometry.positions, ['float32x2'], `${id} geometry.positions`);
+    validateSinglePackedView(geometry.positions, ['float32x2'], `${id} geometry.positions`);
     const offsetViews =
       geometry.kind === 'lines'
         ? [['lineOffsets', geometry.lineOffsets] as const]
@@ -193,7 +193,7 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
             ['ringOffsets', geometry.ringOffsets] as const
           ];
     for (const [name, view] of offsetViews) {
-      validatePackedView(view, ['uint32'], `${id} geometry.${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} geometry.${name}`);
       if (view.length < 1) {
         throw new Error(`${id} geometry.${name} requires a terminal entry`);
       }
@@ -218,14 +218,14 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
       ['vertexIds', vertexIds, 'uint32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} output.${name}`);
+        validateSinglePackedView(view, [format], `${id} output.${name}`);
         if (view.length !== this.featureCount) {
           throw new Error(`${id} output.${name} length must equal the feature count`);
         }
       }
     }
     if (props.output.status?.candidateOverflow) {
-      validatePackedView(
+      validateSinglePackedView(
         props.output.status.candidateOverflow,
         ['uint32'],
         `${id} output.status.candidateOverflow`

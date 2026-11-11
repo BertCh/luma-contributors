@@ -18,7 +18,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createIdentitySourceLineIndicesNode} from './line-segmentize-kernels';
 import {
@@ -28,7 +28,11 @@ import {
   createSmoothPublishNode
 } from './line-smooth-kernels';
 import type {GPULineGeometryOutput} from './line-segmentize-types';
-import {getLineGeometryOutputViews, validateLineGeometryOutput} from './line-geometry-output';
+import {
+  createLineGeometryCountNode,
+  getLineGeometryOutputViews,
+  validateLineGeometryOutput
+} from './line-geometry-output';
 
 const OPERATION = 'GPULineSmooth';
 
@@ -98,7 +102,7 @@ export type GPULineSmoothProps = {
    */
   parameters: GraphDataView<'float32'>;
   /**
-   * Smoothed lines, one per input line. `output.status.count` counts output vertices. `sourceRows` and `measures` are not supported (a smoothed
+   * Smoothed lines, one per input line. `output.status.count` and `requiredCount` count lines (the input line count); `vertexCount` and `requiredVertexCount` count vertices. `sourceRows` and `measures` are not supported (a smoothed
    * vertex blends several input vertices).
    */
   output: GPULineGeometryOutput;
@@ -140,12 +144,12 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
     const {id} = this;
     const {iterationCount} = props;
     validateCapacity(id, 'iterationCount', iterationCount, 1, GPU_LINE_SMOOTH_MAXIMUM_ITERATIONS);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rowCount = props.positions.length;
     if (rowCount < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    validateSinglePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
     if (props.lineOffsets.length < 2) {
       throw new Error(`${id} lineOffsets needs two rows`);
     }
@@ -153,7 +157,7 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
     if (rowCount * 2 ** iterationCount + lineCount > 0xffffffff) {
       throw new Error(`${id} positions.length * 2^iterationCount must fit in 32 bits`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LINE_SMOOTH_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_LINE_SMOOTH_PARAMETER_LENGTH} float32 values`
@@ -170,7 +174,10 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
     ]);
   }
 
-  /** Returns the prepare node, the scan nodes, one node per iteration, publish and source lines. */
+  /**
+   * Returns the prepare node, the scan nodes, one node per iteration, publish, line count and
+   * source lines.
+   */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -282,10 +289,15 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
         smoothFlagStarts,
         capacity,
         outputLineOffsets: output.lineOffsets,
-        count: output.status.count,
         overflow: output.status.overflow,
-        requiredCount: output.status.requiredCount,
-        lineCountOutput: output.status.lineCount
+        vertexCount: output.status.vertexCount,
+        requiredVertexCount: output.status.requiredVertexCount
+      }),
+      createLineGeometryCountNode<Parameters>(graph, {
+        id,
+        operation: OPERATION,
+        output,
+        lineCapacity: lineCount
       })
     );
     if (output.sourceLineIndices) {

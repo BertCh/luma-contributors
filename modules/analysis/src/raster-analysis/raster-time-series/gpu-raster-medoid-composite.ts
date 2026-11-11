@@ -23,7 +23,7 @@ import {
 
 /**
  * Slices per cell: one invocation compares every pair of valid observations, `O(slices^2 * bands)`,
- * and holds the validity of the slices in two 32-bit words.
+ * and holds the mask of the slices in two 32-bit words.
  */
 export const MAXIMUM_MEDOID_COMPOSITE_SLICE_COUNT = 64;
 /** Bands per observation: the distance loop runs over the bands inside the pair loop. */
@@ -45,7 +45,7 @@ export type GPURasterMedoidCompositeProps = {
    */
   values: GraphDataView<'float32'>;
   /** Per-observation QA `cell * sliceCount + slice`; zero rejects the observation. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   output: {
     /** The medoid observation `cell * bandCount + band`; NaN when status is nonzero. */
     composite: GraphDataView<'float32'>;
@@ -65,7 +65,7 @@ export type GPURasterMedoidCompositeProps = {
  * can swap places against a binary64 reference.
  *
  * Per-frame: the contents of the views. Compile-time: `cellCount`, `sliceCount`, `bandCount` and
- * whether `validity` exists.
+ * whether `mask` exists.
  */
 export class GPURasterMedoidComposite implements GPUCommandNodeProducer {
   readonly id: string;
@@ -80,8 +80,8 @@ export class GPURasterMedoidComposite implements GPUCommandNodeProducer {
     validateRequirement(
       id,
       props.values.length >= observationCount * props.bandCount &&
-        (!props.validity || props.validity.length >= observationCount),
-      'values must hold cellCount times sliceCount times bandCount entries and validity cellCount times sliceCount'
+        (!props.mask || props.mask.length >= observationCount),
+      'values must hold cellCount times sliceCount times bandCount entries and mask cellCount times sliceCount'
     );
     validateRequirement(
       id,
@@ -94,7 +94,7 @@ export class GPURasterMedoidComposite implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    return [this.props.values, ...(this.props.validity ? [this.props.validity] : [])];
+    return [this.props.values, ...(this.props.mask ? [this.props.mask] : [])];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -106,7 +106,7 @@ export class GPURasterMedoidComposite implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    const {sliceCount: slices, bandCount: bands, values, validity, output} = props;
+    const {sliceCount: slices, bandCount: bands, values, mask, output} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     return [
       createWGSLKernelNode<Parameters>(graph, {
@@ -116,7 +116,7 @@ export class GPURasterMedoidComposite implements GPUCommandNodeProducer {
         workgroupSize: 64,
         bindings: [
           rasterBinding('values', values),
-          ...(validity ? [rasterBinding('validity', validity)] : []),
+          ...(mask ? [rasterBinding('mask', mask)] : []),
           rasterBinding('composite', output.composite, true),
           rasterBinding('sliceIndex', output.sliceIndex, true),
           rasterBinding('status', output.status, true)
@@ -124,7 +124,7 @@ export class GPURasterMedoidComposite implements GPUCommandNodeProducer {
         declarations: `${RASTER_FINITE_WGSL}
 fn isObservationValid(cell: u32, slice: u32) -> bool {
   let source = cell * ${slices}u + slice;
-  ${validity ? `if (validity[validityOffset + source] == 0u) { return false; }` : ''}
+  ${mask ? `if (mask[maskOffset + source] == 0u) { return false; }` : ''}
   for (var band = 0u; band < ${bands}u; band++) {
     if (!finite(values[valuesOffset + source * ${bands}u + band])) { return false; }
   }

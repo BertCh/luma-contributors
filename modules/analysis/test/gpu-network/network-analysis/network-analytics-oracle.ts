@@ -8,7 +8,11 @@ import {
   type NetworkEdge
 } from '../network-reachability/network-reachability-oracle';
 
-/** Out-degree of every node from CSR offsets. */
+/**
+ * Out-degree of every node from CSR offsets. Only valid for a CSR without dead slots (neighbors
+ * `>= nodeCount`): the contributor counts live slots (review network-paths-06), which the spec
+ * "degree skips dead slots" pins by hand.
+ */
 export function degreeOracle(offsets: Uint32Array): Uint32Array {
   return Uint32Array.from(
     {length: offsets.length - 1},

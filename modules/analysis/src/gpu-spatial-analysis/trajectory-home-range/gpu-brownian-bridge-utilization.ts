@@ -22,7 +22,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -166,9 +166,9 @@ export class GPUBrownianBridgeUtilization implements GPUCommandNodeProducer {
     const id = props.id ?? 'brownian-bridge-utilization';
     resolveGPUSpatialContext(id, props.spatialContext, GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT);
     const {positions, timestamps, trackOffsets, gridSize, output} = props;
-    validatePackedView(positions, ['float32x2'], `${id} positions`);
-    validatePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
-    validatePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
     this.rowCount = positions.length;
     validateCapacity(id, 'fix count', this.rowCount, 2);
     validateMaximumCount(id, 'fix count', this.rowCount, GPU_BROWNIAN_BRIDGE_MAXIMUM_FIX_COUNT);
@@ -179,13 +179,13 @@ export class GPUBrownianBridgeUtilization implements GPUCommandNodeProducer {
       trackOffsets.length >= 2,
       'trackOffsets must contain at least two rows'
     );
-    validatePackedView(props.motionVariances, ['float32'], `${id} motionVariances`);
+    validateSinglePackedView(props.motionVariances, ['float32'], `${id} motionVariances`);
     validateViewLength(id, 'motionVariances', props.motionVariances, this.rowCount);
-    validatePackedView(props.locationErrors, ['float32'], `${id} locationErrors`);
+    validateSinglePackedView(props.locationErrors, ['float32'], `${id} locationErrors`);
     validateViewLength(id, 'locationErrors', props.locationErrors, this.rowCount);
     validateCapacity(id, 'gridSize columns', gridSize[0]);
     validateCapacity(id, 'gridSize rows', gridSize[1]);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       props.parameters.length >= GPU_BROWNIAN_BRIDGE_UTILIZATION_PARAMETER_LENGTH,
@@ -199,7 +199,7 @@ export class GPUBrownianBridgeUtilization implements GPUCommandNodeProducer {
       1,
       GPU_BROWNIAN_BRIDGE_MAXIMUM_SUB_STEP_COUNT
     );
-    validatePackedView(output.density, ['float32'], `${id} output.density`);
+    validateSinglePackedView(output.density, ['float32'], `${id} output.density`);
     validateViewLength(id, 'output.density', output.density, gridSize[0] * gridSize[1]);
     validateGraphOutputsDisjointFromInputs(
       id,

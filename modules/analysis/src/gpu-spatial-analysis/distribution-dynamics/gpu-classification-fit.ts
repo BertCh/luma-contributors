@@ -16,7 +16,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 const OPERATION = 'GPUClassificationFit';
@@ -122,7 +122,7 @@ export class GPUClassificationFit implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const {values, classes, classCount, mask, output} = props;
-    validatePackedView(values, ['float32'], `${id} values`);
+    validateSinglePackedView(values, ['float32'], `${id} values`);
     validatePackedUint32View(classes, `${id} classes`);
     validateCapacity(id, 'classCount', classCount, 1, MAXIMUM_CLASS_COUNT);
     if (values.length < 1) {
@@ -139,9 +139,9 @@ export class GPUClassificationFit implements GPUCommandNodeProducer {
     }
     const slots = classCount + 1;
     validatePackedUint32View(output.counts, `${id} counts`);
-    validatePackedView(output.medians, ['float32'], `${id} medians`);
-    validatePackedView(output.absoluteDeviations, ['float32'], `${id} absoluteDeviations`);
-    validatePackedView(output.squaredDeviations, ['float32'], `${id} squaredDeviations`);
+    validateSinglePackedView(output.medians, ['float32'], `${id} medians`);
+    validateSinglePackedView(output.absoluteDeviations, ['float32'], `${id} absoluteDeviations`);
+    validateSinglePackedView(output.squaredDeviations, ['float32'], `${id} squaredDeviations`);
     for (const [name, view] of [
       ['counts', output.counts],
       ['medians', output.medians],
@@ -153,7 +153,7 @@ export class GPUClassificationFit implements GPUCommandNodeProducer {
       }
     }
     if (output.summary) {
-      validatePackedView(output.summary, ['float32'], `${id} summary`);
+      validateSinglePackedView(output.summary, ['float32'], `${id} summary`);
       if (output.summary.length !== GPU_CLASSIFICATION_FIT_SUMMARY_LENGTH) {
         throw new Error(`${id} summary length must equal the summary layout`);
       }

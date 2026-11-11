@@ -13,7 +13,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
@@ -81,7 +81,7 @@ export class GPUChunkedSpatialWeightsTransform implements GPUCommandNodeProducer
     }
     for (const view of output ?? []) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output`);
+        validateSinglePackedView(view, ['float32'], `${id} output`);
       }
     }
     this.chunkTransforms = weights.chunks.map(

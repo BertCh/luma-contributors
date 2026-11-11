@@ -71,14 +71,24 @@ graph.add(
   standard errors are `sigma2 (X'X + lambda I)^-1` and ignore the shrinkage bias.
 
 Numerics: no float atomics. Per-tile partial sums (one invocation per tile of consecutive rows, in
-row order) are merged in tile order with Kahan compensation; means first, then centered
+row order) are merged in a fixed pairwise order (a float Kahan compensation is folded to a plain
+sum by the shader compiler of at least one supported GPU); means first, then centered
 cross-products about those means; the solve runs on the correlation-scaled normal matrix with a
 single-invocation Cholesky. The residual sum of squares comes from the residual pass, not from
-`Syy - b'Sxy`, so it stays accurate when R2 is close to 1. Results are bitwise reproducible for a
+`Syy - b'Sxy`, so it stays accurate when R2 is close to 1. A float32 mean misses the true mean of
+its column by up to a float32 step; the moment pass also sums the deviations of every column from
+its stored mean, and that remainder is carried through the cross-products, the intercept and the
+residuals, so the residuals sum to zero and the residual sum of squares matches float64 also when
+the response mean is thousands of residual deviations (residuals of 0.002 around 10,000: within
+1e-4, where a float32 mean alone gave 4% to 20% too much). Results are bitwise reproducible for a
 given `tileRowCount` (default `max(64, ceil(rows / 4096))`).
 
 AIC and BIC count `predictorCount + 1` parameters (GeoDa convention); the log-likelihood is
-Gaussian with `sigma2 = RSS / n`. Jarque-Bera is `n/6 (S^2 + (K - 3)^2 / 4)` with p-value
+Gaussian with `sigma2 = RSS / n`. Each estimator on this page counts as its reference library does:
+OLS the intercept and predictors (`p`), `GPUSpatialLagMaximumLikelihood` `p + 1` (it adds `rho`),
+`GPUSpatialErrorMaximumLikelihood` `p` (not `lambda`), and the GWR family `tr(S) + 1` (the error
+variance). Put the models on one count before comparing criteria: each uncounted parameter adds 2
+to AIC and `ln(n)` to the Schwarz criterion. Jarque-Bera is `n/6 (S^2 + (K - 3)^2 / 4)` with p-value
 `exp(-JB / 2)`. Both heteroskedasticity tests use the auxiliary regression of `e^2` on `[1, X]` with
 `R2_aux`, and a chi-square p-value on `predictorCount` degrees of freedom computed by the regularized
 upper incomplete gamma with a fixed iteration cap. Koenker-Bassett (studentized, valid without
@@ -272,7 +282,9 @@ parameters.write(
   on every adapter: lower `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT` if one
   rejects it.
 - Outputs: `coefficients` (`row * (predictorCount + 1) + column`, column 0 intercept), optional
-  `standardErrors`, `tValues`, `significant`, `localR2`, `fitted`, `residuals`, `hatDiagonal`,
+  `standardErrors`, `tValues`, `significant`, `localR2` (`1 - sum_j w_ij (y_j - x_j' beta_i)^2 / sum_j w_ij
+  (y_j - ybar_i)^2`: the residuals are those of local model `i` at its neighbours `j`, not each neighbour's own
+  GWR residual, so a package that uses the latter gives different values), `fitted`, `residuals`, `hatDiagonal`,
   `localStatus` (0 ok, 1 singular, 2 excluded), `bandwidthScores` (AICc of the caller ladder),
   `bandwidthSingularRowCounts`, `candidateTable`, `selectedBandwidth` (`[index, value]`),
   `localConditionNumber` and `summary` (`GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY`: RSS, `tr S`,
@@ -280,8 +292,11 @@ parameters.write(
   t, log-likelihood, included rows; 12 floats, it was 6).
 - `localConditionNumber` is the mgwr `local_collinearity` local condition number: the singular-value
   ratio of the kernel-weighted, column-normalized design (above 30 flags collinearity). It is pinned to
-  mgwr 2.2.1 (bisquare and gaussian, fixed and adaptive) and is f32-accurate. Its eigenvalues come
-  from the shared `getSymmetricEigenvalueRangeWGSL` Jacobi helper of the regression solvers.
+  mgwr 2.2.1 (bisquare and gaussian, fixed and adaptive). The weighted design rows are folded into a
+  triangular factor by Givens rotations and its singular values come from one-sided Jacobi (the
+  helpers of `GPULocalCollinearity`), so the two classes report the same number to about
+  `float32 epsilon * condition`, also for a predictor with a large mean. The former Gram-matrix
+  route was 17% off for a predictor of 1500 +- 3 and meaningless for a projected northing.
 - Rows with a zero mask or a non-finite position, predictor or response are excluded as
   calibration locations and as neighbours.
 - Numerics: the design is centred on the focal row and Jacobi-equilibrated before the shared
@@ -412,11 +427,12 @@ robust LM-error, LM-SARMA, and Moran's I of the residuals (mean, variance, z, tw
   count is a summary slot, not a status port, because `status.code` is this operator's single result code; it is
   also written when the status is not 0. Before this change a masked fit reported status 4 for the whole
   result.
-- `status.code`: 0 ok, 1 singular, 2 too few analyzed rows (`n <= predictorCount + 1`, also a failed OLS fit),
+- `status.code`: 0 ok, 1 singular, 2 too few analyzed rows (`n <= predictorCount + 2`, also a failed OLS fit; OLS
+  itself fits `n = predictorCount + 2` rows, so on exactly that many rows the fit succeeds and the diagnostics do not),
   3 degenerate weights, 4 non-finite moments or exactly zero residuals. Every output is NaN unless the
   status is 0. Conditioning slots are not reported here (see the OLS fit).
 
-Sums are fixed-order tile sums with a Kahan merge on centered columns, and the solve is a unit-diagonal
+Sums are fixed-order tile sums with a pairwise merge on centered columns, and the solve is a unit-diagonal
 scaled Cholesky, so there are no atomics and no readback. Moran's variance and `J` are f32 with
 cancellation (about 1e-2 relative on the variance and z). The statistics match spreg 1.9.1 (`OLS` with
 `spat_diag` and `moran`) on a lattice, a symmetrized kNN scene and two directed row-standardized kNN scenes
@@ -451,8 +467,13 @@ The spatial lag model `y = rho W y + X b + e` by two-stage least squares (spreg 
 with instruments `[1, X, WX]`. Props: `weights`, `predictors`, `response`, `predictorCount` (1 to 8 with
 `instrumentOrder: 1`, 1 to 5 with `instrumentOrder: 2`: the constant is centered out, so the solve factors `(order + 1) k`
 instrument columns in a 16-wide Cholesky; the order-2 cap was previously 8 in the check but failed when building the
-graph), optional `tileRowCount`, `instrumentOrder` and `output: {table, summary, status: {code}, residuals?}`. No kernel
-binds more than 8 storage buffers.
+graph), optional `tileRowCount`, `instrumentOrder`, `robust` and `output: {table, summary, status: {code}, residuals?}`.
+No kernel binds more than 8 storage buffers.
+`robust: {method: 'HC0' | 'HC1' | 'HAC', kernel?, output: {covariance, status}}` replaces the standard errors, z
+statistics and p-values of `table` by those of a heteroskedasticity-consistent (HC0, HC1) or spatial HAC covariance
+(`GPUInstrumentalVariablesCovariance`; HAC needs `kernel`, a symmetric positive semidefinite weights CSR with a unit
+diagonal, distinct from the model weights) and writes the full `(k + 2) x (k + 2)` covariance and its own status.
+The point estimates and the `summary` diagnostics keep their classical definitions.
 `instrumentOrder: 2` (compile-time, default 1) adds `W^2 X` (spreg `w_lags=2`, instruments `[1, X, WX,
 W^2 X]`), evaluated per row from the two-hop neighborhood with no extra buffers; it is pinned to spreg
 1.9.1 `GM_Lag(w_lags=2)` on three scenes.
@@ -463,7 +484,10 @@ W^2 X]`), evaluated per row from the two-hop neighborhood with no extra buffers;
   default), `u'u`, the pseudo R2 (squared correlation of `y` and `y - u`), Moran's `I` of `u`, the
   Anselin-Kelejian statistic and its p-value (slots 0 to 6). The statistic follows spreg `akTest(case='gen')`; any
   sparsity pattern is accepted (`W'u` comes from `GPUSpatialWeightsTranspose`), and it matches spreg 1.9.1 on
-  directed kNN scenes. Diagnostics (slots 7 to 15; none changes `status`):
+  directed kNN scenes. The total weight `S0` cancels from the statistic, which is computed as
+  `(u'Wu / sigma2)^2 / (T + 4 a / sigma2)`: for signed weights whose total is zero the statistic is defined
+  (0.95057 on an eight-row scene with weights of +1 and -1, as the cancelled formula on spreg's fit; it was
+  NaN), while Moran's `I`, which divides by `S0`, is NaN. Diagnostics (slots 7 to 15; none changes `status`):
   - Conditioning of the second stage: the Belsley condition number of the raw `[1, PZ]` Gram matrix (`Z = [X, Wy]`,
     `P` the projection on the instruments), the correlation condition number of `Z'PZ` and its largest variance
     inflation factor, the correlation condition number of the instrument system `H'H` (the instrument-projection
@@ -480,14 +504,40 @@ W^2 X]`), evaluated per row from the two-hop neighborhood with no extra buffers;
     (`(-1, 1)` for a row-standardized `W`; sufficient, not necessary, for other `W`). It is a flag, not a failure:
     2SLS is unconstrained, the estimate is still reported, and the reader decides what a boundary or explosive `rho`
     means for the model.
-- `status.code`: 0 ok, 1 singular or ill-conditioned (including non-finite inputs), 2 too few rows, 3 non-finite
-  sums.
-- `residuals`: the structural residuals `u = y - Z delta`, which can be passed to later diagnostics.
+- `status.code`: 0 ok, 1 singular or ill-conditioned (including non-finite inputs, and a predictor that is constant
+  at float32 resolution, as for the other estimators), 2 too few rows, 3 non-finite sums.
+- `residuals`: the structural residuals `u = y - Z delta`, which can be passed to later diagnostics. They are
+  formed on the centered columns and sum to zero: the part of each mean that float32 cannot hold is carried
+  through the fit, and the moments are corrected to moments about the true means.
+- The lag of the response is formed about the response mean, `W y = W (y - c) + c s_i`, with the row sums `s_i`
+  of the float32 weights carried exactly (rows without neighbours included); a sum of `w * y` over the raw
+  response is rounded to a float32 step of the response, which cost up to 4.2% of `sigma2` and 45% of the
+  Anselin-Kelejian statistic for residuals of 0.002 to 0.004 around 10,000.
+- One step of iterative refinement follows the solve (three more nodes). The float32 solve lands a few float32
+  steps of `rho` from the estimate. Where the lag differs between rows by the response mean (rows without
+  neighbours, row sums that differ) the two-stage `rho` is not at the minimum of `u'u`, and three and five such
+  steps were 3% and 0.8% of `sigma2` (the float32 value nearest to the estimate would have cost 0.07% and
+  0.03%: it was the solve, not the resolution of `rho`). The refinement forms the residuals at the float32
+  coefficients without the rounding of their products, sums `H'u` and solves the same system for the
+  correction. The correction is kept beside the float32 coefficients: `residuals`, `sigma2`, the standard
+  errors and the Anselin-Kelejian statistic are those of the corrected estimate, and `table` holds the float32
+  nearest to it.
+- Measured on the test GPU against spreg `GM_Lag` and a centered float64 solve, for residuals of 0.002 to
+  0.004 around 10,000:
+  - rows that share a row sum, exactly or up to the rounding of the weights (ring at 0.5, six neighbours at
+    float32 1/6, binary weights with row sum 2, row sums of 1 and 1.0000000298, `rho` 0.2 to 0.8, and a second
+    predictor near 4,096): `sigma2` within 2.8e-6, the Anselin-Kelejian statistic within 2.4e-4, `rho` within
+    6e-4 standard errors;
+  - row sums that differ with such a response: three rows without neighbours, `sigma2` within 9.2e-6 and the
+    statistic within 9.1e-6; row sums of 2 and 3, 9.5e-7 and 4.9e-7;
+  - slopes two hundred times the residual deviation over the predictor range: `sigma2` within 1.6e-4, because
+    the fitted values are rounded to about 1% of a residual.
+  `W X` (the instruments) is still summed from the raw predictors.
 
 The coefficients, standard errors, `sigma2`, pseudo R2 and Anselin-Kelejian statistic match spreg on a
-144-row scene within 5e-3 (coefficients) to 2e-2 (z, AK). The standard errors are the classical
-`sigma2 (Z'PZ)^-1`: heteroskedasticity-robust and HAC standard errors are not provided (spreg `robust`),
-nor are `GM_Combo` and maximum-likelihood models. For the spatial error model see
+144-row scene within 5e-3 (coefficients) to 2e-2 (z, AK). The default standard errors are the classical
+`sigma2 (Z'PZ)^-1`; the `robust` prop gives HC0, HC1 or spatial HAC ones.
+`GM_Combo` and maximum-likelihood models are not provided here. For the spatial error model see
 [`GPUSpatialErrorGM`](#gpuspatialerrorgm).
 
 `getGPUSpatialTwoStageLeastSquaresModelResult(readback, {predictorNames?})` turns the read-back `table`, `summary`
@@ -539,7 +589,7 @@ and a uint32 scalar).
   `E[(Wz)'(WWz)]` and `E[||W'(Wz)||^2]` over the same probes, exact in exact mode.
 
 Probes run in batches whose two ping-pong vectors stay within 64 MiB. Every dot product is a fixed-order tile
-sum with a Kahan merge, so there are no float atomics and results are bit-identical across batch sizes and
+sum with a pairwise merge, so there are no float atomics and results are bit-identical across batch sizes and
 runs. The shaders do not depend on the power, the batch or the probe index: per-power and per-batch tables
 are 64-element aligned sub-views and a GPU batch table holds each batch's first probe and probe count, so
 the pipeline count does not grow with `maximumPower` or the number of batches. A `W` with spectral radius above 1 grows as `radius^q` and can overflow float32 for large `Q`.
@@ -681,7 +731,9 @@ estimated `lambda`.
   at-bound flag.
 - `status.code`: 0 ok, 1 singular (OLS or filtered fit), 2 too few rows (`n <= k + 2`), 3 non-finite (including `W`
   without links).
-- `residuals`: `u = y - X b`.
+- `residuals`: `u = y - X b`, formed in the centered model as `(y - ybar) - a0 - (x - xbar) b`, so they and the
+  filtered residuals behind `sigma2` keep their accuracy when the response mean is far above them (residuals of
+  0.002 to 0.004 around 10,000 match spreg in float64 within 1e-4 in `sigma2` and `u'u`).
 
 `getGPUSpatialErrorGMModelResult(readback, {predictorNames?})` turns the read-back `table`, `summary` and `status`
 into the shared `GPURegressionModelResult`: rows `CONSTANT`, the predictors and `lambda` (role `'spatial-error'`),
@@ -689,7 +741,7 @@ z statistics with float64 normal p-values, `sigmaSquaredMaximumLikelihood = e'e 
 `residualSumOfSquares = n sigma2` of the filtered residuals, the scale of the standard errors), `pseudoRSquared`,
 no likelihood and the conditioning above.
 
-Accumulations use the fixed-order tile and Kahan scheme of `GPUOrdinaryLeastSquares`, so results are
+Accumulations use the fixed-order tile and pairwise-merge scheme of `GPUOrdinaryLeastSquares`, so results are
 deterministic. The spec matches spreg on a 10x10 lattice and an asymmetric kNN scene (`k = 4`, 80 rows):
 `lambda` and the coefficients within 5e-3, standard errors within 1e-2 and z within 2e-2 (relative), for both
 estimators. The `GM_Error_Het` variant and the Kelejian-Prucha weighted estimator are not provided.
@@ -719,9 +771,16 @@ default 128), `traceMode`, `traceProbeCount`, `traceParameters` (per-frame seed)
 `output: {table, summary, status: {code, converged?}, residuals?, powerTraces?, powerSums?, infinityNorm?}`. Provide `powerTraces`,
 `powerSums` and `infinityNorm` together to share the traces with a downstream [`GPUSpatialLagImpacts`](#gpuspatiallagimpacts).
 
-- Steps: the OLS residuals `e0`, `e1` of `y` and `W y` on `[1, X]` (two `GPUOrdinaryLeastSquares` compositions) make
-  the concentrated likelihood `-n/2 ln(s2(rho)) + ln|I - rho W|`, `s2 = (e0 - rho e1)'(e0 - rho e1) / n`, depend on
-  three sums. The log-determinant is `-sum_{q<=Q} rho^q tr(W^q) / q` from
+- Steps: the OLS residuals `e0`, `e1` of `y` and of the lag of `y` on `[1, X]` (two `GPUOrdinaryLeastSquares`
+  compositions) give the concentrated likelihood `-n/2 ln(s2(rho)) + ln|I - rho W|`,
+  `s2 = (e0 - rho e1)'(e0 - rho e1) / n`. The lag is formed about the response mean,
+  `W y = W (y - ybar) + ybar s_i`, with the row sums `s_i` of the float32 weights carried exactly (rows without
+  neighbours included), because a sum of `w * y` over the raw response is rounded to a float32 step of the
+  response. The search evaluates `u'u` as `S + e1'e1 (rho - rho*)^2`, with `S` the sum of squares of
+  `e0 - rho0 e1` at `rho0 = e0'e1 / e1'e1` summed per row and `rho*` its minimizer, not as
+  `e0'e0 - 2 rho e0'e1 + rho^2 e1'e1`: where the model fits well (`u'u` below 1e-7 of `e0'e0`) that difference
+  of three float32 sums is rounding, and the search then failed (status 3) or returned a wrong `rho` with
+  status 0. The log-determinant is `-sum_{q<=Q} rho^q tr(W^q) / q` from
   [`GPUSpatialWeightsTraces`](#gpuspatialweightstraces) (exact traces up to 4096 rows, Hutchinson above).
   `rho` is the global maximum on `[-B, B]`: one kernel evaluates the analytic derivative on 1025 grid points,
   bisects (32 steps) every positive-to-non-positive sign change on the derivative, and keeps the best candidate
@@ -731,8 +790,10 @@ default 128), `traceMode`, `traceProbeCount`, `traceParameters` (per-frame seed)
   `rho` of the power traces, and `tr3 = tr((W A)' W A)`, `A = (I - rho W)^-1`, from a second probe pass at the
   estimated `rho` (Horner `u <- z + rho W u` per probe, exact unit probes up to 4096 rows, Rademacher above; the
   probes of `GPUSpatialWeightsTraces`). The `s2` row is eliminated by its Schur complement, the matrix is built on
-  centered predictors, unit-scaled and factored with the shared Cholesky, and the intercept variance is mapped back
-  to the uncentered model. A positive definite failure leaves the standard errors NaN
+  centered predictors and on `W A X b` about its mean (two more nodes; for a response with a large mean the raw
+  column cancels against the intercept in float32, which gave standard errors of `rho` and of the intercept a
+  half to a third of spreg's, or NaN), unit-scaled and factored with the shared Cholesky, and the intercept
+  variance is mapped back to the uncentered model. A positive definite failure leaves the standard errors NaN
   (`..._SUMMARY_VARIANCE_DEFINED` 0) without changing `status`. The coefficient block equals spreg's `vm`.
 - Search interval and truncation. `B = min(0.99, seriesLimit) / ||W||_inf` with `||W||_inf` the largest absolute row
   sum computed on the GPU (0.99 for a row-standardized `W`; keeps `I - rho W` invertible for any `W`, whereas spreg's
@@ -757,9 +818,46 @@ default 128), `traceMode`, `traceProbeCount`, `traceParameters` (per-frame seed)
   1e4; never changes `status`), the bound, the approximation, converged, at-boundary and series-limited flags, the
   truncation bound, variance-defined, the number of local maxima found on the grid (more than 1 is multimodal) and
   `ln|I - rho W|`.
-- `status.code`: 0 ok, 1 singular design, 2 too few rows (`n <= k + 2`), 3 non-finite predictor, response or weight (or no
-  admissible interval); the outputs are then NaN. `status.converged` (optional) is 1 for an interior maximum.
-- `residuals`: `u = y - rho W y - X b`.
+- `status.code`: 0 ok, 1 singular design, 2 too few rows (`n <= k + 2`), 3 non-finite predictor, response or weight, no
+  admissible interval, a residual sum of squares that reaches zero inside the search interval, or an interior
+  `rho` that fails the first-order condition: with `u'u` and `u'e1` summed per row from the published
+  residuals and `t = u'e1 / u'u`, the derivative `g = n t - tr(W A)` of the concentrated log-likelihood and its
+  curvature `c = n (e1'e1 / u'u - 2 t^2) + tr((W A)^2)` must satisfy `|g| <= sqrt(0.25 c) + 4 c step`, that
+  is, `rho` is within half a standard error plus four float32 steps of `rho` of a stationary point. Only
+  ratios of the sums are formed, so a response multiplied by 1e-10, 1 or 1e10 gives the same status and the
+  same `rho` to 6e-8 (the products of two sums of the earlier form overflowed at 1e10 and rejected a correct
+  fit). The four steps are the float32 resolution of `rho` and of the sums: without them the float32 nearest
+  to the maximum failed the test when the standard error of `rho` is below one step (a 64-row scene with a
+  standard error of 4.6e-9; `rho` is now returned within two steps, but `s2` is 33 times the float64 value
+  there, the standard errors 5.7 times and the log-likelihood 111 low, and no output flags it. The cause is
+  the coefficients: the residuals are `e0 - rho e1` of two float32 OLS fits, each with its own rounded slope,
+  and 91% of the published residual sum of squares lies in the span of `[1, x]` (the published slope is one
+  float32 step from the float64 slope). The float32 floor of the residual arithmetic is 1.04 to 1.65 times,
+  and the published residuals with their component in the span of `[1, x]` removed give 2.9 times; the kernel
+  does not refine the coefficients as the two-stage kernel does). The check catches a search that ended away from a stationary point: a `rho`
+  moved by 1e-4 on a high-fit scene, or by one standard error on an ordinary one, is status 3, and one moved
+  by a fifth of a standard error is accepted. It shares the trace series with the search and cannot tell a
+  local maximum from the global one. The outputs are then NaN, except `residuals`, which keep those of the
+  rejected `rho`. `status.converged` (optional) is 1 for an interior maximum.
+  Two degenerate cases have a likelihood and are fitted as spreg `ML_Lag` fits them: a minimum of `u'u` that
+  is zero but lies outside the search interval (`u'u = e1'e1 (rho - rho*)^2` is positive on the interval), and
+  `e1'e1 = 0` (the lag column lies in the span of `[1, X]`, `u'u` is constant and the estimate is the maximum
+  of the log-determinant). Both were status 3.
+- `residuals`: `u = y - rho W y - X b`, as `e0 - rho e1` of the two OLS fits, whose residuals sum to zero (see
+  the OLS numerics above). Measured on the test GPU against the float64 maximum of the concentrated likelihood
+  (the estimator of spreg `ML_Lag`, whose own search is within 5e-7 of it in `rho`), for residuals of 0.002 to
+  0.004 around a response mean of 10,000:
+  - rows that share a row sum, exactly or up to the rounding of the weights (ring at 0.5, six neighbours at
+    float32 1/6, binary weights with row sum 2, row sums of 1 and 1.0000000298, `rho` 0.2 to 0.8): `s2` within
+    1.1e-5 and the log-likelihood within 0.004 (before the lag was formed about the mean: up to 4.2% and 12.5);
+  - three rows without neighbours, `u'u` at 2e-10 of `e0'e0`: `s2` within 4e-5 and `rho` within 0.12 standard
+    errors, a float32 step of `rho` (before: `s2` 2,800 times too large with status 0);
+  - slopes two hundred times the residual deviation over the predictor range (`u'u` at 3e-9 of `e0'e0`): `s2`
+    within 3.4e-4 and `rho` within 0.04 standard errors on 24 scenes, because the fitted values are rounded to
+    1% to 3% of a residual (before: 14 of the 24 were status 3 and 3 were wrong with status 0);
+  - row sums that differ by more than rounding with such a response (row sums 2 and 3): the lag differs
+    between rows by the response mean and the lag column is rounded to a float32 step of that; `s2` within
+    2.5e-4.
 
 Exact log-determinant (opt-in, also `GPUSpatialErrorMaximumLikelihood`): `logDeterminant: 'exact'` with
 `eigenvalues` (the `rowCount` eigenvalues of `W` as float32) replaces the truncated trace series of
@@ -812,8 +910,11 @@ Maximum-likelihood estimator of the spatial error model `y = X b + u`, `u = lamb
 `maximumPower`, `traceMode`, `traceProbeCount`, `traceParameters` (per-frame seed), optional `tileRowCount` and
 `output: {table, summary, status: {code, converged?}, residuals?}`.
 
-- Steps: with `Z = [1, X - mean, y - mean]`, three tile passes (Kahan-merged, fixed order) accumulate once
-  `G0 = Z'Z`, `G1 + G1' = Z'WZ + (Z'WZ)'` and `G2 = (WZ)'(WZ)`. The Gram matrix of the filtered columns
+- Steps: a first tile pass fits OLS on the centered columns and gives `e0 = (y - mean) - (X - mean) b0`. With
+  `Z = [1, X - mean, e0]`, three tile passes (fixed pairwise merge) accumulate once
+  `G0 = Z'Z`, `G1 + G1' = Z'WZ + (Z'WZ)'` and `G2 = (WZ)'(WZ)`. Using `e0` for the response leaves the minimum over
+  the coefficients unchanged (the filtered regression estimates `b - b0`) and keeps `ee(lambda)` accurate in float32
+  when `R2` is close to 1: with the raw response `yy - 2 b'r + b'Ab` cancels to `1 - R2` of its terms. The Gram matrix of the filtered columns
   `Z - lambda W Z` (the filtered constant `1 - lambda sum_j w_ij` is column 0, as in spreg) is then exactly
   `G0 - lambda (G1 + G1') + lambda^2 G2`, so scanning `lambda` needs no pass over the rows. Each grid point solves
   one unit-scaled Cholesky system for `ee(lambda)`, and the derivative follows from the envelope theorem
@@ -852,7 +953,7 @@ graph.add(new GPUSpatialErrorMaximumLikelihood({weights, predictors, response, p
 
 Geographically and temporally weighted regression (GTWR; Huang, Wu and Barry 2010) at a fixed bandwidth. Every row is fitted by weighted least squares with kernel weights on the space-time distance `sqrt(ds^2 + tau dt^2)`, where `ds` is the planar distance, `dt` the difference of the times in ticks and `tau` the time scale (the `tau` of the Python package mgtwr, whose `GTWRKernel` and `GTWR.fit` are the oracle). The kernel is Gaussian `exp(-z^2 / 2)` or bisquare `(1 - z^2)^2` with `z = d / h`, chosen at compile time. `bandwidth` and `timeScale` are per-frame (`getGPUGTWRParameterValues`), so a caller can move through the `(bandwidth, timeScale)` plane without recompiling and compare `summary` AICc; the adaptive (nearest-neighbour) bandwidth and the automatic search of mgtwr are not ported.
 
-`times` are float32 ticks after the origin of a `temporalContext` that declares `float32-relative` encoding with an origin epoch; the unit is whatever the context declares, and `timeScale` converts one tick into spatial units squared per tick squared. The local system is solved in coordinates centered on the focal row with the diagonally equilibrated Cholesky factorization shared with the GWR family, so a rank-deficient or ill-conditioned local design reports `SINGULAR` for that row (NaN coefficients, fitted value and hat) instead of an unstable fit; `EXCLUDED` marks a masked row or one with a non-finite value. `summary` has the layout of `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY` over the non-singular rows: residual sum of squares, trace of the hat matrix, AICc (mgtwr `aicc`: `-2 llf + 2 (tr S + 1) + 2 tr S (tr S + 1) / (n - tr S - 1)`), R squared, observation count, singular row count, sigma squared, log-likelihood and included row count.
+`times` are float32 ticks after the origin of a `temporalContext` that declares `float32-relative` encoding with an origin epoch; the unit is whatever the context declares, and `timeScale` converts one tick into spatial units squared per tick squared. The local system is solved in coordinates centered on the focal row with the diagonally equilibrated Cholesky factorization shared with the GWR family, so a rank-deficient or ill-conditioned local design reports `SINGULAR` for that row (NaN coefficients, fitted value and hat) instead of an unstable fit; `EXCLUDED` marks a masked row or one with a non-finite value. `summary` has the layout of `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY` over the non-singular rows: residual sum of squares, trace of the hat matrix, AICc (the formula of `GPUGeographicallyWeightedRegression`, mgwr `aicc`: `-2 llf + 2 n (tr S + 1) / (n - tr S - 2)`, NaN when `n - tr S - 2 <= 0`, so a GWR and a GTWR fit are comparable and a degenerate bandwidth cannot win a profile search; mgtwr's own `aicc`, `-2 llf + 2 (tr S + 1) (n - 1) / (n - tr S - 1)`, is smaller by `2 n (k + 1) / (n - k - 2) - 2 (k + 1) (n - 1) / (n - k - 1)` with `k = tr S`: 2.15 at `n = 200`, `k = 60`), R squared, observation count, singular row count, sigma squared, log-likelihood and included row count.
 
 The fit is exhaustive over rows (`O(rows^2 x predictors^2)`, at most 32,768 rows and 11 predictors), float32 and planar. `gtwr-mgtwr.spec.ts` compares coefficients, fitted values, residuals, hat diagonals and summary statistics with mgtwr 2.0.5 output for four configurations (Gaussian and bisquare, time scale 0, 1.5, 2 and 8) and checks time-shift invariance, a larger time scale changing the fit, rank-deficient designs and masked rows. mgtwr declares no licence, so it is executed as an oracle (`test/oracles/gtwr-mgtwr-oracle.py`) and no code is copied.
 

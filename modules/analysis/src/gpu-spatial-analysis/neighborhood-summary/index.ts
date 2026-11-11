@@ -12,3 +12,16 @@ export type {
   GPUNeighborhoodSummaryProps,
   GPUNeighborhoodSummaryStatistic
 } from './gpu-neighborhood-summary';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeNeighborhoodSummaryOnCPU,
+  CPUNeighborhoodSummaryOperation
+} from './cpu-neighborhood-summary-operation';
+export type {
+  CPUNeighborhoodSummaryInput,
+  CPUNeighborhoodSummaryOptions,
+  CPUNeighborhoodSummaryResult
+} from './cpu-neighborhood-summary-operation';
+export {GPUNeighborhoodSummaryOperation} from './gpu-neighborhood-summary-operation';
+export type {NeighborhoodSummaryOperationProps} from './gpu-neighborhood-summary-operation';

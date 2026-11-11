@@ -40,7 +40,7 @@ for (const scene of samplingCases) {
       new GPURasterSampling({
         grid: scene.grid,
         values: rig.input('values', 'float32', new Float32Array(values)),
-        validity: rig.input('validity', 'uint32', new Uint32Array(validity)),
+        mask: rig.input('validity', 'uint32', new Uint32Array(validity)),
         noDataValue: -9999,
         positions: rig.input('points', 'float32x2', new Float32Array(points)),
         pointCount: activeCount.importToGraph(rig.graph),

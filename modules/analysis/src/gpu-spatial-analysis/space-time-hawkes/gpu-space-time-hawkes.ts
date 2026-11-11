@@ -27,7 +27,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_ORDERED_KEY_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -195,8 +195,10 @@ export type GPUSpaceTimeHawkesProps = {
  * size does not underflow (log-sum-exp, Ko, Suchard and Holbrook 2024), and the floor
  * {@link GPU_SPACE_TIME_HAWKES_INTENSITY_FLOOR} keeps the logarithms of the background rate and the
  * branching ratio finite. Event statistics are summed in tiles of consecutive events in plain
- * float32 and the tile partials with Neumaier compensation in a fixed order (the `GPUOrdinaryLeastSquares`
- * pattern), so results are bitwise repeatable on a device. `maximumIterations` iterations are
+ * float32 and the tile partials by a fixed pairwise (cascade) sum (the `GPUOrdinaryLeastSquares`
+ * pattern, `getRowTileSumNodes`), whose error is about `log2(tileCount)` roundings of the totals,
+ * so results are bitwise repeatable on a device. (The merge is not a compensated sum: a float
+ * Neumaier term is removed by fast-math shader compilers.) `maximumIterations` iterations are
  * unrolled; a one-thread node tests convergence (largest relative change of any estimate at most
  * `tolerance`) and disarms a GPU dispatch gate, so finished iterations launch nothing. If the budget is
  * exhausted first the latest estimates are still published with `iterationLimitReached` set.
@@ -247,9 +249,9 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
       1,
       GPU_SPACE_TIME_HAWKES_MAXIMUM_PARENTS
     );
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.times, ['float32'], `${id} times`);
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.times, ['float32'], `${id} times`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     validateRequirement(id, props.positions.length >= 2, 'needs at least two events');
     // Counts are summed in float32, which is exact for integers up to 2^24.
     validateMaximumCount(
@@ -269,14 +271,14 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
       `parameters must hold ${GPU_SPACE_TIME_HAWKES_PARAMETER_LENGTH} float32 values`
     );
     const {output} = props;
-    validatePackedView(output.estimates, ['float32'], `${id} output.estimates`);
+    validateSinglePackedView(output.estimates, ['float32'], `${id} output.estimates`);
     validateRequirement(
       id,
       output.estimates.length >= GPU_SPACE_TIME_HAWKES_ESTIMATE_LENGTH,
       `output.estimates must hold ${GPU_SPACE_TIME_HAWKES_ESTIMATE_LENGTH} rows`
     );
     if (output.logLikelihood) {
-      validatePackedView(output.logLikelihood, ['float32'], `${id} output.logLikelihood`);
+      validateSinglePackedView(output.logLikelihood, ['float32'], `${id} output.logLikelihood`);
       validateRequirement(
         id,
         output.logLikelihood.length === 1,
@@ -284,7 +286,7 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
       );
     }
     if (output.backgroundProbability) {
-      validatePackedView(
+      validateSinglePackedView(
         output.backgroundProbability,
         ['float32'],
         `${id} output.backgroundProbability`
@@ -297,7 +299,7 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
     }
     for (const [name, view] of Object.entries(output.status ?? {})) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
         validateRequirement(
           id,
           view.length === 1,

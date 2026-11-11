@@ -16,12 +16,12 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getSortedSegmentOffsetNodes} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
-import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {GUARDED_ATAN2_WGSL, IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUCircularStatisticsContract} from '../../analysis-core/contracts/index';
 import {
@@ -106,8 +106,8 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.groupCount = props.groupCount ?? 1;
     const {id, groupCount} = this;
-    validatePackedView(props.starts, ['float32x2'], `${id} starts`);
-    validatePackedView(props.ends, ['float32x2'], `${id} ends`);
+    validateSinglePackedView(props.starts, ['float32x2'], `${id} starts`);
+    validateSinglePackedView(props.ends, ['float32x2'], `${id} ends`);
     if (props.ends.length !== props.starts.length)
       throw new Error(`${id} ends length must equal starts length`);
     for (const [name, view] of [
@@ -116,8 +116,8 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
       ['mask', props.mask]
     ] as const) {
       if (!view) continue;
-      if (name === 'weights') validatePackedView(view, ['float32'], `${id} ${name}`);
-      else validatePackedView(view, ['uint32'], `${id} ${name}`);
+      if (name === 'weights') validateSinglePackedView(view, ['float32'], `${id} ${name}`);
+      else validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length !== props.starts.length)
         throw new Error(`${id} ${name} length must equal starts length`);
     }
@@ -134,8 +134,8 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
     }
     validateCapacity(id, 'circular.binCount', props.circular.binCount, 2, 360);
     const {summary, bins} = props.output;
-    validatePackedView(summary, ['float32'], `${id} output.summary`);
-    validatePackedView(bins, ['float32'], `${id} output.bins`);
+    validateSinglePackedView(summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(bins, ['float32'], `${id} output.bins`);
     if (summary.length < groupCount * GPU_ROSE_STATISTIC_SUMMARY_STRIDE)
       throw new Error(`${id} output.summary is too short`);
     if (bins.length < groupCount * props.circular.binCount)
@@ -285,7 +285,7 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
         invocationCount: groupCount * ROSE_WORKGROUP_SIZE,
         guardIndex: false,
         bindings,
-        declarations: `const ROWS: u32 = ${rowCount}u;\nconst GROUP_COUNT: u32 = ${groupCount}u;\nconst LANES: u32 = ${ROSE_WORKGROUP_SIZE}u;\nconst BIN_COUNT: u32 = ${props.circular.binCount}u;\nconst PI: f32 = 3.141592653589793;\nconst PERIOD: f32 = ${axial ? 'PI' : '2.0 * PI'};\n${IS_FINITE_FLOAT_WGSL}
+        declarations: `const ROWS: u32 = ${rowCount}u;\nconst GROUP_COUNT: u32 = ${groupCount}u;\nconst LANES: u32 = ${ROSE_WORKGROUP_SIZE}u;\nconst BIN_COUNT: u32 = ${props.circular.binCount}u;\nconst PI: f32 = 3.141592653589793;\nconst PERIOD: f32 = ${axial ? 'PI' : '2.0 * PI'};\n${IS_FINITE_FLOAT_WGSL}\n${GUARDED_ATAN2_WGSL}
 var<workgroup> tileBin: array<u32, ${ROSE_WORKGROUP_SIZE}>;
 var<workgroup> tileWeight: array<f32, ${ROSE_WORKGROUP_SIZE}>;
 var<workgroup> sharedCount: array<u32, ${ROSE_WORKGROUP_SIZE}>;
@@ -320,7 +320,8 @@ var<workgroup> sharedDirectionSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
         let lengthSquared = dot(delta, delta);
         let weight = ${props.weights ? 'weights[weightsOffset + row]' : '1.0'};
         if (lengthSquared > 0.0 && weight > 0.0 && isFiniteFloat(lengthSquared) && isFiniteFloat(weight)) {
-          var angle = atan2(delta.y, delta.x);
+          // delta.x is a coordinate difference and can be -0.0 (contract section 11).
+          var angle = guardedAtan2(delta.y, delta.x);
           if (angle < 0.0) { angle += 2.0 * PI; }
           ${axial ? 'if (angle >= PI) { angle -= PI; }' : ''}
           let circularAngle = ${axial ? '2.0 * angle' : 'angle'};

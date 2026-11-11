@@ -10,6 +10,7 @@ import {
   GPUCostDistance,
   type GPUCostDistanceProps
 } from '../../../src/raster-analysis/cost-distance/index';
+import {createRasterGateSlotTable} from '../../../src/raster-analysis/cost-distance/raster-relaxation';
 import {
   makeGPURasterBand,
   makeGPURasterMetadata
@@ -389,4 +390,18 @@ it('model: a converged run and a restart request start from scratch, and inputs 
   expect(reset.iterationCount).toBe(8);
   while (!state.converged) runModelExecution(size, first, 0, values, state, 8, 6);
   expect(sameBits(values, computeDijkstra(size, first, 0))).toBe(true);
+});
+
+it('raster gate slot table rejects slots outside its group with a named limit', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const table = createRasterGateSlotTable(graph, {
+    id: 'slots',
+    operation: 'GPUCostDistance',
+    groupSize: 4
+  });
+  expect(table.getSlot(4).length).toBe(1);
+  expect(() => table.getSlot(5)).toThrow(
+    /^GPUCostDistance gate slot must be an integer in \[0, 4\] \(the group size\)/
+  );
+  expect(() => table.getSlot(-1)).toThrow(/^GPUCostDistance gate slot/);
 });

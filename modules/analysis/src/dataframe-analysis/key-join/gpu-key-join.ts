@@ -22,7 +22,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getFixedPointWGSL,
@@ -30,9 +30,15 @@ import {
   ORDERED_KEY_WGSL,
   validateSumScale
 } from '../../analysis-core/cell-key-wgsl';
+import {
+  FIXED_POINT_WGSL,
+  getFixedPointHeadroomBits
+} from '../../analysis-core/kernels/fixed-point-accumulator';
 
 const OPERATION = 'GPUKeyJoin';
 const MAXIMUM_GATHER_COLUMNS_PER_KERNEL = 3;
+/** Workgroup size of the pass that reduces the largest exponent of an aggregate column. */
+const SUM_SCALE_WORKGROUP_SIZE = 256;
 
 /** Join kind: `'left'` keeps every left row aligned, `'inner'` also compacts the matched rows. */
 export type GPUKeyJoinKind = 'left' | 'inner';
@@ -59,9 +65,11 @@ export type GPUKeyJoinAggregate = {
    */
   column?: GraphDataView<'float32'>;
   /**
-   * `'count'` counts matching right rows (finite values when a column is given), `'sum'` and
-   * `'mean'` use exact fixed-point sums, `'minimum'` and `'maximum'` are exact. `'mean'` is the
-   * decoded fixed-point sum divided by the finite count.
+   * `'count'` counts matching right rows (finite values when a column is given). `'sum'` is the
+   * exact sum of the finite values in a 96-bit fixed-point accumulator whose unit follows the
+   * largest value among the valid right rows, rounded once to float32; `'mean'` is that sum
+   * divided by the finite count. Neither depends on `sumScale`. `'minimum'` and `'maximum'` are
+   * exact.
    */
   operation: GPUKeyJoinAggregateOperation;
   /**
@@ -71,9 +79,11 @@ export type GPUKeyJoinAggregate = {
    */
   output: GraphDataView<'float32'>;
   /**
-   * Optional left-aligned exact fixed-point sums (`'sum'` and `'mean'` only), signed 64-bit
-   * little-endian words equal to the sum of `roundHalfEven(fround(value * sumScale))`. Zero for
-   * unmatched rows.
+   * Optional left-aligned fixed-point sums in units of `1 / sumScale` (`'sum'` and `'mean'`
+   * only), signed 64-bit little-endian words equal to the sum of
+   * `roundHalfEven(fround(value * sumScale))`. Each value is rounded to the unit first, so a
+   * value below half a unit adds nothing; `output` holds the sum of the values themselves. Zero
+   * for unmatched rows.
    */
   sums?: GraphDataView<'uint32x2'>;
 };
@@ -118,7 +128,10 @@ export type GPUKeyJoinProps = {
   gather?: readonly GPUKeyJoinGather[];
   /** 1:n aggregates over all matching right rows. */
   aggregates?: readonly GPUKeyJoinAggregate[];
-  /** Fixed-point scale of sums and means, a positive float32. Defaults to 65536. */
+  /**
+   * Fixed-point scale of the optional `sums` words of an aggregate only, a positive float32: one
+   * unit is `1 / sumScale`. Defaults to 65536. The float `'sum'` and `'mean'` do not use it.
+   */
   sumScale?: number;
   /** Caller-owned outputs. */
   output: GPUKeyJoinOutput;
@@ -131,11 +144,18 @@ export type GPUKeyJoinProps = {
  * (one pass per key word), so equal keys stay in ascending right-row order. Segment heads and a
  * scan give the unique right keys and their row ranges. Each left row binary-searches the unique
  * keys on the unsigned `(high, low)` order, then gathers the first matching right row's columns
- * and 1:n aggregates. Aggregates accumulate once per unique key with integer atomics (64-bit
- * fixed-point sums with explicit carry, ordered-key extremes), so every output is exact,
- * independent of thread order, and bitwise reproducible. All inputs must be single packed views.
+ * and 1:n aggregates. Aggregates accumulate once per unique key with integer atomics (96-bit
+ * fixed-point sums with a data-derived unit and explicit carry, ordered-key extremes), so every
+ * output is independent of thread order and bitwise reproducible. Counts and extremes are exact;
+ * a sum is the exact integer sum rounded once to float32 (a value keeps all its bits while its
+ * magnitude is at least `max * 2^(h - 71)`, `h` the bit length of the right row count). All
+ * inputs must be single packed views.
  * Left-aligned outputs keep the left row order for both kinds; `'inner'` additionally compacts the
  * matched left row IDs in ascending order.
+ *
+ * The official `GPUHashJoin` of `@luma.gl/graph/gpu-core` is a hash join; this contributor is a
+ * sort and binary-search join because it needs 64-bit keys, row masks, and 1:n aggregates over
+ * repeated right keys.
  */
 export class GPUKeyJoin implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -144,7 +164,7 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
   readonly props: GPUKeyJoinProps;
   /** Join kind. */
   readonly kind: GPUKeyJoinKind;
-  /** Fixed-point scale of the sums. */
+  /** Fixed-point scale of the `sums` words. */
   readonly sumScale: number;
 
   constructor(props: GPUKeyJoinProps) {
@@ -164,8 +184,8 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
     if (keyFormat !== 'uint32' && keyFormat !== 'uint32x2') {
       throw new Error(`${id} leftKeys must be uint32 or uint32x2`);
     }
-    validatePackedView(props.leftKeys, [keyFormat], `${id} leftKeys`);
-    validatePackedView(props.rightKeys, [keyFormat], `${id} rightKeys`);
+    validateSinglePackedView(props.leftKeys, [keyFormat], `${id} leftKeys`);
+    validateSinglePackedView(props.rightKeys, [keyFormat], `${id} rightKeys`);
     const leftCount = props.leftKeys.length;
     const rightCount = props.rightKeys.length;
     if (leftCount < 1 || rightCount < 1) {
@@ -176,7 +196,7 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       ['rightMask', props.rightMask, rightCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length !== count) {
           throw new Error(`${id} ${name} length must equal the ${name.slice(0, -4)} row count`);
         }
@@ -185,8 +205,8 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
     for (const [index, entry] of gather.entries()) {
       const name = `gather[${index}]`;
       const format = entry.column.format;
-      validatePackedView(entry.column, ['float32', 'uint32'], `${id} ${name}.column`);
-      validatePackedView(entry.output, [format], `${id} ${name}.output`);
+      validateSinglePackedView(entry.column, ['float32', 'uint32'], `${id} ${name}.column`);
+      validateSinglePackedView(entry.output, [format], `${id} ${name}.output`);
       if (entry.column.length !== rightCount) {
         throw new Error(`${id} ${name}.column length must equal the right row count`);
       }
@@ -203,12 +223,12 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} needs a column for ${entry.operation}`);
       }
       if (entry.column) {
-        validatePackedView(entry.column, ['float32'], `${id} ${name}.column`);
+        validateSinglePackedView(entry.column, ['float32'], `${id} ${name}.column`);
         if (entry.column.length !== rightCount) {
           throw new Error(`${id} ${name}.column length must equal the right row count`);
         }
       }
-      validatePackedView(entry.output, ['float32'], `${id} ${name}.output`);
+      validateSinglePackedView(entry.output, ['float32'], `${id} ${name}.output`);
       if (entry.output.length !== leftCount) {
         throw new Error(`${id} ${name}.output length must equal the left row count`);
       }
@@ -216,7 +236,7 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
         if (entry.operation !== 'sum' && entry.operation !== 'mean') {
           throw new Error(`${id} ${name}.sums needs the sum or mean operation`);
         }
-        validatePackedView(entry.sums, ['uint32x2'], `${id} ${name}.sums`);
+        validateSinglePackedView(entry.sums, ['uint32x2'], `${id} ${name}.sums`);
         if (entry.sums.length !== leftCount) {
           throw new Error(`${id} ${name}.sums length must equal the left row count`);
         }
@@ -225,14 +245,14 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
     for (const name of ['rightRows', 'matchCounts', 'matched'] as const) {
       const view = output[name];
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== leftCount) {
           throw new Error(`${id} output.${name} length must equal the left row count`);
         }
       }
     }
     if (output.rightMatched) {
-      validatePackedView(output.rightMatched, ['uint32'], `${id} output.rightMatched`);
+      validateSinglePackedView(output.rightMatched, ['uint32'], `${id} output.rightMatched`);
       if (output.rightMatched.length !== rightCount) {
         throw new Error(`${id} output.rightMatched length must equal the right row count`);
       }
@@ -654,26 +674,116 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
       const wantsCounts = operation === 'mean' || (operation === 'count' && Boolean(column));
       const isMinimum = operation === 'minimum';
       const isMaximum = operation === 'maximum';
-      const sums = wantsSums
-        ? createTransientView(graph, `${id}-${name}-sums`, 'uint32x2', rightCount)
-        : undefined;
+      // The float `'sum'` and `'mean'` come from the shared 96-bit fixed-point accumulator, whose
+      // unit follows the largest finite value among the valid right rows: three words per unique
+      // key. They are split over two views so that the row limit stays at one storage binding
+      // of two words per row, as it was with the 64-bit sums: the low and middle words here, the
+      // high word in `sumHighWords`, followed by one word that holds the largest biased exponent
+      // (the scale of the unit).
+      const sumWords = wantsSums ? u32(`${name}-sum-words`, 2 * rightCount) : undefined;
+      const sumHighWords = wantsSums ? u32(`${name}-sum-high-words`, rightCount + 1) : undefined;
+      // The 64-bit words in units of `1 / sumScale` are accumulated only for `aggregate.sums`.
+      const sums =
+        wantsSums && aggregate.sums
+          ? createTransientView(graph, `${id}-${name}-sums`, 'uint32x2', rightCount)
+          : undefined;
       const counts = wantsCounts ? u32(`${name}-counts`, rightCount) : undefined;
       const extremes = isMinimum || isMaximum ? u32(`${name}-extremes`, rightCount) : undefined;
-      if (sums || counts || extremes) {
+      const fixedPointDeclarations = /* wgsl */ `
+const SUM_SCALE_INDEX: u32 = ${rightCount}u;
+const FIXED_POINT_HEADROOM_BITS: u32 = ${getFixedPointHeadroomBits(rightCount)}u;
+${FIXED_POINT_WGSL}`;
+      // The carry chain of `getFixedPointAtomicAddWGSL`, with the high word in its own view.
+      const sumWordsAddWGSL = /* wgsl */ `
+fn addFixedPointToSumWords(cell: u32, value: vec3<u32>) {
+  let base = sumWordsOffset + cell * 2u;
+  var lowCarry = 0u;
+  if (value.x != 0u) {
+    let oldLow = atomicAdd(&sumWords[base], value.x);
+    lowCarry = select(0u, 1u, oldLow + value.x < oldLow);
+  }
+  let middleAddend = value.y + lowCarry;
+  var middleCarry = select(0u, 1u, middleAddend < value.y);
+  if (middleAddend != 0u) {
+    let oldMiddle = atomicAdd(&sumWords[base + 1u], middleAddend);
+    middleCarry = middleCarry + select(0u, 1u, oldMiddle + middleAddend < oldMiddle);
+  }
+  let highAddend = value.z + middleCarry;
+  if (highAddend != 0u) {
+    atomicAdd(&sumHighWords[sumHighWordsOffset + cell], highAddend);
+  }
+}`;
+      if (sumWords || sums || counts || extremes) {
         nodes.push(
           node(
             `${name}-clear`,
             [
+              ...(sumWords ? [write('sumWords', sumWords)] : []),
+              ...(sumHighWords ? [write('sumHighWords', sumHighWords)] : []),
               ...(sums ? [write('sums', sums)] : []),
               ...(counts ? [write('counts', counts)] : []),
               ...(extremes ? [write('extremes', extremes)] : [])
             ],
             rightCount,
-            `${sums ? 'sums[sumsOffset + 2u * index] = 0u;\n  sums[sumsOffset + 2u * index + 1u] = 0u;' : ''}
+            `${
+              sumWords
+                ? `sumWords[sumWordsOffset + 2u * index] = 0u;
+  sumWords[sumWordsOffset + 2u * index + 1u] = 0u;
+  sumHighWords[sumHighWordsOffset + index] = 0u;
+  if (index == 0u) {
+    sumHighWords[sumHighWordsOffset + ${rightCount}u] = 0u;
+  }`
+                : ''
+            }
+  ${sums ? 'sums[sumsOffset + 2u * index] = 0u;\n  sums[sumsOffset + 2u * index + 1u] = 0u;' : ''}
   ${counts ? 'counts[countsOffset + index] = 0u;' : ''}
   ${extremes ? `extremes[extremesOffset + index] = ${isMinimum ? '0xffffffffu' : '0u'};` : ''}`
           )
         );
+        if (sumWords) {
+          // Scale of the unit: the largest biased exponent of the values the accumulate pass
+          // adds (the same predicate), one `atomicMax` per workgroup. Masked rows and rows
+          // without a key (a sentinel such as 1e30) do not raise the unit.
+          nodes.push(
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-${name}-sum-scale`,
+              operation: OPERATION,
+              variant: `${name}-sum-scale`,
+              bindings: [
+                read('sortedRows', sortedRows),
+                read('rowUnique', rowUnique),
+                read('values', column!, 'f32'),
+                atomic('sumHighWords', sumHighWords!)
+              ],
+              invocationCount: rightCount,
+              guardIndex: false,
+              workgroupSize: SUM_SCALE_WORKGROUP_SIZE,
+              declarations: `${fixedPointDeclarations}
+var<workgroup> workgroupExponentBits: atomic<u32>;`,
+              // No early return: every invocation of a workgroup must reach the barriers.
+              body: `if (localInvocationIndex == 0u) {
+    atomicStore(&workgroupExponentBits, 0u);
+  }
+  workgroupBarrier();
+  if (index < INVOCATION_COUNT && rowUnique[rowUniqueOffset + index] != 0xffffffffu) {
+    // 0 for zero and for non-finite values, which the accumulate pass skips.
+    let exponentBits = getFixedPointExponentBits(
+      values[valuesOffset + sortedRows[sortedRowsOffset + index]]
+    );
+    if (exponentBits != 0u) {
+      atomicMax(&workgroupExponentBits, exponentBits);
+    }
+  }
+  workgroupBarrier();
+  if (localInvocationIndex == 0u) {
+    let workgroupMaximum = atomicLoad(&workgroupExponentBits);
+    if (workgroupMaximum != 0u) {
+      atomicMax(&sumHighWords[sumHighWordsOffset + SUM_SCALE_INDEX], workgroupMaximum);
+    }
+  }`
+            })
+          );
+        }
         nodes.push(
           node(
             `${name}-accumulate`,
@@ -681,6 +791,8 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
               read('sortedRows', sortedRows),
               read('rowUnique', rowUnique),
               read('values', column!, 'f32'),
+              ...(sumWords ? [atomic('sumWords', sumWords)] : []),
+              ...(sumHighWords ? [atomic('sumHighWords', sumHighWords)] : []),
               ...(sums ? [atomic('sums', sums)] : []),
               ...(counts ? [atomic('counts', counts)] : []),
               ...(extremes ? [atomic('extremes', extremes)] : [])
@@ -696,6 +808,15 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
   }
   ${counts ? 'atomicAdd(&counts[countsOffset + unique], 1u);' : ''}
   ${
+    sumWords
+      ? `let unitExponent = getFixedPointUnitExponent(
+    atomicLoad(&sumHighWords[sumHighWordsOffset + SUM_SCALE_INDEX]),
+    FIXED_POINT_HEADROOM_BITS
+  );
+  addFixedPointToSumWords(unique, quantizeFixedPoint(value, unitExponent));`
+      : ''
+  }
+  ${
     sums
       ? `let scaled = cellScaleValue(value);
   let previous = atomicAdd(&sums[sumsOffset + 2u * unique], scaled.y);
@@ -707,20 +828,33 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
   }
   ${isMinimum ? 'atomicMin(&extremes[extremesOffset + unique], getOrderedKey(value));' : ''}
   ${isMaximum ? 'atomicMax(&extremes[extremesOffset + unique], getOrderedKey(value));' : ''}`,
-            `${getFixedPointWGSL(this.sumScale)}\n${ORDERED_KEY_WGSL}`
+            `${getFixedPointWGSL(this.sumScale)}\n${ORDERED_KEY_WGSL}${
+              sumWords ? `\n${fixedPointDeclarations}\n${sumWordsAddWGSL}` : ''
+            }`
           )
         );
       }
+      // The exact integer sum of a unique key, rounded once to the nearest float32.
+      const floatTotal = `let base = sumWordsOffset + 2u * unique;
+  let floatTotal = getFixedPointFloat(
+    vec3<u32>(sumWords[base], sumWords[base + 1u], sumHighWords[sumHighWordsOffset + unique]),
+    getFixedPointUnitExponent(
+      sumHighWords[sumHighWordsOffset + SUM_SCALE_INDEX],
+      FIXED_POINT_HEADROOM_BITS
+    )
+  );`;
       let finishBody: string;
       if (operation === 'count') {
         finishBody = counts
           ? 'let value = f32(counts[countsOffset + unique]);'
           : 'let value = f32(uniqueStart[uniqueStartOffset + unique + 1u] - uniqueStart[uniqueStartOffset + unique]);';
       } else if (operation === 'sum') {
-        finishBody = 'let value = cellI64ToF32(total) / SUM_SCALE;';
+        finishBody = `${floatTotal}
+  let value = floatTotal;`;
       } else if (operation === 'mean') {
-        finishBody = `let n = counts[countsOffset + unique];
-    let value = select(getNaN(), cellI64ToF32(total) / SUM_SCALE / f32(n), n != 0u);`;
+        finishBody = `${floatTotal}
+  let n = counts[countsOffset + unique];
+  let value = select(getNaN(), floatTotal / f32(n), n != 0u);`;
       } else {
         finishBody = `let key = extremes[extremesOffset + unique];
     let value = select(decodeOrderedKey(key), getNaN(), key == ${isMinimum ? '0xffffffffu' : '0u'});`;
@@ -732,6 +866,8 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
           [
             read('leftUnique', leftUnique),
             ...(needsUniqueStart ? [read('uniqueStart', uniqueStart)] : []),
+            ...(sumWords ? [read('sumWords', sumWords)] : []),
+            ...(sumHighWords ? [read('sumHighWords', sumHighWords)] : []),
             ...(sums ? [read('sums', sums)] : []),
             ...(counts ? [read('counts', counts)] : []),
             ...(extremes ? [read('extremes', extremes)] : []),
@@ -749,7 +885,7 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
   ${finishBody}
   valueOut[valueOutOffset + index] = value;
   ${aggregate.sums ? 'sumsOut[sumsOutOffset + 2u * index] = total.y;\n  sumsOut[sumsOutOffset + 2u * index + 1u] = total.x;' : ''}`,
-          `${getFixedPointWGSL(this.sumScale)}\n${ORDERED_KEY_WGSL}`
+          `${ORDERED_KEY_WGSL}${sumWords ? `\n${fixedPointDeclarations}` : ''}`
         )
       );
     }

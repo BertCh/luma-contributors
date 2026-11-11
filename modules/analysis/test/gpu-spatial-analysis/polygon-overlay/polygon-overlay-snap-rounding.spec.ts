@@ -128,11 +128,17 @@ it('sizes all overlay outputs from unclamped GPU requirements after ring overflo
     boundaryOverflow: 0,
     requiredRingCount: 3,
     boundaryRequiredCount: 12,
-    nodedSegmentRequiredCount: 12
+    nodedSegmentRequiredCount: 12,
+    // Rule 8 ring-level status: the unclamped requirement and the rings written at capacity 1.
+    ringCount: 1
   });
   const capacity = planOverlayCapacity(props.capacity, limited);
   const complete = await runOverlay(device, {...props, capacity}, 'ring-sized');
-  expect(complete).toMatchObject({overflow: 0, requiredRingCount: 3});
+  expect(complete).toMatchObject({
+    overflow: 0,
+    requiredRingCount: 3,
+    ringCount: 3
+  });
   expect(complete.rings).toHaveLength(3);
   expect(summarizeReadout(complete, {origin: [-1, -1], cell: 1}).area2).toBe(24);
 });

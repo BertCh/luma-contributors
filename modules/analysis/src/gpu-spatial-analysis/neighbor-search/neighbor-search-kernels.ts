@@ -219,12 +219,30 @@ fn isPointInBounds(lattice: Lattice, x: f32, y: f32) -> bool {
 fn isPointValid(lattice: Lattice, x: f32, y: f32) -> bool {
   return lattice.valid && isPointInBounds(lattice, x, y);
 }
+
+// A cross-join query. Planar queries need only finite coordinates: the cell lookups clamp to the
+// lattice and every cell bound below is measured from the true position, so a query outside the
+// bounds still finds its exact neighbors. Great-circle queries keep the bounds rule, because the
+// longitude wrap is defined by them.
+fn isCrossJoinQueryInBounds(lattice: Lattice, x: f32, y: f32) -> bool {
+  ${geodesic ? 'return isPointInBounds(lattice, x, y);' : 'return isFiniteFloat(x) && isFiniteFloat(y);'}
+}
+
+fn isCrossJoinQueryValid(lattice: Lattice, x: f32, y: f32) -> bool {
+  return lattice.valid && isCrossJoinQueryInBounds(lattice, x, y);
+}
 ${
   timeAxis
     ? `
 // Finite and inside the per-frame time bounds, independent of whether the lattice is usable.
 fn isTimeInBounds(lattice: Lattice, time: f32) -> bool {
   return isFiniteFloat(time) && time >= lattice.minimumTime && time <= lattice.maximumTime;
+}
+
+// A cross-join query time only needs to be finite: the bucket range clamps to the buckets that
+// hold targets, and the window test itself is exact.
+fn isCrossJoinQueryTimeInBounds(time: f32) -> bool {
+  return isFiniteFloat(time);
 }
 
 // A rounding margin for bucket lookups: a target whose bucket rounds one way and a query whose
@@ -242,12 +260,13 @@ fn getTimeBucket(lattice: Lattice, time: f32) -> u32 {
     : ''
 }
 
+// Both clamp a position outside the lattice (a planar cross-join query) to the nearest edge cell.
 fn getCellColumn(lattice: Lattice, x: f32) -> u32 {
-  return min(u32(floor((x - lattice.minimumX) / lattice.cellWidth)), lattice.columns - 1u);
+  return u32(clamp(floor((x - lattice.minimumX) / lattice.cellWidth), 0.0, f32(lattice.columns - 1u)));
 }
 
 fn getCellRow(lattice: Lattice, y: f32) -> u32 {
-  return min(u32(floor((y - lattice.minimumY) / lattice.cellHeight)), lattice.rows - 1u);
+  return u32(clamp(floor((y - lattice.minimumY) / lattice.cellHeight), 0.0, f32(lattice.rows - 1u)));
 }
 
 // Distance along one axis from position (in cell queryCell) to the near edge of cell; zero
@@ -407,7 +426,9 @@ export function getNearestNeighborSearchWGSL(
         // A full row of the ring: only the columns within reach of the k-th best are visited.
         var rangeFirst = firstColumn;
         var rangeEnd = endColumn;
-        if (found == K) {
+        // Not narrowed while the k-th squared distance has overflowed to infinity (queries beyond
+        // about 1e19): the reach would be inf - inf = NaN and skip tied lower IDs in other columns.
+        if (found == K && bestDistances[K - 1u] < 3.0e38) {
           let reach = sqrt(max(bestDistances[K - 1u] - rowGapSquared, 0.0)) + slack;
           let lowColumn = floor((x - reach - lattice.minimumX) / lattice.cellWidth);
           let highColumn = floor((x + reach - lattice.minimumX) / lattice.cellWidth);

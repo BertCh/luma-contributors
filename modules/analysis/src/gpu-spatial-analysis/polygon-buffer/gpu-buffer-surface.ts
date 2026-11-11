@@ -16,7 +16,7 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
@@ -138,7 +138,14 @@ export type GPUBufferSurfaceProps = {
  *
  * Polygon distance is signed. Positive grows shells and shrinks holes; negative does the reverse.
  * A non-positive line distance emits an empty surface, matching ordinary planar buffer semantics.
- * `output.status.requiredCount` is the unclamped ring requirement of the assembly.
+ * The optional `output.status.requiredRingCount` is the unclamped ring requirement of the
+ * assembly; the optional `ringCount` is the number of rings written. There is no
+ * `status.requiredCount` (see `GPUPolygonOverlayOutput`).
+ *
+ * Every feature is buffered into one dissolved surface, so an output polygon can cover several
+ * input features and has no single source row, and `output.geometry` has no `sourceIds` (see
+ * `GPUPolygonOverlayOutput`). A per-feature buffer with source rows needs group labels through the
+ * overlay (roadmap STD-08).
  */
 export class GPUBufferSurface implements GPUCommandNodeProducer {
   readonly id: string;
@@ -169,7 +176,7 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
     );
     const {id} = this;
     const {geometry} = props;
-    validatePackedView(geometry.positions, ['float32x2'], `${id} geometry.positions`);
+    validateSinglePackedView(geometry.positions, ['float32x2'], `${id} geometry.positions`);
     if (geometry.positions.length < 1) {
       throw new Error(`${id} geometry.positions must not be empty`);
     }
@@ -190,7 +197,7 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
         }
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_OFFSET_CURVE_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must contain four float32 values`);
     }
@@ -360,13 +367,13 @@ fn findPolygonOfRing(ring: u32) -> u32 {
         bindings: [
           {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'ringOffsets', view: prepared.offsets, type: 'u32', access: 'read'},
+          {name: 'polygonOffsets', view: polygons.polygonOffsets, type: 'u32', access: 'read'},
           {name: 'normalized', view: normalized, type: 'f32', access: 'read'},
           {name: 'leftPositions', view: leftPositions, type: 'f32', access: 'read_write'},
           {name: 'rightPositions', view: rightPositions, type: 'f32', access: 'read_write'}
         ],
         invocationCount: Math.max(ringCount, 1),
-        declarations: `const RING_COUNT: u32 = ${ringCount}u;
-const ROWS_PER_VERTEX: u32 = ${rowsPerVertex}u;
+        declarations: `${layoutWGSL}
 fn readNormalized(row: u32) -> vec2f {
   return vec2f(normalized[normalizedOffset + 2u * row], normalized[normalizedOffset + 2u * row + 1u]);
 }`,
@@ -377,21 +384,25 @@ fn readNormalized(row: u32) -> vec2f {
   let origin = readNormalized(begin);
   var low = vec2f(0.0);
   var high = vec2f(0.0);
-  var doubledArea = 0.0;
-  var previous = readNormalized(end - 1u) - origin;
   for (var row = begin; row < end; row++) {
     let current = readNormalized(row) - origin;
     low = min(low, current);
     high = max(high, current);
-    doubledArea += previous.x * current.y - previous.y * current.x;
-    previous = current;
   }
   let extent = high - low;
   if (min(extent.x, extent.y) >= 2.0 * abs(parameters[parametersOffset])) { return; }
-  // The interior side is left of a counter-clockwise ring and right of a clockwise one.
+  // The interior side is left of a counter-clockwise ring and right of a clockwise one. The
+  // rings were wound by the exact GPUGeometryOrientation above (shells counter-clockwise, holes
+  // clockwise), so the winding is the ring's role. A second, f32 shoelace sum read a sliver whose
+  // sum rounds to zero as clockwise and collapsed its outer offset ring.
+  var isShell = true;
+  if (index >= polygonOffsets[polygonOffsetsOffset] &&
+      index < polygonOffsets[polygonOffsetsOffset + POLYGON_COUNT]) {
+    isShell = polygonOffsets[polygonOffsetsOffset + findPolygonOfRing(index)] == index;
+  }
   let rowBegin = begin * ROWS_PER_VERTEX;
   let rowEnd = end * ROWS_PER_VERTEX;
-  if (doubledArea > 0.0) {
+  if (isShell) {
     let point = vec2f(leftPositions[leftPositionsOffset + 2u * rowBegin], leftPositions[leftPositionsOffset + 2u * rowBegin + 1u]);
     for (var row = rowBegin; row < rowEnd; row++) {
       leftPositions[leftPositionsOffset + 2u * row] = point.x;

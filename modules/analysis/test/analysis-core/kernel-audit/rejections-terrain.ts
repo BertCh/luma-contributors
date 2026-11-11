@@ -14,6 +14,13 @@ export const TERRAIN_REJECTIONS: readonly KernelAuditRejection[] = [
     rejects: /^Error: terrain-spike-repair grid cells must be at most 4194304$/
   },
   {
+    exportName: 'GPUTerrainPeakProminence',
+    name: 'grid above the maximum cell count',
+    kind: 'binding',
+    limit: 3355443,
+    rejects: /^Error: terrain-peak-prominence grid cells must be at most 3355443$/
+  },
+  {
     exportName: 'GPUTerrainPeakSnap',
     name: 'candidates above the maximum',
     kind: 'binding',

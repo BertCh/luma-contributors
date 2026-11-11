@@ -20,7 +20,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/index';
@@ -228,8 +228,12 @@ export class GPUMultipleTestingAdjustment implements GPUCommandNodeProducer {
     this.props = props;
     resolveGPUMultipleTestingMethod(id, props.method);
     validateMinimumFamilySize(id, props.minimumFamilySize);
-    validatePackedView(props.pValues, ['float32'], `${id} pValues`);
-    validatePackedView(props.output.adjustedPValues, ['float32'], `${id} output.adjustedPValues`);
+    validateSinglePackedView(props.pValues, ['float32'], `${id} pValues`);
+    validateSinglePackedView(
+      props.output.adjustedPValues,
+      ['float32'],
+      `${id} output.adjustedPValues`
+    );
     const rows = props.pValues.length;
     validateCapacity(id, 'pValues length', rows, 1, GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1);
     if (props.output.adjustedPValues.length !== rows) {

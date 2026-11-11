@@ -18,20 +18,26 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_COMPOSITE_SCORE_COLUMN_STATISTICS_STRIDE,
+  GPU_COMPOSITE_SCORE_JACOBI_MAXIMUM_SWEEPS,
+  GPU_COMPOSITE_SCORE_JACOBI_TOLERANCE,
+  GPU_COMPOSITE_SCORE_LOADING_TIE_TOLERANCE,
   GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT,
   GPU_COMPOSITE_SCORE_PARAMETER_LENGTH,
-  GPU_COMPOSITE_SCORE_POWER_ITERATIONS,
-  GPU_COMPOSITE_SCORE_PRINCIPAL_COMPONENT_SUMMARY_LENGTH
+  GPU_COMPOSITE_SCORE_POLISH_STEPS,
+  GPU_COMPOSITE_SCORE_PRINCIPAL_COMPONENT_SUMMARY_LENGTH,
+  GPU_COMPOSITE_SCORE_ZERO_SUM_TOLERANCE
 } from './composite-score-parameters';
+import {getSymmetricEigenWGSL} from '../../analysis-core/kernels/symmetric-eigen-wgsl';
 import {
   DECODE_ORDERED_KEY_WGSL,
   GET_NAN_WGSL,
   GET_ORDERED_KEY_WGSL,
   IS_FINITE_BITS_WGSL,
+  IS_FINITE_VALUE_WGSL,
   IS_NAN_BITS_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
 
@@ -94,7 +100,8 @@ export type GPUCompositeScoreProps = {
    */
   enableRank?: boolean;
   /**
-   * Compiles the correlation matrix and power iteration behind the `'principal-component'`
+   * Compiles the correlation matrix and the eigenvector solve (closed form for two indicators,
+   * cyclic Jacobi rotations for more) behind the `'principal-component'`
    * aggregation and the `loadings` output. Without it, that aggregation writes NaN scores.
    * Default false.
    */
@@ -127,18 +134,27 @@ export type GPUCompositeScoreProps = {
  *   `s + epsilon <= 0` for a positively weighted indicator (use min-max or rank scaling) or when no
  *   weight is positive.
  * - `'principal-component'`: `sum(v * s)` where `s` are direction-adjusted z-scores and `v` is the
- *   first eigenvector of their correlation matrix (weights and the scaler are ignored). `v` comes
- *   from a fixed 64-step power iteration from the unit vector `1 / sqrt(d)`, signed so that its sum
- *   is non-negative (largest-magnitude loading positive when the sum is 0). Constant columns get
- *   zero correlations and zero loadings; the explained-variance ratio divides by the number of
- *   non-constant columns.
+ *   first eigenvector of their correlation matrix (weights and the scaler are ignored). For two
+ *   non-constant indicators `v` is the closed form: `(1, 1) / sqrt(2)` with eigenvalue `1 + r`
+ *   when the correlation `r` is zero or positive, `(1, -1) / sqrt(2)` with `1 - r` when it is
+ *   negative (at `r = 0` the two eigenvalues tie and `(1, 1)` is taken). Otherwise `v` is the
+ *   last eigenvector of a cyclic Jacobi decomposition (the shared
+ *   `analysis-core/kernels/symmetric-eigen-wgsl.ts`, at most 24 sweeps, off-diagonal tolerance
+ *   1e-7), which separates eigenvalues that are close; when the largest eigenvalue is repeated,
+ *   any unit vector of its eigenspace is a first component and the one returned is fixed by
+ *   the rotation order. `v` is signed so that its sum is positive; when the sum is zero (within
+ *   1e-5 of the sum of magnitudes), the first loading that ties the largest magnitude (within
+ *   1e-4) is positive. `principalComponentSummary` reports the residual `|C v - lambda v|`.
+ *   Constant columns get zero correlations and zero loadings (all loadings are zero when every
+ *   column is constant); the explained-variance ratio divides by the number of non-constant
+ *   columns.
  *
  * Determinism: no atomics at all. Column min and max (order-preserving u32 keys, exact) and the
  * valid-row count are per-tile reductions merged in tile order. Means and centered (co)variances are
  * two-pass fixed-order sums: one thread per (256-row tile, column) sums in row order, then one 256-lane
  * workgroup per column merges tiles (strided, then a fixed binary tree). The covariance is symmetric, so only the upper triangle
  * of (column, column) pairs is accumulated and mirrored when merging.
- * The power iteration runs in a single thread. Results are bitwise reproducible on one adapter.
+ * The eigen decomposition runs in a single thread. Results are bitwise reproducible on one adapter.
  */
 export class GPUCompositeScore implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -160,7 +176,7 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
       1,
       GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT
     );
-    validatePackedView(props.indicators, ['float32'], `${id} indicators`);
+    validateSinglePackedView(props.indicators, ['float32'], `${id} indicators`);
     if (props.indicators.length % indicatorCount !== 0) {
       throw new Error(`${id} indicators length must be a multiple of indicatorCount`);
     }
@@ -169,12 +185,12 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one row`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_COMPOSITE_SCORE_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_COMPOSITE_SCORE_PARAMETER_LENGTH} float32 values`
@@ -195,7 +211,7 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
         }
         continue;
       }
-      validatePackedView(view, ['float32'], `${id} output.${name}`);
+      validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
       if (view.length < length) {
         throw new Error(`${id} output.${name} must hold at least ${length} values`);
       }
@@ -536,7 +552,14 @@ var<workgroup> laneSums: array<f32, ${REDUCTION_LANES}>;`,
           ],
           invocationCount: 1,
           declarations: `${declarations}
-const POWER_ITERATIONS: u32 = ${GPU_COMPOSITE_SCORE_POWER_ITERATIONS}u;`,
+${IS_FINITE_VALUE_WGSL}
+${getSymmetricEigenWGSL(GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT)}
+const INVERSE_SQRT_TWO: f32 = 0.70710678118654752;
+const JACOBI_MAXIMUM_SWEEPS: u32 = ${GPU_COMPOSITE_SCORE_JACOBI_MAXIMUM_SWEEPS}u;
+const JACOBI_TOLERANCE: f32 = ${GPU_COMPOSITE_SCORE_JACOBI_TOLERANCE};
+const POLISH_STEPS: u32 = ${GPU_COMPOSITE_SCORE_POLISH_STEPS}u;
+const ZERO_SUM_TOLERANCE: f32 = ${GPU_COMPOSITE_SCORE_ZERO_SUM_TOLERANCE};
+const LOADING_TIE_TOLERANCE: f32 = ${GPU_COMPOSITE_SCORE_LOADING_TIE_TOLERANCE};`,
           body: PRINCIPAL_COMPONENT_BODY
         })
       );
@@ -664,7 +687,7 @@ ${GET_ORDERED_KEY_WGSL}
 ${DECODE_ORDERED_KEY_WGSL}
 `;
 
-// Correlation of direction-adjusted z-scores, then a fixed number of power-iteration steps.
+// Correlation of direction-adjusted z-scores, then its first eigenvector.
 const PRINCIPAL_COMPONENT_BODY = /* wgsl */ `let directionBase = paramsOffset + 4u + MAXIMUM_COLUMNS;
   var deviations: array<f32, ${GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT}>;
   var nonConstant = 0.0;
@@ -687,39 +710,88 @@ const PRINCIPAL_COMPONENT_BODY = /* wgsl */ `let directionBase = paramsOffset + 
       correlation[row * COLUMN_COUNT + column] = value;
     }
   }
+  // The first eigenvector. A power iteration is not used: it cannot separate two leading
+  // eigenvalues that are close (a correlation of -0.01 between two indicators leaves 64 steps
+  // from any start between the two eigenvectors), and its start can be an exact eigenvector of
+  // the wrong eigenvalue.
   var vector: array<f32, ${GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT}>;
-  let start = 1.0 / sqrt(f32(COLUMN_COUNT));
-  for (var column = 0u; column < COLUMN_COUNT; column++) {
-    vector[column] = start;
-  }
   var product: array<f32, ${GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT}>;
-  for (var iteration = 0u; iteration < POWER_ITERATIONS; iteration++) {
-    var norm = 0.0;
+  if (COLUMN_COUNT == 2u && nonConstant == 2.0) {
+    // Two indicators: [[1, r], [r, 1]] has the eigenpairs (1 + r, (1, 1) / sqrt(2)) and
+    // (1 - r, (1, -1) / sqrt(2)) for every r. With r exactly 0 the two tie and (1, 1) is taken.
+    vector[0] = INVERSE_SQRT_TWO;
+    vector[1] = select(-INVERSE_SQRT_TWO, INVERSE_SQRT_TWO, correlation[1] >= 0.0);
+  } else if (nonConstant > 0.0) {
+    // Cyclic Jacobi rotations (the shared symmetric eigen decomposition), which resolve close
+    // and repeated eigenvalues. It works on a copy with its own stride and destroys it.
+    var working: array<f32, ${GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT * GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT}>;
+    var eigenvectors: array<f32, ${GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT * GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT}>;
     for (var row = 0u; row < COLUMN_COUNT; row++) {
-      var sum = 0.0;
       for (var column = 0u; column < COLUMN_COUNT; column++) {
-        sum = sum + correlation[row * COLUMN_COUNT + column] * vector[column];
+        working[row * MAXIMUM_COLUMNS + column] = correlation[row * COLUMN_COUNT + column];
       }
-      product[row] = sum;
-      norm = norm + sum * sum;
     }
-    norm = sqrt(norm);
-    if (!(norm > 0.0)) {
-      break;
+    let eigen = getSymmetricEigen_${GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT}(
+      &working,
+      &eigenvectors,
+      COLUMN_COUNT,
+      JACOBI_MAXIMUM_SWEEPS,
+      JACOBI_TOLERANCE
+    );
+    // Eigenvalues ascend: the last column is the first principal component. A non-finite
+    // correlation (no included row) leaves no decomposition and gives NaN loadings.
+    for (var column = 0u; column < COLUMN_COUNT; column++) {
+      vector[column] = select(
+        eigenvectors[column * MAXIMUM_COLUMNS + COLUMN_COUNT - 1u],
+        getNaN(),
+        eigen.status == 1u
+      );
     }
-    for (var row = 0u; row < COLUMN_COUNT; row++) {
-      vector[row] = product[row] / norm;
+    // A few power steps from the Jacobi vector remove the float32 rounding the rotations leave
+    // in the other eigen-directions; they start at the answer, so they need no convergence.
+    for (var step = 0u; step < POLISH_STEPS; step++) {
+      var norm = 0.0;
+      for (var row = 0u; row < COLUMN_COUNT; row++) {
+        var sum = 0.0;
+        for (var column = 0u; column < COLUMN_COUNT; column++) {
+          sum = sum + correlation[row * COLUMN_COUNT + column] * vector[column];
+        }
+        product[row] = sum;
+        norm = norm + sum * sum;
+      }
+      norm = sqrt(norm);
+      if (!(norm > 0.0)) {
+        break;
+      }
+      for (var row = 0u; row < COLUMN_COUNT; row++) {
+        vector[row] = product[row] / norm;
+      }
     }
   }
+  // Sign: the sum of the loadings is positive. When the sum is zero to rounding (always the case
+  // for two indicators with a negative correlation), the first loading that ties the largest
+  // magnitude is positive, so that rounding does not decide the sign of every score.
   var total = 0.0;
-  var largest = 0u;
+  var absoluteTotal = 0.0;
+  var largestMagnitude = 0.0;
   for (var column = 0u; column < COLUMN_COUNT; column++) {
     total = total + vector[column];
-    if (abs(vector[column]) > abs(vector[largest])) {
-      largest = column;
+    absoluteTotal = absoluteTotal + abs(vector[column]);
+    largestMagnitude = max(largestMagnitude, abs(vector[column]));
+  }
+  var leading = 0u;
+  for (var column = 0u; column < COLUMN_COUNT; column++) {
+    if (abs(vector[column]) >= largestMagnitude * (1.0 - LOADING_TIE_TOLERANCE)) {
+      leading = column;
+      break;
     }
   }
-  let orientation = select(-1.0, 1.0, total > 0.0 || (total == 0.0 && vector[largest] >= 0.0));
+  let isZeroSum = abs(total) <= ZERO_SUM_TOLERANCE * absoluteTotal;
+  let orientation = select(
+    -1.0,
+    1.0,
+    (!isZeroSum && total > 0.0) || (isZeroSum && vector[leading] >= 0.0)
+  );
   var eigenvalue = 0.0;
   for (var row = 0u; row < COLUMN_COUNT; row++) {
     vector[row] = orientation * vector[row];

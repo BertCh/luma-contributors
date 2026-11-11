@@ -25,7 +25,10 @@ Shifts longitude, latitude and height with ordered regular grids. The first grid
 position wins; nodata in that grid fails the row rather than falling through. Each row gets a
 status word from `GPU_DATUM_GRID_TRANSFORM_STATUS` (`success`, `invalid`, `noCoverage`, `nodata`,
 `inverseExhausted`). Grid samples are decoded by the caller. Inverse transforms iterate a bounded
-number of times to `tolerance` degrees.
+number of times until the residual `forward(result) - input` is within `tolerance` degrees
+(default `5e-9`, about 0.56 mm; never less than four f32 spacings of the shift itself). The
+inverse always takes at least one update, so a shift smaller than the tolerance is still applied.
+Pass `positionsLow` and `output.positionsLow` to keep detail below the f32 spacing of a coordinate.
 
 ```ts
 import {GPUDatumGridTransform} from '@luma-contributors/analysis/geospatial-analysis';
@@ -34,7 +37,7 @@ graph.add(
   new GPUDatumGridTransform({
     positions, // GraphDataView<'float32x3'>: longitude, latitude, height
     samples, // GraphDataView<'float32x3'>: longitude, latitude, height shifts
-    validity, // GraphDataView<'uint32'>: zero marks nodata
+    mask, // GraphDataView<'uint32'>: zero marks nodata
     grids: [{width: 3, height: 3, sampleOffset: 0, origin: [-1, -1], spacing: [1, 1]}],
     operation: 'combined',
     direction: 'forward',

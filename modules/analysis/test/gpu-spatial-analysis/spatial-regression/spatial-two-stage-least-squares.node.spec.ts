@@ -81,13 +81,19 @@ it('GPUSpatialTwoStageLeastSquares validates its inputs and declares its kernels
   const nodes = new GPUSpatialTwoStageLeastSquares(createProps()).getCommandNodes(graph);
   const ids = nodes.map(node => node.id.replace('spatial-two-stage-least-squares-', ''));
   expect(ids.filter(id => !id.startsWith('transpose-'))).toEqual([
-    'means-tiles',
-    'means-merge',
+    // First: the norm pass also yields the response mean and the row sum the lag is formed about.
     'weights-norm-tiles',
     'weights-norm-merge',
+    'means-tiles',
+    'means-merge',
     'moments-tiles',
     'moments-merge',
     'solve',
+    // One step of iterative refinement: H'u of the residuals at the float32 delta, and the
+    // correction of delta, which the residual pass applies.
+    'refinement-tiles',
+    'refinement-merge',
+    'refine',
     'residuals-tiles',
     'residuals-merge',
     'anselin-kelejian-tiles',

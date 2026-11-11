@@ -227,11 +227,16 @@ for (const operation of ['intersection', 'union', 'difference', 'symmetric-diffe
               positions: context.view('float32x3', 2048),
               ringOffsets: context.view('uint32', 257),
               polygonOffsets: context.view('uint32', 257),
-              featureOffsets: context.view('uint32', 257),
-              sourceIds: context.view('uint32', 256)
+              featureOffsets: context.view('uint32', 257)
             },
             complement: context.view('uint32', 1),
-            status: status(),
+            status: {
+              count: context.view('uint32', 1),
+              overflow: context.view('uint32', 1),
+              candidateOverflow: context.view('uint32', 1),
+              ringCount: context.view('uint32', 1),
+              requiredRingCount: context.view('uint32', 1)
+            },
             boundary: {
               endpoints: context.view('float32x4', 2048),
               operandIds: context.view('uint32', 2048),

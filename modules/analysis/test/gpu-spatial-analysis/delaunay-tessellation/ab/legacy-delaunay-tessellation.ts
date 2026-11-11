@@ -16,7 +16,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../../../src/analysis-core/kernels/stable-lexicographic-index-sort';
 import {createWGSLKernelNode} from '../../../../src/analysis-core/kernels/wgsl-kernel-nodes';
@@ -473,14 +473,14 @@ export class LegacyGPUDelaunayTessellation implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(output.triangles, ['uint32x3'], `${id} output.triangles`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(output.triangles, ['uint32x3'], `${id} output.triangles`);
     validateGPUStatusPort(`${id} output.status`, output.status);
     if (!output.status.requiredCount) {
       throw new Error(`${id} output.status.requiredCount is required`);
     }
     if (output.status.duplicateCount) {
-      validatePackedView(
+      validateSinglePackedView(
         output.status.duplicateCount,
         ['uint32'],
         `${id} output.status.duplicateCount`

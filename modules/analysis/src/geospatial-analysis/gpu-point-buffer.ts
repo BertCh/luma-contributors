@@ -2,12 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNode, GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {GPU_EARTH_MEAN_RADIUS_METERS} from '../analysis-core/contracts/earth';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
-import {validatePackedView} from '../analysis-core/kernels/gpu-contributor-utils';
+import {GUARDED_ATAN2_WGSL} from '../analysis-core/kernels/wgsl-common';
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateSinglePackedView,
+  validateRequirement,
+  validateViewLength
+} from '../analysis-core/kernels/gpu-contributor-utils';
 
 /** Mean Earth radius in meters used by the geographic mode. */
 export const GPU_POINT_BUFFER_EARTH_RADIUS_METERS = GPU_EARTH_MEAN_RADIUS_METERS;
@@ -24,7 +30,8 @@ export function getGPUPointBufferParameterValues(
   target: Float32Array = new Float32Array(GPU_POINT_BUFFER_PARAMETER_LENGTH)
 ): Float32Array {
   // The radius must be a positive finite number: zero collapses the ring, negative mirrors it.
-  assert(Number.isFinite(radius) && radius > 0);
+  validateFiniteNumber('GPUPointBuffer', 'radius', radius);
+  validateRequirement('GPUPointBuffer', radius > 0, 'radius must be positive');
   target[0] = radius;
   target[1] = 0;
   return target;
@@ -66,14 +73,23 @@ export class GPUPointBuffer implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUPointBufferProps) {
     this.id = props.id ?? 'point-buffer';
-    validatePackedView(props.points, ['float32x2'], `${this.id} points`);
-    validatePackedView(props.offsets, ['float32x2'], `${this.id} offsets`);
+    validateSinglePackedView(props.points, ['float32x2'], `${this.id} points`);
+    validateSinglePackedView(props.offsets, ['float32x2'], `${this.id} offsets`);
     // Rings need at least a triangle and one offset row per ring vertex.
-    assert(Number.isInteger(props.verticesPerRing) && props.verticesPerRing >= 3);
-    assert(props.offsets.length === props.points.length * props.verticesPerRing);
+    validateCapacity(this.id, 'verticesPerRing', props.verticesPerRing, 3);
+    validateViewLength(
+      this.id,
+      'offsets',
+      props.offsets,
+      props.points.length * props.verticesPerRing
+    );
     // Parameters hold the radius.
-    validatePackedView(props.parameters, ['float32'], `${this.id} parameters`);
-    assert(props.parameters.length >= GPU_POINT_BUFFER_PARAMETER_LENGTH);
+    validateSinglePackedView(props.parameters, ['float32'], `${this.id} parameters`);
+    validateRequirement(
+      this.id,
+      props.parameters.length >= GPU_POINT_BUFFER_PARAMETER_LENGTH,
+      `parameters must have at least ${GPU_POINT_BUFFER_PARAMETER_LENGTH} rows`
+    );
   }
 
   getCommandNodes<Parameters>(
@@ -116,7 +132,7 @@ export class GPUPointBuffer implements GPUCommandNodeProducer {
   }
   // The common cosPhi factor of the standard atan2 arguments is divided out, so the longitude
   // stays defined (and finite) at the poles, where cosPhi is exactly zero.
-  let longitudeOffset = atan2(
+  let longitudeOffset = guardedAtan2(
     sinTheta * sinDelta,
     cosPhi * (1.0 - versine) - sinPhi * sinDelta * cosTheta
   );
@@ -146,7 +162,8 @@ export class GPUPointBuffer implements GPUCommandNodeProducer {
 const EARTH_RADIUS_METERS: f32 = ${GPU_POINT_BUFFER_EARTH_RADIUS_METERS};
 const TAU: f32 = 6.283185307179586;
 const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;
-const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
+const RADIANS_TO_DEGREES: f32 = 57.29577951308232;
+${GUARDED_ATAN2_WGSL}`,
         body: `let pointIndex = index / VERTICES_PER_RING;
   let vertexIndex = index % VERTICES_PER_RING;
   let bearing = TAU * f32(vertexIndex) / f32(VERTICES_PER_RING);

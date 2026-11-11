@@ -5,9 +5,13 @@ import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {GPURasterFractionalCategoricalStatistics} from '../../src/raster-analysis/gpu-raster-fractional-categorical-statistics';
-import {GPURasterFractionalCoverage} from '../../src/raster-analysis/gpu-raster-fractional-coverage';
+import {
+  GPURasterFractionalCoverage,
+  getGPURasterFractionalCoverageParameterValues
+} from '../../src/raster-analysis/gpu-raster-fractional-coverage';
 import {importGraphBuffer} from '../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
+  createInputBuffer,
   createOutputBuffer,
   readFloat32,
   readUint32,
@@ -103,6 +107,10 @@ async function createFixture(polygonCoverage = false, areaScale = 1) {
           polygonOffsets: allocate('uint32', fixture.geometry.polygonOffsets).view,
           featureOffsets: allocate('uint32', fixture.geometry.featureOffsets).view
         },
+        parameters: allocate(
+          'float32',
+          Array.from(getGPURasterFractionalCoverageParameterValues(grid))
+        ).view,
         output: coverage
       })
     );
@@ -445,5 +453,178 @@ it('RS02 rejects float32 area overflow per zone without misclassifying it as mis
     expect(actual.missingArea[0]).toBeGreaterThan(0);
   } finally {
     context.destroy();
+  }
+});
+
+it('RS02 a zone edge on a cell boundary leaves no sliver when the cell size does not divide exactly (fr-fields-07)', async () => {
+  const testDevice = await getWebGPUTestDevice('core');
+  requireTestDevice(testDevice);
+  const device = testDevice;
+  // A 4 x 3 grid of 0.3 x 0.7 cells, rows advancing toward larger y, origin (0, 0). Neither cell
+  // size is a float32 number, and the zone corners are the float32 values nearest k * 0.3 and
+  // k * 0.7. Their quotients are not integers even in exact arithmetic: float32(0.9) /
+  // float32(0.3) is 2.9999998, one float32 step below 3, so a kernel that trusts the quotient
+  // puts a sliver of the zone into the next cell whatever the quality of the GPU's division.
+  //   zone 0: x in [0.3, 0.9], y in [0.7, 1.4], exactly cells 5 and 6 (row 1, columns 1 and 2)
+  //   zone 1: x in [0.9, 1.2], y in [1.4, 2.1], exactly cell 11 (row 2, column 3), which is masked
+  // Zone 1 therefore has no valid support. A sliver in a neighbouring valid cell would give it
+  // one: the failure this spec had before the coverage kernel snapped pixel coordinates.
+  const cellWidth = 0.3;
+  const cellHeight = 0.7;
+  const grid = {
+    width: 4,
+    height: 3,
+    affine: [cellWidth, 0, 0, 0, cellHeight, 0] as const,
+    pixelInterpretation: 'area' as const
+  };
+  const getRectangle = (left: number, bottom: number, right: number, top: number) => [
+    left * cellWidth,
+    bottom * cellHeight,
+    right * cellWidth,
+    bottom * cellHeight,
+    right * cellWidth,
+    top * cellHeight,
+    left * cellWidth,
+    top * cellHeight
+  ];
+  const positions = Float32Array.from([...getRectangle(1, 1, 3, 2), ...getRectangle(3, 2, 4, 3)]);
+  // The premise of the test: the float32 quotient is not the integer.
+  expect(Math.fround(Math.fround(3 * cellWidth) / Math.fround(cellWidth))).not.toBe(3);
+  const zoneCount = 2;
+  const categoryCapacity = 2;
+  const cellCount = grid.width * grid.height;
+  const tupleCapacity = zoneCount * cellCount;
+  const graph = new GPUCommandGraph(device);
+  const buffers: ReturnType<typeof createOutputBuffer>[] = [];
+  let identifier = 0;
+  const input = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+    values: Uint32Array | Float32Array,
+    format: Format
+  ) => {
+    const buffer = createInputBuffer(device, values);
+    buffers.push(buffer);
+    return importGraphBuffer(
+      graph,
+      `sliver-input-${identifier++}`,
+      buffer,
+      format,
+      values.length / (format === 'float32x2' ? 2 : 1)
+    );
+  };
+  const output = <Format extends 'uint32' | 'float32'>(length: number, format: Format) => {
+    const buffer = createOutputBuffer(device, length);
+    buffers.push(buffer);
+    return {
+      buffer,
+      view: importGraphBuffer(graph, `sliver-output-${identifier++}`, buffer, format, length)
+    };
+  };
+  const zoneIds = output(tupleCapacity, 'uint32');
+  const cellIds = output(tupleCapacity, 'uint32');
+  const fractions = output(tupleCapacity, 'float32');
+  const count = output(1, 'uint32');
+  const requiredCount = output(1, 'uint32');
+  const overflow = output(1, 'uint32');
+  const zoneValidity = output(zoneCount, 'uint32');
+  const coverage = {
+    zoneIds: zoneIds.view,
+    cellIds: cellIds.view,
+    fractions: fractions.view,
+    zoneValidity: zoneValidity.view,
+    status: {count: count.view, requiredCount: requiredCount.view, overflow: overflow.view}
+  };
+  graph.add(
+    new GPURasterFractionalCoverage({
+      id: 'sliver-coverage',
+      grid,
+      zones: {
+        positions: input(positions, 'float32x2'),
+        ringOffsets: input(Uint32Array.of(0, 4, 8), 'uint32'),
+        polygonOffsets: input(Uint32Array.of(0, 1, 2), 'uint32'),
+        featureOffsets: input(Uint32Array.of(0, 1, 2), 'uint32')
+      },
+      parameters: input(getGPURasterFractionalCoverageParameterValues(grid), 'float32'),
+      output: coverage
+    })
+  );
+  const categories = Uint32Array.of(0, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0);
+  const mask = new Uint32Array(cellCount).fill(1);
+  mask[11] = 0;
+  const statistics = {
+    coverageSums: output(zoneCount * categoryCapacity, 'float32'),
+    classAreas: output(zoneCount * categoryCapacity, 'float32'),
+    proportions: output(zoneCount * categoryCapacity, 'float32'),
+    coveredArea: output(zoneCount, 'float32'),
+    validArea: output(zoneCount, 'float32'),
+    missingArea: output(zoneCount, 'float32'),
+    majority: output(zoneCount, 'uint32'),
+    minority: output(zoneCount, 'uint32'),
+    validity: output(zoneCount, 'uint32')
+  };
+  graph.add(
+    new GPURasterFractionalCategoricalStatistics({
+      id: 'sliver-categories',
+      grid,
+      zoneCount,
+      categoryCapacity,
+      input: {
+        id: 'sliver-category-band',
+        format: 'uint32',
+        storage: {kind: 'buffer', values: input(categories, 'uint32')},
+        validity: input(mask, 'uint32')
+      },
+      coverage,
+      output: {
+        coverageSums: statistics.coverageSums.view,
+        classAreas: statistics.classAreas.view,
+        proportions: statistics.proportions.view,
+        coveredArea: statistics.coveredArea.view,
+        validArea: statistics.validArea.view,
+        missingArea: statistics.missingArea.view,
+        majority: statistics.majority.view,
+        minority: statistics.minority.view,
+        validity: statistics.validity.view
+      }
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    // Exactly the three covered cells, each whole: no tuple for any neighbour.
+    expect(await readUint32(requiredCount.buffer, 1)).toEqual([3]);
+    expect(await readUint32(count.buffer, 1)).toEqual([3]);
+    expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+    expect(await readUint32(zoneIds.buffer, 3)).toEqual([0, 0, 1]);
+    expect(await readUint32(cellIds.buffer, 3)).toEqual([5, 6, 11]);
+    expect(await readFloat32(fractions.buffer, 3)).toEqual([1, 1, 1]);
+    expect(await readUint32(zoneValidity.buffer, zoneCount)).toEqual([1, 1]);
+    // Zone 0: one cell of each category. Zone 1: only the masked cell, so no valid support.
+    const cellArea = Math.fround(cellWidth) * Math.fround(cellHeight);
+    expect(await readUint32(statistics.validity.buffer, zoneCount)).toEqual([1, 0]);
+    expect(await readUint32(statistics.majority.buffer, zoneCount)).toEqual([1, 0xffffffff]);
+    expect(await readUint32(statistics.minority.buffer, zoneCount)).toEqual([0, 0xffffffff]);
+    expect(await readFloat32(statistics.coverageSums.buffer, 4)).toEqual([1, 1, 0, 0]);
+    const proportions = await readFloat32(statistics.proportions.buffer, 4);
+    expect(proportions.slice(0, 2)).toEqual([0.5, 0.5]);
+    expect(proportions[2]).toBeNaN();
+    expect(proportions[3]).toBeNaN();
+    const classAreas = await readFloat32(statistics.classAreas.buffer, 4);
+    const missingArea = await readFloat32(statistics.missingArea.buffer, zoneCount);
+    const validArea = await readFloat32(statistics.validArea.buffer, zoneCount);
+    for (const [actual, expected] of [
+      [classAreas[0], cellArea],
+      [classAreas[1], cellArea],
+      [classAreas[2], 0],
+      [classAreas[3], 0],
+      [missingArea[0], 0],
+      [missingArea[1], cellArea],
+      [validArea[0], 2 * cellArea],
+      [validArea[1], 0]
+    ]) {
+      expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1e-6);
+    }
+  } finally {
+    compiled.destroy();
+    buffers.forEach(buffer => buffer.destroy());
   }
 });

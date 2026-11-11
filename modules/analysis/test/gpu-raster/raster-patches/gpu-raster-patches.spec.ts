@@ -64,7 +64,7 @@ async function runMetrics(
     new GPURasterPatchMetrics({
       grid: makeGrid(width, height),
       labels: rig.input(labels, 'uint32', labels.length),
-      validity: guards.validity && rig.input(guards.validity, 'uint32', labels.length),
+      mask: guards.validity && rig.input(guards.validity, 'uint32', labels.length),
       status: {
         componentCount:
           guards.componentCount !== undefined
@@ -268,7 +268,7 @@ async function runSieve(
     new GPURasterSieve({
       grid: makeGrid(width, height),
       labels: rig.input(labels, 'uint32', labels.length),
-      validity: options.validity && rig.input(options.validity, 'uint32', labels.length),
+      mask: options.validity && rig.input(options.validity, 'uint32', labels.length),
       patchCapacity: capacity,
       parameters: parameters.importToGraph(rig.graph),
       mode: options.mode,

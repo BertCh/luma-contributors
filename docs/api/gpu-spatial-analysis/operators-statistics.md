@@ -81,6 +81,12 @@ The summary block reports `n`, `S0`, `S1`, `S2`, the mean, the variance, the bla
 island count. `n` is counted in `u32` and the mean gets a second-pass correction
 (`mean += sum(x - mean) / n`), so a large offset does not bias the variance; the row count must be
 below `2^24`, the limit of the local statistics, because degrees and counts are f32 columns.
+The statistics do not change when the values are multiplied by a constant, so the values are divided
+by a power of two near their mean magnitude before the moment sums (an exact operation; only the
+reported mean and variance are scaled back) and the weights enter the variances as `S1 / S0^2` and
+`S2 / S0^2`. Large data therefore keeps its inference: 40,000 values near 300,000, a standard
+deviation of 5e7, or 1.2e7 rows with 60 neighbors no longer overflow float32 in the General G,
+Moran or Geary variances.
 `w_ji` comes from a binary search of row `j`. Column sums come from a deterministic transpose: a
 stable sort of slots by neighbor. Per-row partials are reduced by fixed-shape workgroup trees, and
 join counts by u32 atomics. Results are bitwise reproducible, and values, weights and the mask
@@ -112,8 +118,12 @@ Local spatial autocorrelation on caller-supplied square `weights`. Rows count wh
 nonzero and their value is finite; excluded rows are neither foci nor neighbors. `n`, the mean `X`
 and the population standard deviation `S` are taken over the analysis rows (see islands below), or
 from per-frame `fixedMoments`. The mean gets a second-pass correction (`mean += sum(x - mean) / n`),
-so a large offset does not bias the variance, and `n` is counted in `u32`. Sums run in slot order
-with fixed-order reductions, so outputs are bitwise reproducible.
+and the centered values are the stored first-pass deviations minus the mean of those deviations (one
+scheme with `GPUGlobalSpatialStatistics`, the permutation tests and `GPUEmergingHotSpots`), so a large
+offset biases neither the variance nor the z-scores; `n` is counted in `u32`. Sums run in slot order
+with fixed-order reductions, so outputs are bitwise reproducible. Analytic p-values are never exactly
+0: they are floored at the smallest normal float32 (1.17549435e-38), the same rule in the global,
+local, hot-spot and emerging-hot-spot statistics.
 
 Shared semantics (also `GPULocalGeary`):
 
@@ -784,9 +794,19 @@ cross-product, squared difference, or absolute difference over those edges, into
 `output.statistic` (`GPUEdgeAssociationOutput`; `float32` or `uint32` values). Both skip the focal
 row's own slot and zero-weight slots, and reduce the edges in three fixed-order stages (per-workgroup
 moments, per-workgroup centered sums around the combined means, one combining workgroup), so they use
-the whole device and stay deterministic. The local Geary, Pearson, and the two Gamma forms with an
-order-equivalent pair sum expose `GPUPermutationStatisticAdapter` descriptors for the existing
-permutation contributors; they do not duplicate permutation loops.
+the whole device and stay deterministic. The local Geary, Pearson, and two Gamma forms expose
+`GPUPermutationStatisticAdapter` descriptors that name a statistic of the existing permutation
+contributors; they do not duplicate permutation loops. Only two of them test the same statistic:
+local Geary, and squared-difference Gamma (Geary's numerator over a constant). The cross-product
+Gamma adapter runs the `'moran'` test and the Pearson adapter the `'bivariateMoran'` test. These
+order permutations like the edge statistic only on regular weights: every row or every column
+with the same total weight for Gamma (for example row-standardized weights), every column with the
+same total for Pearson. On other graphs they are tests of Moran's I and of bivariate Moran's I.
+Example: on the star 0-1, 0-2, 0-3 with the edge 3-4 and binary weights, the values
+(7, 2, 4, 1, 11) and (11, 2, 1, 7, 4) have cross-product Gamma -10 and -11.0625 but Moran pair sums
+-80 and -64. `GPUGammaStatistic` is not `esda.Gamma` (a plain sum, uncentered by default, not
+divided by the edge weight), and `GPUSpatialPearson` is not `esda.Spatial_Pearson` (Lee's L, see
+`leesL`).
 
 `GPURoseStatistic` consumes planar line starts and ends. Its required
 `GPUCircularStatisticsContract` makes directional versus axial interpretation, radians, angular
@@ -930,6 +950,10 @@ greedy p-median, maximum-coverage, and set-covering selection. Pair it with
 (`sparseCosts`, below). Outputs include selected facility flags, nearest assignments, the objective, uncovered demand count, completion, and invalid
 input count. The contributor keeps selection on the GPU, but it does not claim the integer-programming
 optimum or application-specific facility constraints of a packaged solver.
+
+Set covering scores a facility by the number of uncovered demand rows it would cover, not by their
+weight: as in `spopt`'s `LSCP`, every reachable row must be covered, including a row whose
+`demandWeights` entry is 0. `demandWeights` enters the p-median and maximum-coverage objectives only.
 
 A `+Infinity` cost marks an unreachable demand-facility pair. Unreachable demand is never summed
 into the p-median objective: the objective is the weighted cost of the reachable rows, the
@@ -1218,8 +1242,11 @@ Euclidean in position units. It measures distance, so `local-lambert-equal-area`
 `[minLon, minLat, maxLon, maxLat]` degrees inside `[-180, 180] x [-90, 90]`. The neighbor test is the
 haversine term against `sin^2(epsilon / (2 R))`, and each encoding sizes its cells to
 `epsilon / R` of latitude by `2 asin(sin(epsilon / (2 R)) / cos(maxAbsLatitude))` of longitude (the whole
-extent in one column near a pole), so the 3x3 search stays exact. The search does not wrap at the
-antimeridian: a cluster straddling +-180 is split, so keep `bounds` on one side of it. `denseBoxShortcut`
+extent in one column near a pole), so the 3x3 search stays exact. The search wraps at the
+antimeridian: points on the two sides of +-180 are neighbours when their great-circle distance is within
+`epsilon`, so a cluster straddling +-180 is one cluster, as in `GPUOPTICS`. Cluster centroids remain arithmetic
+means of the coordinates, so shift longitudes into a continuous range first if the centroid of a straddling
+cluster is needed. `denseBoxShortcut`
 is planar only, and other metrics (rhumb, ellipsoidal) throw. Geographic results match scikit-learn
 `DBSCAN(metric='haversine')` on the test scene.
 Planar positions are float32, so the representable spacing near a coordinate of magnitude `M` is about
@@ -1255,18 +1282,18 @@ Settings of `getGPUSpatialClusteringParameterValues`:
 ::lens{scenario=gpu-spatial-analysis.spatial-clustering rung=kernel caption="Inspect the grid-binned core, union and label kernels with their retained WGSL bindings."}
 ::lens{scenario=gpu-spatial-analysis.spatial-clustering rung=graph caption="Trace the cell grid, core flags, lock-free union-find and compact labels over 2,344 observations."}
 
-### `GPUKMeans`
+### `GPUSpatialKMeans`
 
 Partition planar points into k clusters by Lloyd iterations, returning labels, centers, sizes, squared distances, inertia and status.
 
-::lens{scenario=gpu-spatial-analysis.k-means rung=result caption="k-means assigns 2,344 observations to six clusters; inertia 3.1e9 m² after 14 iterations, converged."}
+::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=result caption="k-means assigns 2,344 observations to six clusters; inertia 3.1e9 m² after 14 iterations, converged."}
 
 Deterministic k-means over planar points (scikit-learn `KMeans`, PostGIS `ST_ClusterKMeans`). Props:
 `positions`, optional planar `spatialContext` (longitude/latitude throws; project first; it measures
 distance, so `local-lambert-equal-area` frames also throw), `k`
 (1 to 256), `maximumIterations` (1 to 64), `initialization` (`'kmeans++'` by default, or `'first-valid'`),
 `restartCount` (1 to 32, default 1), the per-frame `parameters` view
-(`getGPUKMeansParameterValues({seed, tolerance})`, `GPU_KMEANS_PARAMETER_LENGTH` `uint32` words) and the
+(`getGPUSpatialKMeansParameterValues({seed, tolerance})`, `GPU_SPATIAL_KMEANS_PARAMETER_LENGTH` `uint32` words) and the
 `output` bag: `labels` (cluster or noise), `centers` (`k` rows), optional `sizes`, `squaredDistances` (the
 explain column), `inertia` (a one-row `float32`: the total inertia, the sum of `squaredDistances`),
 `status.iterationCount` and `status.converged`.
@@ -1274,6 +1301,11 @@ Behavior change: the default `initialization` was `'first-valid'`, which is orde
 centers next to each other; `'kmeans++'` matches scikit-learn. Each point goes to the nearest center with lowest-ID ties, means are fixed-order chunked
 reductions (no sort). Results are bitwise reproducible per seed. `'kmeans++'` uses `log`, which WGSL does not
 pin down across devices.
+Behavior change (2026-11-10): the `'kmeans++'` draws are Philox 4x32-10 blocks per `(row, round)` under the
+registered purpose `kMeansPlusPlusSeeding`, mapped to the open interval `(0, 1)`; they were a private integer hash
+whose largest value mapped to exactly 1. The centers a given `seed` selects therefore differ from earlier builds.
+When every remaining point coincides with a chosen center, the next center repeats the lowest valid row (finite, not
+NaN) and its empty cluster is relocated; a center is NaN only when it could not be initialized at all.
 
 Behavior change (empty clusters): a center that receives no point is no longer left in place. After every
 assignment step the empty clusters (lowest ID first) are relocated like scikit-learn's
@@ -1288,7 +1320,7 @@ no readback; it costs `O(n E)` for `E` empty clusters and nothing when none is e
 
 `restartCount` runs that many independent seeded initializations, each with its own Lloyd iterations, and
 returns the one with the lowest total inertia (a fixed-order compensated sum; a tie goes to the lowest
-restart index). Restart `r` uses the seed `getKMeansRestartSeed(seed, r)` (restart 0 uses `seed`), so any
+restart index). Restart `r` uses the seed `getGPUSpatialKMeansRestartSeed(seed, r)` (restart 0 uses `seed`), so any
 single restart can be reproduced with `restartCount: 1` and that seed. The default of 1 matches
 scikit-learn's `n_init='auto'` for k-means++. Restarts are separate node chains in the graph, so graph size
 and GPU time grow linearly with `restartCount`; `status.iterationCount`, `status.converged` and `inertia` describe the
@@ -1296,9 +1328,9 @@ returned restart.
 `restartCount` above 1 needs `'kmeans++'` (`'first-valid'` has no randomness).
 
 ```ts
-graph.add(new GPUKMeans({positions, k: 8, maximumIterations: 20, initialization: 'kmeans++',
+graph.add(new GPUSpatialKMeans({positions, k: 8, maximumIterations: 20, initialization: 'kmeans++',
   parameters, output: {labels, centers, sizes}}));
-parameters.write(getGPUKMeansParameterValues({seed: 3}));
+parameters.write(getGPUSpatialKMeansParameterValues({seed: 3}));
 ```
 
 `maximumIterations` is a cap: a cap that is too low reports `status.converged` 0 (first-valid initialization needs 20 to 30
@@ -1311,29 +1343,29 @@ result equals running every iteration when `tolerance` is 0 (an exact fixed poin
 are `parameters` words and the k-means++ round and the restart index come from a GPU cursor word, so the graph compiles one pipeline per kernel at any `k` and
 `restartCount`, and restart scoring is a two-stage (per-chunk, then fixed-order) reduction.
 
-{/* parameters: GPUKMeans generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+{/* parameters: GPUSpatialKMeans generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
-#### `GPUKMeans` parameters
+#### `GPUSpatialKMeans` parameters
 
-- Packer: `getGPUKMeansParameterValues(settings?)`, writes `GPU_KMEANS_PARAMETER_LENGTH` (2) `uint32` values.
+- Packer: `getGPUSpatialKMeansParameterValues(settings?)`, writes `GPU_SPATIAL_KMEANS_PARAMETER_LENGTH` (2) `uint32` values.
 
-Settings of `getGPUKMeansParameterValues`:
+Settings of `getGPUSpatialKMeansParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `seed` (optional) | `number` | Seed of the `'kmeans++'` hash, an integer in `[0, 2^32 - 1]`. Default 0. Restart `r` is seeded with `getKMeansRestartSeed(seed, r)`. |
+| `seed` (optional) | `number` | Seed of the `'kmeans++'` draws, an integer in `[0, 2^32 - 1]`. Default 0. Restart `r` is seeded with `getGPUSpatialKMeansRestartSeed(seed, r)`. |
 | `tolerance` (optional) | `number` | Convergence tolerance: an iteration converges when the largest center shift (Euclidean, in position units) is at most this value. Finite and `>= 0`; default `0`, which stops only at an exact fixed point and so gives the same result as running every iteration. A positive value trades exactness for fewer iterations. After convergence the remaining iterations' assign, reduction and relocation kernels are skipped through a GPU-written indirect dispatch, so each one costs only a one-thread convergence check. |
 
 {/* /parameters */}
 
 #### How it computes
 
-{/* lens:GPUKMeans */}
+{/* lens:GPUSpatialKMeans */}
 
-::lens{scenario=gpu-spatial-analysis.k-means rung=datum bind=page datum=1000 caption="Inspect observation 1000: its cluster label and squared distance to that center."}
-::lens{scenario=gpu-spatial-analysis.k-means rung=formula caption="Follow the inertia and the center update: squared distance to the nearest center, then member means."}
-::lens{scenario=gpu-spatial-analysis.k-means rung=kernel caption="Inspect the assignment, chunked reduction and center-update kernels with their retained WGSL bindings."}
-::lens{scenario=gpu-spatial-analysis.k-means rung=graph caption="Trace k-means++ seeding and 20 unrolled Lloyd iterations down to the inertia reduction."}
+::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=datum bind=page datum=1000 caption="Inspect observation 1000: its cluster label and squared distance to that center."}
+::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=formula caption="Follow the inertia and the center update: squared distance to the nearest center, then member means."}
+::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=kernel caption="Inspect the assignment, chunked reduction and center-update kernels with their retained WGSL bindings."}
+::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=graph caption="Trace k-means++ seeding and 20 unrolled Lloyd iterations down to the inertia reduction."}
 
 ### `GPUHierarchicalDensityClustering`
 
@@ -1424,7 +1456,11 @@ Assuncao et al. 2006).
   count is nonzero (each tree stays one region and every `cutEdges` entry is `GPU_SKATER_NO_CUT`).
 - `GPUSkaterRegions`: greedy SKATER cuts of that tree. Each step evaluates the sum-of-squared-deviation
   reduction of every tree edge in parallel (Euler-tour side sums) and applies the best one, ties to the
-  lowest slot, while honoring `minimumRegionSize`. The target region count and the minimum size are
+  lowest slot, while honoring `minimumRegionSize`. The reduction is computed in its direct form
+  `nA nB / (nA + nB) |mean A - mean B|^2` from the two sides' sizes and attribute sums (the Ward increase), not as
+  a difference of three sums of squares, so a small gain inside a quiet region whose mean is far from zero is not
+  lost to float32 rounding; the side sums carry the exact rounding error of each addition. What remains is the
+  last place of the region's attribute sum spread over the smaller side, which centred attributes keep small. The target region count and the minimum size are
   per-frame `parameters` words written with
   `getGPUSkaterRegionsParameterValues({regionCount, minimumRegionSize})`
   (`GPU_SKATER_REGIONS_PARAMETER_LENGTH` words); `maximumRegionCount - 1` steps are compile-time, so the
@@ -1434,7 +1470,7 @@ Assuncao et al. 2006).
   target counts every region. SKATER does not center attributes itself: the tree's `standardize`
   (default true) does, and `standardizedValues` should be passed as the SKATER `values` so the cuts and
   the tree share a metric and the f32 subtree-sum subtraction stays well conditioned.
-- `GPURegionPartitionEvaluation`: scores any label column (SKATER, `GPUSpatialClustering`, `GPUKMeans`):
+- `GPURegionPartitionEvaluation`: scores any label column (SKATER, `GPUSpatialClustering`, `GPUSpatialKMeans`):
   region count, within, between and total sum of squared deviations, smallest and largest region, the
   fraction of weights-graph links that cross regions (a compactness proxy) and the number of ignored
   rows, plus per-label sizes and within-region deviations. The summary also holds `pseudoF`, the
@@ -1443,6 +1479,12 @@ Assuncao et al. 2006).
   is zero, as sklearn). `output` holds `summary` (`GPU_REGION_PARTITION_EVALUATION_LAYOUT`: `withinSumOfSquares`,
   `betweenSumOfSquares`, `totalSumOfSquares`, ...) and the optional `regionSizes` and
   `regionWithinSumOfSquares`. The cost is `O(labelCapacity * rows)`.
+  `betweenSumOfSquares` is computed directly as `sum over regions of n_r |mean_r - mean|^2`, not as
+  `total - within`, so it and `pseudoF` keep their digits when the partition explains a small share of the total
+  (it equals `total - within` up to float32 rounding).
+  A labelled row with a NaN or infinite value in any column is left out of every statistic, as an unlabelled row
+  is: it is counted in `ignoredRows`, and the optional one-row `output.invalidRowCount` says how many such rows
+  there were. One missing value removes one row; it no longer turns every statistic into NaN.
 
 ```ts
 graph.add(new GPUSpatialWeightsMinimumSpanningTree({weights, values, columnCount: 3,
@@ -1551,7 +1593,7 @@ Settings of `getGPUGeographicDistributionParameterValues`:
 |---|---|---|
 | `origin` (optional) | `readonly [number, number]` | Local origin `[x, y]` subtracted from every position before any sum, so float32 sums keep precision when the planar coordinates are large (for example Web Mercator meters). Choose a point near the data. Defaults to `[0, 0]`. |
 | `standardDeviations` (optional) | `number` | Number of standard deviations that scale `standardDistances`, `ellipses` and the vertex rings (ArcGIS offers 1, 2 and 3). Any positive number is accepted. Defaults to `1`. |
-| `ellipseConvention` (optional) | `GPUGeographicDistributionEllipseConvention` | Axis scaling of the ellipse: `'arcgis'` scales the axes by `sqrt(2)` as the ArcGIS Directional Distribution tool does, `'standard'` uses the plain standard deviation along each principal axis. Defaults to `'arcgis'`. |
+| `ellipseConvention` (optional) | `GPUGeographicDistributionEllipseConvention` | Axis scaling of the ellipse: `'root-two'` scales the axes by `sqrt(2)` as the ArcGIS Directional Distribution tool does, `'standard'` uses the plain standard deviation along each principal axis. Defaults to `'root-two'`. |
 | `orientationOnly` (optional) | `boolean` | Treat lines as undirected (angles are doubled before averaging, so a line and its reverse agree). Only affects `directionalMeans`. Defaults to `false`. |
 | `medianTolerance` (optional) | `number` | Absolute tolerance, in position units, under which the last Weiszfeld step counts as converged for `medianConverged`. The iteration stops once every non-empty group's last step is at most this value. Non-negative. Defaults to `GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE`. |
 
@@ -1721,9 +1763,10 @@ Pool each tract with its queen neighbours into a local prior, returning spatial 
 ::lens{scenario=gpu-spatial-analysis.spatial-empirical-bayes-rates rung=result caption="Spatial empirical-Bayes poverty rates of 791 tracts pooled over queen neighbourhoods, spanning 2.8% to 75.9%."}
 
 Neighborhood-pooled rate smoothing (esda 2.10 `Spatial_Rate` and `Spatial_Empirical_Bayes`, libpysal 4.15
-weights). The neighborhood of an included row `i` is `i` plus its listed neighbors that are included
+weights). The neighborhood of an included row `i` is `i` plus its active neighbors (slots with positive
+weight to another row, the shared neighbor rule) that are included
 (nonzero `mask`, finite `events`, finite `populations > 0`); only the weights' structure counts (esda sets
-`transform = 'b'`). With `E = sum e`, `B = sum b` and `n` members: the spatial rate is `E / B`
+`transform = 'b'`; a slot stored with weight 0 is not a neighbor here). With `E = sum e`, `B = sum b` and `n` members: the spatial rate is `E / B`
 (`Spatial_Rate.r`), the local prior mean is `m = E / B`, the local variance is
 `s2 = sum b (e / b - m)^2 / B`, `a = max(s2 - m / (B / n), 0)`, and the smoothed rate is
 `w e_i / b_i + (1 - w) m` with `w = a / (a + m / b_i)`. `events` and `populations` are `float32` or
@@ -1984,7 +2027,7 @@ parameters.write(
   negative or zero weight excludes the row), `groupIds` with compile-time `groupCount` (ids at or
   above it are excluded), `mask`, and `lineEnds` for the directional mean.
 - Per-frame parameters (no recompile): `origin` (local origin subtracted before every sum for
-  float32 stability), `standardDeviations`, `ellipseConvention` (`'arcgis'` scales the axes by
+  float32 stability), `standardDeviations`, `ellipseConvention` (`'root-two'` scales the axes by
   `sqrt(2)`, `'standard'` does not), `orientationOnly`, `medianTolerance`.
 - Median centre: Weiszfeld steps from the mean centre, all groups together, for at most the
   compile-time `maximumMedianIterations` (default 24). Behavior change: the steps stop after the first one
@@ -2021,7 +2064,7 @@ Settings of `getGPUGeographicDistributionParameterValues`:
 |---|---|---|
 | `origin` (optional) | `readonly [number, number]` | Local origin `[x, y]` subtracted from every position before any sum, so float32 sums keep precision when the planar coordinates are large (for example Web Mercator meters). Choose a point near the data. Defaults to `[0, 0]`. |
 | `standardDeviations` (optional) | `number` | Number of standard deviations that scale `standardDistances`, `ellipses` and the vertex rings (ArcGIS offers 1, 2 and 3). Any positive number is accepted. Defaults to `1`. |
-| `ellipseConvention` (optional) | `GPUGeographicDistributionEllipseConvention` | Axis scaling of the ellipse: `'arcgis'` scales the axes by `sqrt(2)` as the ArcGIS Directional Distribution tool does, `'standard'` uses the plain standard deviation along each principal axis. Defaults to `'arcgis'`. |
+| `ellipseConvention` (optional) | `GPUGeographicDistributionEllipseConvention` | Axis scaling of the ellipse: `'root-two'` scales the axes by `sqrt(2)` as the ArcGIS Directional Distribution tool does, `'standard'` uses the plain standard deviation along each principal axis. Defaults to `'root-two'`. |
 | `orientationOnly` (optional) | `boolean` | Treat lines as undirected (angles are doubled before averaging, so a line and its reverse agree). Only affects `directionalMeans`. Defaults to `false`. |
 | `medianTolerance` (optional) | `number` | Absolute tolerance, in position units, under which the last Weiszfeld step counts as converged for `medianConverged`. The iteration stops once every non-empty group's last step is at most this value. Non-negative. Defaults to `GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE`. |
 
@@ -2068,9 +2111,11 @@ graph.add(new GPURegionStatistics({
 }));
 ```
 
-Lasso membership is even-odd with an exact side test: a straddling edge counts when the exact
-orientation sign puts the point strictly on its inner side, so points on an edge are outside and no
-f32 crossing abscissa decides the result.
+Rectangle and lasso regions are inclusive, as luma.gl `GPUPointSpatialQuery` is for bounds and
+polygons: a point exactly on the boundary is selected. Lasso membership is even-odd with an exact
+side test. A point is on an edge when it lies in the edge's bounding box and the exact orientation
+sign is zero; otherwise a straddling edge counts when the exact orientation sign puts the point
+strictly on its inner side, so no f32 crossing abscissa decides the result.
 
 `GPURegionMask` and `GPUPickRegionMask` write `output: {mask, status: {overflow}}`
 (`GPURegionMaskOutput`); `GPUPickRegionMask` reads the packed pick result from `picks`, as does a
@@ -2095,6 +2140,16 @@ An optional `spatialIndex: {kind: 'grid', index, candidateCapacity}` takes a cal
 rectangle, circle, or lasso touches. Results match the full scan except for float reassociation in
 `sum` and `mean`; the `candidatesTruncated` flag reports capacity overflow or rows missing from the
 index.
+
+**Summary words.** `output.summary` holds `8 + binCount` `uint32` words (`GPU_REGION_STATISTICS_SUMMARY_LAYOUT`):
+0 `selectedCount`, 1 `valueCount`, 2 `sum` (f32 bits), 3 `mean` (f32 bits), 4 `minimum` (f32 bits), 5 `maximum`
+(f32 bits), 6 `histogramOutsideCount`, 7 `flags`, then the bins. `flags` bits (`GPU_REGION_STATISTICS_FLAGS`):
+1 `selectionTruncated` (`output.selectedRows.ids` too small), 2 `regionTruncated` (lasso vertex count above
+capacity, or pick-region overflow), 4 `candidatesTruncated` (grid candidate stage incomplete); other bits are 0.
+`decodeGPURegionStatistics` and `GPURegionStatisticsReadback` decode the words. The same flags are also available
+as named one-row status scalars beside the header, which keeps its words: optional `output.status.overflow` is 1
+when bit 1 or 2 is set and `output.status.candidateOverflow` is 1 when bit 4 is set (it is not folded into
+`overflow`).
 
 An optional `output.drawInstanceCount` (one-row `uint32` view, for example the instance-count word
 of an indirect draw record) receives the same capacity-clamped selected count as
@@ -2170,6 +2225,12 @@ graph.add(new GPUZonalStatistics({
 value means some points could not be classified and the per-feature statistics may be low. It is
 always 0 for caller-supplied feature rows.
 
+Optional `output.status.candidateOverflow` is 1 when the join's candidate capacity or BVH leaf capacity was too
+small, and optional `output.candidateTruncated` (polygon features only; one packed `uint32` per point) flags the
+points whose membership may be incomplete: the points whose candidates were dropped, or every point after a BVH
+leaf overflow. Both are the `GPUPointInPolygonJoin` outputs passed through; `candidateOverflow` is always 0 for
+caller-supplied feature rows.
+
 - Variance. `output.variances` and `output.standardDeviations` are the unbiased estimates in two
   passes (mean first, then `sum w (v - m)^2`), so there is no `E[v^2] - E[v]^2` cancellation. Unweighted it
   is `ddof = 1` (`numpy.var(v, ddof=1)`). With `weights`, which act as reliability weights, it is
@@ -2213,6 +2274,9 @@ Summarise each raster cell's moving window, writing the window mean, deviation a
 Moving-window statistics over a float32 raster, like ArcGIS `FocalStatistics` and GRASS
 `r.neighbors`: mean, sum, min, max, range, population standard deviation, and the count of valid
 cells. The radius, window shape, minimum count, and center nodata policy are per-frame.
+A cell is nodata when it is not finite (NaN or an infinity), equals the optional `noDataValue`, or
+has a zero `validity` word; nodata cells are left out of every window. (Before 2026-11-10 an
+infinity was kept as a value, which gave an infinite mean and a NaN standard deviation.)
 The operator is raster-only: it reads a lattice of values and never positions, so it takes no
 `spatialContext`, its `grid` (`GPURasterMetadata`) only sizes the raster, and its radius is in
 cells, not ground units. Cell size and shape (for example

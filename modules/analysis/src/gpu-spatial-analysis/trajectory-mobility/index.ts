@@ -18,3 +18,24 @@ export type {
   GPUModalSplitProps,
   GPUModalSplitTriplegs
 } from './gpu-modal-split';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeMobilityIndicatorsOnCPU,
+  CPUMobilityIndicatorsOperation
+} from './cpu-mobility-indicators-operation';
+export type {
+  CPUMobilityIndicatorsInput,
+  CPUMobilityIndicatorsOptions,
+  CPUMobilityIndicatorsResult
+} from './cpu-mobility-indicators-operation';
+export {computeModalSplitOnCPU, CPUModalSplitOperation} from './cpu-modal-split-operation';
+export type {
+  CPUModalSplitInput,
+  CPUModalSplitOptions,
+  CPUModalSplitResult
+} from './cpu-modal-split-operation';
+export {GPUMobilityIndicatorsOperation} from './gpu-mobility-indicators-operation';
+export type {MobilityIndicatorsOperationProps} from './gpu-mobility-indicators-operation';
+export {GPUModalSplitOperation} from './gpu-modal-split-operation';
+export type {ModalSplitOperationProps} from './gpu-modal-split-operation';

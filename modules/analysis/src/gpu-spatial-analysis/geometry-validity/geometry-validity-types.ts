@@ -11,7 +11,12 @@ export const GPU_GEOMETRY_VALIDITY_BIT = {
   nonFinite: 1 << 0,
   /** `ringClosure: 'explicit'` only: a ring's last vertex differs from its first. */
   unclosedRing: 1 << 1,
-  /** A ring has fewer than three distinct vertices once a closing duplicate is dropped. */
+  /**
+   * A ring has fewer than three vertices once a closing duplicate of its first vertex is dropped.
+   * The count is of rows, not of distinct points: `A, B, B, A` has three rows left and does not
+   * set this bit (GEOS counts non-repeated points and would). Such a ring still fails through
+   * `selfIntersection` (its two edges double back), and `repeatedVertex` reports the repeat.
+   */
   shortRing: 1 << 2,
   /**
    * Two consecutive vertices of a ring are equal. GEOS treats this as valid, so the bit is

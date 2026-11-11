@@ -16,7 +16,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getSlotGroupingNodes} from './slot-grouping';
 import {getGPUSpatialWeightsNeighborLoopWGSL, type GPUSpatialWeights} from './spatial-weights';
@@ -118,16 +118,16 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
-    validatePackedView(props.output.statistics, ['float32'], `${id} statistics`);
+    validateSinglePackedView(props.output.statistics, ['float32'], `${id} statistics`);
     if (props.output.statistics.length < GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.statistics.length) {
       throw new Error(`${id} statistics must hold at least 3 values`);
     }
-    validatePackedView(props.output.counts, ['uint32'], `${id} counts`);
+    validateSinglePackedView(props.output.counts, ['uint32'], `${id} counts`);
     if (props.output.counts.length < GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts.length) {
       throw new Error(`${id} counts must hold at least 6 values`);
     }
     if (props.output.cardinality) {
-      validatePackedView(props.output.cardinality, ['uint32'], `${id} cardinality`);
+      validateSinglePackedView(props.output.cardinality, ['uint32'], `${id} cardinality`);
       if (props.output.cardinality.length !== rows) {
         throw new Error(`${id} cardinality length must equal the weights row count`);
       }

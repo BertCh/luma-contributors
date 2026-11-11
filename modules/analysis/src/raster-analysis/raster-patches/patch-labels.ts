@@ -12,7 +12,7 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {validatePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateSinglePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid} from '../raster-band-utils';
 import type {
   GPUOverflowStatusPort,
@@ -47,8 +47,8 @@ export type GPURasterPatchLabels = {
   grid: GPURasterMetadata;
   /** One dense label per pixel, row-major. 0 is background. */
   labels: GraphDataView<'uint32'>;
-  /** Optional per-pixel observation validity; pixels with 0 are treated as background. */
-  validity?: GraphDataView<'uint32'>;
+  /** Optional input row filter (one `uint32` per pixel): pixels with 0 are treated as background. */
+  mask?: GraphDataView<'uint32'>;
   /** Optional one-row status scalars the labeling passes wrote, read here as guards. */
   status?: GPURasterPatchLabelsStatus;
 };
@@ -63,14 +63,14 @@ export type GPURasterPatchLabelsStatus = Pick<GPUIterationStatusPort, 'converged
 /** Validates a {@link GPURasterPatchLabels} and returns its pixel count. @internal */
 export function validatePatchLabels(id: string, input: GPURasterPatchLabels): number {
   const pixelCount = validateRasterGrid(id, input.grid);
-  validatePackedView(input.labels, ['uint32'], `${id} labels`);
+  validateSinglePackedView(input.labels, ['uint32'], `${id} labels`);
   if (input.labels.length !== pixelCount) {
     throw new Error(`${id} labels length must equal grid width * height`);
   }
-  if (input.validity) {
-    validatePackedView(input.validity, ['uint32'], `${id} validity`);
-    if (input.validity.length !== pixelCount) {
-      throw new Error(`${id} validity length must equal grid width * height`);
+  if (input.mask) {
+    validateSinglePackedView(input.mask, ['uint32'], `${id} mask`);
+    if (input.mask.length !== pixelCount) {
+      throw new Error(`${id} mask length must equal grid width * height`);
     }
   }
   for (const [name, view] of [
@@ -79,7 +79,7 @@ export function validatePatchLabels(id: string, input: GPURasterPatchLabels): nu
     ['status.overflow', input.status?.overflow]
   ] as const) {
     if (view) {
-      validatePackedView(view, ['uint32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length < 1) {
         throw new Error(`${id} ${name} must hold one uint32`);
       }
@@ -92,7 +92,7 @@ export function validatePatchLabels(id: string, input: GPURasterPatchLabels): nu
 export function getPatchLabelViews(input: GPURasterPatchLabels): GraphDataView[] {
   return [
     input.labels,
-    input.validity,
+    input.mask,
     input.status?.converged,
     input.status?.componentCount,
     input.status?.overflow
@@ -117,8 +117,8 @@ export function createPatchKeysNode<Parameters>(
     {name: 'labels', view: input.labels, type: 'u32', access: 'read'}
   ];
   const conditions: string[] = [];
-  if (input.validity) {
-    bindings.push({name: 'labelValidity', view: input.validity, type: 'u32', access: 'read'});
+  if (input.mask) {
+    bindings.push({name: 'labelValidity', view: input.mask, type: 'u32', access: 'read'});
     conditions.push('labelValidity[labelValidityOffset + index] != 0u');
   }
   if (input.status?.converged) {

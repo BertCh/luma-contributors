@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
+import {validateMaximumCount} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUBVH, GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
@@ -1332,7 +1332,7 @@ export function createZoneTableGatherNode<Parameters>(
   }
   // The caller chunks columns so that a kernel never needs more than the 8 storage bindings of a
   // core device, see getZoneTableColumnBindingCount.
-  assert(bindings.length <= 8);
+  validateMaximumCount(props.id, 'table gather storage bindings', bindings.length, 8);
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,

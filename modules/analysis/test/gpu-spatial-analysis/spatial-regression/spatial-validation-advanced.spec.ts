@@ -255,7 +255,10 @@ it('nested variogram and RBF bandwidth search keeps heldout outcomes out of sele
         'uint32'
       ),
       innerFoldCount: 2,
-      seed: 2,
+      // Seed 8 deals the six inner blocks to the partition the oracle fixture was computed for
+      // (`innerFolds`: blocks 0, 1 and 4 in fold 1). The partition itself is checked on the GPU
+      // by the next test; the scores, predictions and metrics stay independent of the kernel.
+      seed: 8,
       neighborCount: 4,
       candidates: [
         {
@@ -316,6 +319,43 @@ it('nested variogram and RBF bandwidth search keeps heldout outcomes out of sele
   compiled.destroy();
   harness.destroy();
 });
+
+for (const outerFold of [0, 1]) {
+  it(`the seeded inner block folds of outer fold ${outerFold} are the partition of the nested oracle fixture`, async () => {
+    // The nested oracle (`nested-validation-oracle.py`) scores candidates on a fixed inner
+    // partition, recorded as `innerFolds`. This pins the seed used above to that partition, with
+    // the same blocks and the same mask (the outer training rows) the nested contributor passes.
+    const harness = await createHarness(),
+      rows = 12;
+    const folds = harness.output(rows, 'uint32');
+    harness.graph.add(
+      new GPUSpatialCrossValidation({
+        positions: harness.input(nestedReference.positions, 'float32x2', 2),
+        blocks: harness.input(nestedReference.blocks, 'uint32'),
+        mask: harness.input(nestedReference.folds[outerFold].training, 'uint32'),
+        foldCount: 2,
+        seed: 8,
+        output: {
+          folds: folds.view,
+          training: harness.output(rows * 2, 'uint32').view,
+          testing: harness.output(rows * 2, 'uint32').view,
+          counts: harness.output(6, 'uint32').view,
+          status: harness.output(2, 'uint32').view
+        }
+      })
+    );
+    const cleanup = await harness.run();
+    try {
+      expect(Array.from(await folds.read())).toEqual(
+        nestedReference.innerFolds.map((fold, row) =>
+          nestedReference.folds[outerFold].training[row] ? fold : 0xffffffff
+        )
+      );
+    } finally {
+      cleanup();
+    }
+  });
+}
 
 for (const failure of [
   'environment-exhausted',

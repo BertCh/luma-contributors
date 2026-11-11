@@ -13,6 +13,7 @@ import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 import {
@@ -39,7 +40,7 @@ export type GPUTerrainFlowFractionsProps = {
   grid: GPURasterMetadata;
   /** Same canonical routing surface used by GPUTerrainFlow, including fill when enabled. */
   elevation: GraphDataView<'float32'>;
-  /** Optional per-cell validity of `elevation` (uint32, nonzero valid); a zero word counts as NaN, so the cell has NaN fractions. */
+  /** Optional per-cell validity of `elevation` (uint32, nonzero valid); a zero word counts as NaN, so the cell has no data and a zero fraction row. */
   validity?: GraphDataView<'uint32'>;
   /** Existing GPUTerrainFlow D8 fallback directions, preserving unresolved sentinels. */
   flowDirections: GraphDataView<'uint32'>;
@@ -49,6 +50,14 @@ export type GPUTerrainFlowFractionsProps = {
   /** Ground model of the edge lengths and of the `parameters` cell size. Default `'uniform'`. */
   cellSizeMode?: GPURasterCellSizeMode;
   output: {
+    /**
+     * Eight fractions per cell, east first clockwise. A cell without data (NaN elevation or a zero
+     * validity word) has a zero row: it donates nothing, so it never blocks a consumer that pulls
+     * from its neighbours. A valid cell whose direction is unresolved has a NaN row: its receiver
+     * is unknown. A zero row does not mark the no-data cell itself invalid in a consumer; pass the
+     * same `validity` (or NaN `values`) to `GPUTerrainBranchingFlow`, or the unresolved stream
+     * mask of `GPUTerrainFlow` to `GPUTerrainTiledFlow`, for that.
+     */
     fractions: GraphDataView<'float32'>;
     /** Eight lengths per cell in the units of the `parameters` cell size (ground meters under `cellSizeMode`), using the same row-dependent metric as flow routing. */
     edgeLengths: GraphDataView<'float32'>;
@@ -63,6 +72,8 @@ export class GPUTerrainFlowFractions implements GPUCommandNodeProducer {
     const count = validateRasterGrid(this.id, props.grid);
     validateRasterCellSizeMode(this.id, props.cellSizeMode);
     validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);
+    // Same routing kernel and diagonal step as GPUTerrainFlow: orthogonal pixel axes only.
+    validateRasterGridOrthogonal(this.id, props.grid);
     validateViewLength(this.id, 'elevation', props.elevation, count);
     validateViewLength(this.id, 'flowDirections', props.flowDirections, count);
     validateTerrainValidityView(this.id, props.validity, count);
@@ -146,10 +157,15 @@ receivers[receiversOffset + index] = receiver;`
           terrainBinding('fractions', props.output.fractions, 'read_write'),
           terrainBinding('lengths', props.output.edgeLengths, 'read_write')
         ],
+        // A cell without data donates nothing: a zero row, as the accumulation of GPUTerrainFlow
+        // treats it. Only a valid cell whose direction is unknown has an unknown (NaN) row.
         body: `let code = directions[directionsOffset + index];
-let valid = isFiniteValue(surface[surfaceOffset + index]) && (code == 0u || (code <= 128u && (code & (code - 1u)) == 0u && receivers[receiversOffset + index] != GRID_NONE));
+let hasData = isFiniteValue(surface[surfaceOffset + index]);
+let resolved = code == 0u || (code <= 128u && (code & (code - 1u)) == 0u && receivers[receiversOffset + index] != GRID_NONE);
 for (var direction = 0u; direction < 8u; direction++) {
- fractions[fractionsOffset + index * 8u + direction] = select(getQuietNaN(), getFlowFraction(index, direction), valid);
+ var fraction = 0.0;
+ if (hasData) { fraction = select(getQuietNaN(), getFlowFraction(index, direction), resolved); }
+ fractions[fractionsOffset + index * 8u + direction] = fraction;
  lengths[lengthsOffset + index * 8u + direction] = getD8Distance(direction, index / GRID_WIDTH);
 }`
       })

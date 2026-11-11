@@ -19,7 +19,7 @@ import {
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
 import {
@@ -27,6 +27,7 @@ import {
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {createStandardizeColumnsNode} from './regionalization-inputs';
 import {REGIONALIZATION_CSR_WGSL, REGIONALIZATION_NONE_WGSL} from './regionalization-wgsl';
 
 const OPERATION = 'GPUSpatialWeightsMinimumSpanningTree';
@@ -40,9 +41,6 @@ export const GPU_MINIMUM_SPANNING_TREE_STATUS = {
   invalidCount: 0,
   length: 1
 } as const;
-
-/** Lanes of the per-column standardisation workgroup. */
-const STANDARDIZE_LANES = 256;
 
 /**
  * Properties for {@link GPUSpatialWeightsMinimumSpanningTree}.
@@ -149,20 +147,24 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
     const columnCount = props.columnCount ?? 1;
     const {output} = props;
     validateCapacity(id, 'columnCount', columnCount, 1, GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS);
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rows * columnCount) {
       throw new Error(`${id} values length must equal rows * columnCount`);
     }
-    validatePackedView(output.treeEdgeFlags, ['uint32'], `${id} output.treeEdgeFlags`);
+    validateSinglePackedView(output.treeEdgeFlags, ['uint32'], `${id} output.treeEdgeFlags`);
     if (output.treeEdgeFlags.length !== props.weights.neighbors.length) {
       throw new Error(`${id} output.treeEdgeFlags length must equal the weights slot capacity`);
     }
-    validatePackedView(output.componentLabels, ['uint32'], `${id} output.componentLabels`);
+    validateSinglePackedView(output.componentLabels, ['uint32'], `${id} output.componentLabels`);
     if (output.componentLabels.length !== rows) {
       throw new Error(`${id} output.componentLabels length must equal the weights row count`);
     }
     if (output.standardizedValues) {
-      validatePackedView(output.standardizedValues, ['float32'], `${id} output.standardizedValues`);
+      validateSinglePackedView(
+        output.standardizedValues,
+        ['float32'],
+        `${id} output.standardizedValues`
+      );
       if (output.standardizedValues.length !== rows * columnCount) {
         throw new Error(`${id} output.standardizedValues length must equal rows * columnCount`);
       }
@@ -171,7 +173,7 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
       }
     }
     if (output.status) {
-      validatePackedView(output.status, ['uint32'], `${id} output.status`);
+      validateSinglePackedView(output.status, ['uint32'], `${id} output.status`);
       if (output.status.length < GPU_MINIMUM_SPANNING_TREE_STATUS.length) {
         throw new Error(
           `${id} output.status must hold ${GPU_MINIMUM_SPANNING_TREE_STATUS.length} word`
@@ -185,13 +187,13 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
     }
     const capacity = output.edges?.ids.length ?? 0;
     if (output.edgeEndpoints) {
-      validatePackedView(output.edgeEndpoints, ['uint32'], `${id} output.edgeEndpoints`);
+      validateSinglePackedView(output.edgeEndpoints, ['uint32'], `${id} output.edgeEndpoints`);
       if (output.edgeEndpoints.length < 2 * capacity) {
         throw new Error(`${id} output.edgeEndpoints must hold two entries per edge slot`);
       }
     }
     if (output.edgeDissimilarities) {
-      validatePackedView(
+      validateSinglePackedView(
         output.edgeDissimilarities,
         ['float32'],
         `${id} output.edgeDissimilarities`
@@ -260,74 +262,16 @@ ${REGIONALIZATION_CSR_WGSL}`;
       table =
         output.standardizedValues ??
         createTransientView(graph, `${id}-table`, 'float32', rows * columnCount);
-      // One workgroup per column: each lane sums a strided share of the rows and a fixed binary
-      // tree merges the lanes, so the reductions are `O(rows / 256 + log 256)` deep instead of one
-      // thread walking every row three times, and the sum order is still deterministic.
+      // The one standardizer of the regionalization family (AZP, Ward and max-p use the same
+      // node): one workgroup per column, a constant column becomes exactly zero.
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createStandardizeColumnsNode<Parameters>(graph, {
           id: `${id}-standardize`,
           operation: OPERATION,
-          variant: 'standardize',
-          bindings: [
-            {name: 'values', view: props.values, type: 'f32', access: 'read'},
-            {name: 'scaled', view: table, type: 'f32', access: 'read_write'}
-          ],
-          workgroupSize: STANDARDIZE_LANES,
-          invocationCount: columnCount * STANDARDIZE_LANES,
-          guardIndex: false,
-          declarations: `const ROWS: u32 = ${rows}u;
-const COLUMNS: u32 = ${columnCount}u;
-const LANES: u32 = ${STANDARDIZE_LANES}u;
-${IS_FINITE_FLOAT_WGSL}
-var<workgroup> partials: array<f32, ${STANDARDIZE_LANES}>;
-
-// Sum of one value per lane over the workgroup, available to every lane.
-fn reduceLanes(lane: u32, value: f32) -> f32 {
-  partials[lane] = value;
-  workgroupBarrier();
-  for (var stride = LANES / 2u; stride > 0u; stride = stride / 2u) {
-    if (lane < stride) {
-      partials[lane] = partials[lane] + partials[lane + stride];
-    }
-    workgroupBarrier();
-  }
-  let total = partials[0];
-  workgroupBarrier();
-  return total;
-}`,
-          body: `let column = index / LANES;
-  let lane = localInvocationIndex;
-  // Center before reducing: a rounded mean of a constant column can otherwise
-  // create a nonzero deviation and normalize every row to +1 or -1. The origin is the first
-  // finite entry; statistics skip non-finite entries, which stay as they are.
-  var origin = 0.0;
-  for (var row = 0u; row < ROWS; row++) {
-    let candidate = values[valuesOffset + row * COLUMNS + column];
-    if (isFiniteFloat(candidate)) { origin = candidate; break; }
-  }
-  var sum = 0.0;
-  var count = 0.0;
-  for (var row = lane; row < ROWS; row += LANES) {
-    let value = values[valuesOffset + row * COLUMNS + column];
-    if (isFiniteFloat(value)) { sum += value - origin; count += 1.0; }
-  }
-  let finiteCount = max(reduceLanes(lane, count), 1.0);
-  let mean = reduceLanes(lane, sum) / finiteCount;
-  var squares = 0.0;
-  for (var row = lane; row < ROWS; row += LANES) {
-    let value = values[valuesOffset + row * COLUMNS + column];
-    if (isFiniteFloat(value)) {
-      let delta = (value - origin) - mean;
-      squares += delta * delta;
-    }
-  }
-  let deviation = sqrt(reduceLanes(lane, squares) / finiteCount);
-  let inverse = select(0.0, 1.0 / deviation, deviation > 1e-20);
-  for (var row = lane; row < ROWS; row += LANES) {
-    let value = values[valuesOffset + row * COLUMNS + column];
-    scaled[scaledOffset + row * COLUMNS + column] =
-      select(value, ((value - origin) - mean) * inverse, isFiniteFloat(value));
-  }`
+          values: props.values,
+          scaled: table,
+          rowCount: rows,
+          columnCount
         })
       );
     }

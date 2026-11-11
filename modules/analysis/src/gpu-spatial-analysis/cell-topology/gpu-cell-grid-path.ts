@@ -16,7 +16,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import type {GPUCellWordOrder} from '../cell-aggregation/gpu-cell-aggregation';
@@ -42,8 +42,10 @@ export type GPUCellGridPathOutput = {
   distances?: GraphDataView<'uint32'>;
   /**
    * `uint32x2` little-endian `(low, high)` path cells, `rows * maximumPathLength` entries,
-   * row-major: the cells of H3 `gridPathCells`, origin first, destination last, zero padded. Paths
-   * longer than `maximumPathLength` keep their first `maximumPathLength` cells.
+   * row-major: the cells of H3 `gridPathCells`, origin first, destination last, zero padded
+   * (at an exact tie of an interpolation step the cell can be the other adjacent one; see the
+   * class documentation, about 0.2% of random pairs). Paths longer than `maximumPathLength` keep
+   * their first `maximumPathLength` cells.
    */
   cells?: GraphDataView<'uint32x2'>;
   /**
@@ -135,13 +137,13 @@ export class GPUCellGridPath implements GPUCommandNodeProducer {
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
-    validatePackedView(props.origins, ['uint32x2'], `${id} origins`);
-    validatePackedView(props.destinations, ['uint32x2'], `${id} destinations`);
+    validateSinglePackedView(props.origins, ['uint32x2'], `${id} origins`);
+    validateSinglePackedView(props.destinations, ['uint32x2'], `${id} destinations`);
     if (props.destinations.length !== rows) {
       throw new Error(`${id} destinations length must equal the origins length`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal the row count`);
       }
@@ -153,7 +155,7 @@ export class GPUCellGridPath implements GPUCommandNodeProducer {
       throw new Error(`${id} output.counts needs output.cells`);
     }
     if (output.distances) {
-      validatePackedView(output.distances, ['uint32'], `${id} output.distances`);
+      validateSinglePackedView(output.distances, ['uint32'], `${id} output.distances`);
       if (output.distances.length !== rows) {
         throw new Error(`${id} output.distances length must equal the row count`);
       }
@@ -172,7 +174,7 @@ export class GPUCellGridPath implements GPUCommandNodeProducer {
         );
       }
       this.maximumPathLength = length;
-      validatePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
+      validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
       if (output.cells.length !== rows * length) {
         throw new Error(
           `${id} output.cells length must be rows * maximumPathLength = ${rows * length}`
@@ -180,7 +182,7 @@ export class GPUCellGridPath implements GPUCommandNodeProducer {
       }
     }
     if (output.counts) {
-      validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
+      validateSinglePackedView(output.counts, ['uint32'], `${id} output.counts`);
       if (output.counts.length !== rows) {
         throw new Error(`${id} output.counts length must equal the row count`);
       }

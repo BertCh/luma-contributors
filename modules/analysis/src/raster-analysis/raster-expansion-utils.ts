@@ -5,7 +5,7 @@
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -20,6 +20,7 @@ import {
 } from './cost-distance/raster-relaxation';
 import {validateRasterBuffersDistinct, validateRasterGrid} from './raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPUIterationStatusPort} from '../analysis-core/contracts/status';
 
 /** Shared exact-length and ownership checks for bounded raster producers. @internal */
 export function validateRasterExpansionViews(
@@ -30,7 +31,7 @@ export function validateRasterExpansionViews(
 ): number {
   const count = validateRasterGrid(id, grid);
   for (const view of [...inputs, ...outputs]) {
-    if (view) validatePackedView(view, [view.format], id);
+    if (view) validateSinglePackedView(view, [view.format], id);
   }
   validateRasterBuffersDistinct(id, outputs, inputs);
   return count;
@@ -60,8 +61,11 @@ export function requireRasterLength(
   );
 }
 
-/** Optional status words a bounded iteration publishes, each one `uint32` entry. */
-export type RasterIterationStatusOutputs = {
+/**
+ * Status words a bounded iteration publishes, each one `uint32` entry: the named
+ * `GPUIterationStatusPort` of `analysis-core/contracts/status`, with `converged` required.
+ */
+export type RasterIterationStatusOutputs = GPUIterationStatusPort & {
   /** 1 when a round changed nothing before the iteration limit, else 0. */
   converged: GraphDataView<'uint32'>;
   /** 1 when the iteration limit was reached without convergence, else 0. */

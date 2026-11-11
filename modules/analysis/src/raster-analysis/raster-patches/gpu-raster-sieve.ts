@@ -14,7 +14,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createPatchKeysNode,
@@ -94,7 +94,7 @@ export type GPURasterSieveProps = GPURasterPatchLabels & {
  * mask's clumps). Merging is a single pass: a small patch whose neighbors are all small is removed
  * rather than merged into a small neighbor, and no chains form.
  *
- * `validity`, `converged`, `componentCount` and `overflow` turn pixels into background exactly
+ * `mask`, `converged`, `componentCount` and `overflow` turn pixels into background exactly
  * as in `GPURasterPatchMetrics`. Unfinished labels (`converged` reads 0 or `overflow` is nonzero)
  * are not reported as "no patches": every word of `output.labels`, `output.patchTargets` and
  * `output.sievedCount` is then {@link GPU_RASTER_PATCH_UNRESOLVED}, which a finished run never
@@ -124,25 +124,25 @@ export class GPURasterSieve implements GPUCommandNodeProducer {
       throw new Error(`${id} connectivity must be 4 or 8`);
     }
     validateCapacity(id, 'patchCapacity', props.patchCapacity, 1, pixelCount);
-    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     if (props.parameters.length < GPU_RASTER_SIEVE_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must contain at least ${GPU_RASTER_SIEVE_PARAMETER_LENGTH} values`
       );
     }
     const {output} = props;
-    validatePackedView(output.labels, ['uint32'], `${id} output.labels`);
+    validateSinglePackedView(output.labels, ['uint32'], `${id} output.labels`);
     if (output.labels.length !== pixelCount) {
       throw new Error(`${id} output.labels length must equal grid width * height`);
     }
     if (output.patchTargets) {
-      validatePackedView(output.patchTargets, ['uint32'], `${id} output.patchTargets`);
+      validateSinglePackedView(output.patchTargets, ['uint32'], `${id} output.patchTargets`);
       if (output.patchTargets.length !== props.patchCapacity) {
         throw new Error(`${id} output.patchTargets length must equal patchCapacity`);
       }
     }
     if (output.sievedCount) {
-      validatePackedView(output.sievedCount, ['uint32'], `${id} output.sievedCount`);
+      validateSinglePackedView(output.sievedCount, ['uint32'], `${id} output.sievedCount`);
       if (output.sievedCount.length < 1) {
         throw new Error(`${id} output.sievedCount must hold one uint32`);
       }

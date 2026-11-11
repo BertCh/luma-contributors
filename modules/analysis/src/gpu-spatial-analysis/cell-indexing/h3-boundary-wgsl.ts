@@ -5,6 +5,8 @@
 
 // H3 boundary construction is derived from Uber's Apache-2.0 H3 (faceijk.c).
 
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
+
 /**
  * WGSL port of H3's `_faceIjkToCellBoundary` and `_faceIjkPentToCellBoundary` (H3 C
  * `faceijk.c`), complete for every H3 cell: hexagons and pentagons, cells that cross icosahedron
@@ -28,8 +30,12 @@
  *
  * Precision is f32: the hex2d coordinates of the finest resolutions exceed the f32 mantissa
  * (resolution 14 and 15), so vertices there carry errors of a fraction of a cell.
+ *
+ * Also declares `guardedAtan2` ({@link GUARDED_ATAN2_WGSL}), so a kernel that embeds this must not
+ * add it again.
  */
 export const H3_BOUNDARY_WGSL = /* wgsl */ `
+${GUARDED_ATAN2_WGSL}
 const CELL_INDEX_H3_BOUNDARY_MAX_VERTICES: u32 = 10u;
 const CELL_INDEX_H3_BOUNDARY_NO_OVERAGE: u32 = 0u;
 const CELL_INDEX_H3_BOUNDARY_FACE_EDGE: u32 = 1u;
@@ -151,9 +157,11 @@ fn cellIndexH3BoundaryHex2dToUnitVector(point: vec2f, face: u32, adjustedResolut
   );
 }
 
+// atan2(y, -0.0) returns -sign(y) * pi / 2 on the test GPU (FX-17), so the longitude uses
+// guardedAtan2; the second atan2 below has a nonnegative length as its x.
 fn cellIndexH3BoundaryUnitVectorToLngLat(unitVector: vec3f) -> vec2f {
   return vec2f(
-    atan2(unitVector.y, unitVector.x) * DGGS_RADIANS_TO_DEGREES,
+    guardedAtan2(unitVector.y, unitVector.x) * DGGS_RADIANS_TO_DEGREES,
     atan2(unitVector.z, length(unitVector.xy)) * DGGS_RADIANS_TO_DEGREES
   );
 }

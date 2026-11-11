@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {IS_FINITE_VALUE_WGSL} from '../kernels/wgsl-common';
+
 /**
  * WGSL of the monotone path of `GPUPolygonTriangulation` (internal).
  *
@@ -48,10 +50,17 @@
  *
  * Validity: the counts `clean + 2 holes - 2` must equal the sum of `(piece vertices - 2)`, every
  * piece must be strictly monotone in rank along both chains, every walk must close, every
- * diagonal must be symmetric and lie strictly inside the angular wedge of both of its ends, and
- * every predicate must be certified. Not detected: self-intersections or overlapping holes that
- * keep all of these consistent. Not supported (flagged invalid): a diagonal between two coincident
- * vertices (rings that touch at a vertex).
+ * diagonal must be symmetric and lie strictly inside the angular wedge of both of its ends, no
+ * triangle may be clockwise (triangles of three collinear vertices are written), and every
+ * predicate must be certified. The pieces are the cycles of a permutation of the half-edges, in
+ * which every ring edge appears once and every diagonal once in each direction, and the stack
+ * triangulation replaces two consecutive edges of a piece by the third side of a triangle at each
+ * step. The triangle boundaries therefore sum to the polygon boundary, and with no clockwise
+ * triangle the number of triangles over a point is the winding number of the rings about it: for
+ * a valid polygon a result that passes is a tiling. Not detected: invalid input (rings that
+ * cross, overlapping holes) that keeps all of these consistent; its triangles then cover each
+ * point as often as the rings wind about it. Not supported (flagged invalid): a diagonal between
+ * two coincident vertices, and most other polygons whose rings touch at a vertex.
  *
  * @internal
  */
@@ -335,7 +344,7 @@ export function getIndexSource(sizes: MonotoneSizes): MonotoneKernelSource {
 fn vertexAt(row: u32) -> vec2f {
   return vec2f(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
 }
-fn isFiniteBits(x: f32) -> bool { return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u; }`,
+${IS_FINITE_VALUE_WGSL}`,
     body: `let j = index;
   keepFlags[keepFlagsOffset + j] = 0u;
   // The largest polygon whose routed range starts at or before j.
@@ -375,7 +384,7 @@ fn isFiniteBits(x: f32) -> bool { return (bitcast<u32>(x) & 0x7f800000u) != 0x7f
   let ringBegin = ringOffsets[ringOffsetsOffset + ring];
   let ringEnd = min(ringOffsets[ringOffsetsOffset + ring + 1u], VERTEX_COUNT);
   let point = vertexAt(row);
-  if (!isFiniteBits(point.x) || !isFiniteBits(point.y)) {
+  if (!isFiniteValue(point.x) || !isFiniteValue(point.y)) {
     failPolygon(polygon, FAIL_NON_FINITE);
     return;
   }
@@ -1051,12 +1060,21 @@ fn emitTriangle(cornerA: u32, cornerB: u32, cornerC: u32) {
   triangleCursor += 1u;
 }
 // Fan from \`vertex\` over the whole stack: counter-clockwise on a left-chain stack as
-// (upper, lower, vertex) and on a right-chain stack as (lower, upper, vertex).
+// (upper, lower, vertex) and on a right-chain stack as (lower, upper, vertex). In a monotone
+// piece of a simple polygon no fan triangle is clockwise. One that is means the piece is not
+// such a polygon (rings that touch can pass every other check, frc-geometry-02) and fails it:
+// the triangles of a piece sum to its boundary, so they tile it exactly when none is clockwise.
 fn fanStack(fanVertex: u32, fanChain: u32) {
   for (var fanItem = 0u; fanItem + 1u < stackSize; fanItem++) {
     let fanUpper = stackVertexAt(fanItem);
     let fanLower = stackVertexAt(fanItem + 1u);
-    if (fanChain == 0u) { emitTriangle(fanUpper, fanLower, fanVertex); } else { emitTriangle(fanLower, fanUpper, fanVertex); }
+    let fanFirst = select(fanLower, fanUpper, fanChain == 0u);
+    let fanSecond = select(fanUpper, fanLower, fanChain == 0u);
+    if (orientOf(positionOf(fanFirst), positionOf(fanSecond), positionOf(fanVertex)) < 0) {
+      pieceFailed = true;
+      return;
+    }
+    emitTriangle(fanFirst, fanSecond, fanVertex);
   }
 }
 

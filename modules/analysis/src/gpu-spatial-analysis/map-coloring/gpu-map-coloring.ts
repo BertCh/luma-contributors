@@ -13,7 +13,7 @@ import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createRasterIterationFinalizeNode,
@@ -193,11 +193,11 @@ export class GPUMapColoring implements GPUCommandNodeProducer {
     }
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
     const {output} = props;
-    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     if (props.parameters.length < GPU_MAP_COLORING_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must hold ${GPU_MAP_COLORING_PARAMETER_LENGTH} uint32`);
     }
-    validatePackedView(output.colors, ['uint32'], `${id} output.colors`);
+    validateSinglePackedView(output.colors, ['uint32'], `${id} output.colors`);
     if (output.colors.length !== rows) {
       throw new Error(`${id} output.colors length must equal the weights row count`);
     }
@@ -208,7 +208,7 @@ export class GPUMapColoring implements GPUCommandNodeProducer {
       ['status.iterationCount', output.status?.iterationCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < 1) {
           throw new Error(`${id} output.${name} must hold one uint32`);
         }

@@ -52,10 +52,13 @@ function createOperator(side: string, secondary?: GPUSpatialContext, omitSide = 
           positions: view('float32x2', 32),
           featureOffsets: view('uint32', 9),
           polygonOffsets: view('uint32', 9),
-          ringOffsets: view('uint32', 9),
-          sourceIds: view('uint32', 8)
+          ringOffsets: view('uint32', 9)
         },
-        status: {...status(), candidateOverflow: view('uint32', 1)},
+        status: {
+          count: view('uint32', 1),
+          overflow: view('uint32', 1),
+          candidateOverflow: view('uint32', 1)
+        },
         boundary: {
           endpoints: view('float32x4', 32),
           operandIds: view('uint32', 32),

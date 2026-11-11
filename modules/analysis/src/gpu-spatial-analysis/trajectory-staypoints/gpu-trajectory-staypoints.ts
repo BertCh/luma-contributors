@@ -29,7 +29,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -219,10 +219,10 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
       SPATIAL_CONTEXT_SUPPORT
     );
     const {output, positions, timestamps, trackOffsets, parameters} = props;
-    validatePackedView(positions, ['float32x2'], `${id} positions`);
-    validatePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
-    validatePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
-    validatePackedView(parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(parameters, ['float32'], `${id} parameters`);
     validateViewLength(id, 'timestamps', timestamps, positions.length);
     validateRequirement(
       id,
@@ -254,12 +254,12 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
       ['durations', output.durations, 'float32']
     ] as const) {
       if (view) {
-        validatePackedView(view, [format], `${id} output.${name}`);
+        validateSinglePackedView(view, [format], `${id} output.${name}`);
         validateViewLength(id, `output.${name}`, view, capacity);
       }
     }
     if (output.staypointIds) {
-      validatePackedView(output.staypointIds, ['uint32'], `${id} output.staypointIds`);
+      validateSinglePackedView(output.staypointIds, ['uint32'], `${id} output.staypointIds`);
       validateViewLength(id, 'output.staypointIds', output.staypointIds, positions.length);
     }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());

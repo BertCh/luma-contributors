@@ -91,10 +91,11 @@ for (const fixture of arcsFixtures)
           const owners = rig.output('owners', capacity, 'uint32');
           const measures = rig.output('measures', capacity, 'float32');
           const sourceLines = rig.output('source-lines', pairs, 'uint32');
-          const count = rig.output('count', 1, 'uint32');
-          const required = rig.output('required', 1, 'uint32');
-          const overflow = rig.output('overflow', 1, 'uint32');
           const lineCount = rig.output('line-count', 1, 'uint32');
+          const requiredLineCount = rig.output('required-line-count', 1, 'uint32');
+          const overflow = rig.output('overflow', 1, 'uint32');
+          const vertexCount = rig.output('vertex-count', 1, 'uint32');
+          const requiredVertexCount = rig.output('required-vertex-count', 1, 'uint32');
           const parameters = rig.input('parameters', [0, 1, 0, 0], 'float32');
           rig.graph.add(
             new GPUGreatCircleArcs({
@@ -115,10 +116,11 @@ for (const fixture of arcsFixtures)
                 sourceLineIndices: sourceLines.view,
                 measures: measures.view,
                 status: {
-                  count: count.view,
-                  requiredCount: required.view,
+                  count: lineCount.view,
+                  requiredCount: requiredLineCount.view,
                   overflow: overflow.view,
-                  lineCount: lineCount.view
+                  vertexCount: vertexCount.view,
+                  requiredVertexCount: requiredVertexCount.view
                 }
               }
             })
@@ -149,14 +151,15 @@ for (const fixture of arcsFixtures)
                   relative
                 );
               compare(
-                'count/required/overflow/lineCount',
+                'vertexCount/requiredVertexCount/overflow/count/requiredCount',
                 [
-                  ...(await readUint32(count.buffer, 1)),
-                  ...(await readUint32(required.buffer, 1)),
+                  ...(await readUint32(vertexCount.buffer, 1)),
+                  ...(await readUint32(requiredVertexCount.buffer, 1)),
                   ...(await readUint32(overflow.buffer, 1)),
-                  ...(await readUint32(lineCount.buffer, 1))
+                  ...(await readUint32(lineCount.buffer, 1)),
+                  ...(await readUint32(requiredLineCount.buffer, 1))
                 ],
-                [used, total, Number(total > capacity), pairs]
+                [used, total, Number(total > capacity), pairs, pairs]
               );
               compare(
                 'every line offset',

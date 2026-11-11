@@ -112,3 +112,9 @@ export type {
   GPUTextureShadingProps,
   GPUTextureShadingSettings
 } from './gpu-texture-shading';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {computeSolarPositionOnCPU, CPUSolarPositionOperation} from './cpu-solar-position-operation';
+export type {CPUSolarPositionResult} from './cpu-solar-position-operation';
+export {GPUSolarPositionOperation} from './gpu-solar-position-operation';
+export type {SolarPositionOperationProps} from './gpu-solar-position-operation';

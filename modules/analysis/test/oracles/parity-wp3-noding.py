@@ -75,7 +75,8 @@ def generate(output, name, coordinates, tolerance, source):
     offsets, neighbors, edgeIds, weights = [0], [], [], []
     for node in range(len(ordered)):
         for edge,(first,second) in enumerate(zip(fromNodes,toNodes)):
-            for endpoint,other in [(first,second),(second,first)]:
+            # An undirected self-loop has one CSR entry, as luma.gl GPUGraphAlgorithmsTopology lists it.
+            for endpoint,other in ([(first,second)] if first == second else [(first,second),(second,first)]):
                 if endpoint == node:
                     neighbors.append(other)
                     edgeIds.append(edge)

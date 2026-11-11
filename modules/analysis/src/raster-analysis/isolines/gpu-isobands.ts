@@ -100,8 +100,8 @@ export type GPUIsobandsProps = {
   grid: GPURasterMetadata;
   /** Packed row-major float32 raster, at least `width * height` rows. NaN and infinite samples are nodata. */
   values: GraphDataView<'float32'>;
-  /** Optional row-major `uint32` validity; zero marks a nodata sample. */
-  validity?: GraphDataView<'uint32'>;
+  /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
+  mask?: GraphDataView<'uint32'>;
   /** Optional finite nodata sentinel compared exactly against sample values. */
   noDataValue?: number;
   /**
@@ -124,7 +124,7 @@ export type GPUIsobandsProps = {
  * binary search) for fragment-side shading. Geometry mode writes triangles: for every marching-squares
  * cell and band `[b[k - 1], b[k])`, the region `Above(b[k - 1]) ∩ Below(b[k])` is built
  * combinatorially from the cell's boundary walk, with level crossings joined through each level's
- * segment partners (saddles by the centre-value rule), so at most two convex pieces per cell and
+ * segment partners (saddles by the bilinear decider of `GPUIsolines`), so at most two convex pieces per cell and
  * band, fan-triangulated. Every vertex is a sample position or a crossing computed exactly like
  * `GPUIsolines`, so band boundaries coincide with isolines of the same breaks. Cells with a nodata
  * corner emit nothing. Infinite sample values give unspecified geometry.
@@ -139,6 +139,14 @@ export type GPUIsobandsProps = {
  * raster or tile corner, a vertex is within about `1.2e-7` of its distance from that corner of the
  * float64 crossing (1.2 cm at 100 km); add the origin back on the CPU or as the layer's coordinate
  * origin.
+ *
+ * Row direction: row 0 of the raster is placed at `minY` of the per-frame extent and rows advance
+ * toward larger y. Only the width and height of `grid` are read; `grid.affine` is not, and nothing
+ * is checked at construction. A north-up grid (row 0 at the top, the default of
+ * `makeGPURasterMetadata`) therefore comes out mirrored north to south unless the caller reverses
+ * the row order of the raster before upload. Mirroring the output instead (`y' = minY + maxY - y`)
+ * also swaps the documented side: high values are then on the right of a segment, and ring
+ * windings are reversed. Following the grid affine is deferred (roadmap 12.4).
  */
 export class GPUIsobands implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -166,7 +174,7 @@ export class GPUIsobands implements GPUCommandNodeProducer {
     this.cellCount = (width - 1) * (height - 1);
     validateRasterAlgebraView(id, 'values', props.values, 'float32', sampleCount);
     validateRasterAlgebraNoData(id, props.noDataValue);
-    validateRasterAlgebraView(id, 'validity', props.validity, 'uint32', sampleCount);
+    validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', sampleCount);
     validateRasterAlgebraView(id, 'breaks', props.breaks, 'float32', 1);
     this.maximumBreakCount = props.breaks.length;
     validateRasterAlgebraView(
@@ -273,7 +281,7 @@ export class GPUIsobands implements GPUCommandNodeProducer {
     validateRasterAlgebraAliasing(
       id,
       [...writable, output.triangles, output.edges] as (GraphDataView | undefined)[],
-      [props.values, props.validity, props.breaks, props.parameters]
+      [props.values, props.mask, props.breaks, props.parameters]
     );
   }
 
@@ -286,7 +294,7 @@ export class GPUIsobands implements GPUCommandNodeProducer {
     const {width, height} = props.grid;
     validateRasterAlgebraGraph(id, graph, [
       props.values,
-      props.validity,
+      props.mask,
       props.breaks,
       props.parameters,
       output.bandClasses,
@@ -316,8 +324,8 @@ ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`;
       {name: 'breaks', view: props.breaks, type: 'f32', access: 'read'},
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
     ];
-    if (props.validity) {
-      inputs.push({name: 'validity', view: props.validity, type: 'u32', access: 'read'});
+    if (props.mask) {
+      inputs.push({name: 'validity', view: props.mask, type: 'u32', access: 'read'});
     }
     const nodes: GPUCommandNode<Parameters>[] = [];
 
@@ -335,7 +343,7 @@ ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`;
           declarations: common,
           body: `let value = values[valuesOffset + index];
   var isValid = isFiniteValue(value) && !isNoDataValue(value);
-  ${props.validity ? 'isValid = isValid && validity[validityOffset + index] != 0u;' : ''}
+  ${props.mask ? 'isValid = isValid && validity[validityOffset + index] != 0u;' : ''}
   let breakCountValue = params[paramsOffset];
   let breakCount = min(u32(clamp(select(0.0, breakCountValue, isFiniteValue(breakCountValue)), 0.0, 4294967040.0)), MAXIMUM_BREAK_COUNT);
   classesOut[classesOutOffset + index] = select(NO_DATA_CLASS, countBreaksBelow(0u, breakCount, value, false), isValid);`
@@ -349,7 +357,7 @@ ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`;
       output.status?.count &&
       output.status?.overflow
     ) {
-      const cellWGSL = getIsobandsCellWGSL(Boolean(props.validity));
+      const cellWGSL = getIsobandsCellWGSL(Boolean(props.mask));
       const cellCounts = createTransientView(graph, `${id}-cell-counts`, 'uint32', cellCount);
       const cellOffsets = createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount);
       const total = createTransientView(graph, `${id}-total`, 'uint32', 1);
@@ -467,7 +475,7 @@ ${cellWGSL}`,
       output.status?.edgeCount &&
       output.status?.edgeOverflow
     ) {
-      const cellWGSL = getIsobandsCellWGSL(Boolean(props.validity));
+      const cellWGSL = getIsobandsCellWGSL(Boolean(props.mask));
       const edgeCounts = createTransientView(graph, `${id}-edge-cell-counts`, 'uint32', cellCount);
       const edgeOffsets = createTransientView(
         graph,

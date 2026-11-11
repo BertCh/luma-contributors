@@ -1,7 +1,7 @@
 # @luma-contributors/analysis
 
 GPU geospatial and analysis operations built on published [luma.gl](https://luma.gl)
-(`@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph` at `10.0.0-alpha.10`). The GPU
+(`@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph` at `10.0.0-alpha.12`). The GPU
 infrastructure itself (command graphs, GPU Core operations, GPU tables, dataframes, graph algorithms)
 comes from luma.gl. This package holds only the analysis code.
 

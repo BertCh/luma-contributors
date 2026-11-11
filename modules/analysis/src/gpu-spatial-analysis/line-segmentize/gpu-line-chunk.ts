@@ -13,7 +13,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUGreatCircleRadius,
@@ -33,7 +33,11 @@ import {
   type LinePieceMode
 } from './line-chunk-kernels';
 import {type GPULineCoordinateSystem, type GPULineGeometryOutput} from './line-segmentize-types';
-import {getLineGeometryOutputViews, validateLineGeometryOutput} from './line-geometry-output';
+import {
+  createLineGeometryCountNode,
+  getLineGeometryOutputViews,
+  validateLineGeometryOutput
+} from './line-geometry-output';
 
 const OPERATION = 'GPULineChunk';
 
@@ -121,10 +125,13 @@ export type GPULineChunkProps = {
    */
   parameters: GraphDataView<'float32'>;
   /**
-   * Output pieces. `output.status.count` counts output vertices (not pieces; `status.lineCount`
-   * counts pieces). In `'chunk'` mode the line capacity is `output.lineOffsets.length - 1` and the
-   * piece count is data dependent (`status.lineCount` and `sourceLineIndices` report it); in `'substring'` mode
-   * there is exactly one output line per input line.
+   * Output pieces. `output.status.count` counts the pieces written (output lines) and
+   * `requiredCount` the unclamped piece count; `vertexCount` and `requiredVertexCount` count
+   * vertices. In `'chunk'` mode the line capacity is `output.lineOffsets.length - 1` and the piece
+   * count is data dependent (`sourceLineIndices` gives each piece's input line); a line is counted
+   * with at most `lineCapacity + 1` pieces, so `requiredCount` is exact unless one line alone needs
+   * more than that, in which case it is a lower bound that still exceeds the capacity. In
+   * `'substring'` mode there is exactly one output line per input line.
    */
   output: GPULineGeometryOutput;
 };
@@ -174,17 +181,17 @@ export class GPULineChunk implements GPUCommandNodeProducer {
     if (props.mode !== 'chunk' && props.mode !== 'substring') {
       throw new Error(`${id} mode must be 'chunk' or 'substring'`);
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rowCount = props.positions.length;
     if (rowCount < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    validateSinglePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
     if (props.lineOffsets.length < 2) {
       throw new Error(`${id} lineOffsets needs two rows`);
     }
     const lineCount = props.lineOffsets.length - 1;
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LINE_CHUNK_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_LINE_CHUNK_PARAMETER_LENGTH} float32 values`
@@ -208,7 +215,7 @@ export class GPULineChunk implements GPUCommandNodeProducer {
 
   /**
    * Returns the prefix node, piece count and scan nodes, the range node, the vertex scan nodes,
-   * the emit node, the publish node and an optional source-line-index node.
+   * the emit node, the publish node, the line-count node and an optional source-line-index node.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -306,10 +313,16 @@ export class GPULineChunk implements GPUCommandNodeProducer {
         vertexStarts,
         capacity: output.positions.length,
         outputLineOffsets: output.lineOffsets,
-        count: output.status.count,
         overflow: output.status.overflow,
-        requiredCount: output.status.requiredCount,
-        lineCountOutput: output.status.lineCount
+        vertexCount: output.status.vertexCount,
+        requiredVertexCount: output.status.requiredVertexCount
+      }),
+      createLineGeometryCountNode<Parameters>(graph, {
+        id,
+        operation: OPERATION,
+        output,
+        lineCapacity,
+        lineTotal: pieceTotal
       })
     ];
     if (output.sourceLineIndices) {

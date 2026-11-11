@@ -19,7 +19,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPURipley} from './gpu-ripley';
 import {
@@ -228,7 +228,7 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
       throw new Error(`${id} maximumAttempts must be an integer in [1, 256]`);
     }
     if (output.unplacedCount) {
-      validatePackedView(output.unplacedCount, ['uint32'], `${id} output.unplacedCount`);
+      validateSinglePackedView(output.unplacedCount, ['uint32'], `${id} output.unplacedCount`);
       if (output.unplacedCount.length < 1) {
         throw new Error(`${id} output.unplacedCount must hold 1 row`);
       }
@@ -256,14 +256,14 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
     ] as const;
     for (const [name, view] of radiusOutputs) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length < radiusCount) {
           throw new Error(`${id} ${name} must hold radiusCount rows`);
         }
       }
     }
     if (output.statistics) {
-      validatePackedView(output.statistics, ['float32'], `${id} output.statistics`);
+      validateSinglePackedView(output.statistics, ['float32'], `${id} output.statistics`);
       if (output.statistics.length < GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH) {
         throw new Error(
           `${id} output.statistics must hold ${GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH} rows`
@@ -605,7 +605,7 @@ fn fromL(lValue: f32, radius: f32) -> f32 {
   var anyFinite = false;
   for (var radiusIndex = 0u; radiusIndex < RADIUS_COUNT; radiusIndex++) {
     let kValue = allK[allKOffset + index * RADIUS_COUNT + radiusIndex];
-    if (isFiniteFloat(kValue)) {
+    if (isFiniteValue(kValue)) {
       deviation = max(deviation, getLDeviation(kValue, getRadius(radiusIndex)));
       anyFinite = true;
     }
@@ -643,17 +643,17 @@ fn fromL(lValue: f32, radius: f32) -> f32 {
   let n = count[countOffset];
   var validCount = 0u;
   for (var simulation = 0u; simulation < SIMULATION_COUNT; simulation++) {
-    if (isFiniteFloat(deviations[deviationsOffset + simulation])) { validCount++; }
+    if (isFiniteValue(deviations[deviationsOffset + simulation])) { validCount++; }
   }
   // rank-th largest by (value, index): the total order breaks ties without double counting.
   var critical = nan;
   for (var candidate = 0u; candidate < SIMULATION_COUNT; candidate++) {
     let value = deviations[deviationsOffset + candidate];
-    if (!isFiniteFloat(value)) { continue; }
+    if (!isFiniteValue(value)) { continue; }
     var greater = 0u;
     for (var other = 0u; other < SIMULATION_COUNT; other++) {
       let otherValue = deviations[deviationsOffset + other];
-      if (isFiniteFloat(otherValue) && (otherValue > value || (otherValue == value && other < candidate))) {
+      if (isFiniteValue(otherValue) && (otherValue > value || (otherValue == value && other < candidate))) {
         greater++;
       }
     }
@@ -667,7 +667,7 @@ fn fromL(lValue: f32, radius: f32) -> f32 {
   var observedFinite = false;
   for (var radiusIndex = 0u; radiusIndex < RADIUS_COUNT; radiusIndex++) {
     let kValue = observedK[observedKOffset + radiusIndex];
-    if (isFiniteFloat(kValue)) {
+    if (isFiniteValue(kValue)) {
       observedDeviation = max(observedDeviation, getLDeviation(kValue, getRadius(radiusIndex)));
       observedFinite = true;
     }
@@ -677,7 +677,7 @@ fn fromL(lValue: f32, radius: f32) -> f32 {
     var atLeast = 0u;
     for (var simulation = 0u; simulation < SIMULATION_COUNT; simulation++) {
       let value = deviations[deviationsOffset + simulation];
-      if (isFiniteFloat(value) && value >= observedDeviation) { atLeast++; }
+      if (isFiniteValue(value) && value >= observedDeviation) { atLeast++; }
     }
     pValue = f32(1u + atLeast) / f32(validCount + 1u);
   }`
@@ -722,31 +722,31 @@ fn fromL(lValue: f32, radius: f32) -> f32 {
   ${output.theoretical ? 'theoretical[theoreticalOffset + index] = fromL(radius, radius);' : ''}
   ${
     output.globalLower
-      ? `globalLower[globalLowerOffset + index] = select(nan, fromL(radius - critical, radius), isFiniteFloat(critical));`
+      ? `globalLower[globalLowerOffset + index] = select(nan, fromL(radius - critical, radius), isFiniteValue(critical));`
       : ''
   }
   ${
     output.globalUpper
-      ? `globalUpper[globalUpperOffset + index] = select(nan, fromL(radius + critical, radius), isFiniteFloat(critical));`
+      ? `globalUpper[globalUpperOffset + index] = select(nan, fromL(radius + critical, radius), isFiniteValue(critical));`
       : ''
   }
   ${
     output.lower || output.upper
       ? `var validCount = 0u;
   for (var simulation = 0u; simulation < SIMULATION_COUNT; simulation++) {
-    if (isFiniteFloat(allK[allKOffset + simulation * RADIUS_COUNT + index])) { validCount++; }
+    if (isFiniteValue(allK[allKOffset + simulation * RADIUS_COUNT + index])) { validCount++; }
   }
   var lowerValue = nan;
   var upperValue = nan;
   if (validCount >= 2u * RANK) {
     for (var candidate = 0u; candidate < SIMULATION_COUNT; candidate++) {
       let value = allK[allKOffset + candidate * RADIUS_COUNT + index];
-      if (!isFiniteFloat(value)) { continue; }
+      if (!isFiniteValue(value)) { continue; }
       // Position of this value in the ascending order of finite values, ties by simulation index.
       var below = 0u;
       for (var other = 0u; other < SIMULATION_COUNT; other++) {
         let otherValue = allK[allKOffset + other * RADIUS_COUNT + index];
-        if (isFiniteFloat(otherValue) && (otherValue < value || (otherValue == value && other < candidate))) {
+        if (isFiniteValue(otherValue) && (otherValue < value || (otherValue == value && other < candidate))) {
           below++;
         }
       }
@@ -754,8 +754,8 @@ fn fromL(lValue: f32, radius: f32) -> f32 {
       if (below == validCount - RANK) { upperValue = value; }
     }
   }
-  ${output.lower ? 'lower[lowerOffset + index] = select(nan, fromK(lowerValue, radius), isFiniteFloat(lowerValue));' : ''}
-  ${output.upper ? 'upper[upperOffset + index] = select(nan, fromK(upperValue, radius), isFiniteFloat(upperValue));' : ''}`
+  ${output.lower ? 'lower[lowerOffset + index] = select(nan, fromK(lowerValue, radius), isFiniteValue(lowerValue));' : ''}
+  ${output.upper ? 'upper[upperOffset + index] = select(nan, fromK(upperValue, radius), isFiniteValue(upperValue));' : ''}`
       : ''
   }`
         })

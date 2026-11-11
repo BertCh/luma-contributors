@@ -214,3 +214,27 @@ it('load-balanced loops reject topologies past uint32 (rule 16)', () => {
     /invalid load-balanced topology/
   );
 });
+
+it('createLoadBalancedSegmentSumNodes rejects an output shorter than rows x lanes x components', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'load-balanced-short'});
+  expect(() =>
+    createLoadBalancedSegmentSumNodes(graph, {
+      id: 'short-sum',
+      operation: 'LoadBalancedSpec',
+      offsets: createTransientView(graph, 'offsets', 'uint32', 11),
+      itemCapacity: 100,
+      laneCount: 2,
+      accumulatorType: 'f32',
+      output: createTransientView(graph, 'output', 'float32', 19),
+      bindings: [
+        {
+          name: 'itemValues',
+          view: createTransientView(graph, 'item-values', 'float32', 100),
+          type: 'f32',
+          access: 'read'
+        }
+      ],
+      declarations: CONTRIBUTION_WGSL('f32')
+    })
+  ).toThrow(/^short-sum output must hold at least 20 elements/);
+});

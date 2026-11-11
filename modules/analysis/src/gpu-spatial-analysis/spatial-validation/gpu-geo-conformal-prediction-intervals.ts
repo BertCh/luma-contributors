@@ -12,7 +12,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
@@ -93,10 +93,10 @@ export class GPUGeoConformalPredictionIntervals implements GPUCommandNodeProduce
     const {id} = this;
     this.queryRows = props.query.predictions.length;
     validateConformalInputs(id, props.calibration, props.query, 1, this.queryRows);
-    validatePackedView(props.neighbors.offsets, ['uint32'], `${id} neighbors.offsets`);
+    validateSinglePackedView(props.neighbors.offsets, ['uint32'], `${id} neighbors.offsets`);
     validateViewLength(id, 'neighbors.offsets', props.neighbors.offsets, this.queryRows + 1);
-    validatePackedView(props.neighbors.indices, ['uint32'], `${id} neighbors.indices`);
-    validatePackedView(props.neighbors.weights, ['float32'], `${id} neighbors.weights`);
+    validateSinglePackedView(props.neighbors.indices, ['uint32'], `${id} neighbors.indices`);
+    validateSinglePackedView(props.neighbors.weights, ['float32'], `${id} neighbors.weights`);
     validateViewLength(
       id,
       'neighbors.weights',

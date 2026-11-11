@@ -18,7 +18,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createFloat32ValuesNodes,
@@ -275,7 +275,11 @@ export class GPUAssuncaoReisStandardization implements GPUCommandNodeProducer {
     const {output} = props;
     const rows = validateFloat32OrUint32Values(props.events, `${id} events`);
     validateFloat32OrUint32Values(props.populations, `${id} populations`);
-    validatePackedView(output.standardizedRates, ['float32'], `${id} output.standardizedRates`);
+    validateSinglePackedView(
+      output.standardizedRates,
+      ['float32'],
+      `${id} output.standardizedRates`
+    );
     validateCapacity(id, 'events length', rows, 0, MAXIMUM_ROWS - 1);
     for (const [name, view] of [
       ['populations', props.populations],
@@ -292,7 +296,7 @@ export class GPUAssuncaoReisStandardization implements GPUCommandNodeProducer {
       }
     }
     if (output.statistics) {
-      validatePackedView(output.statistics, ['float32'], `${id} output.statistics`);
+      validateSinglePackedView(output.statistics, ['float32'], `${id} output.statistics`);
       validateCapacity(
         id,
         'output.statistics length',

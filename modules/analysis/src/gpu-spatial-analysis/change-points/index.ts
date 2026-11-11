@@ -22,3 +22,23 @@ export {
   GPU_PETTITT_TEST_NO_CHANGE_SLICE
 } from './gpu-pettitt-test';
 export type {GPUPettittTestOutput, GPUPettittTestProps} from './gpu-pettitt-test';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  CPU_PETTITT_TEST_MAXIMUM_SLICE_COUNT,
+  computePettittTestOnCPU,
+  CPUPettittTestOperation
+} from './cpu-pettitt-test-operation';
+export type {CPUPettittTestOptions, CPUPettittTestResult} from './cpu-pettitt-test-operation';
+export {GPUPettittTestOperation} from './gpu-pettitt-test-operation';
+export type {PettittTestOperationProps} from './gpu-pettitt-test-operation';
+export {
+  computeLocationChangePointsOnCPU,
+  CPULocationChangePointsOperation
+} from './cpu-location-change-points-operation';
+export type {
+  CPULocationChangePointsOptions,
+  CPULocationChangePointsResult
+} from './cpu-location-change-points-operation';
+export {GPULocationChangePointsOperation} from './gpu-location-change-points-operation';
+export type {LocationChangePointsOperationProps} from './gpu-location-change-points-operation';

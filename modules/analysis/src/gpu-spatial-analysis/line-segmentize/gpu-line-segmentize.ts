@@ -14,7 +14,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUGreatCircleRadius,
@@ -33,7 +33,11 @@ import {
 } from './line-segmentize-kernels';
 import {GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} from './line-segmentize-parameters';
 import {type GPULineCoordinateSystem, type GPULineGeometryOutput} from './line-segmentize-types';
-import {getLineGeometryOutputViews, validateLineGeometryOutput} from './line-geometry-output';
+import {
+  createLineGeometryCountNode,
+  getLineGeometryOutputViews,
+  validateLineGeometryOutput
+} from './line-geometry-output';
 
 const OPERATION = 'GPULineSegmentize';
 
@@ -86,8 +90,8 @@ export type GPULineSegmentizeProps = {
    */
   parameters: GraphDataView<'float32'>;
   /**
-   * Densified lines, one output line per input line. `output.status.count` counts output vertices
-   * (`output.status.lineCount` counts lines). The optional `output.status.approximation` receives
+   * Densified lines, one output line per input line. `output.status.count` and `requiredCount`
+   * count lines (the input line count); `vertexCount` and `requiredVertexCount` count vertices. The optional `output.status.approximation` receives
    * `1` when an edge needed more than `maximumPieceCount` pieces, so its output segments are longer
    * than the requested maximum; otherwise `0`.
    */
@@ -146,7 +150,7 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
     if (props.closedLines !== undefined && typeof props.closedLines !== 'boolean') {
       throw new Error(`${id} closedLines must be a boolean`);
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rowCount = props.positions.length;
     if (rowCount < 1) {
       throw new Error(`${id} needs at least one position`);
@@ -159,11 +163,11 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
       1,
       Math.floor(0xffffffff / rowCount)
     );
-    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    validateSinglePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
     if (props.lineOffsets.length < 2) {
       throw new Error(`${id} lineOffsets needs two rows`);
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} float32 values`
@@ -179,7 +183,7 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
 
   /**
    * Returns the optional prefix node, the count node, the scan nodes, the emit node, the publish
-   * node, an optional source-row node (closed spherical rings with every vertex column), and an
+   * node, the line-count node, an optional source-row node (closed spherical rings with every vertex column), and an
    * optional source-line-index node.
    */
   getCommandNodes<Parameters>(
@@ -278,10 +282,15 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
         starts,
         outputLineOffsets: output.lineOffsets,
         capacity: output.positions.length,
-        count: output.status.count,
         overflow: output.status.overflow,
-        requiredCount: output.status.requiredCount,
-        lineCountOutput: output.status.lineCount
+        vertexCount: output.status.vertexCount,
+        requiredVertexCount: output.status.requiredVertexCount
+      }),
+      createLineGeometryCountNode<Parameters>(graph, {
+        id,
+        operation: OPERATION,
+        output,
+        lineCapacity: lineCount
       })
     );
     if (separateSourceRows && output.sourceRows) {

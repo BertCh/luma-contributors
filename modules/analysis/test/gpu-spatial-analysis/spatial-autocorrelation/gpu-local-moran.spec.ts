@@ -61,18 +61,15 @@ function expectMatchesOracle(
   expect(result.globalStatistics[4], `${label} islandCount`).toBe(oracle.islandCount);
   let comparedQuadrants = 0;
   for (const [row, expected] of oracle.zScores.entries()) {
-    // z takes the sign of the centered value, so it flips for values within f32 rounding of the
-    // mean (the GPU mean is f32). |z| and p are continuous there and are always compared.
+    // z takes the sign of the centered value, so it can flip for values within f32 rounding of
+    // the mean. |z| and p are continuous there and are always compared. A row whose value equals
+    // the reported f32 mean is no longer special: the centered value is the stored first-pass
+    // deviation minus the residual mean (spatial-statistics-07), which resolves differences below
+    // the f32 grid of the values, so its z is finite and compared like any other row. (The old
+    // kernel subtracted the rounded mean, got exactly 0 and wrote NaN; this spec used to expect
+    // that.)
     const centered = oracle.included[row] ? oracleValues[row] - oracle.moments.mean : NaN;
     const nearMean = Math.abs(centered) < CENTERED_GUARD;
-    if (nearMean && Math.fround(oracleValues[row]) === result.globalStatistics[1]) {
-      // The f32 GPU mean cannot resolve this row from the mean (centered is exactly 0 on the GPU, a
-      // 6e-7 difference at a value of 100 is below one f32 ulp of 7.6e-6), and a zero centered value
-      // has no z-score by definition, so z and p are NaN where the f64 oracle still has a finite z.
-      expect(result.zScores[row], `${label}: row ${row} z at the f32 mean`).toBeNaN();
-      expect(result.pValues[row], `${label}: row ${row} p at the f32 mean`).toBeNaN();
-      continue;
-    }
     const actualZ = nearMean ? Math.abs(result.zScores[row]) : result.zScores[row];
     const expectedZ = nearMean ? Math.abs(expected) : expected;
     if (!isClose(actualZ, expectedZ, Z_ABSOLUTE_TOLERANCE, Z_RELATIVE_TOLERANCE)) {

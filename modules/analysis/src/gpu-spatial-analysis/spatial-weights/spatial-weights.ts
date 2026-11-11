@@ -11,7 +11,7 @@ import {
 import type {GPUCapacityPlan} from '../../analysis-core/contracts/capacity-planning';
 import {
   validateCapacity,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /**
@@ -195,16 +195,16 @@ export function validateGPUSpatialWeights(
   weights: GPUSpatialWeights,
   name = 'weights'
 ): number {
-  validatePackedView(weights.offsets, ['uint32'], `${id} ${name}.offsets`);
-  validatePackedView(weights.neighbors, ['uint32'], `${id} ${name}.neighbors`);
-  validatePackedView(weights.weights, ['float32'], `${id} ${name}.weights`);
+  validateSinglePackedView(weights.offsets, ['uint32'], `${id} ${name}.offsets`);
+  validateSinglePackedView(weights.neighbors, ['uint32'], `${id} ${name}.neighbors`);
+  validateSinglePackedView(weights.weights, ['float32'], `${id} ${name}.weights`);
   validateCapacity(id, `${name}.offsets length`, weights.offsets.length, 2);
   validateCapacity(id, `${name}.neighbors length`, weights.neighbors.length);
   if (weights.weights.length !== weights.neighbors.length) {
     throw new Error(`${id} ${name}.weights length must equal neighbors length`);
   }
   if (weights.distances) {
-    validatePackedView(weights.distances, ['float32'], `${id} ${name}.distances`);
+    validateSinglePackedView(weights.distances, ['float32'], `${id} ${name}.distances`);
     if (weights.distances.length !== weights.neighbors.length) {
       throw new Error(`${id} ${name}.distances length must equal neighbors length`);
     }

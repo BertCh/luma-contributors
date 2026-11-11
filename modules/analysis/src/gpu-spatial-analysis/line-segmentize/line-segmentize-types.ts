@@ -6,7 +6,8 @@ import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {
   GPUApproximationStatusPort,
   GPUCardinalityPort,
-  GPUOverflowStatusPort
+  GPUOverflowStatusPort,
+  GPUVertexCountStatusPort
 } from '../../analysis-core/contracts/index';
 
 /**
@@ -27,18 +28,18 @@ export const GPU_LINE_NO_SOURCE = 0xffffffff;
 
 /**
  * Caller-owned, capacity-bounded line output written by the line-emitting contributors
- * (`GPULineSegmentize`, `GPUGreatCircleArcs`, `GPULineSmooth`, `GPULineChunk`).
+ * (`GPULineSegmentize`, `GPUGreatCircleArcs`, `GPULineSmooth`, `GPULineChunk`, `GPURectangleClip`).
  *
  * Lines use the toolkit's flat layout: vertex rows in `positions`, line `p` owning rows
  * `[lineOffsets[p], lineOffsets[p + 1])`, which is what deck.gl `PathLayer` binary attributes
  * (`startIndices`) consume. The vertex capacity is `positions.length` (compile time).
  *
- * Every offset is clamped to the capacity, so when `status.overflow` is 1 the last lines are truncated
- * (possibly to zero vertices) but the layout stays valid. `status.count` is `min(total, capacity)` and is
- * safe as an indirect draw count. Every word is rewritten on every encoding.
+ * Every offset is clamped to the vertex capacity, so when `status.overflow` is 1 the last lines are
+ * truncated (possibly to zero vertices) but the layout stays valid. Every word is rewritten on every
+ * encoding.
  */
 export type GPULineGeometryOutput = {
-  /** Output vertices, `capacity` rows. Rows at or past `status.count` are unspecified. */
+  /** Output vertices, `capacity` rows. Rows at or past the vertex count are unspecified. */
   positions: GraphDataView<'float32x2'>;
   /**
    * Line start offsets, `lineCapacity + 1` rows, clamped to the vertex capacity. For contributors that
@@ -46,23 +47,26 @@ export type GPULineGeometryOutput = {
    */
   lineOffsets: GraphDataView<'uint32'>;
   /**
-   * One-row status scalars: `count` counts output vertices (not lines) and receives the clamped vertex count, `overflow` receives `1` when
-   * the vertex or line capacity overflowed (otherwise `0`), the optional `requiredCount` receives
-   * the unclamped vertex count, and the optional `lineCount` receives the clamped number of output
-   * lines (required by contributors whose line count is data dependent, such as chunking;
-   * otherwise equal to the input line count). The optional `approximation` receives `1` when an
-   * input edge needed more pieces than the compile-time piece cap, so some output segments are
-   * longer than the requested maximum; only `GPULineSegmentize` and `GPUGreatCircleArcs` write it
-   * and the other contributors that emit this layout reject a view for it.
+   * One-row status scalars of the generated-geometry layout (contributor contract rule 8):
+   * - `count`: output lines written (rings for `GPURectangleClip` polygons), clamped to the line
+   *   capacity. A line truncated by the vertex capacity still counts.
+   * - `requiredCount` (optional): the unclamped number of output lines.
+   * - `overflow`: `1` when the vertex or line capacity dropped rows, otherwise `0`.
+   * - `vertexCount` (optional): vertices written, `min(total, capacity)`, the indirect draw count
+   *   of `positions`.
+   * - `requiredVertexCount` (optional): the unclamped number of vertices.
+   * - `approximation` (optional): `1` when an input edge needed more pieces than the compile-time
+   *   piece cap, so some output segments are longer than the requested maximum. Only
+   *   `GPULineSegmentize` and `GPUGreatCircleArcs` write it; the other contributors that emit this
+   *   layout reject a view for it.
    */
   status: GPUCardinalityPort &
     GPUOverflowStatusPort &
-    GPUApproximationStatusPort & {
-      lineCount?: GraphDataView<'uint32'>;
-    };
+    GPUApproximationStatusPort &
+    GPUVertexCountStatusPort;
   /**
    * Optional per-output-line source line (or source pair) row, `lineCapacity` rows,
-   * `GPU_LINE_NO_SOURCE` past `status.lineCount`.
+   * `GPU_LINE_NO_SOURCE` past `status.count`.
    */
   sourceLineIndices?: GraphDataView<'uint32'>;
   /**

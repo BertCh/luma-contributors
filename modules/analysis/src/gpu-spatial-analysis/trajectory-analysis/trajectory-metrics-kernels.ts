@@ -12,6 +12,7 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {TIME_WORDS_WGSL} from '../../dataframe-analysis/time-window-filter/time-words';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 
@@ -391,6 +392,7 @@ export function createTrajectoryStepColumnsNode<Parameters>(
     declarations: `${getTrackSearchSource(trackCount)}
 ${getTrajectoryTimeSource(getTrajectoryTimeMode(props))}
 ${getStepSource(false, props.geodesicRadius)}
+${GUARDED_ATAN2_WGSL}
 
 fn getStepSpeed(row: u32) -> f32 {
   let duration = getStepDuration(row);
@@ -413,13 +415,15 @@ fn getStepSpeed(row: u32) -> f32 {
           ? `let deltaX = positions[positionsOffset + 2u * index] - positions[positionsOffset + 2u * (index - 1u)];
       let deltaY = positions[positionsOffset + 2u * index + 1u] - positions[positionsOffset + 2u * (index - 1u) + 1u];
       if (deltaX != 0.0 || deltaY != 0.0) {
-        heading = atan2(deltaY, deltaX);
+        // deltaX is -0.0 for a due north or south step from x = +0 to x = -0 (FX-17).
+        heading = guardedAtan2(deltaY, deltaX);
       }`
           : `if (getStepDistance(index) > 0.0) {
         // The planar convention (counterclockwise from east) applied to the initial bearing
         // (clockwise from north): atan2(cos(bearing), sin(bearing)) = pi / 2 - bearing, wrapped.
         let bearing = geodesicInitialBearingDegrees(getStepPosition(index - 1u), getStepPosition(index)) * GEODESIC_DEGREES_TO_RADIANS;
-        heading = atan2(cos(bearing), sin(bearing));
+        // sin(bearing) is -0.0 for a bearing of -0.0 (due north with a longitude step of -0.0).
+        heading = guardedAtan2(cos(bearing), sin(bearing));
       }`
       }
       let duration = getStepDuration(index);

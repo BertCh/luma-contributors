@@ -13,7 +13,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -95,7 +95,7 @@ export class GPUSpaceTimeLocalMoran implements GPUCommandNodeProducer {
     const lag = props.lag ?? 1;
     validateCapacity(id, 'lag', lag);
     validateCapacity(id, 'period', props.period, lag, props.periodCount - 1);
-    validatePackedView(props.cube, ['float32'], `${id} cube`);
+    validateSinglePackedView(props.cube, ['float32'], `${id} cube`);
     validateViewLength(id, 'cube', props.cube, cellCount * props.periodCount);
     if (props.layout !== 'period-major' && props.layout !== 'cell-major') {
       throw new Error(`${id} layout must be 'period-major' or 'cell-major'`);

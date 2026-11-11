@@ -279,6 +279,55 @@ it('GPUNetworkSnapping BVH candidate path matches the exhaustive scan', async ()
   expect(overflowing.overflow).toBe(1);
 });
 
+it('GPUNetworkSnapping BVH and exhaustive paths agree on ties, nodes and the snap tolerance', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const points: number[] = [];
+  // Every node: all incident edges tie at distance 0, and the smallest edge row must win.
+  for (let node = 0; node < NODE_COUNT; node++) {
+    points.push(GRID.positions[node * 2], GRID.positions[node * 2 + 1]);
+  }
+  // Every cell center: four edges tie at distance 0.5.
+  for (let row = 0; row < WIDTH - 1; row++) {
+    for (let column = 0; column < WIDTH - 1; column++) {
+      points.push(column + 0.5, row + 0.5);
+    }
+  }
+  // Exactly at the snap tolerance of 1.5 (inclusive), just inside it and just beyond it.
+  points.push(3, -1.5, 3.5, 8.5, -1.5, 3, 10.5, 3.5, 3, -1.25, 3, -1.75, 20, 20);
+  const fixture: SnappingFixture = {
+    points: Float32Array.from(points),
+    positions: GRID.positions,
+    csr: CSR
+  };
+  const options = {fixture, edgeCosts: true, maximumSnapDistance: 1.5};
+  const scanned = await runSnapping(device, options);
+  const joined = await runSnapping(device, {...options, candidateCapacity: 32768});
+  expect(joined.overflow).toBe(0);
+  expect(joined.edges).toEqual(scanned.edges);
+  expect(joined.fractions).toEqual(scanned.fractions);
+  expect(joined.distances).toEqual(scanned.distances);
+  expect(joined.sourceCosts).toEqual(scanned.sourceCosts);
+  expect(joined.startNodes).toEqual(scanned.startNodes);
+  const pointCount = points.length / 2;
+  // Nodes snap onto their smallest incident edge row.
+  for (let node = 0; node < NODE_COUNT; node++) {
+    const incident = Array.from(CSR.neighbors.keys()).filter(
+      edge => CSR.sources[edge] === node || CSR.neighbors[edge] === node
+    );
+    expect(joined.edges[node]).toBe(Math.min(...incident));
+    expect(joined.distances[node]).toBe(0);
+  }
+  // The last six points: at the tolerance, inside, beyond, and a far point. The tolerance is inclusive.
+  const tail = pointCount - 7;
+  expect(scanned.edges[tail]).not.toBe(GPU_NETWORK_SNAPPING_NONE);
+  expect(joined.edges[tail]).not.toBe(GPU_NETWORK_SNAPPING_NONE);
+  expect(joined.edges[tail + 4]).not.toBe(GPU_NETWORK_SNAPPING_NONE);
+  expect(joined.edges[tail + 5]).toBe(GPU_NETWORK_SNAPPING_NONE);
+  expect(joined.edges[tail + 6]).toBe(GPU_NETWORK_SNAPPING_NONE);
+  expect(scanned.edges[tail + 5]).toBe(GPU_NETWORK_SNAPPING_NONE);
+});
+
 /**
  * 3 x 3 longitude/latitude grid at 60 N straddling the antimeridian (longitudes 179.985, 179.995,
  * -179.995; latitudes 59.99, 60, 60.01), one direction per link so that no two edge rows tie.

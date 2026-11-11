@@ -781,8 +781,23 @@ for (const mode of ['spatial', 'buffer'] as const)
       );
       context.run();
       expect(Array.from(await readUint32(status.buffer))).toEqual(Array(data.foldCount).fill(0));
-      expect(Array.from(await readUint32(training.buffer))).toEqual(data.training);
-      expect(Array.from(await readUint32(testing.buffer))).toEqual(data.testing);
+      // The fold NUMBER of a block is a seeded random order (math correctness review,
+      // interpolation-density-02), so the design is compared with blockCV as a partition: every
+      // GPU fold must be one blockCV fold, with the same test rows and the same training rows.
+      const gpuTraining = Array.from(await readUint32(training.buffer));
+      const gpuTesting = Array.from(await readUint32(testing.buffer));
+      const getFoldRows = (masks: number[], fold: number) =>
+        masks.slice(fold * 12, (fold + 1) * 12).join('');
+      const matchedReferenceFolds = new Set<number>();
+      for (let fold = 0; fold < data.foldCount; fold++) {
+        const referenceFold = Array.from({length: data.foldCount}, (_, index) => index).find(
+          candidate => getFoldRows(data.testing, candidate) === getFoldRows(gpuTesting, fold)
+        );
+        expect(referenceFold, `GPU fold ${fold} test rows`).not.toBeUndefined();
+        matchedReferenceFolds.add(referenceFold!);
+        expect(getFoldRows(gpuTraining, fold)).toBe(getFoldRows(data.training, referenceFold!));
+      }
+      expect(matchedReferenceFolds.size).toBe(data.foldCount);
     } finally {
       context.destroy();
     }

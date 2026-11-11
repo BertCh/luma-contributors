@@ -113,7 +113,7 @@ async function createHarness(
       id: 'profile',
       grid: makeGPURasterMetadata({width: raster.width, height: raster.height}),
       values: importGraphBuffer(graph, 'raster', inputs.raster, 'float32', raster.values.length),
-      validity: inputs.validity
+      mask: inputs.validity
         ? importGraphBuffer(graph, 'validity', inputs.validity, 'uint32', raster.values.length)
         : undefined,
       noDataValue: raster.noDataValue,

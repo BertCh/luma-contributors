@@ -91,7 +91,7 @@ async function runEncounters(
       samples: importGraphBuffer(graph, 'samples', input(samples), 'float32x2', samples.length / 2),
       trackCount,
       bucketCount,
-      trackValid: options.trackValid
+      mask: options.trackValid
         ? importGraphBuffer(graph, 'valid', input(options.trackValid), 'uint32', trackCount)
         : undefined,
       distance: importGraphBuffer(

@@ -8,6 +8,7 @@ import type {
   GraphExternalTextureHandle,
   GraphTextureHandle
 } from '@luma.gl/graph/gpu-core';
+import {recordWGSLKernelNodes} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import type {
   GPUComputationNodeAnnotation,
   GPUComputationRecordScope
@@ -40,12 +41,30 @@ export class GPUComputationRecorder {
   /** Whether recorded sources keep their full text. */
   readonly sourceText: boolean;
 
+  /** Graph whose `createWGSLKernelNode` kernels this recorder describes, set by `recordKernels`. */
+  get graph(): GPUCommandGraph<any> | undefined {
+    return this.kernelGraph;
+  }
+
+  private kernelGraph?: GPUCommandGraph<any>;
   private readonly scopes: GPUComputationRecordScope[] = [];
   private readonly nodes = new Map<string, GPUComputationRecordedNode>();
   private readonly resources = new Map<string, GPUComputationRecordedResource>();
 
   constructor(props: GPUComputationRecorderProps = {}) {
     this.sourceText = props.sourceText ?? false;
+  }
+
+  /**
+   * Keeps the kernel facts of every node `createWGSLKernelNode` builds on `graph` from now on (source,
+   * workgroup size, dispatch, bindings, operation), so `describeGPUCommandGraph(compiled, {recorder})`
+   * fills them in for nodes that were never passed to `recordNode`. Call it before contributors add
+   * nodes. Annotations passed to `recordNode` win field by field. Returns the graph.
+   */
+  recordKernels<Graph extends GPUCommandGraph<any>>(graph: Graph): Graph {
+    recordWGSLKernelNodes(graph);
+    this.kernelGraph = graph;
+    return graph;
   }
 
   /** Runs `callback`; nodes recorded inside inherit the scope. Scopes nest, innermost wins. */

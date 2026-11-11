@@ -12,7 +12,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -105,12 +105,12 @@ export class GPUNormalizeGeometry implements GPUCommandNodeProducer {
   constructor(props: GPUNormalizeGeometryProps) {
     this.id = props.id ?? 'normalize-geometry';
     this.props = props;
-    validatePackedView(props.positions, ['float32x2'], this.id);
-    validatePackedView(props.nodes, ['uint32x4'], this.id);
-    validatePackedView(props.children, ['uint32'], this.id);
-    validatePackedView(props.output.positions, ['float32x2'], this.id);
-    validatePackedView(props.output.children, ['uint32'], this.id);
-    validatePackedView(props.output.status, ['uint32'], this.id);
+    validateSinglePackedView(props.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.nodes, ['uint32x4'], this.id);
+    validateSinglePackedView(props.children, ['uint32'], this.id);
+    validateSinglePackedView(props.output.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.output.children, ['uint32'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32'], this.id);
     if (
       props.positions.length !== props.output.positions.length ||
       props.children.length !== props.output.children.length ||

@@ -13,7 +13,7 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -73,14 +73,14 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
       throw new Error('Invalid snap tolerance');
     }
     for (const view of [props.positions, props.referencePositions, props.output.positions]) {
-      validatePackedView(view, ['float32x2'], this.id);
+      validateSinglePackedView(view, ['float32x2'], this.id);
     }
     for (const view of [props.lineOffsets, props.output.sourceEdges]) {
-      validatePackedView(view, ['uint32'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
     }
-    validatePackedView(props.output.counts, ['uint32x4'], this.id);
+    validateSinglePackedView(props.output.counts, ['uint32x4'], this.id);
     if (props.output.validity) {
-      validatePackedView(props.output.validity, ['uint32'], this.id);
+      validateSinglePackedView(props.output.validity, ['uint32'], this.id);
       if (props.output.validity.length !== props.lineOffsets.length - 1) {
         throw new Error('Snap validity length mismatch');
       }

@@ -13,6 +13,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {createSortedSegmentOffsetsNode} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 
 /** Threads of one regime workgroup: strided row partials, then a fixed binary tree. */
 const REGIME_WORKGROUP_SIZE = 256;
@@ -20,7 +21,7 @@ const REGIME_WORKGROUP_SIZE = 256;
 /** Float32 words per regime in the moments view of {@link getRegimeMomentNodes}. */
 export function getRegimeMomentStride(predictorCount: number): number {
   const dimension = predictorCount + 1;
-  return dimension + (dimension * (dimension + 1)) / 2;
+  return dimension + (dimension * (dimension + 1)) / 2 + dimension;
 }
 
 /** Properties of {@link getRegimeMomentNodes}. */
@@ -48,7 +49,14 @@ export type RegimeMomentViews = {
    * Per regime, `getRegimeMomentStride(predictorCount)` float32 words: the means of the
    * predictors and of the response (`D = predictorCount + 1`), then the packed upper-triangular
    * centered cross-products of `[predictors, response]` (row `first`, column `second >= first`,
-   * slot `first * (2D - first + 1) / 2 + second - first`). Empty regimes hold zeros.
+   * slot `first * (2D - first + 1) / 2 + second - first`), then the `D` sums of the deviations
+   * `value - mean` of each column. Empty regimes hold zeros.
+   *
+   * The means are float32, so they are the true means only to half a float32 step. The deviation
+   * sums are what is left: `mean + deviationSum / count` is the mean to the precision of the
+   * deviations. A consumer that needs levels finer than a float32 step of a column mean (a
+   * response whose mean is large against its residuals) treats the stored mean as an exact shift
+   * and carries the deviation sums through its moments.
    */
   moments: GraphDataView<'float32'>;
 };
@@ -62,8 +70,8 @@ export type RegimeMomentViews = {
  * 3. One binary search per regime gives the segment offsets (no atomics).
  * 4. One 256-thread workgroup per regime: each thread sums its strided rows of the segment, a
  *    fixed binary tree combines the threads (means), then the same for the centered
- *    cross-products about those means. The order depends only on the segment bounds, so the
- *    result is bitwise reproducible.
+ *    cross-products about those means and for the sums of the deviations from them. The order
+ *    depends only on the segment bounds, so the result is bitwise reproducible.
  *
  * Work is `O(n log n)` for the sort plus `O(n D^2)`; the depth is the sort plus one dispatch.
  */
@@ -153,6 +161,7 @@ const D: u32 = ${dimension}u;
 const MOMENT_COUNT: u32 = ${momentCount}u;
 const STRIDE: u32 = ${stride}u;
 const REGIME_COUNT: u32 = ${regimeCount}u;
+${ROUNDED_DIFFERENCE_WGSL}
 var<workgroup> partialSums: array<f32, ${REGIME_WORKGROUP_SIZE}>;
 var<workgroup> regimeMeans: array<f32, ${dimension}>;
 
@@ -207,10 +216,16 @@ fn reduceWorkgroup(localIndex: u32, value: f32) -> f32 {
   }
   var products: array<f32, ${momentCount}>;
   var centered: array<f32, ${dimension}>;
+  var deviationSums: array<f32, ${dimension}>;
+  // The first segment starts at sorted row 0, so this buffer word is a zero the compiler cannot
+  // know. It fixes each deviation as written: summed as (sum of values) - count * mean, the
+  // deviation sums and the centered products would lose everything below a float32 step.
+  let runtimeZero = segmentOffsets[segmentOffsetsOffset];
   for (var slot = begin + localInvocationIndex; slot < end; slot += ${REGIME_WORKGROUP_SIZE}u) {
     let row = sortedRows[sortedRowsOffset + slot];
     for (var column = 0u; column < D; column++) {
-      centered[column] = getValue(row, column) - means[column];
+      centered[column] = getRoundedDifference(getValue(row, column), means[column], runtimeZero);
+      deviationSums[column] = deviationSums[column] + centered[column];
     }
     var moment = 0u;
     for (var first = 0u; first < D; first++) {
@@ -230,6 +245,12 @@ fn reduceWorkgroup(localIndex: u32, value: f32) -> f32 {
     let total = reduceWorkgroup(localInvocationIndex, products[moment]);
     if (isInRange && localInvocationIndex == 0u) {
       moments[base + D + moment] = total;
+    }
+  }
+  for (var column = 0u; column < D; column++) {
+    let total = reduceWorkgroup(localInvocationIndex, deviationSums[column]);
+    if (isInRange && localInvocationIndex == 0u) {
+      moments[base + D + MOMENT_COUNT + column] = total;
     }
   }`
     })

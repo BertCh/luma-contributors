@@ -19,7 +19,11 @@ import {
   type GPURasterCellSizeMode
 } from '../../analysis-core/raster-grid';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {getTerrainFlowTracingWGSL} from './terrain-flow-tracing';
+import {
+  getTerrainFlowTracingWGSL,
+  validateTerrainFlowDirectionEncoding,
+  type GPUTerrainFlowDirectionEncoding
+} from './terrain-flow-tracing';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validateRasterGridAxisAligned} from '../../raster-analysis/raster-band-utils';
 import {
@@ -37,8 +41,21 @@ import {
 export type GPUTerrainFlowDistanceProps = {
   id?: string;
   grid: GPURasterMetadata;
+  /**
+   * D8 codes, one per cell, ESRI by default (1 east, clockwise powers of two; 0 terminal;
+   * `0xffffffff` invalid; `0xfffffffe` unresolved). A nonzero code without a receiver is
+   * unresolved.
+   */
   flowDirections: GraphDataView<'uint32'>;
-  /** Optional nonzero stream cells stop tracing before their outgoing transition. */
+  /**
+   * Numbering of `flowDirections`: `'esri'` (default), `'whitebox'` (the WhiteboxTools default
+   * pointer) or `'taudem'`, see {@link GPUTerrainFlowDirectionEncoding}. Compile-time.
+   */
+  directionEncoding?: GPUTerrainFlowDirectionEncoding;
+  /**
+   * Optional stream mask: a nonzero word is a stream cell and stops tracing before its outgoing
+   * transition. The words `0xffffffff` and `0xfffffffe` are unresolved, not stream cells.
+   */
   streams?: GraphDataView<'uint32'>;
   /**
    * Cost of each cell's outgoing edge, in explicit caller units. Otherwise the length of the
@@ -90,6 +107,7 @@ export class GPUTerrainFlowDistance implements GPUCommandNodeProducer {
     ])
       requireRasterLength(view, count);
     validateRasterCellSizeMode(this.id, props.cellSizeMode);
+    validateTerrainFlowDirectionEncoding(this.id, props.directionEncoding);
     validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);
     validateCapacity(this.id, 'maximumSteps', props.maximumSteps ?? count);
     // Seed and output nodes plus the gated pointer-jumping loop.
@@ -119,7 +137,7 @@ export class GPUTerrainFlowDistance implements GPUCommandNodeProducer {
       createTransientView(graph, `${id}-state-${side}`, 'uint32', count * 4)
     );
     const converged = createTransientView(graph, `${id}-converged`, 'uint32', 1);
-    const declarations = `${getTerrainFlowTracingWGSL(grid.width, grid.height)}
+    const declarations = `${getTerrainFlowTracingWGSL(grid.width, grid.height, props.directionEncoding)}
 ${IS_FINITE_VALUE_WGSL}
 ${getTerrainGroundMeasureWGSL(grid, props.cellSizeMode)}`;
     const operation = 'GPUTerrainFlowDistance';
@@ -155,7 +173,7 @@ ${getTerrainGroundMeasureWGSL(grid, props.cellSizeMode)}`;
         declarations,
         // kind 0 extends the path to the receiver, 1 ends it at this cell, 2 cannot be resolved
         // (invalid direction, unresolved stream word or unusable cost).
-        body: `let code = directions[directionsOffset+index];
+        body: `let code = getFlowDirectionCode(directions[directionsOffset+index]);
 let receiver = getFlowReceiver(index, code);
 var kind = 0u; var cost = 0.0;
 if (code != 0u && receiver == NO_CELL) { kind = 2u; } else {

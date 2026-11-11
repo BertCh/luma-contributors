@@ -61,7 +61,9 @@ An empty annulus can produce a valid K with undefined correlations; inspect thos
 
 The default `edgeCorrection: 'translation'` uses the rectangle's overlap with its translated copy.
 `'none'` explicitly disables correction. Pairs with zero overlap are excluded. Without supplied
-intensity the normalization uses `area / (nFocus * nNeighbor)`, including same-type `n²` normalization.
+intensity the normalization is `area / (nFocus * nNeighbor)` for two different types (spatstat `Kcross`)
+and `area / (n * (n - 1))` when focus and neighbor are the same set (no `types`, or an equal `typePair`),
+as `GPURipley` and spatstat `Kest`; one point of a type has no same-type K (NaN, status 1).
 With intensity, the estimator is the sum of `1 / (intensity_i * intensity_j * overlapArea)`;
 nonpositive, nonfinite and below-threshold intensities are excluded. Intensity estimation remains an
 explicit upstream step.
@@ -71,12 +73,33 @@ uses weighted mean products divided by the product of category mean marks; zero 
 empty shells are undefined. Supplying intensity weights both the pair and mark sums. These choices
 must be matched before comparing another package's output.
 
+Without `gridSize` every focus scans every row, so rows are limited to 16,384. An optional
+compile-time `gridSize: [columns, rows]` builds a cell index over the window with cells at least
+`maximumRadius` wide, and each focus visits only the 3 x 3 cells around it; rows are then limited
+by the partial table (`rows * radiusCount * 3` at most `2^24`). Pair counts and status match the
+dense path. Sums are added in cell order and then per bin in a fixed tree of at most 256 entries
+per invocation, and the category mean marks are sums divided by counts (the dense path keeps a
+running mean), so the statistics can differ from the dense path in the last float32 bits. Apart
+from the pair pass, no grid pass loops over every row in one invocation; a `maximumRadius` that
+reaches the window's extent collapses the lattice to one cell, where each focus visits every row.
+A `maximumRadius` whose square overflows float32 gives no pairs on the grid path.
+
 ## Cross and space-time variograms
 
 `GPUCrossVariogram` computes the signed mean of `(x_i - x_j) * (y_i - y_j) / 2` for each distance bin.
 `secondValues` defaults to `values`, yielding the Matheron semivariogram. Negative cross-semivariances
 are retained. Its dense `times` and `temporalLagCount` path is superseded by `GPUSpaceTimeVariogram`
-and should not be used.
+and should not be used. Without `gridSize` every row scans every later row (at most 16,384 rows). The
+optional compile-time `gridSize: [columns, rows]` fits a cell index to the bounds of the
+complete-case rows on every encoding, with cells at least `maximumDistance` wide, so `maximumDistance`
+can still change per frame; each row then visits only the 3 x 3 cells around it, and rows are limited
+by the partial table (`rows * bins` at most `2^24`). Pair counts and status match the dense path;
+sums are added in cell order and then per bin in a fixed tree of at most 256 entries per
+invocation, so semivariances can differ in the last float32 bits. Apart from the pair pass, no grid
+pass loops over every row in one invocation. The pair pass visits every row of the 3 x 3 cells
+around its focus: when `maximumDistance` reaches the extent of the rows, the lattice collapses to
+one cell and each row visits every other row, the dense cost, so choose `gridSize` and
+`maximumDistance` such that the cells stay small against the data.
 
 `GPUSpaceTimeVariogram` is built on the indexed pair histogram of `GPUVariogram`, so its cost follows
 the pairs in neighboring lattice cells instead of `rows^2`. Class 0 of each axis is the exact zero lag
@@ -129,8 +152,12 @@ with a separate distance bandwidth for every variable, including the intercept. 
 [relativeContributionTolerance, interceptBandwidth, predictorBandwidth0, ...]
 ```
 
-The algorithm starts at zero coefficient surfaces, updates one variable across every location, then
-moves to the next variable. A sweep converges when the largest relative change in any fitted component
+The algorithm starts every coefficient surface at the global ordinary least squares coefficients
+(at zero when full `inference` is requested, because its propagation starts from zero surfaces),
+updates one variable across every location, then moves to the next variable. This starting point is
+this kernel's own: a package that starts from a single-bandwidth GWR fit reaches the same fixed point
+when it is unique, with different iteration counts and a different result if the iteration limit
+stops the backfitting first. A sweep converges when the largest relative change in any fitted component
 is within tolerance. The row selection is complete-case. Singular component fits invalidate the
 whole coupled backfit. Non-converged coefficient surfaces are not published as completed results.
 `output.status.codes` has one row per observation; `output.status.iterationCount` is one scalar
@@ -199,7 +226,7 @@ per regime), so results are reproducible; rows are limited to 2^24 and the devic
 ## Evidence and performance limits
 
 The committed generator
-[`geospatial-expansion-statistics.py`](../../../../modules/analysis/test/oracles/geospatial-expansion-statistics.py)
+[`geospatial-expansion-statistics.py`](../../../modules/analysis/test/oracles/geospatial-expansion-statistics.py)
 records package versions, synthetic input provenance, float32 rounding and reference types. It uses
 direct esda LOSH/Geary, direct constrained-bandwidth mgwr backfitting, direct spreg panel and regime
 fits, independent local statsmodels GLMs, and explicit statsmodels/NumPy compositions for grid CV

@@ -598,6 +598,47 @@ describe('hot spot analysis recipe status', () => {
     });
     expect(stages['permutation']).toEqual({overflow: recipe.permutation!.status.overflow});
   });
+
+  it('the permutation confirms the statistic the Gi stage maps, or construction throws', () => {
+    // The permutation test has a fixed focal weight: 1 for 'localGStar', none for 'localG'.
+    const build = (selfWeight: number | undefined, statistic?: 'localG' | 'localGStar') => {
+      const context = createContext();
+      const recipe = addHotSpotAnalysisRecipe(context.graph, {
+        parameters: parameters(context),
+        selfWeight,
+        permutation: {
+          parameters: new GPUParameterBuffer(context.graph.device, {
+            id: `hot-spot-permutation-parameters-${parameterSerial++}`,
+            format: 'uint32',
+            length: 8
+          }),
+          maximumPermutations: 99,
+          statistic
+        },
+        source: {
+          kind: 'lattice',
+          values: context.view('float32', 64, 'values'),
+          width: 8,
+          height: 8,
+          neighborCapacity: 512
+        }
+      });
+      const statistics = recipe.contributors
+        .map(
+          contributor =>
+            (contributor as unknown as {props?: {statistic?: unknown}}).props?.statistic
+        )
+        .filter(value => typeof value === 'string');
+      return statistics[0];
+    };
+    expect(build(undefined)).toBe('localGStar');
+    expect(build(1)).toBe('localGStar');
+    expect(build(0)).toBe('localG');
+    expect(build(0, 'localG')).toBe('localG');
+    expect(() => build(0.5)).toThrow(/selfWeight/);
+    expect(() => build(0, 'localGStar')).toThrow(/selfWeight/);
+    expect(() => build(1, 'localG')).toThrow(/selfWeight/);
+  });
 });
 
 describe('period comparison recipe status', () => {

@@ -299,6 +299,117 @@ it('GPUVariogram reports NaN for empty lags and zero for constant values', async
   }
 });
 
+it('GPUVariogram Cressie-Hawkins estimator carries the 0.045 / N^2 term in sparse bins', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Four points on a line 1 apart with values 0, 1, 3, 6. Lags of width 1 over [0, 8]:
+  // lag 1 holds three pairs (differences 1, 2, 3), lag 2 two pairs (3, 5), lag 3 one pair (6).
+  // Cressie and Hawkins (1980): gamma = (mean |dz|^(1/2))^4 / (2 (0.457 + 0.494 / N + 0.045 / N^2)),
+  // the form scikit-gstat evaluates. For one pair the denominator is 2 * 0.996, so gamma is
+  // 36 / 1.992 = 18.0723; without the last term it would be 36 / 1.902 = 18.927, 4.7 % more.
+  const positions = new Float32Array([0, 0, 1, 0, 2, 0, 3, 0]);
+  const values = new Float32Array([0, 1, 3, 6]);
+  const harness = createPairStatisticsHarness(device, {
+    positions,
+    values,
+    parameterLength: GPU_VARIOGRAM_PARAMETER_LENGTH,
+    outputs: {
+      semivariances: {format: 'float32', length: 8},
+      pairCounts: {format: 'uint32', length: 8},
+      robustSemivariances: {format: 'float32', length: 8}
+    },
+    createContributor: views =>
+      new GPUVariogram({
+        positions: views.positions,
+        values: views.values!,
+        parameters: views.parameters,
+        gridSize: [4, 4],
+        lagCount: 8,
+        output: {
+          semivariances: views.outputs.semivariances as never,
+          pairCounts: views.outputs.pairCounts as never,
+          robustSemivariances: views.outputs.robustSemivariances as never
+        }
+      })
+  });
+  try {
+    const result = await harness.run(
+      getGPUVariogramParameterValues({bounds: [0, -1, 3, 1], maximumDistance: 7.999})
+    );
+    expect(result.pairCounts).toEqual([0, 3, 2, 1, 0, 0, 0, 0]);
+    const getRobust = (differences: number[]) => {
+      const count = differences.length;
+      const mean = differences.reduce((sum, value) => sum + Math.sqrt(value), 0) / count;
+      return mean ** 4 / (2 * (0.457 + 0.494 / count + 0.045 / (count * count)));
+    };
+    expect(getRobust([6])).toBeCloseTo(36 / 1.992, 12);
+    for (const [lag, differences] of [
+      [1, [1, 2, 3]],
+      [2, [3, 5]],
+      [3, [6]]
+    ] as const) {
+      const expected = getRobust([...differences]);
+      expectClose(`robust lag ${lag}`, result.robustSemivariances[lag], expected, 2e-4 * expected);
+    }
+    expect(result.robustSemivariances[0]).toBeNaN();
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('GPUVariogram counts coincident pairs in sector 0 whatever the azimuth offset', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Three points at the same place (three coincident pairs, which have no direction) and one
+  // point 2 away to the east. With four sectors and an offset of 0.3 rad, a direction of 0
+  // reduces to pi - 0.3, sector 3: the east pairs go there, the coincident pairs stay in sector 0.
+  const positions = new Float32Array([5, 5, 5, 5, 5, 5, 7, 5]);
+  const values = new Float32Array([1, 2, 4, 8]);
+  const lagCount = 4;
+  const directionCount = 4;
+  const binCount = lagCount * directionCount;
+  const harness = createPairStatisticsHarness(device, {
+    positions,
+    values,
+    parameterLength: GPU_VARIOGRAM_PARAMETER_LENGTH,
+    outputs: {
+      semivariances: {format: 'float32', length: binCount},
+      pairCounts: {format: 'uint32', length: binCount}
+    },
+    createContributor: views =>
+      new GPUVariogram({
+        positions: views.positions,
+        values: views.values!,
+        parameters: views.parameters,
+        gridSize: [4, 4],
+        lagCount,
+        directionCount,
+        output: {
+          semivariances: views.outputs.semivariances as never,
+          pairCounts: views.outputs.pairCounts as never
+        }
+      })
+  });
+  try {
+    for (const azimuthOffset of [0.3, -0.3, 1.2]) {
+      const result = await harness.run(
+        getGPUVariogramParameterValues({bounds: [0, 0, 10, 10], maximumDistance: 4, azimuthOffset})
+      );
+      // Lags are 1 wide: the coincident pairs are in lag 0, the east pairs (distance 2) in lag 2.
+      const expected = new Array<number>(binCount).fill(0);
+      expected[0] = 3;
+      const eastAngle = (((0 - azimuthOffset) % Math.PI) + Math.PI) % Math.PI;
+      const eastSector = Math.floor((eastAngle / Math.PI) * directionCount);
+      expected[eastSector * lagCount + 2] = 3;
+      expect(result.pairCounts, `offset ${azimuthOffset}`).toEqual(expected);
+      // Coincident differences 1, 2 and 3: Matheron gamma = (1 + 4 + 9) / (2 * 3).
+      expect(result.semivariances[0]).toBeCloseTo(14 / 6, 4);
+    }
+  } finally {
+    harness.destroy();
+  }
+});
+
 it('GPUVariogram bins are bitwise independent of the cell lattice, including direction sectors', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

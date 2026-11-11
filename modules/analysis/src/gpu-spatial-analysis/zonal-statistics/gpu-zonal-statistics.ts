@@ -23,11 +23,13 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateGraphViewTopology,
-  validatePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateGPUStatusPort,
   GPU_LINEAR_EDGE_MODELS,
+  type GPUCandidateStatusPort,
   type GPULonLatPolygonStatusPort,
   type GPUPackedGeometryPort,
   type GPUPolygonGeometryPort
@@ -208,6 +210,14 @@ export type GPUZonalStatisticsOutput = {
    */
   pointFeatureRows?: GPUUint32Rows;
   /**
+   * `kind: 'polygons'` only: optional per-point flag, one packed `uint32` per point in row order
+   * across chunks, 1 when that point's membership may be incomplete because the join dropped
+   * candidates (`features.candidateCapacity`) or BVH leaves (`features.leafCapacity`). A flagged
+   * point may be unassigned although a feature contains it, so the statistics of the features it
+   * belongs to may be low. It is `GPUPointInPolygonJoinOutput.candidateTruncated` passed through.
+   */
+  candidateTruncated?: GraphDataView<'uint32'>;
+  /**
    * Two rows `[minimum, maximum]` of `extentStatistic` over features whose count is positive and
    * whose statistic is finite. `[0, 0]` when no feature qualifies. Counts and extrema are exact;
    * counts above 2^24 lose precision as float32.
@@ -222,21 +232,24 @@ export type GPUZonalStatisticsOutput = {
    * Optional membership status. `antimeridianUncertainCount` counts unprepared crossing rings;
    * `poleUncertainCount` counts uncapped pole rings. Planar and feature-row inputs leave both untouched.
    */
-  status?: GPULonLatPolygonStatusPort & {
-    /**
-     * One row: 1 when the join overflowed a BVH leaf or candidate capacity, otherwise 0. Always 0
-     * for `kind: 'feature-rows'`.
-     */
-    overflow?: GraphDataView<'uint32'>;
-    /**
-     * One row: the number of (point, feature) candidate pairs whose containment could not be
-     * proven (non-finite input, malformed offsets, or a predicate outside the double-single
-     * arithmetic envelope). Uncertain pairs are never assigned: a point whose only candidates were
-     * uncertain stays unassigned, so a nonzero value means `counts` and the other statistics may be
-     * low. Always 0 for `kind: 'feature-rows'`.
-     */
-    uncertainCount?: GraphDataView<'uint32'>;
-  };
+  status?: GPULonLatPolygonStatusPort &
+    GPUCandidateStatusPort & {
+      /**
+       * One row: 1 when the join overflowed a BVH leaf or candidate capacity, otherwise 0. Always 0
+       * for `kind: 'feature-rows'`. `candidateOverflow` reports the same two intermediate
+       * capacities under the shared status name (also 0 for `kind: 'feature-rows'`); see
+       * `candidateTruncated` for the points affected.
+       */
+      overflow?: GraphDataView<'uint32'>;
+      /**
+       * One row: the number of (point, feature) candidate pairs whose containment could not be
+       * proven (non-finite input, malformed offsets, or a predicate outside the double-single
+       * arithmetic envelope). Uncertain pairs are never assigned: a point whose only candidates were
+       * uncertain stays unassigned, so a nonzero value means `counts` and the other statistics may be
+       * low. Always 0 for `kind: 'feature-rows'`.
+       */
+      uncertainCount?: GraphDataView<'uint32'>;
+    };
 };
 
 /**
@@ -328,7 +341,9 @@ const OUTPUT_NAMES = [
 function getOutputViews(output: GPUZonalStatisticsOutput) {
   return [
     ...OUTPUT_NAMES.map(name => output[name]),
+    output.candidateTruncated,
     output.status?.overflow,
+    output.status?.candidateOverflow,
     output.status?.uncertainCount,
     output.status?.antimeridianUncertainCount,
     output.status?.poleUncertainCount
@@ -407,9 +422,9 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
         throw new Error(`${id} positions are required for polygon features`);
       }
       for (const chunk of getGraphViewChunks(props.positions)) {
-        validatePackedView(chunk, ['float32x2'], `${id} positions`);
+        validateSinglePackedView(chunk, ['float32x2'], `${id} positions`);
       }
-      validatePackedView(features.positions, ['float32x2'], `${id} features.positions`);
+      validateSinglePackedView(features.positions, ['float32x2'], `${id} features.positions`);
       for (const [name, view] of [
         ['featureOffsets', features.featureOffsets],
         ['polygonOffsets', features.polygonOffsets],
@@ -470,7 +485,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
         continue;
       }
       for (const chunk of getGraphViewChunks(view)) {
-        validatePackedView(chunk, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(chunk, ['float32'], `${id} ${name}`);
       }
       if (view.length !== this.pointCount) {
         throw new Error(`${id} ${name} length must equal the point count`);
@@ -480,7 +495,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       validateGraphViewTopology(id, 'weights', values, weights);
     }
     if (areas) {
-      validatePackedView(areas, ['float32'], `${id} areas`);
+      validateSinglePackedView(areas, ['float32'], `${id} areas`);
       if (areas.length !== this.featureCount) {
         throw new Error(`${id} areas length must equal the feature count`);
       }
@@ -498,20 +513,33 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     for (const name of PER_FEATURE_FLOAT_OUTPUTS) {
       const view = output[name];
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== this.featureCount) {
           throw new Error(`${id} output.${name} length must equal the feature count`);
         }
       }
     }
     if (output.extent) {
-      validatePackedView(output.extent, ['float32'], `${id} output.extent`);
+      validateSinglePackedView(output.extent, ['float32'], `${id} output.extent`);
       if (output.extent.length !== 2) {
         throw new Error(`${id} output.extent must contain two float32 rows`);
       }
     }
     if (output.status) {
       validateGPUStatusPort(`${id} output.status`, output.status);
+    }
+    if (output.candidateTruncated) {
+      validateRequirement(
+        id,
+        features.kind === 'polygons',
+        "output.candidateTruncated needs features.kind 'polygons'"
+      );
+      validatePackedUint32View(output.candidateTruncated, `${id} output.candidateTruncated`);
+      validateRequirement(
+        id,
+        output.candidateTruncated.length === this.pointCount,
+        `output.candidateTruncated needs one row per point (${this.pointCount})`
+      );
     }
     if (output.pointFeatureRows) {
       for (const chunk of getGraphViewChunks(output.pointFeatureRows)) {
@@ -736,7 +764,12 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
           output: {
             pointFeatureIds: pointFeatureRows,
             featureCounts: counts,
-            status: {overflow, uncertainCount: output.status?.uncertainCount}
+            candidateTruncated: output.candidateTruncated,
+            status: {
+              overflow,
+              candidateOverflow: output.status?.candidateOverflow,
+              uncertainCount: output.status?.uncertainCount
+            }
           }
         }).getCommandNodes(graph)
       );
@@ -757,6 +790,18 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
             id: `${id}-overflow`,
             operation: OPERATION,
             view: output.status.overflow,
+            type: 'u32',
+            value: '0u',
+            componentCount: 1
+          })
+        );
+      }
+      if (output.status?.candidateOverflow) {
+        nodes.push(
+          createFillNode<Parameters>(graph, {
+            id: `${id}-candidate-overflow`,
+            operation: OPERATION,
+            view: output.status.candidateOverflow,
             type: 'u32',
             value: '0u',
             componentCount: 1

@@ -33,3 +33,17 @@ export type {
   GPUIsobandRingsProps,
   GPUIsobandRingsStatus
 } from './gpu-isoband-rings';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  CPU_ISOLINES_MAXIMUM_CELL_COUNT,
+  computeIsolinesOnCPU,
+  CPUIsolinesOperation
+} from './cpu-isolines-operation';
+export type {
+  CPUIsolinesInput,
+  CPUIsolinesOptions,
+  CPUIsolinesResult
+} from './cpu-isolines-operation';
+export {GPUIsolinesOperation} from './gpu-isolines-operation';
+export type {IsolinesOperationProps} from './gpu-isolines-operation';

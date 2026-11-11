@@ -1,8 +1,15 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-/** Spherical S2 boundary arithmetic. Integer identity helpers are supplied by dggs. @internal */
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
+
+/**
+ * Spherical S2 boundary arithmetic. Integer identity helpers are supplied by dggs. Includes
+ * `guardedAtan2` ({@link GUARDED_ATAN2_WGSL}), so a kernel that embeds this must not add it again.
+ * @internal
+ */
 export const S2_ANALYSIS_WGSL = /* wgsl */ `
+${GUARDED_ATAN2_WGSL}
 fn s2AnalysisVertex(cell: vec2u, slot: u32) -> vec3f {
   let coordinate = dggs_s2_get_ij(cell);
   let offset = vec2f(f32(select(0u, 1u, slot == 1u || slot == 2u)), f32(select(0u, 1u, slot >= 2u)));
@@ -11,6 +18,12 @@ fn s2AnalysisVertex(cell: vec2u, slot: u32) -> vec3f {
 }
 // atan2 with a zero (or negative zero) second argument returns minus half pi on some GPU
 // compilers, which made a cell 90 degrees from a face-center query look like it touched it.
+// On the headless test GPU atan2(y, -0.0) is -sign(y) * pi / 2 (atan2(y, +0.0) is correct), and a
+// polygon winding denominator can be -0.0 (FX-17). An exactly zero second argument therefore takes
+// the quadrant angle explicitly (zero when both arguments are zero); see guardedAtan2.
+fn s2AnalysisAtan2(y: f32, x: f32) -> f32 {
+  return guardedAtan2(y, x);
+}
 fn s2AnalysisAngle(first: vec3f, second: vec3f) -> f32 {
   let cosine = dot(first, second);
   return select(atan2(length(cross(first, second)), cosine), 1.5707963267948966, cosine == 0.0);

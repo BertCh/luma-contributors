@@ -18,7 +18,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getPairHistogramNodes, validatePairHistogramShape} from './pair-histogram';
 import {
@@ -177,10 +177,16 @@ export type GPURipleyDistanceFunctionsProps = {
  *   4 * radiusCount sub-slots and linear interpolation. Refine referenceGrid for accuracy.
  *   `G(r) = sum_{d <= r} weight / sum weight`. Weights are accumulated in 14-bit fixed point
  *   (relative error about 1e-4) and capped at 1024 times the window area ratio. A point with no
- *   neighbor within `maximumDistance` has an unknown `d`: if its border distance is at least
- *   `maximumDistance` it enters the denominator with `d = maximumDistance` (a lower bound on its
- *   weight, so G is biased slightly high), otherwise it is exactly censored. The estimate is
- *   exact when every point has a neighbor within `maximumDistance`.
+ *   neighbor within `maximumDistance` has an unknown `d`. If its border distance is below
+ *   `maximumDistance` it is exactly censored. Otherwise it enters the denominator with the
+ *   weight of `d = maximumDistance`, which is right in neither case: if the point is uncensored
+ *   (`d <= b`) its true weight is larger and G comes out too high; if it is censored (`d > b`)
+ *   its true weight is zero and G comes out too low (two such points beside one close pair give
+ *   0.44 where the estimator is 1). spatstat `han` is understood to divide by the cumulated
+ *   weight at its largest radius instead (not checked against the package here). The estimate is
+ *   exact when every point has a neighbor within
+ *   `maximumDistance`, so choose `maximumDistance` at least as large as the largest
+ *   nearest-neighbor distance when the Hanisch estimate matters.
  * - `J(r) = (1 - G(r)) / (1 - F(r))`, NaN where either function is undefined or F has
  *   zero survival. Survival probabilities are evaluated directly to avoid cancellation at one.
  * - Undefined results (`n < 2` for G, `n < 1` for F, zero reference count, an empty border set)
@@ -240,7 +246,7 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
       ['output.radii', output.radii]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length < radiusCount) {
           throw new Error(`${id} ${name} must hold radiusCount rows`);
         }
@@ -700,7 +706,7 @@ fn getReferencePrefix(channel: u32, last: u32) -> u32 {
   let mode = u32(parameters[parametersOffset + 5u] + 0.5);
   let border = mode == 1u;
   let maximumDistance = parameters[parametersOffset + 4u];
-  let valid = isFiniteFloat(parameters[parametersOffset]) && isFiniteFloat(maximumDistance) && maximumDistance > 0.0;
+  let valid = isFiniteValue(parameters[parametersOffset]) && isFiniteValue(maximumDistance) && maximumDistance > 0.0;
   var gDistribution = vec2f(nan);
   var fDistribution = vec2f(nan);
   if (valid && n >= 2.0) {
@@ -742,7 +748,7 @@ fn getReferencePrefix(channel: u32, last: u32) -> u32 {
   ${
     output.j
       ? `j[jOffset + index] = nan;
-  if (isFiniteFloat(gDistribution.y) && isFiniteFloat(fDistribution.y) && fDistribution.y > 0.0) {
+  if (isFiniteValue(gDistribution.y) && isFiniteValue(fDistribution.y) && fDistribution.y > 0.0) {
     j[jOffset + index] = gDistribution.y / fDistribution.y;
   }`
       : ''

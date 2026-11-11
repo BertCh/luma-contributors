@@ -207,6 +207,51 @@ it('GPULocationAllocation completes deterministic set covering', async () => {
   expect(result.status).toEqual([2, 0, 1, 0, 0, 0, 0]);
 });
 
+// Set covering covers rows, not weight (LSCP has no weights). Both cases are solved by hand.
+it.each([
+  ['dense', false],
+  ['sparse', true]
+] as const)('GPULocationAllocation set covering covers a zero-weight row (%s costs)', async (_name, sparse) => {
+  // Row 0 has weight 0 and only facility 1 reaches it; row 1 has weight 1 and only facility 0
+  // reaches it. The only cover is both facilities.
+  const result = await runAllocation(
+    'set-covering',
+    Float32Array.from([10, 1, 1, 10]),
+    2,
+    2,
+    5,
+    0,
+    Float32Array.from([0, 1]),
+    sparse
+  );
+  if (!result) return;
+  expect(result.selected).toEqual([1, 1]);
+  expect(result.assignments).toEqual([1, 0]);
+  expect(result.objective).toBe(2);
+  expect(result.status).toEqual([2, 0, 1, 0, 0, 0, 0]);
+});
+
+it.each([
+  ['dense', false],
+  ['sparse', true]
+] as const)('GPULocationAllocation set covering picks the facility that covers the most rows (%s costs)', async (_name, sparse) => {
+  // Facility 0 reaches row 0 alone (weight 5); facility 1 reaches rows 1, 2 and 3 (weight 0
+  // each). One facility is allowed: three rows beat one, and one row stays uncovered.
+  const result = await runAllocation(
+    'set-covering',
+    Float32Array.from([1, 10, 10, 1, 10, 1, 10, 1]),
+    2,
+    1,
+    5,
+    0,
+    Float32Array.from([5, 0, 0, 0]),
+    sparse
+  );
+  if (!result) return;
+  expect(result.selected).toEqual([0, 1]);
+  expect(result.status).toEqual([1, 1, 0, 0, 0, 0, 0]);
+});
+
 // Exact checks. The TSDoc promises the deterministic greedy heuristics (lowest facility row on
 // ties), not an integer-programming optimum, so each instance is checked against (a) a CPU copy of
 // the greedy rule, which must match bit for bit because the integer costs make every f32 sum exact,

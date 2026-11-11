@@ -85,6 +85,7 @@ type FixtureOptions = {
   mask?: Uint32Array;
   thresholds?: number[];
   maximumIterations?: number;
+  sweepAfterIteration?: number;
   maximumTieIterations?: number;
   frictionParameters?: number[];
   backLinks?: boolean;
@@ -206,6 +207,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
       sourceCount: sourceCount?.importToGraph(graph),
       sourceMask: maskBuffer ? view('mask', 'uint32', cellCount) : undefined,
       maximumIterations: options.maximumIterations,
+      sweepAfterIteration: options.sweepAfterIteration,
       maximumTieIterations: options.maximumTieIterations,
       costBreaks: thresholds?.importToGraph(graph),
       output: {
@@ -726,6 +728,74 @@ function createSpiralFriction(size: number): Float32Array {
   }
   return friction;
 }
+
+it('GPUCostDistance sweeps reach the Dijkstra fixpoint and report an iteration limit hit mid-sweep', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A 128 x 128 serpentine: sixteen corridors, each eight tiles long. Plain tiled passes move the
+  // front one tile per iteration; with sweeps from iteration 2 a pass carries it along a corridor.
+  const size = 128;
+  const friction = createSerpentineFriction(size);
+  // Seven iterations end inside the sweep cycle (and inside a gate group of four): the relaxation
+  // has not reached the far corridors, so the run must say so and publish no cost as final.
+  const truncated = createFixture(device, {
+    width: size,
+    height: size,
+    friction,
+    sources: [0],
+    sweepAfterIteration: 2,
+    maximumIterations: 7
+  });
+  const truncatedCompiled = await run(device, truncated);
+  expect(await readIterations(truncated)).toEqual({converged: 0, iterationCount: 7});
+  const truncatedCosts = await readCosts(truncated);
+  for (let cell = 0; cell < size * size; cell++) {
+    // Passable cells are unresolved (NaN), walls stay unreached.
+    if (Number.isNaN(friction[cell])) {
+      expect(truncatedCosts[cell]).toBe(Infinity);
+    } else if (!Number.isNaN(truncatedCosts[cell])) {
+      throw new Error(`cell ${cell} holds ${truncatedCosts[cell]} after a truncated run`);
+    }
+  }
+  truncatedCompiled.destroy();
+  destroyFixture(truncated);
+
+  // The same schedule with a sufficient budget stops at a round that changed nothing, and that
+  // state is the Dijkstra result (an independent oracle), so the gate did not stop early.
+  const swept = createFixture(device, {
+    width: size,
+    height: size,
+    friction,
+    sources: [0],
+    sweepAfterIteration: 2,
+    maximumIterations: 200
+  });
+  const sweptCompiled = await run(device, swept);
+  const sweptIterations = await readIterations(swept);
+  expect(sweptIterations.converged).toBe(1);
+  const oracle = computeCostDistance(getOracleOptions(swept, [{cell: 0, cost: 0}]));
+  expect(Number.isFinite(oracle[size * size - 1])).toBe(true);
+  expectCostsClose(await readCosts(swept), oracle);
+  sweptCompiled.destroy();
+  destroyFixture(swept);
+
+  // Plain tiled passes only (sweeps disabled): the same fixpoint, in more iterations.
+  const plain = createFixture(device, {
+    width: size,
+    height: size,
+    friction,
+    sources: [0],
+    sweepAfterIteration: 200,
+    maximumIterations: 200
+  });
+  const plainCompiled = await run(device, plain);
+  const plainIterations = await readIterations(plain);
+  expect(plainIterations.converged).toBe(1);
+  expectCostsClose(await readCosts(plain), oracle);
+  expect(sweptIterations.iterationCount).toBeLessThan(plainIterations.iterationCount);
+  plainCompiled.destroy();
+  destroyFixture(plain);
+}, 120000);
 
 for (const [name, createFriction] of [
   ['serpentine', createSerpentineFriction],

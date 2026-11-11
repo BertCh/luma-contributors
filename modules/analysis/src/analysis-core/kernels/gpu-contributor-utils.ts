@@ -198,15 +198,16 @@ export function validateGraphViewTopology(
 }
 
 /**
- * Throws unless `view` is one packed, uint32-aligned view of one of `formats`. Like the gpgpu
- * `validatePackedView` (same arguments), but a chunked `GraphVectorView` is rejected with a short
- * message instead of being read as one view.
+ * Throws unless `view` is one packed, uint32-aligned view of one of `formats`. Like the published
+ * `validatePackedView` from `@luma.gl/graph/gpu-core` (same arguments), but it also accepts a
+ * `GraphVectorView` argument and rejects a chunked vector with a short `must be one packed view`
+ * message before the published check runs.
  *
  * @param view View to check.
  * @param formats Accepted formats.
  * @param name Prop name prefixed with the contributor ID, for the message.
  */
-export function validatePackedView<Format extends GPUVectorFormat>(
+export function validateSinglePackedView<Format extends GPUVectorFormat>(
   view: GraphDataView | GraphVectorView,
   formats: readonly Format[],
   name: string
@@ -271,7 +272,7 @@ export const GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE = 134217728;
 /**
  * Largest element count `n` whose binding of `(n + extraElementCount) * bytesPerElement` bytes fits
  * the device's `maxStorageBufferBindingSize`. Contributors derive their documented maxima from it at
- * declaration (`getCommandNodes(graph)`, with `graph.device`), so a device created with larger
+ * declaration (in `getCommandNodes`, with `graph.device`), so a device created with larger
  * binding limits accepts larger inputs; a default device (128 MiB) gives the core values.
  *
  * @param device Device whose limit applies.
@@ -396,7 +397,7 @@ export function validateCompactOutput(id: string, output: GPUCompactOutput): voi
  *
  * Geospatial, raster, and projection operations in `@luma.gl/graph` schedule nodes directly
  * through `addToGraph(graph)`, while GPU Core contributors return them from
- * `getCommandNodes(graph)`. A contributor's `getCommandNodes(graph)` wraps such calls with this helper
+ * `getCommandNodes`. A contributor's `getCommandNodes` wraps such calls with this helper
  * so every contributor composes through `graph.add(contributor)` in declaration order. Transient resources
  * created by `addNodes` are still declared on `graph`.
  *
@@ -538,6 +539,21 @@ export function validateFiniteNumber(
   const float32Value = Math.fround(value);
   if (!Number.isFinite(float32Value) || float32Value < minimum || float32Value > maximum) {
     throw new Error(`${id} ${name} must be a finite number in [${minimum}, ${maximum}]`);
+  }
+}
+
+/**
+ * Throws unless `value` is finite and not zero after rounding to float32, which is the precision
+ * the kernel receives. For a signed step such as a raster cell size that a kernel divides by.
+ *
+ * @param id Contributor ID, for the message.
+ * @param name Prop name, for the message.
+ * @param value Value to check.
+ */
+export function validateNonZeroFiniteNumber(id: string, name: string, value: number): void {
+  const float32Value = Math.fround(value);
+  if (!Number.isFinite(float32Value) || float32Value === 0) {
+    throw new Error(`${id} ${name} must be a finite number other than 0`);
   }
 }
 

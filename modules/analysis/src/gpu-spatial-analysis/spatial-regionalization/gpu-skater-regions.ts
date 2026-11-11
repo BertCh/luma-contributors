@@ -10,6 +10,7 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {
   createWGSLDispatchGate,
   createWGSLKernelNode
@@ -20,7 +21,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -37,8 +38,9 @@ export const GPU_SKATER_MAXIMUM_COLUMNS = 16;
 /**
  * Largest `weights.neighbors` slot count (and row count) times `2 + columnCount` of
  * {@link GPUSkaterRegions} on `device`: the arc and region statistics tables hold `2 + columnCount`
- * float32 values per slot or row in one storage binding, so 33554432 on a default device (128 MiB
- * bindings). At 16 columns that is 1,864,135 slots.
+ * float32 values per slot or row (the size, one unused word, and a sum per column) in one storage
+ * binding, so 33554432 on a default device (128 MiB bindings). At 16 columns that is 1,864,135
+ * slots.
  *
  * @param device Device whose `maxStorageBufferBindingSize` applies.
  */
@@ -128,7 +130,8 @@ export type GPUSkaterRegionsProps = {
    * `columnCount` columns. Pass the tree's `standardizedValues` so cuts and tree share a metric.
    * That table is centered and scaled per column (population standard deviation), which also
    * keeps the f32 subtree-sum subtraction well conditioned: raw attributes with a large mean
-   * relative to their spread lose digits when a deep region's sums are subtracted.
+   * relative to their spread lose digits when a deep region's sums are subtracted (see "Ties and
+   * precision" on {@link GPUSkaterRegions} for the size of the error).
    */
   values: GraphDataView<'float32'>;
   /** Number of attribute columns. Defaults to 1; at most 16. */
@@ -138,7 +141,8 @@ export type GPUSkaterRegionsProps = {
    * `GPUWardRegions` and `GPUMaxPRegions` do with their `invalidCount`, SKATER makes no cut when
    * its `invalidCount` word is nonzero (the attribute table has non-finite entries): every tree
    * stays one region, `regionCount` is the tree count and every `cutEdges` entry is
-   * `GPU_SKATER_NO_CUT`.
+   * `GPU_SKATER_NO_CUT`. Without it, a region that holds a non-finite attribute has no finite
+   * cut gain and is never cut, while the other regions are cut as usual.
    */
   treeStatus?: GraphDataView<'uint32'>;
   /**
@@ -181,8 +185,10 @@ export type GPUSkaterRegionsOutput = {
  * regions that minimise within-region sum of squares (Assunção et al. 2006; PySAL `spopt` Skater).
  *
  * Each step evaluates every remaining tree edge as a cut in parallel, one thread per edge,
- * computing the SSD reduction `SSD(region) - SSD(side A) - SSD(side B)` from the side's size,
- * attribute sums and sum of squares, and applies the best candidate whose both sides keep at
+ * computing the SSD reduction `SSD(region) - SSD(side A) - SSD(side B)` in its direct form
+ * `nA nB / (nA + nB) |mean A - mean B|^2` (the between-side sum of squares, as `GPUWardRegions`
+ * writes its merge cost) from each side's size and attribute sums, and applies the best candidate
+ * whose both sides keep at
  * least `minimumRegionSize` rows. Cuts apply while the region count is below the target region
  * count, so a region-count slider re-runs the same compiled steps. Region `k` of the greedy
  * sequence is a prefix of the sequence for `k + 1`, as in SKATER.
@@ -197,8 +203,15 @@ export type GPUSkaterRegionsOutput = {
  * a deep region carry a few more f32 roundings than a direct walk (counts stay exact).
  *
  * **Ties and precision.** The best candidate is the maximum SSD reduction, ties to the lowest
- * edge slot, found with integer atomics so the choice is deterministic. Gains are f32; a CPU
- * oracle in f64 agrees except where two candidates' gains differ by less than f32 rounding.
+ * edge slot, found with integer atomics so the choice is deterministic. Gains are f32. The direct
+ * form has no cancellation of sums of squares, so a gain is as accurate as the two side means:
+ * the subtree and tree sums are walked with the exact rounding error of every addition
+ * (`getAdditionRoundingError`), so each is right to its last place, and each cut adds one more
+ * rounding to the sums it subtracts from. What remains is the last place of the region's attribute
+ * sum `S`, spread over the smaller side: a side mean is off by about `6e-8 |S| / n_side` per
+ * rounding, and a gain is reliable while `|mean A - mean B|` is well above that. Centered
+ * attributes keep `|S|` small, which is why the standardized table is the input to use. A CPU
+ * oracle in f64 agrees except where two candidates' gains differ by less than this.
  * `spopt` breaks ties by its own order and its stopping rule (it can return fewer regions than
  * requested when a floor binds) is reproduced here by leaving the region count below target.
  *
@@ -226,46 +239,46 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
     const {output} = props;
     validateCapacity(id, 'columnCount', columnCount, 1, GPU_SKATER_MAXIMUM_COLUMNS);
     validateCapacity(id, 'maximumRegionCount', props.maximumRegionCount, 2);
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rows * columnCount) {
       throw new Error(`${id} values length must equal rows * columnCount`);
     }
-    validatePackedView(props.treeEdgeFlags, ['uint32'], `${id} treeEdgeFlags`);
+    validateSinglePackedView(props.treeEdgeFlags, ['uint32'], `${id} treeEdgeFlags`);
     if (props.treeEdgeFlags.length !== props.weights.neighbors.length) {
       throw new Error(`${id} treeEdgeFlags length must equal the weights slot capacity`);
     }
-    validatePackedView(props.componentLabels, ['uint32'], `${id} componentLabels`);
+    validateSinglePackedView(props.componentLabels, ['uint32'], `${id} componentLabels`);
     if (props.componentLabels.length !== rows) {
       throw new Error(`${id} componentLabels length must equal the weights row count`);
     }
     if (props.treeStatus) {
-      validatePackedView(props.treeStatus, ['uint32'], `${id} treeStatus`);
+      validateSinglePackedView(props.treeStatus, ['uint32'], `${id} treeStatus`);
       if (props.treeStatus.length < GPU_MINIMUM_SPANNING_TREE_STATUS.length) {
         throw new Error(
           `${id} treeStatus must hold ${GPU_MINIMUM_SPANNING_TREE_STATUS.length} word`
         );
       }
     }
-    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     if (props.parameters.length < GPU_SKATER_REGIONS_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must hold ${GPU_SKATER_REGIONS_PARAMETER_LENGTH} words`);
     }
-    validatePackedView(output.labels, ['uint32'], `${id} output.labels`);
+    validateSinglePackedView(output.labels, ['uint32'], `${id} output.labels`);
     if (output.labels.length !== rows) {
       throw new Error(`${id} output.labels length must equal the weights row count`);
     }
     if (output.regionCount) {
-      validatePackedView(output.regionCount, ['uint32'], `${id} output.regionCount`);
+      validateSinglePackedView(output.regionCount, ['uint32'], `${id} output.regionCount`);
     }
     const stepCount = props.maximumRegionCount - 1;
     if (output.cutEdges) {
-      validatePackedView(output.cutEdges, ['uint32'], `${id} output.cutEdges`);
+      validateSinglePackedView(output.cutEdges, ['uint32'], `${id} output.cutEdges`);
       if (output.cutEdges.length < stepCount) {
         throw new Error(`${id} output.cutEdges must hold maximumRegionCount - 1 entries`);
       }
     }
     if (output.cutGains) {
-      validatePackedView(output.cutGains, ['float32'], `${id} output.cutGains`);
+      validateSinglePackedView(output.cutGains, ['float32'], `${id} output.cutGains`);
       if (output.cutGains.length < stepCount) {
         throw new Error(`${id} output.cutGains must hold maximumRegionCount - 1 entries`);
       }
@@ -412,9 +425,7 @@ fn getFirstLiveArc(row: u32) -> u32 {
 fn isInfoLive(info: u32) -> bool { return ((info >> 30u) & 1u) != 0u; }
 fn isInfoDown(info: u32) -> bool { return ((info >> 31u) & 1u) != 0u; }
 fn isInfoLiveFlag(flags: u32) -> bool { return (flags & 1u) != 0u; }
-fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
-  return squares - sumSquares / max(count, 1.0);
-}`;
+${ADDITION_ROUNDING_ERROR_WGSL}`;
     const declarations = constants;
     const tourDeclarations = `${constants}\n${tourFunctions}`;
     const infoDeclarations = `${constants}\n${infoFunctions}`;
@@ -651,12 +662,12 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
     return;
   }
   var count = 1.0;
-  var squares = 0.0;
   var sums: array<f32, ${columnCount}>;
+  // Rounding error of every addition into sums, so a sum over a whole tree is right to its last
+  // place (a plain serial float32 sum of n rows can be off by n / 2 last places).
+  var roundingErrors: array<f32, ${columnCount}>;
   for (var column = 0u; column < COLUMNS; column++) {
-    let value = values[valuesOffset + index * COLUMNS + column];
-    sums[column] = value;
-    squares += value * value;
+    sums[column] = values[valuesOffset + index * COLUMNS + column];
   }
   var head = NONE;
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
@@ -674,8 +685,9 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
         count += 1.0;
         for (var column = 0u; column < COLUMNS; column++) {
           let value = values[valuesOffset + row * COLUMNS + column];
-          sums[column] += value;
-          squares += value * value;
+          let next = sums[column] + value;
+          roundingErrors[column] += getAdditionRoundingError(sums[column], value, next);
+          sums[column] = next;
         }
       }
       arc = getInfoSuccessor(info);
@@ -686,9 +698,10 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
   }
   let base = regionStatsOffset + index * STRIDE;
   regionStats[base] = count;
-  regionStats[base + 1u] = squares;
+  // Word 1 is unused (it held the sum of squares the gain no longer needs); the stride is kept.
+  regionStats[base + 1u] = 0.0;
   for (var column = 0u; column < COLUMNS; column++) {
-    regionStats[base + 2u + column] = sums[column];
+    regionStats[base + 2u + column] = sums[column] + roundingErrors[column];
   }`
       }),
       // Statistics of the rows below every down arc of the initial forest, by walking the tour
@@ -713,12 +726,10 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
   let child = neighbors[neighborsOffset + index];
   let end = twin[twinOffset + index];
   var count = 1.0;
-  var squares = 0.0;
   var sums: array<f32, ${columnCount}>;
+  var roundingErrors: array<f32, ${columnCount}>;
   for (var column = 0u; column < COLUMNS; column++) {
-    let value = values[valuesOffset + child * COLUMNS + column];
-    sums[column] = value;
-    squares += value * value;
+    sums[column] = values[valuesOffset + child * COLUMNS + column];
   }
   var arc = getInfoSuccessor(startInfo);
   for (var guard = 0u; guard < 2u * ROWS && arc != end; guard++) {
@@ -728,17 +739,18 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
       count += 1.0;
       for (var column = 0u; column < COLUMNS; column++) {
         let value = values[valuesOffset + row * COLUMNS + column];
-        sums[column] += value;
-        squares += value * value;
+        let next = sums[column] + value;
+        roundingErrors[column] += getAdditionRoundingError(sums[column], value, next);
+        sums[column] = next;
       }
     }
     arc = getInfoSuccessor(info);
   }
   let base = arcStatsOffset + index * STRIDE;
   arcStats[base] = count;
-  arcStats[base + 1u] = squares;
+  arcStats[base + 1u] = 0.0;
   for (var column = 0u; column < COLUMNS; column++) {
-    arcStats[base + 2u + column] = sums[column];
+    arcStats[base + 2u + column] = sums[column] + roundingErrors[column];
   }`
       })
     );
@@ -775,7 +787,6 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
   let child = neighbors[neighborsOffset + index];
   let childBase = arcStatsOffset + index * STRIDE;
   let count = arcStats[childBase];
-  let squares = arcStats[childBase + 1u];
   let base = regionStatsOffset + labels[labelsOffset + child] * STRIDE;
   let regionCount = regionStats[base];
   let remainder = regionCount - count;
@@ -783,20 +794,23 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
   if (count < minimum || remainder < minimum) {
     return;
   }
-  var regionSumSquares = 0.0;
-  var childSumSquares = 0.0;
-  var remainderSumSquares = 0.0;
+  // SSD(region) - SSD(side A) - SSD(side B) in its direct form, the between-side sum of squares
+  // nA nB / (nA + nB) |mean A - mean B|^2 (the Ward increase). The three-term difference loses
+  // the gain below the last place of the region's sum of squares; this has no such cancellation.
+  var squaredDifference = 0.0;
   for (var column = 0u; column < COLUMNS; column++) {
     let regionSum = regionStats[base + 2u + column];
     let childSum = arcStats[childBase + 2u + column];
-    regionSumSquares += regionSum * regionSum;
-    childSumSquares += childSum * childSum;
-    let remainderSum = regionSum - childSum;
-    remainderSumSquares += remainderSum * remainderSum;
+    let difference = childSum / count - (regionSum - childSum) / remainder;
+    squaredDifference += difference * difference;
   }
-  let gain = getSsd(regionCount, regionStats[base + 1u], regionSumSquares)
-    - getSsd(count, squares, childSumSquares)
-    - getSsd(remainder, regionStats[base + 1u] - squares, remainderSumSquares);
+  // The division comes last so that small integer inputs give the exact gain.
+  let gain = count * remainder * squaredDifference / regionCount;
+  // A NaN or infinite gain (a non-finite attribute in the region, when no treeStatus stopped the
+  // run) is not a candidate: as a key it would outrank every finite gain.
+  if ((bitcast<u32>(gain) & 0x7fffffffu) >= 0x7f800000u) {
+    return;
+  }
   gainKey[gainKeyOffset + index] = bitcast<u32>(max(gain, 0.0)) + 1u;`
         }),
         createWGSLKernelNode<Parameters>(graph, {
@@ -875,9 +889,8 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
   let childBase = regionStatsOffset + child * STRIDE;
   let removedBase = arcStatsOffset + down * STRIDE;
   regionStats[childBase] = arcStats[removedBase];
-  regionStats[childBase + 1u] = arcStats[removedBase + 1u];
+  regionStats[childBase + 1u] = 0.0;
   regionStats[regionBase] = regionStats[regionBase] - arcStats[removedBase];
-  regionStats[regionBase + 1u] = regionStats[regionBase + 1u] - arcStats[removedBase + 1u];
   for (var column = 0u; column < COLUMNS; column++) {
     let sum = arcStats[removedBase + 2u + column];
     regionStats[childBase + 2u + column] = sum;

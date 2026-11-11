@@ -10,7 +10,6 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {assert} from '@luma.gl/core';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -20,7 +19,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPUInferenceAlternative,
@@ -205,7 +204,7 @@ export function getLocalStatisticSpec(
           };
     default:
       // The constructor rejects unknown statistics before any spec is resolved.
-      assert(false);
+      throw new Error(`local-permutation-test statistic ${String(statistic)} is not supported`);
   }
 }
 
@@ -671,15 +670,15 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
         : GPU_LOCAL_PERMUTATION_MAXIMUM_NEIGHBORS
     );
     validatePackedUint32View(props.output.exceedances, `${id} exceedances`);
-    validatePackedView(props.output.pseudoPValues, ['float32'], `${id} pseudoPValues`);
+    validateSinglePackedView(props.output.pseudoPValues, ['float32'], `${id} pseudoPValues`);
     if (props.output.observed) {
-      validatePackedView(props.output.observed, ['float32'], `${id} observed`);
+      validateSinglePackedView(props.output.observed, ['float32'], `${id} observed`);
     }
     if (props.output.significant) {
       validatePackedUint32View(props.output.significant, `${id} significant`);
     }
     if (props.output.adjustedPValues) {
-      validatePackedView(props.output.adjustedPValues, ['float32'], `${id} adjustedPValues`);
+      validateSinglePackedView(props.output.adjustedPValues, ['float32'], `${id} adjustedPValues`);
     }
     for (const [name, view] of [
       ['exceedances', props.output.exceedances],

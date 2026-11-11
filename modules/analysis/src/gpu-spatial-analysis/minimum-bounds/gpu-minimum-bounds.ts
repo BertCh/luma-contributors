@@ -21,9 +21,10 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
+import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
 import {GPUGroupConvexHull} from '../group-geometry/index';
 
 const OPERATION = 'GPUMinimumBounds';
@@ -178,7 +179,7 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -187,7 +188,7 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
       throw new Error(`${id} supports fewer than 2^24 rows`);
     }
     if (!isPolygonMinimumBoundsInput(props)) {
-      validatePackedView(props.labels, ['uint32'], `${id} labels`);
+      validateSinglePackedView(props.labels, ['uint32'], `${id} labels`);
       if (props.labels.length !== rows) {
         throw new Error(`${id} labels length must equal positions length`);
       }
@@ -195,7 +196,7 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
       this.groupCount = props.groupCount;
     } else {
       for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
-        validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(props[name], ['uint32'], `${id} ${name}`);
         if (props[name].length < 2) {
           throw new Error(`${id} ${name} must contain at least two rows`);
         }
@@ -219,7 +220,7 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedView(view, formats, `${id} output.${name}`);
+      validateSinglePackedView(view, formats, `${id} output.${name}`);
       if (view.length < length) {
         throw new Error(`${id} output.${name} must hold at least ${length} rows`);
       }
@@ -530,9 +531,10 @@ fn findMaximum(begin: u32, count: u32, anchor: vec2<f32>, axis: vec2<f32>) -> u3
   for (var slot = 0u; slot < count; slot++) {
     order[orderOffset + begin + slot] = slot;
   }
-  // Deterministic Fisher-Yates shuffle keyed by group and position.
+  // Deterministic Fisher-Yates shuffle: one Philox block per (group, slot). The circle does not
+  // depend on the order in exact arithmetic; the shuffle only bounds the expected running time.
   for (var slot = count - 1u; slot > 0u; slot--) {
-    let pick = hashPair(index, slot) % (slot + 1u);
+    let pick = philox4x32(vec4<u32>(index, slot, 0u, 0u), vec2<u32>(0u, CIRCLE_SHUFFLE_PURPOSE)).x % (slot + 1u);
     let held = order[orderOffset + begin + slot];
     order[orderOffset + begin + slot] = order[orderOffset + begin + pick];
     order[orderOffset + begin + pick] = held;
@@ -573,11 +575,8 @@ fn findMaximum(begin: u32, count: u32, anchor: vec2<f32>, axis: vec2<f32>) -> u3
   circles[circlesOffset + index * 3u + 1u] = anchor.y + center.y;
   circles[circlesOffset + index * 3u + 2u] = sqrt(coverSquared);`,
           `${declarations}
-fn hashPair(a: u32, b: u32) -> u32 {
-  var state = a * 747796405u + b * 2891336453u + 2891336453u;
-  let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-  return (word >> 22u) ^ word;
-}
+${PHILOX_WGSL}
+const CIRCLE_SHUFFLE_PURPOSE: u32 = ${PHILOX_PURPOSES.minimumBoundsCircleShuffle.id}u;
 fn isOutside(point: vec2<f32>, center: vec2<f32>, radiusSquared: f32) -> bool {
   let delta = point - center;
   return dot(delta, delta) > radiusSquared * (1.0 + 4.0e-6);

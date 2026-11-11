@@ -211,7 +211,11 @@ export function getDefaultSpatialSort(featureCount: number): boolean {
 /** Features reduced by one thread of the scene-extent tile pass. */
 const SCENE_BOUNDS_TILE_ROWS = 256;
 
-/** Space-filling curve that orders features before the BVH build. @internal */
+/**
+ * Space-filling curve that orders features before the BVH build: the type of the experimental
+ * `spatialSortCurve` prop of `GPUPointInPolygonJoin`, `GPUNearestFeatureJoin` and
+ * `GPUBufferSelection`. `'hilbert'` is the default; `'morton'` is Z-order. Results are identical.
+ */
 export type SpatialSortCurve = 'morton' | 'hilbert';
 
 /**
@@ -713,8 +717,11 @@ export function getChunkNodeId(
  * first part of its candidates, and every later row with at least one candidate loses all of them.
  * Rows before that row are untouched. `candidateTruncated[row]` is 1 for exactly those rows (it
  * covers `rowCount` rows and is fully written), and `candidateOverflow` is 1 when the unclamped
- * total in `total[0]` exceeds the capacity. A BVH overflow is not part of either: it drops leaves,
- * not candidate slots.
+ * total in `total[0]` exceeds the capacity.
+ *
+ * With `bvhOverflow`, a BVH leaf overflow (more features than `leafCapacity`) also counts: the
+ * build drops the features past the leaf slots, and a dropped feature may be a candidate of any
+ * row, so every row is flagged in `candidateTruncated` and `candidateOverflow` is 1.
  *
  * @internal
  */
@@ -731,19 +738,26 @@ export function getCandidateTruncationNodes<Parameters>(
     total: GraphDataView<'uint32'>;
     candidateTruncated?: GraphDataView<'uint32'>;
     candidateOverflow?: GraphDataView<'uint32'>;
+    /** Optional one-row BVH overflow flag; when nonzero every row is incomplete. */
+    bvhOverflow?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
   const declarations = `const CANDIDATE_CAPACITY: u32 = ${props.candidateCapacity}u;`;
+  const bvhBindings: WGSLKernelBinding[] = props.bvhOverflow
+    ? [{name: 'bvhOverflow', view: props.bvhOverflow, type: 'u32', access: 'read'}]
+    : [];
+  const leavesLost = props.bvhOverflow ? 'bvhOverflow[bvhOverflowOffset] != 0u' : 'false';
   if (props.candidateTruncated) {
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${props.id}-candidate-truncated`,
         operation: props.operation,
-        variant: 'candidate-truncated',
+        variant: props.bvhOverflow ? 'candidate-truncated-bvh' : 'candidate-truncated',
         bindings: [
           {name: 'counts', view: props.counts, type: 'u32', access: 'read'},
           {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
+          ...bvhBindings,
           {
             name: 'candidateTruncated',
             view: props.candidateTruncated,
@@ -757,7 +771,7 @@ export function getCandidateTruncationNodes<Parameters>(
         body: `let count = counts[countsOffset + index];
   let offset = offsets[offsetsOffset + index];
   candidateTruncated[candidateTruncatedOffset + index] =
-    select(0u, 1u, count > 0u && (offset >= CANDIDATE_CAPACITY || count > CANDIDATE_CAPACITY - offset));`
+    select(0u, 1u, ${leavesLost} || (count > 0u && (offset >= CANDIDATE_CAPACITY || count > CANDIDATE_CAPACITY - offset)));`
       })
     );
   }
@@ -766,9 +780,10 @@ export function getCandidateTruncationNodes<Parameters>(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${props.id}-candidate-overflow`,
         operation: props.operation,
-        variant: 'candidate-overflow',
+        variant: props.bvhOverflow ? 'candidate-overflow-bvh' : 'candidate-overflow',
         bindings: [
           {name: 'total', view: props.total, type: 'u32', access: 'read'},
+          ...bvhBindings,
           {
             name: 'candidateOverflow',
             view: props.candidateOverflow,
@@ -778,11 +793,69 @@ export function getCandidateTruncationNodes<Parameters>(
         ],
         invocationCount: 1,
         declarations,
-        body: 'candidateOverflow[candidateOverflowOffset] = select(0u, 1u, total[totalOffset] > CANDIDATE_CAPACITY);'
+        body: `candidateOverflow[candidateOverflowOffset] = select(0u, 1u, ${leavesLost} || total[totalOffset] > CANDIDATE_CAPACITY);`
       })
     );
   }
   return nodes;
+}
+
+/**
+ * Adds the candidate status of a join whose only intermediate capacity is the BVH leaf capacity
+ * (an exact traversal with no candidate table, such as the nearest-neighbor walk). A BVH overflow
+ * drops the features past the leaf slots, and a dropped feature may be the answer of any row, so
+ * `candidateTruncated[row]` (all `rowCount` rows) and `candidateOverflow` are both the BVH
+ * overflow flag. Nothing is added when neither output is given.
+ *
+ * @internal
+ */
+export function getLeafOverflowStatusNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    rowCount: number;
+    bvhOverflow: GraphDataView<'uint32'>;
+    candidateTruncated?: GraphDataView<'uint32'>;
+    candidateOverflow?: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters>[] {
+  const {candidateTruncated, candidateOverflow} = props;
+  if (!candidateTruncated && !candidateOverflow) {
+    return [];
+  }
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'bvhOverflow', view: props.bvhOverflow, type: 'u32', access: 'read'}
+  ];
+  if (candidateTruncated) {
+    bindings.push({
+      name: 'candidateTruncated',
+      view: candidateTruncated,
+      type: 'u32',
+      access: 'read_write'
+    });
+  }
+  if (candidateOverflow) {
+    bindings.push({
+      name: 'candidateOverflow',
+      view: candidateOverflow,
+      type: 'u32',
+      access: 'read_write'
+    });
+  }
+  return [
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${props.id}-leaf-overflow-status`,
+      operation: props.operation,
+      variant: `leaf-overflow-status-${candidateTruncated ? 'rows' : 'none'}-${candidateOverflow ? 'flag' : 'none'}`,
+      bindings,
+      invocationCount: Math.max(props.rowCount, 1),
+      declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;`,
+      body: `let leavesLost = select(0u, 1u, bvhOverflow[bvhOverflowOffset] != 0u);
+  ${candidateTruncated ? 'if (index < ROW_COUNT) { candidateTruncated[candidateTruncatedOffset + index] = leavesLost; }' : ''}
+  ${candidateOverflow ? 'if (index == 0u) { candidateOverflow[candidateOverflowOffset] = leavesLost; }' : ''}`
+    })
+  ];
 }
 
 /**
@@ -833,6 +906,11 @@ export function getSpatialJoinProbeNodes<Parameters>(
     candidateTruncated?: GraphDataView<'uint32'>;
     /** Optional one-row flag, 1 when the candidate total exceeded `candidateCapacity`. */
     candidateOverflow?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row BVH overflow flag. When it is nonzero every row is flagged in
+     * `candidateTruncated` and `candidateOverflow` is 1 (see {@link getCandidateTruncationNodes}).
+     */
+    bvhOverflow?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -1071,7 +1149,8 @@ ${NODE_OVERLAPS_WGSL}`;
       candidateCapacity: props.candidateCapacity,
       total: props.state,
       candidateTruncated: props.candidateTruncated,
-      candidateOverflow: props.candidateOverflow
+      candidateOverflow: props.candidateOverflow,
+      bvhOverflow: props.bvhOverflow
     })
   );
   return nodes;

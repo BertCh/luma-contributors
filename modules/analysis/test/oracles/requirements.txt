@@ -66,8 +66,11 @@ POT==0.9.7.post1  # stm09-sinkhorn-pot.py (MIT); needs numpy and scipy only
 xclim==1.0.0
 # rts06-climate-indices-xclim.py records xclim 1.0.0 with numpy 2.5.4, scipy 1.18.1, pandas 3.1.1, xarray 2026.9.0;
 # numba and dask were stubbed (no compiled wheels here). Install xclim with its full dependencies when regenerating.
-# rts04-change-monitoring-numpy.py and rts07-snapshot-eof-numpy.py record numpy 2.5.4 and scipy 1.18.1 on Python 3.14;
-# pyxccd and xeofs were not run (see the generators).
+# rts04-change-monitoring-numpy.py records the pinned set above (Python 3.14.8, numpy 2.5.4, scipy 1.16.3; regenerated
+# 2026-11-11). rts07-snapshot-eof-numpy.py records numpy 2.5.4 and scipy 1.18.1 on Python 3.14; xeofs was not run.
+# pyxccd has no wheel for CPython 3.14, so it is not in this file. rts04-cold-pyxccd.py ran pyxccd 1.1.0 `cold_detect`
+# in its own environment (CPython 3.12.13, numpy 2.5.4, scipy 1.18.1, PyYAML 6.0.3); its fixture is
+# fixtures/rts04-cold-pyxccd.json.
 
 # Generators with an older recorded set. These scripts assert the exact versions and need a
 # separate environment (raster-round-two.py, nested-validation-oracle.py, urban-ecology.py and the

@@ -28,7 +28,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GEOGRAPHIC_DISTRIBUTION_MAXIMUM_ROWS,
@@ -216,7 +216,7 @@ export type GPUGeographicDistributionProps = {
  *   `Sxy = sum(w dx dy) / W` with `d = p - M`, from two passes (no `E[x^2] - E[x]^2`).
  * - Standard deviational ellipse: principal variances `lambdaMax/Min = (Sxx + Syy) / 2 +/-
  *   sqrt(((Sxx - Syy) / 2)^2 + Sxy^2)`; semi-axes `standardDeviations * scale * sqrt(lambda)`
- *   with `scale = sqrt(2)` for the `'arcgis'` convention (ArcGIS Directional Distribution) and
+ *   with `scale = sqrt(2)` for the `'root-two'` convention (ArcGIS Directional Distribution) and
  *   `1` for `'standard'`.
  * - Axis naming follows ArcGIS: the ellipse "y" axis is the long axis and the "x" axis is the
  *   short axis, so `sigmaY >= sigmaX`. ArcGIS reports the clockwise-from-north angle `theta` of
@@ -294,7 +294,7 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
       SPATIAL_CONTEXT_SUPPORT
     );
     const {output} = props;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -303,16 +303,16 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
       throw new Error(`${id} supports fewer than 2^24 rows`);
     }
     if (props.weights) {
-      validatePackedView(props.weights, ['float32'], `${id} weights`);
+      validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
     }
     if (props.groupIds) {
-      validatePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
+      validateSinglePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
     }
     if (props.lineEnds) {
-      validatePackedView(props.lineEnds, ['float32x2'], `${id} lineEnds`);
+      validateSinglePackedView(props.lineEnds, ['float32x2'], `${id} lineEnds`);
     }
     for (const [name, view] of [
       ['weights', props.weights],
@@ -324,7 +324,7 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} length must equal positions length`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} float32 values`
@@ -381,7 +381,7 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
         continue;
       }
       outputCount++;
-      validatePackedView(view, formats, `${id} output.${name}`);
+      validateSinglePackedView(view, formats, `${id} output.${name}`);
       if (view.length < length) {
         throw new Error(`${id} output.${name} must hold at least ${length} rows`);
       }

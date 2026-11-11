@@ -21,9 +21,19 @@ Assigns each county's 2023 unemployment rate to one of five quantile classes usi
 
 ::lens{scenario=gpu-spatial-analysis.class-assignment rung=result caption="437 Midwest counties coloured by quantile class of 2023 unemployment; higher class means higher rate."}
 
-`new GPUClassAssignment({values, breaks, classCount, mask, output})` assigns each value the number of
+`new GPUClassAssignment({values, breaks, classCount, mask, intervalClosure, output})` assigns each value the number of
 inner edges `e[1..k-1]` that are `<=` the value, clamped, the same rule as `GPUClassBreaks.classCounts`.
-NaN and masked rows get `GPU_CLASS_ASSIGNMENT_NO_CLASS` (`0xffffffff`). Run one `GPUClassBreaks` over the
+NaN and masked rows get `GPU_CLASS_ASSIGNMENT_NO_CLASS` (`0xffffffff`).
+
+`intervalClosure` (compile-time, default `'left'`) decides the class of a value exactly equal to an inner edge.
+`'left'` treats an edge as the lower edge of the class above it (classes `[e[j], e[j+1])`): the value goes to the
+upper class. Use it for `'natural-breaks'` edges, each of which is the smallest value of its class, and for d3 scales.
+`'right'` treats an edge as the upper bound of the class below it (classes `(e[j], e[j+1]]`, the minimum in the
+first class): the count is of inner edges strictly `<` the value. This is the rule of mapclassify and giddy, so pass
+`'right'` with `'quantile'`, `'equal-interval'`, `'standard-deviation'`, `'head-tail'` or `'box-plot'` breaks when the
+classes or transition counts must equal theirs. The two differ only for rows equal to an edge, which quantile breaks
+produce whenever the data are tied at the quantile. `GPUSpatialMarkov` has the same choice for its lag classes as
+`lagIntervalClosure`. Run one `GPUClassBreaks` over the
 pooled `n * T` column and assign every period with its breaks to get one legend for a time slider.
 
 #### How it computes
@@ -163,7 +173,9 @@ graph.add(new GPUTransitionMatrix({classes, periodCount, classCount: 5, output: 
   `['quantile']`) and an `output` of `counts`, `lagBreaks`, `lagClassCount` and the optional
   `probabilities`, `rowTotals`, `ignored`, `lagValues` and `lagClasses`. For each period it runs `GPUSpatialLag` (row-standardized by default,
   `normalize`), classifies the lag with one pooled `GPUClassBreaks`, assigns the lag classes, and builds a
-  transition matrix conditioned on the lag class at the start period. `counts` is
+  transition matrix conditioned on the lag class at the start period. A lag exactly equal to a lag edge goes to
+  the upper lag class by default; optional `lagIntervalClosure: 'right'` keeps it in the lower one, as giddy
+  does (mapclassify bins are right-closed). `counts` is
   `maximumLagClassCount x K x K`; slices past the produced `lagClassCount` stay zero. The `output` also
   takes the `GPUTransitionMatrix` diagnostics (`homogeneity`, `steadyStates`, `stateSparsity`,
   `status.converged`) and `minimumTransitions`: `homogeneity` is giddy's `Q`, `Q_p_value`, `LR`,
@@ -554,7 +566,9 @@ Windows and defaults:
   50% of the study period, `windowShape` `'circle'`, `rateDirection` `'high'`, `maximumClusters` 8.
 
 Outputs: the most likely cluster plus greedy, non-overlapping secondary clusters (no shared zone, time
-ignored, same maximum distribution, as SaTScan), all in the caller-owned `output` bag:
+ignored, same maximum distribution, as SaTScan), all in the caller-owned `output` bag. The candidates
+for a secondary cluster are the single best window of each center, as in SaTScan: a center whose best
+window overlaps an earlier cluster is dropped, and its smaller windows are not reconsidered.
 `output.clusterIndices` (`GPU_SPATIAL_SCAN_STATISTIC_CLUSTER_INDEX`) and `output.clusterStatistics`
 (`GPU_SPATIAL_SCAN_STATISTIC_CLUSTER`: LLR, observed, expected, p, radius, ratio,
 `truncatedByZoneCap`); `output.statistics` (the observed maximum then the maximum of every Monte Carlo

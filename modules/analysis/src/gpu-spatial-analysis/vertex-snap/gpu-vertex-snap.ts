@@ -12,7 +12,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
@@ -155,8 +155,8 @@ export class GPUVertexSnap implements GPUCommandNodeProducer {
     );
     this.props = props;
     const {id} = this;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.referencePositions, ['float32x2'], `${id} referencePositions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.referencePositions, ['float32x2'], `${id} referencePositions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
@@ -173,13 +173,13 @@ export class GPUVertexSnap implements GPUCommandNodeProducer {
         throw new Error(`${id} referenceOffsets must have as many rows as featureOffsets`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_VERTEX_SNAP_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_VERTEX_SNAP_PARAMETER_LENGTH} float32 values`
       );
     }
-    validatePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
     if (props.output.positions.length !== props.positions.length) {
       throw new Error(`${id} output.positions must hold ${props.positions.length} rows`);
     }

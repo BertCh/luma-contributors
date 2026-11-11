@@ -106,6 +106,8 @@ export type OverlayReadout = {
   boundaryRequiredCount: number;
   boundaryOverflow: number;
   nodedSegmentRequiredCount: number;
+  /** `status.ringCount` (current implementation only; otherwise -1). */
+  ringCount: number;
 };
 
 /** Sizes a repeat run from complete GPU counts; uncertain/candidate-truncated plans are refused. */
@@ -176,17 +178,24 @@ export function prepareOverlay(
   const featureOffsets = output('feature-offsets', 'uint32', capacity.rings + 1);
   const polygonOffsets = output('polygon-offsets', 'uint32', capacity.rings + 1);
   const ringOffsets = output('ring-offsets', 'uint32', capacity.rings + 1);
-  const sourceIds = output('source-ids', 'uint32', capacity.rings);
   const scalar = (suffix: string) => output(suffix, 'uint32', 1);
   const count = scalar('count');
-  const requiredCount = scalar('required-count');
   const overflow = scalar('overflow');
   const candidateOverflow = scalar('candidate-overflow');
   const nodedSegmentRequiredCount = scalar('noded-segment-required-count');
+  const ringCountStatus = scalar('ring-count');
+  const requiredRingCountStatus = scalar('required-ring-count');
   const boundaryCount = scalar('boundary-count');
   const boundaryRequired = scalar('boundary-required');
   const boundaryOverflow = scalar('boundary-overflow');
   const boundaryCandidateOverflow = scalar('boundary-candidate-overflow');
+  const geometry = {
+    kind: 'polygons' as const,
+    positions: positions.view,
+    featureOffsets: featureOffsets.view,
+    polygonOffsets: polygonOffsets.view,
+    ringOffsets: ringOffsets.view
+  };
   const overlayProps = {
     left: polygons('left', props.left),
     right: props.right && polygons('right', props.right),
@@ -195,23 +204,6 @@ export function prepareOverlay(
     capacity: {intersections: capacity.intersections, nodedSegments: capacity.nodedSegments},
     vertexTolerance: props.vertexTolerance,
     output: {
-      geometry: {
-        kind: 'polygons' as const,
-        positions: positions.view,
-        featureOffsets: featureOffsets.view,
-        polygonOffsets: polygonOffsets.view,
-        ringOffsets: ringOffsets.view,
-        sourceIds: sourceIds.view
-      },
-      status: {
-        count: count.view,
-        requiredCount: requiredCount.view,
-        overflow: overflow.view,
-        candidateOverflow: candidateOverflow.view,
-        ...(props.implementation === 'current'
-          ? {nodedSegmentRequiredCount: nodedSegmentRequiredCount.view}
-          : {})
-      },
       boundary: {
         endpoints: output('boundary', 'float32x4', capacity.boundary).view,
         operandIds: output('boundary-operands', 'uint32', capacity.boundary).view,
@@ -225,10 +217,39 @@ export function prepareOverlay(
       }
     }
   };
+  const status = {
+    count: count.view,
+    overflow: overflow.view,
+    candidateOverflow: candidateOverflow.view
+  };
+  // The frozen legacy overlay still writes the output row index and the ring requirement under
+  // `geometry.sourceIds` and `status.requiredCount`; the current one has `status.requiredRingCount`.
   graph.add(
     props.implementation === 'legacy'
-      ? new LegacyGPUPolygonOverlay(overlayProps)
-      : new GPUPolygonOverlay(overlayProps)
+      ? new LegacyGPUPolygonOverlay({
+          ...overlayProps,
+          output: {
+            ...overlayProps.output,
+            geometry: {
+              ...geometry,
+              sourceIds: output('source-ids', 'uint32', capacity.rings).view
+            },
+            status: {...status, requiredCount: requiredRingCountStatus.view}
+          }
+        })
+      : new GPUPolygonOverlay({
+          ...overlayProps,
+          output: {
+            ...overlayProps.output,
+            geometry,
+            status: {
+              ...status,
+              nodedSegmentRequiredCount: nodedSegmentRequiredCount.view,
+              ringCount: ringCountStatus.view,
+              requiredRingCount: requiredRingCountStatus.view
+            }
+          }
+        })
   );
   const compileStart = performance.now();
   const compiled = graph.compile();
@@ -248,13 +269,14 @@ export function prepareOverlay(
       const readout: OverlayReadout = {
         rings: [],
         featureCount,
-        requiredRingCount: await scalarValue(requiredCount),
+        requiredRingCount: await scalarValue(requiredRingCountStatus),
         overflow: await scalarValue(overflow),
         candidateOverflow: await scalarValue(candidateOverflow),
         boundaryCount: await scalarValue(boundaryCount),
         boundaryRequiredCount: await scalarValue(boundaryRequired),
         boundaryOverflow: await scalarValue(boundaryOverflow),
-        nodedSegmentRequiredCount: await scalarValue(nodedSegmentRequiredCount)
+        nodedSegmentRequiredCount: await scalarValue(nodedSegmentRequiredCount),
+        ringCount: props.implementation === 'current' ? await scalarValue(ringCountStatus) : -1
       };
       if (featureCount === 0) {
         return readout;

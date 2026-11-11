@@ -55,7 +55,9 @@ export const GPU_TEXTURE_SHADING_PARAMETER_LENGTH = 12;
 export type GPUTextureShadingSettings = {
   /**
    * Fractional Laplacian order `alpha` (Leland Brown's "detail"): band `k` gets weight
-   * `2^(-k * detail)`. 0 weighs every band equally; 1 approaches a Laplacian. Defaults to 0.5.
+   * `2^(-k * detail)`, which approximates the frequency response `|f|^detail`. 0 weighs every
+   * band equally; 1 is the half Laplacian `|f|`; 2 approaches a Laplacian, whose response is
+   * `|f|^2`. Defaults to 0.5.
    */
   detail?: number;
   /** Output multiplier. Defaults to 1. */
@@ -531,7 +533,7 @@ fn getBlurred(numerator: f32, denominator: f32) -> f32 {
         declarations: TERRAIN_ILLUMINATION_WGSL_CONSTANTS,
         body: `let value = settings[settingsOffset] * accumulator[accumulatorOffset + index];
   let isValid = elevationValidity[elevationValidityOffset + index] != 0u && isFiniteValue(value);
-  ${target ? 'textureShade[textureShadeOffset + index] = select(getNaN(index), value, isValid);' : ''}
+  ${target ? 'textureShade[textureShadeOffset + index] = select(getQuietNaN(index), value, isValid);' : ''}
   ${output.outputValidity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
       })
     );

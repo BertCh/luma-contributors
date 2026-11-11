@@ -114,6 +114,29 @@ it('packs the parameter layout and rejects invalid settings', () => {
   ).toThrow(/target must hold 14/);
 });
 
+it('packs one slice without a time window (math correctness review, interpolation-density-07)', () => {
+  // `sliceCount` is documented as "at least 1". The default window of one slice is the instant
+  // of that slice; the packer used to reject it as unordered, also when the window is ignored.
+  const base = {bandwidth: 0.5, temporalBandwidth: 2, firstSliceTime: 1, sliceInterval: 3};
+  const values = getGPUSpaceTimeKernelDensityParameterValues(base, GRID, 1);
+  expect(Array.from(values.slice(9))).toEqual([2, 1, 3, 1, 1]);
+  // An explicit window still has to have a length, for one slice as for many.
+  expect(() =>
+    getGPUSpaceTimeKernelDensityParameterValues({...base, timeWindow: [1, 1]}, GRID, 1)
+  ).toThrow(/start < end/);
+  expect(
+    Array.from(
+      getGPUSpaceTimeKernelDensityParameterValues({...base, timeWindow: [0, 2]}, GRID, 1).slice(12)
+    )
+  ).toEqual([0, 2]);
+  // The slice count itself is still checked.
+  for (const sliceCount of [0, -1, 1.5, Number.NaN]) {
+    expect(() => getGPUSpaceTimeKernelDensityParameterValues(base, GRID, sliceCount)).toThrow(
+      /sliceCount/
+    );
+  }
+});
+
 function createDensity(overrides: Record<string, unknown> = {}, rows = 8, sliceCount = 5) {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);

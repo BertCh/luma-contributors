@@ -377,6 +377,16 @@ export type TerrainHorizonSweepKernelProps = Omit<TerrainHorizonSweepNodeProps, 
  * Builds the exact upper-hull sweep kernel for one direction: the horizon angle of every pixel
  * along one digital line family, in amortised O(1) per pixel.
  *
+ * "Exact" describes the search, not the geometry: the kernel returns exactly the maximum over
+ * the samples of its sampling model. The model is nearest-pixel sampling of the ray. Sample `k`
+ * ahead of a pixel takes the elevation of a pixel centre on the digital line and the distance
+ * `k * hypot(1, slope)` cells along the ideal line, not the distance to that centre. The digital
+ * line stays within half a pixel of its own ideal line, but its lateral offset from the ray
+ * through a given pixel's centre is the difference of two such roundings and can approach one
+ * pixel (0.45 px at line slope 0.5, 0.86 px at slope 0.3). A sample one cell ahead that is 10 m
+ * higher on 10 m cells reads 41.8 degrees at line slope 0.5, where centre-to-centre geometry
+ * gives 45.0 (side neighbour) or 35.3 (diagonal neighbour).
+ *
  * ## Algorithm (Stewart-style hull pointers)
  *
  * Each invocation owns one digital line and walks its pixels from the far ("ahead") end back
@@ -565,7 +575,7 @@ ${
     if (next != NONE) {
       firstAhead = select(hull[hullOffset + next], next, isValidPixel(next));
     }
-    var horizonAngle = getNaN(pixel);
+    var horizonAngle = getQuietNaN(pixel);
     if (!isValidPixel(pixel)) {
       hull[hullOffset + pixel] = firstAhead;
     } else {

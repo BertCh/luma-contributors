@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -10,6 +11,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {TIME_WORDS_WGSL} from '../../dataframe-analysis/time-window-filter/time-words';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
+import {ADDITION_ROUNDING_ERROR_WGSL} from '../line-segmentize/line-segmentize-kernels';
 import {GPU_TRAJECTORY_PLAYHEAD_STATUS} from './trajectory-playhead-parameters';
 
 const PLAYHEAD_OPERATION = 'GPUTrajectoryPlayhead';
@@ -70,9 +72,11 @@ fn getSegmentLength(a: vec2<f32>, b: vec2<f32>) -> f32 {
   return length(b - a);
 }
 
+${GUARDED_ATAN2_WGSL}
 fn getSegmentHeading(a: vec2<f32>, b: vec2<f32>) -> f32 {
   let delta = b - a;
-  return select(0.0, atan2(delta.y, delta.x), delta.x != 0.0 || delta.y != 0.0);
+  // delta.x is -0.0 for a due north or south step from x = +0 to x = -0.
+  return select(0.0, guardedAtan2(delta.y, delta.x), delta.x != 0.0 || delta.y != 0.0);
 }
 `;
   }
@@ -96,8 +100,10 @@ fn getSegmentLength(a: vec2<f32>, b: vec2<f32>) -> f32 {
 fn getSegmentHeading(a: vec2<f32>, b: vec2<f32>) -> f32 {
   // Planar convention (counterclockwise from east) of the initial bearing: pi / 2 - bearing, wrapped.
   let bearing = geodesicInitialBearingDegrees(a, b) * GEODESIC_DEGREES_TO_RADIANS;
-  return select(0.0, atan2(cos(bearing), sin(bearing)), geodesicCentralAngle(a, b) > 0.0);
+  // sin(bearing) is -0.0 for a bearing of -0.0 (due north with a longitude step of -0.0).
+  return select(0.0, guardedAtan2(cos(bearing), sin(bearing)), geodesicCentralAngle(a, b) > 0.0);
 }
+${GUARDED_ATAN2_WGSL}
 `;
 }
 
@@ -501,8 +507,9 @@ export type TrajectoryArcLengthProps = {
 };
 
 /**
- * Builds the per-track cumulative planar path length, summed sequentially in row order so the
- * result is deterministic. One invocation per track.
+ * Builds the per-track cumulative path length, summed sequentially in row order with a
+ * Neumaier-compensated f32 sum, so the result is deterministic and a long track does not drift.
+ * One invocation per track.
  *
  * @internal
  */
@@ -531,6 +538,7 @@ export function createTrajectoryArcLengthNode<Parameters>(
     ],
     invocationCount: props.trackCount,
     declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;
+${ADDITION_ROUNDING_ERROR_WGSL}
 ${getSegmentGeometrySource(props.geodesicRadius)}
 fn getPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
@@ -538,11 +546,18 @@ fn getPosition(row: u32) -> vec2<f32> {
     body: /* wgsl */ `let track = index;
   ${TRACK_RANGE_SOURCE}
   if (trackEnd > trackStart) {
-    var total = 0.0;
+    // Neumaier-compensated running sum, as the line family's prefix (line-segmentize-kernels.ts):
+    // a plain f32 sum of 86,400 equal steps of 13.9 ends 1,051 short of 1,200,960. The correction
+    // is read off the integer significands; the float form is removed by fast-math compilers.
+    var sum = 0.0;
+    var compensation = 0.0;
     cumulativeLengths[cumulativeLengthsOffset + trackStart] = 0.0;
     for (var row = trackStart + 1u; row < trackEnd; row++) {
-      total = total + getSegmentLength(getPosition(row - 1u), getPosition(row));
-      cumulativeLengths[cumulativeLengthsOffset + row] = total;
+      let segmentLength = getSegmentLength(getPosition(row - 1u), getPosition(row));
+      let nextSum = sum + segmentLength;
+      compensation = compensation + getAdditionRoundingError(sum, segmentLength, nextSum);
+      sum = nextSum;
+      cumulativeLengths[cumulativeLengthsOffset + row] = sum + compensation;
     }
   }`
   });

@@ -34,15 +34,15 @@ NaN, including in constant populations. An all-excluded column therefore outputs
 Null validity must be represented by NaN or the caller's mask; this API does not inspect Arrow
 validity bitmaps. Every output row is rewritten on each encoding.
 
-Inputs, masks and outputs may have different packed chunk boundaries. Alignment creates borrowed
-subviews; reductions span the entire column and scratch retains those spans. There is no implicit
-packing or independent normalization per chunk. Source and output buffers must be disjoint.
-All views must belong to the graph. The logical row count is 0 through 2^24; individual empty
-chunks are permitted. An empty column emits no output rows. Lengths, method, variance convention, and mask presence are topology;
+`values`, `mask` and `output` must each be a single packed chunk; a column with more than one
+chunk is rejected at construction (`values single chunk`), and the three columns must have the same
+length. There is no implicit packing, realignment or independent normalization per chunk. Source and
+output buffers must be disjoint. All views must belong to the graph. The logical row count is 0
+through 2^24. An empty column emits no output rows. Lengths, method, variance convention, and mask presence are topology;
 buffer contents are per-frame data. Buffers remain caller-owned and scratch is graph-owned.
 
 Arithmetic uses float32 shared hierarchical reductions, not GeoDa's float64 loops. Summation order
-can change with chunk boundaries, so compare within a float32 tolerance, not bitwise. A shared extent reduction supplies an origin and radius. The origin is the minimum for same-sign extrema, otherwise zero. Values are normalized around
+is a hierarchical reduction, not GeoDa's sequential loop, so compare within a float32 tolerance, not bitwise. A shared extent reduction supplies an origin and radius. The origin is the minimum for same-sign extrema, otherwise zero. Values are normalized around
 that origin before mean and dispersion reductions; z-scores and MAD are computed in normalized
 space. Extreme divisors are rescaled before division to avoid reciprocal underflow on GPUs
 that flush subnormal results. This avoids raw-sum/squared-deviation overflow and cancellation from large common offsets.

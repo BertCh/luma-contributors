@@ -22,7 +22,10 @@ export const SCREEN_TRANSFORM = Float32Array.from([
   0.2, 0, 0, 0, 0, -0.2, 0, 0, 0, 0, 1, 0, -1, 1, 0, 1, 100, 100, 0, 0
 ]);
 
-/** Even-odd PNPOLY test, half-open in y. */
+/**
+ * Inclusive even-odd test: a point on an edge is inside, like the rectangle region. The on-edge
+ * test is a float64 cross product, exact for the small binary fractions of these fixtures.
+ */
 export function isInsidePolygon(
   x: number,
   y: number,
@@ -38,6 +41,17 @@ export function isInsidePolygon(
   for (let index = 0; index < count; index++) {
     const currentX = vertices[index * 2];
     const currentY = vertices[index * 2 + 1];
+    const isInBox =
+      x >= Math.min(previousX, currentX) &&
+      x <= Math.max(previousX, currentX) &&
+      y >= Math.min(previousY, currentY) &&
+      y <= Math.max(previousY, currentY);
+    if (
+      isInBox &&
+      (currentX - previousX) * (y - previousY) === (currentY - previousY) * (x - previousX)
+    ) {
+      return true;
+    }
     if (currentY > y !== previousY > y) {
       const crossingX =
         ((previousX - currentX) * (y - currentY)) / (previousY - currentY) + currentX;

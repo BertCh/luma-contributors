@@ -15,7 +15,11 @@ import {
   validateRequirement,
   validateViewLength
 } from '../analysis-core/kernels/gpu-contributor-utils';
-import {getPlaneMomentsSource, getPlaneSolveSource} from './pointcloud-plane-icp';
+import {
+  getPlaneMomentsSource,
+  getPlaneSolveSource,
+  POINT_CLOUD_PLANE_ICP_BLOCK_WORDS
+} from './pointcloud-plane-icp';
 import {
   createPointCloudGridIndex,
   validatePointCloudSearchGrid,
@@ -51,7 +55,12 @@ export type GPUPointCloudICPProps = {
    * source point scans every target point and the constructor refuses larger inputs.
    */
   targetGrid?: PointCloudGrid;
-  /** Default point-to-point. Point-to-plane requires finite target normals and a full-rank six-parameter system. */
+  /**
+   * Default point-to-point. Point-to-plane requires finite target normals and a full-rank
+   * six-parameter system. Its Gauss-Newton moments are taken about the centroid of the matched
+   * source points and the system is scaled to a unit diagonal, so the rank test does not depend on
+   * the coordinate unit or on the distance from the origin.
+   */
   metric?: 'point-to-point' | 'point-to-plane';
   targetNormals?: GraphDataView<'float32x3'>;
   /** Iteratively reweighted rigid least squares; scale is in coordinate units. Default is unweighted. */
@@ -71,9 +80,10 @@ export type GPUPointCloudICPProps = {
    * `..._ITERATION_LIMIT` (1) the iteration budget ran out first (the transform is still the last
    * iterate), `..._INSUFFICIENT_MATCHES` (2) fewer than three inlier matches (six under point-to-plane),
    * `..._DEGENERATE` (3) the solution is not unique (the two largest eigenvalues of the Horn matrix
-   * agree to 1e-6, or a point-to-plane pivot vanishes), `..._EIGENSOLVE_EXHAUSTED` (4) the
-   * 48-sweep point-to-point Jacobi eigensolve did not converge. After a code of 2, 3 or 4 the
-   * transform is the last good iterate.
+   * agree to 1e-6, or a pivot of the point-to-plane normal matrix, scaled to a unit diagonal, is at
+   * or below 1e-5), `..._EIGENSOLVE_EXHAUSTED` (4) the point-to-point Jacobi eigensolve did not
+   * converge within 48 rotations (one pivot each). After a code of 2, 3 or 4 the transform is the
+   * last good iterate.
    */
   status: GraphDataView<'uint32'>;
 };
@@ -222,7 +232,7 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
       graph,
       `${this.id}-moments`,
       'float32',
-      blockCount * (pointToPlane ? 45 : 18)
+      blockCount * (pointToPlane ? POINT_CLOUD_PLANE_ICP_BLOCK_WORDS : 18)
     );
     const initial = this.localInitialTransform;
     const nodes = getPointCloudKernelNodes(graph, {
@@ -354,7 +364,7 @@ var system = mat4x4f(vec4f(trace,difference),
  vec4f(difference.z, covariance[2][0]+covariance[0][2], covariance[2][1]+covariance[1][2], -covariance[0][0]-covariance[1][1]+covariance[2][2]));
 var vectors = mat4x4f(vec4f(1,0,0,0),vec4f(0,1,0,0),vec4f(0,0,1,0),vec4f(0,0,0,1));
 var converged = false;
-for (var sweep = 0u; sweep < 48u; sweep++) {
+for (var jacobiRotation = 0u; jacobiRotation < 48u; jacobiRotation++) {
   var first = 0u; var second = 1u; var scale = 0.0;
   for (var column = 0u; column < 4u; column++) {
     scale = max(scale,abs(system[column][column]));

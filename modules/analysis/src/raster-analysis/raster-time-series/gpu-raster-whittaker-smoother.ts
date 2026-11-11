@@ -29,11 +29,15 @@ import {
   type GPURasterIrregularDateAxis
 } from './raster-irregular-date-axis';
 
-/** Slices: one invocation per cell runs a banded Cholesky over a private array of this many columns. */
+/** Slices: one invocation per cell runs a banded QR over a private array of this many columns. */
 export const MAXIMUM_WHITTAKER_SLICE_COUNT = 256;
 /** Reweighting passes are unrolled into the per-cell loop, so the count is capped. */
 export const MAXIMUM_WHITTAKER_REWEIGHT_PASS_COUNT = 8;
-/** float32 band Cholesky loses accuracy past this smoothing parameter (roadmap RTS-02). */
+/**
+ * Largest accepted smoothing parameter. The float32 banded QR on centred values agrees with a
+ * binary64 solve to one float32 step of the result at this value for every difference order
+ * (256 slices; pinned by `rts02-whittaker-precision.spec.ts`).
+ */
 export const MAXIMUM_WHITTAKER_SMOOTHING_PARAMETER = 1e7;
 /** Float32 elements of the per-frame parameters: smoothing parameter, minimum weight. */
 export const GPU_RASTER_WHITTAKER_SMOOTHER_PARAMETER_LENGTH = 2;
@@ -74,7 +78,7 @@ export type GPURasterWhittakerSmootherProps = {
   /** Cell-major `cell * sliceCount + slice`; nonfinite samples have zero weight. */
   values: GraphDataView<'float32'>;
   /** Per-observation QA; zero gives a sample zero weight. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Per-observation quality weights in `[0, 1]`, for example from a QA band. */
   qualityWeights?: GraphDataView<'float32'>;
   /** Float32, see {@link getGPURasterWhittakerSmootherParameterValues}. */
@@ -96,8 +100,18 @@ export type GPURasterWhittakerSmootherProps = {
 };
 
 /**
- * Weighted Whittaker smoother per cell: minimises `sum w (y - z)^2 + lambda |D z|^2` by a banded
- * Cholesky solve, with zero weight on missing observations so gaps are filled. `D` is the
+ * Weighted Whittaker smoother per cell: minimises `sum w (y - z)^2 + lambda |D z|^2`, with zero
+ * weight on missing observations so gaps are filled. The solve is a banded Givens QR of the stacked
+ * matrix `[sqrt(W); sqrt(lambda) D]` on the values minus their per-cell mean (the smoother is exact
+ * on constants, so the mean is added back), not a factorisation of the normal equations: in
+ * float32 the result then depends on the variation of the series, not on its offset or on
+ * `lambda`. Status 2 means the triangular factor has a zero or non-finite diagonal, or the
+ * solution is not finite (for example `lambda = 0` with a gap, or a non-finite `lambda`); it is
+ * not raised for a system that is merely badly conditioned. With a few clustered observations
+ * and a long gap, orders 2 and 3 continue the curve as a line or a parabola, and the float32
+ * error grows with the gap: over 250 slices beyond 3 or 5 adjacent observations it stays within
+ * 6e-4 (order 2) and 1.3e-2 (order 3) of the spread of the curve, with status 0 (measured against
+ * an exact rational solve for `lambda` from 1 to 1e7). `D` is the
  * difference operator of order `d`; with a date axis it is the divided difference on acquisition
  * dates scaled by the mean spacing so a regular axis reduces to ordinary differences and `lambda`
  * keeps its usual meaning. Robust reweighting runs a fixed number of passes (Tukey bisquare on the
@@ -145,10 +159,10 @@ export class GPURasterWhittakerSmoother implements GPUCommandNodeProducer {
     validateCapacity(id, 'cellCount times sliceCount', observationCount);
     validateRequirement(
       id,
-      [props.values, props.validity, props.qualityWeights].every(
+      [props.values, props.mask, props.qualityWeights].every(
         view => !view || view.length >= observationCount
       ) && props.output.smoothed.length >= observationCount,
-      'values, validity, qualityWeights and output.smoothed must hold cellCount times sliceCount entries'
+      'values, mask, qualityWeights and output.smoothed must hold cellCount times sliceCount entries'
     );
     validateRequirement(
       id,
@@ -167,11 +181,11 @@ export class GPURasterWhittakerSmoother implements GPUCommandNodeProducer {
   }
 
   private getInputs(): RasterScalarView[] {
-    const {values, validity, qualityWeights, parameters} = this.props;
+    const {values, mask, qualityWeights, parameters} = this.props;
     return [
       values,
       parameters,
-      ...(validity ? [validity] : []),
+      ...(mask ? [mask] : []),
       ...(qualityWeights ? [qualityWeights] : [])
     ];
   }
@@ -184,22 +198,14 @@ export class GPURasterWhittakerSmoother implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, differenceOrder: order, reweightPassCount, reweightFunction} = this;
-    const {
-      sliceCount: slices,
-      values,
-      validity,
-      qualityWeights,
-      parameters,
-      dateAxis,
-      output
-    } = props;
+    const {sliceCount: slices, values, mask, qualityWeights, parameters, dateAxis, output} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     if (dateAxis) validateGPURasterDateAxisGraph(id, graph, dateAxis);
     const bandStride = order + 1;
     const inputBindings = [
       rasterBinding('values', values),
       rasterBinding('parameters', parameters),
-      ...(validity ? [rasterBinding('validity', validity)] : []),
+      ...(mask ? [rasterBinding('mask', mask)] : []),
       ...(qualityWeights ? [rasterBinding('qualityWeights', qualityWeights)] : [])
     ];
     const spanExpression = dateAxis
@@ -221,7 +227,7 @@ export class GPURasterWhittakerSmoother implements GPUCommandNodeProducer {
 ${dateAxis ? getGPURasterDateAxisDeclarations(this.ticksPerYear, slices) : ''}
 fn baseWeight(cell: u32, slice: u32) -> f32 {
   let source = cell * ${slices}u + slice;
-  if (!finite(values[valuesOffset + source]) ${validity ? '|| validity[validityOffset + source] == 0u' : ''}) { return 0.0; }
+  if (!finite(values[valuesOffset + source]) ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { return 0.0; }
   return ${qualityWeights ? 'clamp(qualityWeights[qualityWeightsOffset + source], 0.0, 1.0)' : '1.0'};
 }
 fn siftDown(heap: ptr<function, array<f32, ${slices}>>, start: u32, size: u32) {
@@ -244,6 +250,49 @@ fn getMedian(heap: ptr<function, array<f32, ${slices}>>, count: u32) -> f32 {
   }
   if (count % 2u == 1u) { return (*heap)[count / 2u]; }
   return 0.5 * ((*heap)[count / 2u - 1u] + (*heap)[count / 2u]);
+}
+// Rotates one row of the stacked least-squares matrix into the upper band R, where
+// band[j * stride + k] holds R[j, j + k]. entries[k] is the value of the row in column row + k.
+// Rows must arrive ordered by first column (weight row, then penalty row, for each slice), which
+// keeps every rotation inside the band: a row is finished after at most order + 1 rotations.
+fn insertRow(
+  band: ptr<function, array<f32, ${slices * bandStride}>>,
+  rightSide: ptr<function, array<f32, ${slices}>>,
+  row: u32,
+  entries: array<f32, ${bandStride}>,
+  entryRightSide: f32
+) {
+  var work = entries;
+  var workRightSide = entryRightSide;
+  let last = min(row + ${order}u, ${slices - 1}u);
+  for (var column = row; column <= last; column++) {
+    let lead = work[0];
+    let base = column * ${bandStride}u;
+    let diagonal = (*band)[base];
+    if (lead != 0.0 && diagonal == 0.0) {
+      for (var term = 0u; term <= ${order}u; term++) { (*band)[base + term] = work[term]; }
+      (*rightSide)[column] = workRightSide;
+      return;
+    }
+    var cosine = 1.0;
+    var sine = 0.0;
+    if (lead != 0.0) {
+      let radius = sqrt(diagonal * diagonal + lead * lead);
+      cosine = diagonal / radius;
+      sine = lead / radius;
+      (*band)[base] = radius;
+    }
+    for (var term = 1u; term <= ${order}u; term++) {
+      let upper = (*band)[base + term];
+      let lower = work[term];
+      (*band)[base + term] = cosine * upper + sine * lower;
+      work[term - 1u] = cosine * lower - sine * upper;
+    }
+    work[${order}u] = 0.0;
+    let upperRightSide = (*rightSide)[column];
+    (*rightSide)[column] = cosine * upperRightSide + sine * workRightSide;
+    workRightSide = cosine * workRightSide - sine * upperRightSide;
+  }
 }`,
         body: `let smoothing = parameters[parametersOffset];
 let minimumWeight = parameters[parametersOffset + 1u];
@@ -252,19 +301,44 @@ var solution: array<f32, ${slices}>;
 var robust: array<f32, ${slices}>;
 var workspace: array<f32, ${slices}>;
 var support = 0u;
-for (var slice = 0u; slice < ${slices}u; slice++) { robust[slice] = 1.0; if (baseWeight(index, slice) > 0.0) { support++; } }
+// The smoother is exact on constants (every difference of order one or more removes them), so the
+// solve runs on values minus a per-cell reference and the reference is added back. Without this
+// the float32 error grows with the magnitude of the data instead of its variation.
+var reference = 0.0;
+for (var slice = 0u; slice < ${slices}u; slice++) {
+  robust[slice] = 1.0;
+  if (baseWeight(index, slice) > 0.0) {
+    if (support == 0u) { reference = values[valuesOffset + index * ${slices}u + slice]; }
+    support++;
+  }
+}
+if (support > 0u) {
+  // Mean of the valid values, formed around the first one so the sum stays small.
+  var offsetSum = 0.0;
+  for (var slice = 0u; slice < ${slices}u; slice++) {
+    if (baseWeight(index, slice) > 0.0) { offsetSum += values[valuesOffset + index * ${slices}u + slice] - reference; }
+  }
+  reference += offsetSum / f32(support);
+}
+let penaltyScale = sqrt(max(smoothing, 0.0));
 ${dateAxis ? `let axisMeanSpacing = rasterYearsBetween(${slices - 1}u, 0u) / ${slices - 1}.0;` : ''}
 var code = 0u;
 if (support < ${order + 1}u) { code = 1u; }
 if (code == 0u) {
   for (var iteration = 0u; iteration < ${reweightPassCount + 1}u; iteration++) {
     for (var entry = 0u; entry < ${slices * bandStride}u; entry++) { band[entry] = 0.0; }
-    for (var slice = 0u; slice < ${slices}u; slice++) {
-      let weight = baseWeight(index, slice) * robust[slice];
-      band[slice * ${bandStride}u] = weight;
-      solution[slice] = select(0.0, weight * values[valuesOffset + index * ${slices}u + slice], weight > 0.0);
-    }
-    for (var row = 0u; row < ${slices - order}u; row++) {
+    for (var slice = 0u; slice < ${slices}u; slice++) { solution[slice] = 0.0; }
+    // Givens QR of the stacked matrix [sqrt(W); sqrt(lambda) D] instead of a factorisation of
+    // W + lambda D'D: the condition number is the square root of the normal equations', which is
+    // what float32 needs at large lambda.
+    for (var row = 0u; row < ${slices}u; row++) {
+      let weight = baseWeight(index, row) * robust[row];
+      if (weight > 0.0) {
+        var weightRow: array<f32, ${bandStride}>;
+        weightRow[0] = sqrt(weight);
+        insertRow(&band, &solution, row, weightRow, weightRow[0] * (values[valuesOffset + index * ${slices}u + row] - reference));
+      }
+      if (row >= ${slices - order}u) { continue; }
       var previous: array<array<f32, ${bandStride}>, ${bandStride}>;
       for (var offset = 0u; offset < ${bandStride}u; offset++) { previous[offset][0] = 1.0; }
       for (var level = 1u; level <= ${order}u; level++) {
@@ -280,55 +354,42 @@ if (code == 0u) {
         }
         previous = current;
       }
-      let coefficients = previous[0];
-      for (var left = 0u; left <= ${order}u; left++) {
-        for (var right = left; right <= ${order}u; right++) {
-          band[(row + left) * ${bandStride}u + (right - left)] += smoothing * coefficients[left] * coefficients[right];
-        }
-      }
+      var penaltyRow = previous[0];
+      for (var term = 0u; term <= ${order}u; term++) { penaltyRow[term] *= penaltyScale; }
+      insertRow(&band, &solution, row, penaltyRow, 0.0);
     }
-    // LDL^T of the symmetric band: band[i, 0] holds D_i and band[i, k] holds L[i + k, i].
+    // A diagonal of R that is zero or not finite means the system has no solution in float32
+    // (for example lambda = 0 with a gap). The size of a diagonal against the largest one is not
+    // tested: the penalty rows scale with sqrt(lambda), so that ratio is small for well-posed
+    // series with few clustered observations, which this solve handles (see the class
+    // documentation for the accuracy there).
     for (var row = 0u; row < ${slices}u; row++) {
-      var pivot = band[row * ${bandStride}u];
-      let firstColumn = select(0u, row - ${order}u, row > ${order}u);
-      for (var column = firstColumn; column < row; column++) {
-        let factor = band[column * ${bandStride}u + (row - column)];
-        pivot -= factor * factor * band[column * ${bandStride}u];
-      }
-      band[row * ${bandStride}u] = pivot;
-      if (!(pivot > 0.0) || !finite(pivot)) { code = 2u; break; }
-      for (var below = row + 1u; below <= min(row + ${order}u, ${slices - 1}u); below++) {
-        var coupled = band[row * ${bandStride}u + (below - row)];
-        let firstShared = select(0u, below - ${order}u, below > ${order}u);
-        for (var column = firstShared; column < row; column++) {
-          coupled -= band[column * ${bandStride}u + (below - column)] * band[column * ${bandStride}u + (row - column)] * band[column * ${bandStride}u];
-        }
-        band[row * ${bandStride}u + (below - row)] = coupled / pivot;
-      }
+      let diagonal = abs(band[row * ${bandStride}u]);
+      if (!finite(diagonal) || !(diagonal > 0.0)) { code = 2u; }
     }
     if (code != 0u) { break; }
-    for (var row = 1u; row < ${slices}u; row++) {
-      let firstColumn = select(0u, row - ${order}u, row > ${order}u);
-      for (var column = firstColumn; column < row; column++) { solution[row] -= band[column * ${bandStride}u + (row - column)] * solution[column]; }
-    }
-    for (var row = 0u; row < ${slices}u; row++) { solution[row] /= band[row * ${bandStride}u]; }
-    for (var reverse = 1u; reverse < ${slices}u; reverse++) {
+    // Back substitution on the upper band.
+    for (var reverse = 0u; reverse < ${slices}u; reverse++) {
       let row = ${slices - 1}u - reverse;
-      for (var below = row + 1u; below <= min(row + ${order}u, ${slices - 1}u); below++) { solution[row] -= band[row * ${bandStride}u + (below - row)] * solution[below]; }
+      var remainder = solution[row];
+      for (var above = row + 1u; above <= min(row + ${order}u, ${slices - 1}u); above++) { remainder -= band[row * ${bandStride}u + (above - row)] * solution[above]; }
+      solution[row] = remainder / band[row * ${bandStride}u];
+      if (!finite(solution[row])) { code = 2u; }
     }
+    if (code != 0u) { break; }
     if (iteration == ${reweightPassCount}u) { break; }
     var residualCount = 0u;
     var largestNegative = 0.0;
     for (var slice = 0u; slice < ${slices}u; slice++) {
       if (baseWeight(index, slice) <= 0.0) { continue; }
-      let residual = values[valuesOffset + index * ${slices}u + slice] - solution[slice];
+      let residual = (values[valuesOffset + index * ${slices}u + slice] - reference) - solution[slice];
       workspace[residualCount] = abs(residual); residualCount++;
       if (residual < 0.0) { largestNegative = max(largestNegative, -residual); }
     }
     let scale = 6.0 * getMedian(&workspace, residualCount);
     for (var slice = 0u; slice < ${slices}u; slice++) {
       if (baseWeight(index, slice) <= 0.0) { continue; }
-      let residual = values[valuesOffset + index * ${slices}u + slice] - solution[slice];
+      let residual = (values[valuesOffset + index * ${slices}u + slice] - reference) - solution[slice];
       ${
         reweightFunction === 'bisquare'
           ? `var nextRobust = 1.0;
@@ -342,7 +403,7 @@ if (code == 0u) {
 }
 status[statusOffset + index] = code;
 for (var slice = 0u; slice < ${slices}u; slice++) {
-  smoothed[smoothedOffset + index * ${slices}u + slice] = select(missing(), solution[slice], code == 0u);
+  smoothed[smoothedOffset + index * ${slices}u + slice] = select(missing(), solution[slice] + reference, code == 0u);
 }`
       })
     ];

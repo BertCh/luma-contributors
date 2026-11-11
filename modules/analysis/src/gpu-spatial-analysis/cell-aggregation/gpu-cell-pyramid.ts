@@ -11,7 +11,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getCellKeyLayout} from './cell-keys';
@@ -88,7 +88,7 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
       }
     }
     if (output.levelCounts) {
-      validatePackedView(output.levelCounts, ['uint32'], `${id} output.levelCounts`);
+      validateSinglePackedView(output.levelCounts, ['uint32'], `${id} output.levelCounts`);
       if (output.levelCounts.length !== resolutions.length) {
         throw new Error(`${id} output.levelCounts must hold one row per level`);
       }

@@ -4,13 +4,53 @@
 
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '../../../src/analysis-core/contracts/earth';
+import {
+  GPU_WGS84_FLATTENING,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS
+} from '../../../src/analysis-core/contracts/earth';
 import type {
   GPUPointHorizonDistanceLattice,
   GPUPointHorizonSegments
 } from '../../../src/gpu-terrain/point-horizon/index';
 
 const EARTH_RADIUS = 6371008.8;
+
+/**
+ * WGS84 radii of curvature at the latitude of a Web Mercator world pixel row, in meters:
+ * `[N, M]`, prime vertical and meridional. `row` is the continuous row index of the model
+ * (`row + 0.5` is the pixel center the eye geometry uses).
+ */
+export function getOracleRadiiOfCurvature(
+  model: Pick<PointHorizonOracleModel, 'worldPixelSize' | 'originY'>,
+  row: number
+): [number, number] {
+  const mercatorOrdinate =
+    Math.PI *
+    (1 - (2 * ((model.originY as number) + row + 0.5)) / (model.worldPixelSize as number));
+  const sinLatitude = Math.tanh(mercatorOrdinate);
+  const eccentricitySquared = GPU_WGS84_FLATTENING * (2 - GPU_WGS84_FLATTENING);
+  const denominator = 1 - eccentricitySquared * sinLatitude * sinLatitude;
+  const primeVertical = GPU_WGS84_SEMI_MAJOR_AXIS_METERS / Math.sqrt(denominator);
+  return [primeVertical, (primeVertical * (1 - eccentricitySquared)) / denominator];
+}
+
+/**
+ * Sphere azimuth `[sin, cos]` of the ray whose ground bearing on the WGS84 ellipsoid is
+ * `[sinBearing, cosBearing]`, for an eye on world pixel row `row`: ground east is `N` per unit of
+ * sphere east and ground north is `M` per unit of sphere north.
+ */
+export function getOracleSphereAzimuth(
+  model: Pick<PointHorizonOracleModel, 'worldPixelSize' | 'originY'>,
+  row: number,
+  sinBearing: number,
+  cosBearing: number
+): [number, number] {
+  const [primeVertical, meridional] = getOracleRadiiOfCurvature(model, row);
+  const east = sinBearing / primeVertical;
+  const north = cosBearing / meridional;
+  const norm = Math.hypot(east, north);
+  return [east / norm, north / norm];
+}
 
 /**
  * Grid of a Web Mercator window in EPSG:3857 meters: square pixels of `2 * pi * a / worldPixelSize`
@@ -110,7 +150,14 @@ export function sampleOracleHeight(
   return bilinear(model, x, y, column - x, row - y);
 }
 
-/** Maximum-tangent march of one ray in float64, no skipping. */
+/**
+ * Maximum-tangent march of one ray in float64, no skipping.
+ *
+ * Planar: `(sinA, cosA)` is the bearing and every distance is a planar meter. Web Mercator:
+ * `(sinA, cosA)` is the azimuth on the sphere the great circle is traced on, and `stop`, the
+ * frame `maximumDistance`, the curvature drop and the returned tangents and distance are WGS84
+ * ground meters: sphere meters times `hypot(N sinA, M cosA) / R` at the eye latitude.
+ */
 export function marchOracleRay(
   model: PointHorizonOracleModel,
   eyeColumn: number,
@@ -120,11 +167,17 @@ export function marchOracleRay(
   cosA: number,
   stop = 0
 ): {has: boolean; t: number; d: number; tQ: number} {
-  const {lattice, segments, width, height, curvature} = model;
-  const frameMaximum = model.maximumDistance ?? 0;
+  const {lattice, segments, width, height} = model;
+  const mercator = model.projection === 'web-mercator';
+  // Ground meters per sphere meter along this ray (1 for planar rasters).
+  let groundScale = 1;
+  if (mercator) {
+    const [primeVertical, meridional] = getOracleRadiiOfCurvature(model, eyeRow);
+    groundScale = Math.hypot(primeVertical * sinA, meridional * cosA) / EARTH_RADIUS;
+  }
+  const frameMaximum = (model.maximumDistance ?? 0) / groundScale;
   const maximum =
     frameMaximum > 0 ? Math.min(frameMaximum, lattice.lastDistance) : lattice.lastDistance;
-  const mercator = model.projection === 'web-mercator';
   // Segment offsets in pixels at each breakpoint (mercator) or one straight segment (planar).
   let offsets: {d: number; x: number; y: number}[] = [];
   if (mercator) {
@@ -154,7 +207,7 @@ export function marchOracleRay(
   const last = lattice.getFloorIndex(maximum);
   for (let n = 0; n <= last; n++) {
     const d = lattice.getDistance(n);
-    if (!qDone && d >= stop) {
+    if (!qDone && d * groundScale >= stop) {
       tQ = has ? best : -3.4028234663852886e38;
       qDone = true;
     }
@@ -182,11 +235,12 @@ export function marchOracleRay(
       continue;
     }
     const h = bilinear(model, x, y, u - x, v - y);
-    const t = (h - eyeElevation) / d - d * curvature;
+    const groundDistance = d * groundScale;
+    const t = (h - eyeElevation) / groundDistance - groundDistance * model.curvature;
     if (!has || t > best) {
       has = true;
       best = t;
-      bestDistance = d;
+      bestDistance = groundDistance;
     }
   }
   if (!qDone) {
@@ -223,7 +277,12 @@ export function computePointHorizonProfile(
       eyeElevation = ground + height;
     }
     for (let a = 0; a < model.azimuthSpan; a++) {
-      const [sinA, cosA] = getOracleAzimuth(model.firstAzimuth + a, model.azimuthCount);
+      // Azimuths are ground bearings; a Web Mercator ray is traced along the matching sphere azimuth.
+      const [sinBearing, cosBearing] = getOracleAzimuth(model.firstAzimuth + a, model.azimuthCount);
+      const [sinA, cosA] =
+        model.projection === 'web-mercator'
+          ? getOracleSphereAzimuth(model, row, sinBearing, cosBearing)
+          : [sinBearing, cosBearing];
       const result = marchOracleRay(model, column, row, eyeElevation, sinA, cosA);
       const index = observerIndex * model.azimuthSpan + a;
       tangent[index] = result.has ? result.t : -3.4028234663852886e38;

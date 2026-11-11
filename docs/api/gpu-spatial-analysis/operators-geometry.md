@@ -77,7 +77,9 @@ a positive distance is to the left of the path direction. Per vertex it writes a
 outside of a turn, the single intersection point on the inside, and a plain normal offset at path ends.
 The output has `getGPUOffsetCurveRowsPerVertex` rows per vertex (`2q + 1` round, 2 otherwise); the optional
 `output.counts` gives the distinct points per vertex and padding repeats the last point. Distance and mitre
-limit are per-frame. It is render-grade: GEOS loop removal is not done, so tight inside corners can
+limit are per-frame. Which side of a vertex is the inside of its turn is an exact orientation sign, so
+the join is on the right side where two edges nearly reverse (the tip of a sliver thinner than one float32
+step). It is render-grade: GEOS loop removal is not done, so tight inside corners can
 self-cross. GEOS clamps `quad_segs` to at least 8, so round-join parity is pinned at 8 and 16; GEOS
 leaves the corner at a ring's first vertex open on the outside and this closes it. Points were within 2e-4
 of Shapely 2.1.2. Planar only (`spatialContext` defaults to planar; a longitude/latitude context throws,
@@ -158,9 +160,12 @@ Both classes are planar only: `spatialContext` defaults to native planar coordin
 `GPUPolygonOverlay` produces polygon geometry for `intersection`, `union`, `difference`,
 `symmetric-difference`, and unary `dissolve`. It combines both operand boundaries and nodes them by
 snap rounding on a lattice (`vertexTolerance` is the grid: the step is the smallest power of two
-that is at least `vertexTolerance` and at least 2^-22 of the input extent, anchored at a multiple
-of the step, so a power-of-two `vertexTolerance` reproduces shapely `grid_size` and GEOS fixed
-precision). Vertices and crossings are rounded to the lattice, every edge is rerouted through the
+that is at least `vertexTolerance`, at least 2^-22 of the input extent and at least 2^-24 of the
+largest coordinate magnitude (one float32 step there, so every lattice point is a float32 value),
+anchored at a multiple of the step, so a power-of-two `vertexTolerance` reproduces shapely
+`grid_size` and GEOS fixed precision whenever float32 can store that grid at the coordinates of the
+data; at a projected northing of 4,000,000 the step is 0.25 to 0.5 whatever the tolerance, so use
+coordinates relative to a local origin for a finer result). Vertices and crossings are rounded to the lattice, every edge is rerouted through the
 hot pixels it passes, and the resulting pieces meet only at shared lattice vertices; coincident
 pieces are bit-identical. The faces are then labelled without testing pieces against rings: one
 ray toward +x per group of coincident pieces finds the nearest group to its right (exact predicates
@@ -190,15 +195,24 @@ so regions a raw boundary covers twice stay inside; a point is in the operand wh
 polygon. Every decision is exact: coordinates are lattice integers, crossings are rounded by exact
 integer division and ordered along the ray with 96-bit integer arithmetic. Noding reports
 uncertain segment pairs, non-finite vertices and capacities through `overflow`.
-`output.status.requiredCount` is the unclamped ring (shell plus hole) requirement of the assembly,
-for sizing the output ring capacity; it is no longer a copy of `count`.
+The optional `output.status.requiredRingCount` is the unclamped ring (shell plus hole) requirement
+of the assembly, for sizing the output ring capacity, and the optional `ringCount` is the number of
+rings written. There is no `output.status.requiredCount`: contributor contract rule 8 reserves it
+for features, and the unclamped feature count is not known once rings were dropped. An output
+polygon is a piece of operand unions and can cover several input features, so it has no single
+source row and `output.geometry` has no `sourceIds` (a view passed there throws); provenance is per
+boundary edge (`output.boundary.operandIds`, `sourceFeatureIds`). **Breaking (2026-11-10):**
+`status.requiredCount` (it held the ring requirement) and the deprecated `geometry.sourceIds` (it
+held the output row index) are removed. Join a point inside each output polygon
+(`GPULabelPoint`) to each operand with `GPUPointInPolygonJoin` for the features under it.
+`GPUBufferSurface` has the same output and dissolves all features into one surface.
 Optional `output.status.nodedSegmentRequiredCount` reports the unclamped piece count for
 `capacity.nodedSegments` (exact when `candidateOverflow` is zero). Once boundary overflow is zero,
-size the three output offset arrays to `requiredCount + 1`, source IDs to `requiredCount`, and
-positions to `output.boundary.status.requiredCount + requiredCount` (one closing vertex per ring).
+size the three output offset arrays to `requiredRingCount + 1` and positions to
+`output.boundary.status.requiredCount + requiredRingCount` (one closing vertex per ring).
 Ring capacity is independent of input feature count: the A/B star-grid intersection at 1,000
 vertices per operand needs 521 rings, exceeding its former 512-ring allocation. Each additional
-ring needs 16 bytes across the caller's offset/source-ID arrays, plus assembly scratch. For the
+ring needs 12 bytes across the caller's offset arrays, plus assembly scratch. For the
 snap noder, expanded input rows `V` and crossing capacity `I` reserve `V + I` hot pixels; their
 diagonal segment table alone needs `128 * (V + I)` bytes. Incidence capacity is
 `max(nodedSegments + V, 2 * (V + I))`, with twice that many candidate pairs. Size from reported
@@ -448,6 +462,11 @@ Earcut on the GPU (`earcut`, deck.gl `PolygonLayer` tessellation, geo `Triangula
 `triangleCount` are per polygon; the polygons of feature `f` are `[featureOffsets[f], featureOffsets[f + 1])`. The first ring is the shell and the others holes, with any winding.
 The ear search's diagonal-midpoint inside test is an exact parity (the Simulation-of-Simplicity rule of
 `utils/exact-geometry-wgsl.ts`), not an f32 ray crossing.
+The hole bridge is exact as well: the shell edge that the ray from a hole's leftmost vertex meets first, the
+vertices inside the bridge triangle, the candidate with the smallest angle to the ray (collinear candidates
+keep the nearer one, as in Earcut) and the order of holes that share their leftmost vertex are decided by
+orientation tests, so a hole a few float32 steps from a shell edge, two shell edges that the ray crosses
+closer than float32 resolution, and bridge candidates in almost the same direction are bridged correctly.
 GPU layout preparation skips degenerate rings and scans triangle slice capacities. A ring is degenerate
 when it has fewer than three vertices or every first-vertex fan triangle has exact orientation zero;
 uncertified orientations are retained, matching `GPUStudyWindowPreparation`. Empty polygons and polygons
@@ -459,13 +478,43 @@ starts at index `3 * triangleOffsets[p]`. Non-degenerate layouts retain their or
 `3 * max(0, vertexCount + 2 * ringCount - 4)` when polygons exist, otherwise zero. Smaller legacy buffers
 are still accepted, with insufficient slices flagged invalid. Indices refer to rows of `positions`.
 Unused polygon slots hold `(first, first, first)`; spare capacity is zeroed. With no positions, the used
-triangle count is zero and nothing should be drawn. `valid[p]` is 0 for untriangulable rings, scratch
+triangle count is zero and nothing should be drawn. `valid[p]` is 0 for untriangulable rings, a hole that
+cannot be joined to the shell, non-finite coordinates, scratch
 overflow or exceeded `maximumWork` (the slice is then all degenerate, unless the monotone path completes it). One
 invocation per polygon, so Earcut scales with polygon count, not ring size; ear tests use Earcut's z-order hash
 above 80 vertices (`useZOrderHash`). Orientation tests use the exact predicate of
 `GPUSegmentIntersection`. Empty rings and polygon slots from `GPURectangleClip` are accepted directly.
 Triangle area equaled Shapely `area` and the triangle count equaled the `earcut` npm
-package on 14 hand-built cases (order differs), and area matched on 60 random polygons. Delaunay variants
+package on 14 hand-built cases (order differs), and area matched on 60 random polygons. A seeded search
+(`gpu-polygon-triangulation-search.spec.ts`) triangulates random polygons with up to 12 holes, on an integer
+lattice and at projected-metre magnitude down to float32 resolution, and checks in exact arithmetic that the
+triangles tile the polygon (non-zero areas, every triangle inside, no two overlapping, areas summing to the
+polygon area), with the triangle count of the `earcut` package (3.2.4) where that package tiles the polygon.
+
+A result flagged `valid = 1` is a tiling of the polygon whenever the polygon is valid (simple rings, holes
+inside the shell and outside each other; any winding). Rings may touch at single points, vertex to vertex or
+a vertex of one ring inside an edge of another. Three departures from Earcut make this hold. Where Earcut
+cures a local self-intersection of its working ring by writing a triangle across it, the port flags the
+polygon: that triangle is the only step after which the triangles written and the ring that remains no
+longer add up to the polygon boundary. A hole that cannot be joined to the shell flags the polygon instead of
+being dropped, and so does a predicate that cannot be certified. What is left writes only counter-clockwise
+ears of exact positive area whose boundaries sum to the polygon boundary, so the number of triangles over a
+point is the polygon's winding number there. An invalid polygon (rings that cross, a hole outside its shell)
+is flagged, or covered as often as its rings wind: **behavior change** for such input, which Earcut's cure
+used to return as valid.
+
+A hole whose leftmost vertex lies inside an edge of another ring is joined there: the vertex is inserted into
+the edge (exact on-segment test) and the bridge has zero length. Two holes that share their leftmost vertex
+are ordered by the edge that leaves it, also when that vertex is repeated, and of two edges that the bridge
+ray meets at one point the one whose side holds the hole is taken. On 126,382 valid polygons with up to
+twelve holes (90,985 on integer lattices and lattice shears with coordinates up to six million, 35,397 of
+them again at projected-metre magnitude, half of those at float32 resolution; four in five with touching
+rings) the Earcut port returned 126,381
+tilings and flagged one, a sliver at float32 resolution, where a candidate diagonal is judged at its float32
+midpoint, the one decision that is not exact. The `earcut` package (3.2.4) returned a wrong triangulation
+for 641 of them. Before these rules the port flagged 535 and returned 32 wrong triangulations as valid.
+The pinned sample is `gpu-polygon-triangulation-touching-rings.spec.ts` (Shapely validity and area,
+`test/oracles/polygon-triangulation-touching-rings.py`). Delaunay variants
 are separate because this contributor preserves polygon constraints and holes.
 
 Large polygons (`largePolygonMethod`, default `'monotone'`; `'none'` keeps `valid = 0` past `maximumWork`).
@@ -485,12 +534,20 @@ diagonals of a vertex by exact angle, label the pieces by pointer jumping on the
 invocation, so a single huge convex piece is linear but not parallel. Triangles are counter-clockwise, and a
 polygon with collinear points keeps zero-area triangles (`triangleCount` counts them), which Earcut would
 have filtered. `valid` is 0 when the piece triangles do not add up to `vertices + 2 * holes - 2`, a chain is
-not monotone, a predicate is uncertain, a diagonal is out of order, a walk does not close, or a ray finds no
-edge. Not detected: self-intersections or overlapping holes that leave all of these consistent. Not
-supported (flagged invalid by the monotone path): rings that touch at a vertex when the decomposition needs a
-diagonal between the two coincident vertices. A polygon that skipped Earcut and that the monotone path flags
+not monotone, a predicate is uncertain, a diagonal is out of order, a walk does not close, a ray finds no
+edge, or a triangle would be clockwise. The triangles of the pieces sum to the polygon boundary by
+construction (every ring edge is in one piece, every diagonal in two with opposite directions, and each
+triangle replaces two consecutive edges of its piece by the third side), so with no clockwise triangle a
+valid result tiles a valid polygon; triangles of zero area between collinear vertices add nothing. Not
+detected: rings that cross or overlapping holes that leave all of these consistent, which are then covered
+as often as the rings wind. Not supported (flagged invalid by the monotone path): most polygons whose rings
+touch at a vertex (87 of every 100 in the search above; the others are tiled). The clockwise test is what
+flags the rest of them: without it the path alone returned 106 wrong triangulations as valid on those 126,382
+polygons, and one in the default configuration on a polygon of 4,306 vertices that `'none'` tiles. A polygon that
+skipped Earcut and that the monotone path flags
 (or that exceeds the capacity) is then given to Earcut within `maximumWork` in a second pass, so `'monotone'`
-never does worse than `'none'`. Cost: the sweep sort, the member sort and the scans are sized by the capacity
+never does worse than `'none'`: it is valid wherever `'none'` is, and a polygon the monotone path returns as
+valid is a tiling. Cost: the sweep sort, the member sort and the scans are sized by the capacity
 (`monotoneMaximumVertices`, default all vertices, at most `getGPUPolygonTriangulationMonotoneMaximumVertexCount(device)`,
 3,355,443 on a default device), so they run even when no polygon is large; pass `largePolygonMethod: 'none'` or a
 smaller capacity for inputs known to be small. Large polygons beyond the capacity (in row order) go to the
@@ -502,7 +559,7 @@ triangle edges to the polygon boundary (which proves coverage without overlap); 
 and the WGSL kernels (in a WGSL interpreter) are checked on adversarial polygons: combs, spirals, stars, 50 holes,
 collinear runs, equal heights, duplicate vertices and random polygons.
 
-Maximum: the scratch holds `2 * (vertices + 2 * (rings - polygons)) + 8 * polygons` nodes (`getPolygonTriangulationNodeCount`), at most `getGPUPolygonTriangulationMaximumNodeCount(device)` (4,793,490 on a default device, 28 bytes per node; 8,388,608 with `useZOrderHash: false`). `GPURandomPointsInPolygon` and `GPUDotDensity` triangulate internally and apply the same limit under their own ID.
+Maximum: the scratch holds `2 * vertices + 5 * (rings - polygons) + 8 * polygons` nodes (`getPolygonTriangulationNodeCount`; one node per hole more than before 2026-11-11, for the vertex inserted into a touched edge), at most `getGPUPolygonTriangulationMaximumNodeCount(device)` (4,793,490 on a default device, 28 bytes per node; 8,388,608 with `useZOrderHash: false`). `GPURandomPointsInPolygon` and `GPUDotDensity` triangulate internally and apply the same limit under their own ID.
 
 Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`). Orientation signs are exact.
 
@@ -528,7 +585,8 @@ Planar only: `spatialContext` defaults to native planar coordinates and a longit
 
 `GPUDelaunayTessellation` builds an unconstrained planar point triangulation by parallel insertion
 and flipping. Exact duplicate coordinates use first-row ownership, collinear input produces no
-triangles, and cocircular ties are broken by Simulation of Simplicity on row order (a lifted
+triangles (so `GPUVoronoiDiagram`, which derives edges only from triangles, returns nothing for two
+sites or for collinear sites, although those have bisectors), and cocircular ties are broken by Simulation of Simplicity on row order (a lifted
 perturbation), so the result is the unique perturbed Delaunay triangulation whatever the parallel
 schedule. Every output triangle is counter-clockwise, rotated so its smallest row comes first, and the
 rows are sorted by their first two indices.
@@ -686,7 +744,7 @@ Sums street length per grid cell and divides by cell area, producing a line-dens
 
 ::lens{scenario=gpu-spatial-analysis.line-density rung=result caption="Grey: 223 Wicker Park streets · blue: metres of street per 100 m cell"}
 
-Line length per grid cell and its density (QGIS line density). Props: `positions`, `lineOffsets`,
+Line length per grid cell and its density (length in the cell over cell area; not the QGIS or ArcGIS "Line density" tool, see Semantics). Props: `positions`, `lineOffsets`,
 `columns`, `rows`, optional `spatialContext` (native planar by default, or longitude-latitude with the great-circle metric),
 `recordCapacity`, `parameters`
 (`getGPULineDensityParameterValues({minX, minY, cellWidth, cellHeight})`) and
@@ -695,7 +753,10 @@ by cell, and the lengths are summed per cell by a stable sort and a fixed-order 
 bitwise reproducible. Spherical mode measures each clipped piece in the context's length unit using
 the mean radius (`radius`); cell areas use `getGPUAuthalicSphereRadius` (the new `areaRadius` field),
 in that unit squared. Lengths default to meters and cell areas to square meters; `units: 'kilometers'`
-gives kilometers and square kilometers. Exceeding `recordCapacity` sets `status.overflow` and under-counts the
+gives kilometers and square kilometers. A longitude/latitude segment is cut by the grid along the
+straight line between its vertices in degrees and each piece is measured as a great circle, so the
+total of a long segment depends on the grid (the segment (0, 60) to (90, 60) is 4,605 km as one piece and
+about 5,004 km when cut by 1 degree cells): densify long segments first. Exceeding `recordCapacity` sets `status.overflow` and under-counts the
 last segments. A segment on a cell boundary goes to the upper or right cell, and closed rings are not
 special (pass ring edges as lines). Length per polygon is
 [`GPULineLengthPerPolygon`](#gpulinelengthperpolygon).
@@ -768,6 +829,8 @@ are summed per polygon by a stable sort and a fixed-order segmented sum, so resu
 per segment) and `segmentCounts` counts segments with positive length inside. A longitude-latitude context clips straight in
 longitude/latitude, as `GPULineDensity` does, and measures each piece as the great-circle distance between its
 endpoints. `status.overflow` is 1 when the candidate, BVH or crossing capacity was exceeded, and lengths can then be low.
+Optional `status.candidateOverflow` isolates the candidate stage (pair capacity or BVH); it is 0 when only the
+crossing bound was exceeded. The output is per polygon, so there is no per-row flag.
 
 Maxima: `positions` has at most `getGPULineLengthPerPolygonMaximumPositionCount(device)` (8,388,608 on a default device) rows and `pairCapacity` is at most `getGPULineLengthPerPolygonMaximumPairCapacity(device)` (16,777,216; the default is clamped to it). `maximumCrossingCount` is in [1, 1024].
 
@@ -1075,13 +1138,16 @@ Clips lines or polygons to a rectangle (turf `bboxClip`, Shapely `clip_by_rect`,
 Props: `geometryType` (`'lines'` with `positions` and `lineOffsets`, or `'polygons'` with the four-level
 `positions`, `featureOffsets`, `polygonOffsets` and `ringOffsets`), `parameters`
 (`getGPURectangleClipParameterValues({minX, minY, maxX, maxY})`) and `output: GPULineGeometryOutput`
-(`positions`, `lineOffsets`, `status` with `count` (output vertices), `overflow`, optional `requiredCount` and `lineCount`, and, for lines,
+(`positions`, `lineOffsets`, `status` with `count` (output lines, or rings for polygons), `overflow`, optional `requiredCount` (unclamped lines or rings), `vertexCount` and `requiredVertexCount`, and, for lines,
 `sourceLineIndices`). Lines use Liang-Barsky, and the pieces are re-joined into lines, so a line that leaves and
 re-enters becomes several lines. Polygons use Sutherland-Hodgman in four count, scan and emit stages, with
 one output ring per input ring (possibly empty; `output.lineOffsets` holds the output ring offsets, and the input
 `featureOffsets` and `polygonOffsets` describe them unchanged) and zero-width bridges for concave shapes (the area is
 exact). The output capacity is `output.positions.length`, shared by all stages. Single-vertex lines are
-dropped, degenerate bridges are not removed, and there is no spherical mode.
+dropped, degenerate bridges are not removed, and there is no spherical mode. Polygon clip points have the
+bound itself in the clipped coordinate and are interpolated from the lexicographically smaller endpoint of
+the edge, so two polygons that share an edge get bit-identical clip points. Line clip points are
+`a + (b - a) * t` from the segment's own start and can be one float32 step off the rectangle edge.
 
 `spatialContext` defaults to native planar coordinates. A longitude-latitude context is accepted: the rectangle is in the same degrees as the input and edges are straight in longitude and latitude (turf `bboxClip`), with no antimeridian handling; a context declaring great-circle edges throws.
 

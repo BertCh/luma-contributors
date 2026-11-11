@@ -4,7 +4,6 @@
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuProj.
 // This datum-grid extension is independently authored; no cuProj grid implementation is copied.
 
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -16,7 +15,12 @@ import {
   type WGSLKernelBinding
 } from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateCapacity,
+  validateFiniteNumber,
+  validateMaximumCount,
+  validateRequirement,
+  validateViewLength,
+  validateSinglePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../analysis-core/kernels/gpu-contributor-utils';
@@ -37,6 +41,12 @@ export const GPU_DATUM_GRID_TRANSFORM_STATUS = {
   /** The inverse iteration did not reach the residual tolerance. */
   inverseExhausted: 8
 } as const;
+
+/**
+ * Default inverse residual tolerance in degrees: 5e-9 degrees of latitude is 0.56 mm. The earlier
+ * default of 1e-5 degrees (1.1 m) accepted the unshifted input for any shift below a meter.
+ */
+const DEFAULT_INVERSE_TOLERANCE_DEGREES = 5e-9;
 
 /**
  * Caller-decoded regular grid. Longitude must use the same continuous branch as positions.
@@ -60,8 +70,8 @@ export type GPUDatumGridTransformProps = {
   positionsLow?: GraphDataView<'float32x3'>;
   /** Packed shifts: longitude degrees, latitude degrees, signed height meters. */
   samples: GraphDataView<'float32x3'>;
-  /** Zero marks nodata. All four interpolation corners must be valid, including at edges. */
-  validity: GraphDataView<'uint32'>;
+  /** Row mask of `samples`: zero marks nodata. All four interpolation corners must be valid, including at edges. */
+  mask: GraphDataView<'uint32'>;
   /** First covering grid wins. Nodata in that grid fails; it does not fall through. */
   grids: readonly GPUDatumGrid[];
   operation: 'horizontal' | 'vertical' | 'combined';
@@ -71,7 +81,14 @@ export type GPUDatumGridTransformProps = {
   targetVerticalReference?: string;
   heightUnitMeters?: number;
   maximumIterations?: number;
-  /** Inverse residual tolerance in degrees; defaults to 1e-5 (f32 coordinates). */
+  /**
+   * Inverse residual tolerance in degrees of longitude and latitude (the larger of the two
+   * absolute residuals of `forward(result) - input`). Defaults to 5e-9 degrees, about 0.56 mm
+   * on the ground. The residual is formed from the low words, so it resolves far below the f32
+   * spacing of a coordinate; the inverse always takes at least one update before testing it.
+   * The test never asks for less than four f32 spacings of the shift being inverted (4.8e-7 of
+   * it), the resolution of the residual itself.
+   */
   tolerance?: number;
   output: {
     positions: GraphDataView<'float32x3'>;
@@ -85,69 +102,92 @@ export type GPUDatumGridTransformProps = {
 /** GPU-resident bilinear datum shift with ordered grids and bounded inverse iteration. */
 export class GPUDatumGridTransform implements GPUCommandNodeProducer {
   readonly id: string;
+  /** The sample mask, `props.mask`. */
+  readonly mask: GraphDataView<'uint32'>;
   constructor(readonly props: GPUDatumGridTransformProps) {
     this.id = props.id ?? 'datum-grid-transform';
-    validatePackedView(props.positions, ['float32x3'], this.id);
-    if (props.positionsLow) validatePackedView(props.positionsLow, ['float32x3'], this.id);
+    const {mask} = props;
+    validateRequirement(this.id, mask !== undefined, 'mask must be given');
+    this.mask = mask;
+    validateSinglePackedView(props.positions, ['float32x3'], this.id);
+    if (props.positionsLow) validateSinglePackedView(props.positionsLow, ['float32x3'], this.id);
     if (props.output.positionsLow)
-      validatePackedView(props.output.positionsLow, ['float32x3'], this.id);
-    assert(Boolean(props.positionsLow) === Boolean(props.output.positionsLow));
-    assert(
-      !props.positionsLow ||
-        (props.positionsLow.length === props.positions.length &&
-          props.output.positionsLow!.length === props.positions.length)
+      validateSinglePackedView(props.output.positionsLow, ['float32x3'], this.id);
+    validateRequirement(
+      this.id,
+      Boolean(props.positionsLow) === Boolean(props.output.positionsLow),
+      'positionsLow and output.positionsLow must be given together'
     );
-    validatePackedView(props.samples, ['float32x3'], this.id);
-    validatePackedView(props.validity, ['uint32'], this.id);
-    validatePackedView(props.output.positions, ['float32x3'], this.id);
-    validatePackedView(props.output.status, ['uint32'], this.id);
-    // Output rows are aligned, grid indices are exact u32 offsets, and interpolation needs 2x2 cells.
-    assert(
-      props.output.positions.length === props.positions.length &&
-        props.output.status.length === props.positions.length
-    );
-    assert(props.samples.length === props.validity.length);
-    for (const grid of props.grids) {
-      assert(
-        Number.isInteger(grid.width) &&
-          grid.width >= 2 &&
-          Number.isInteger(grid.height) &&
-          grid.height >= 2
-      );
-      assert(
-        Number.isInteger(grid.sampleOffset) &&
-          grid.sampleOffset >= 0 &&
-          grid.sampleOffset + grid.width * grid.height <= props.samples.length
-      );
-      assert(
-        grid.origin.every(value => Number.isFinite(Math.fround(value))) &&
-          grid.spacing.every(
-            value => Number.isFinite(Math.fround(value)) && Math.fround(value) !== 0
-          )
+    if (props.positionsLow) {
+      validateViewLength(this.id, 'positionsLow', props.positionsLow, props.positions.length);
+      validateViewLength(
+        this.id,
+        'output.positionsLow',
+        props.output.positionsLow!,
+        props.positions.length
       );
     }
-    assert(
-      Number.isFinite(Math.fround(props.heightUnitMeters ?? 1)) &&
-        Math.fround(props.heightUnitMeters ?? 1) > 0
+    validateSinglePackedView(props.samples, ['float32x3'], this.id);
+    validateSinglePackedView(this.mask, ['uint32'], this.id);
+    validateSinglePackedView(props.output.positions, ['float32x3'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32'], this.id);
+    // Output rows are aligned, grid indices are exact u32 offsets, and interpolation needs 2x2 cells.
+    validateViewLength(this.id, 'output.positions', props.output.positions, props.positions.length);
+    validateViewLength(this.id, 'output.status', props.output.status, props.positions.length);
+    validateViewLength(this.id, 'mask', this.mask, props.samples.length);
+    for (const [gridIndex, grid] of props.grids.entries()) {
+      const name = `grids[${gridIndex}]`;
+      validateCapacity(this.id, `${name}.width`, grid.width, 2);
+      validateCapacity(this.id, `${name}.height`, grid.height, 2);
+      validateCapacity(this.id, `${name}.sampleOffset`, grid.sampleOffset, 0);
+      validateMaximumCount(
+        this.id,
+        `${name} sampleOffset + width * height`,
+        grid.sampleOffset + grid.width * grid.height,
+        props.samples.length
+      );
+      for (const [axis, value] of grid.origin.entries()) {
+        validateFiniteNumber(this.id, `${name}.origin[${axis}]`, value);
+      }
+      for (const [axis, value] of grid.spacing.entries()) {
+        validateFiniteNumber(this.id, `${name}.spacing[${axis}]`, value);
+        validateRequirement(
+          this.id,
+          Math.fround(value) !== 0,
+          `${name}.spacing[${axis}] must be nonzero in float32`
+        );
+      }
+    }
+    validateFiniteNumber(this.id, 'heightUnitMeters', props.heightUnitMeters ?? 1);
+    validateRequirement(
+      this.id,
+      Math.fround(props.heightUnitMeters ?? 1) > 0,
+      'heightUnitMeters must be positive in float32'
     );
-    assert(
-      Number.isFinite(Math.fround(props.tolerance ?? 1e-5)) &&
-        Math.fround(props.tolerance ?? 1e-5) > 0
+    validateFiniteNumber(
+      this.id,
+      'tolerance',
+      props.tolerance ?? DEFAULT_INVERSE_TOLERANCE_DEGREES
     );
-    assert(
-      Number.isInteger(props.maximumIterations ?? 16) &&
-        (props.maximumIterations ?? 16) >= 1 &&
-        (props.maximumIterations ?? 16) <= 1024
+    validateRequirement(
+      this.id,
+      Math.fround(props.tolerance ?? DEFAULT_INVERSE_TOLERANCE_DEGREES) > 0,
+      'tolerance must be positive in float32'
     );
+    validateCapacity(this.id, 'maximumIterations', props.maximumIterations ?? 16, 1, 1024);
     if (props.operation !== 'horizontal') {
       // Vertical source and target references are mandatory, even when only height units differ.
-      assert(Boolean(props.sourceVerticalReference) && Boolean(props.targetVerticalReference));
+      validateRequirement(
+        this.id,
+        Boolean(props.sourceVerticalReference) && Boolean(props.targetVerticalReference),
+        `${props.operation} operation requires sourceVerticalReference and targetVerticalReference`
+      );
     }
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       ...(props.positionsLow ? [props.positionsLow] : []),
       props.samples,
-      props.validity
+      this.mask
     ]);
   }
   getCommandNodes<Parameters>(
@@ -158,7 +198,7 @@ export class GPUDatumGridTransform implements GPUCommandNodeProducer {
       props.positions,
       ...(props.positionsLow ? [props.positionsLow] : []),
       props.samples,
-      props.validity,
+      this.mask,
       ...Object.values(props.output)
     ]);
     const horizontal = props.operation !== 'vertical';
@@ -189,7 +229,7 @@ export class GPUDatumGridTransform implements GPUCommandNodeProducer {
               ]
             : []),
           {name: 'samples', view: props.samples, type: 'f32', access: 'read'},
-          {name: 'validity', view: props.validity, type: 'u32', access: 'read'},
+          {name: 'validity', view: this.mask, type: 'u32', access: 'read'},
           {name: 'output', view: props.output.positions, type: 'f32', access: 'read_write'},
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
         ],
@@ -198,6 +238,12 @@ fn datumFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) 
 // Compare the residual against the latitude limits before adding it to the high word.
 // Summing first rounds sub-ulp excursions beyond either pole back onto the valid boundary.
 fn datumLatitudeValid(high: f32, low: f32) -> bool { return low <= 90.0 - high && low >= -90.0 - high; }
+// Residual limit of the inverse: the tolerance, but never less than four f32 spacings of the
+// terms the residual is formed from (4 * 2^-23 of the largest), below which it is rounding.
+fn datumInverseLimit(displacement: vec2f, shift: vec2f, low: vec2f) -> f32 {
+  let magnitude = max(max(abs(displacement), abs(shift)), abs(low));
+  return max(${props.tolerance ?? DEFAULT_INVERSE_TOLERANCE_DEGREES}, 4.8e-7 * max(magnitude.x, magnitude.y));
+}
 fn loadDatumSample(row: u32) -> vec3f { let offset = samplesOffset + row * 3u; return vec3f(samples[offset], samples[offset + 1u], samples[offset + 2u]); }
 fn sampleDatum(position: vec2f, low: vec2f) -> GridSample {
 ${props.grids
@@ -242,7 +288,9 @@ if (failure == 0u) {
   for (var iteration = 0u; iteration < ${props.maximumIterations ?? 16}u && failure == 0u; iteration++) {
     let residual = displacement.xy + sampled.shift.xy - sourceLow.xy;
     if (!datumFinite(residual.x) || !datumFinite(residual.y)) { failure = ${GPU_DATUM_GRID_TRANSFORM_STATUS.invalid}u; break; }
-    if (max(abs(residual.x), abs(residual.y)) <= ${props.tolerance ?? 1e-5}) { converged = true; break; }
+    // The first residual is the grid shift at the input, not an error of the estimate: always
+    // take one update before testing, or every shift below the tolerance is skipped.
+    if (iteration > 0u && max(abs(residual.x), abs(residual.y)) <= datumInverseLimit(displacement.xy, sampled.shift.xy, sourceLow.xy)) { converged = true; break; }
     displacement = vec3f(displacement.xy - residual, displacement.z);
     sampled = sampleDatum(source.xy, displacement.xy);
     failure = sampled.status;
@@ -250,7 +298,7 @@ if (failure == 0u) {
   if (!converged && failure == 0u) {
     let residual = displacement.xy + sampled.shift.xy - sourceLow.xy;
     if (!datumFinite(residual.x) || !datumFinite(residual.y)) { failure = ${GPU_DATUM_GRID_TRANSFORM_STATUS.invalid}u; }
-    else if (max(abs(residual.x), abs(residual.y)) > ${props.tolerance ?? 1e-5}) { failure = ${GPU_DATUM_GRID_TRANSFORM_STATUS.inverseExhausted}u; }
+    else if (max(abs(residual.x), abs(residual.y)) > datumInverseLimit(displacement.xy, sampled.shift.xy, sourceLow.xy)) { failure = ${GPU_DATUM_GRID_TRANSFORM_STATUS.inverseExhausted}u; }
   }`
       : horizontal
         ? 'displacement = vec3f(sourceLow.xy + sampled.shift.xy, sourceLow.z);'

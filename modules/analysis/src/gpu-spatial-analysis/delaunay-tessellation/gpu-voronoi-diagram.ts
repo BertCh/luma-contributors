@@ -17,7 +17,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -74,6 +74,12 @@ export function getVoronoiMaximumSegmentCount(triangleCapacity: number): number 
  * triangles whose circumcenter overflows f32, are rejected and counted in `invalidCount` when that
  * canonical status field is supplied.
  *
+ * Edges come only from triangles. Two sites, or any set of collinear sites, have no Delaunay
+ * triangle, so the output is empty (`count` 0, `invalidCount` 0) although their Voronoi diagram is
+ * not: two sites are separated by one bisector and collinear sites by parallel bisectors, which
+ * `shapely.voronoi_polygons` returns. Callers that need those cases must build the bisectors of
+ * consecutive sites themselves.
+ *
  * Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude
  * context throws at construction. Project first, for example with `createGPULocalFrame` and
  * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
@@ -89,18 +95,18 @@ export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.triangles, ['uint32x3'], `${id} triangles`);
-    validatePackedView(props.triangleCount, ['uint32'], `${id} triangleCount`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.triangles, ['uint32x3'], `${id} triangles`);
+    validateSinglePackedView(props.triangleCount, ['uint32'], `${id} triangleCount`);
     if (props.triangleCount.length < 1) {
       throw new Error(`${id} triangleCount must contain one row`);
     }
-    validatePackedView(props.clipBounds, ['float32x4'], `${id} clipBounds`);
+    validateSinglePackedView(props.clipBounds, ['float32x4'], `${id} clipBounds`);
     if (props.clipBounds.length !== 1) {
       throw new Error(`${id} clipBounds must contain one row`);
     }
-    validatePackedView(props.output.segments, ['float32x4'], `${id} output.segments`);
-    validatePackedView(props.output.siteIds, ['uint32x2'], `${id} output.siteIds`);
+    validateSinglePackedView(props.output.segments, ['float32x4'], `${id} output.segments`);
+    validateSinglePackedView(props.output.siteIds, ['uint32x2'], `${id} output.siteIds`);
     if (props.output.segments.length !== props.output.siteIds.length) {
       throw new Error(`${id} output segment and site capacities must match`);
     }

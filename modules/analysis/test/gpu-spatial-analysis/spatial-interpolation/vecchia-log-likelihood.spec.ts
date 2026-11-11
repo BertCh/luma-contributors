@@ -15,7 +15,10 @@ import {
   evaluateReferenceVecchiaLogLikelihood,
   simulateReferenceVecchiaField
 } from './vecchia-likelihood-reference';
-import {createVecchiaLikelihoodHarness} from './vecchia-likelihood-harness';
+import {
+  createVecchiaFisherHarness,
+  createVecchiaLikelihoodHarness
+} from './vecchia-likelihood-harness';
 
 /** A square of `rowCount` uniform points simulated from the Vecchia model, the experiment's setup. */
 function createScene(rowCount: number, neighborCount: number, covariance: GPUVecchiaCovariance) {
@@ -180,6 +183,52 @@ describe('GPUVecchiaLogLikelihood', () => {
     expect(result.excludedSiteCount).toBe(2);
     expect(result.usedSiteCount).toBe(398);
     expect(Number.isFinite(result.logLikelihood)).toBe(true);
+  });
+
+  it('treats a site whose conditioning rows are all excluded as marginal, like the Fisher scoring sibling', async () => {
+    // Math correctness review, interpolation-density-06. Row 0 is excluded but still listed in
+    // the conditioning sets (validity toggled without rebuilding them). Site 1 conditions on
+    // {0}: nothing usable, so its term is the marginal one. Site 2 conditions on {0, 1}: only
+    // row 1 is usable. Expected values by hand, exponential model, sill 1, nugget 0.1, range
+    // 3000: C(0) = 1.1 and C(1500) = exp(-3 * 1500 / 3000) = exp(-1.5).
+    const scene = {
+      positions: [0, 0, 1000, 0, 2500, 0],
+      values: [7, 0.8, -0.4],
+      offsets: new Uint32Array([0, 0, 1, 3]),
+      neighbors: new Uint32Array([0, 0, 1]),
+      neighborCount: 4,
+      validity: [0, 1, 1]
+    };
+    const termOf = (residual: number, variance: number) =>
+      -0.5 * (Math.log(2 * Math.PI) + Math.log(variance) + (residual * residual) / variance);
+    const crossCovariance = Math.exp(-1.5);
+    const expectedTerms = [
+      termOf(0.8, 1.1),
+      termOf(-0.4 - (crossCovariance / 1.1) * 0.8, 1.1 - (crossCovariance * crossCovariance) / 1.1)
+    ];
+    const parameters = getGPUVecchiaLogLikelihoodParameterValues({
+      model: 'exponential',
+      range: 3000,
+      sill: 1,
+      nugget: 0.1
+    });
+    const harness = await createHarness(scene);
+    const result = await harness.evaluate(parameters);
+    expect(result.failedSiteCount).toBe(0);
+    expect(result.excludedSiteCount).toBe(1);
+    expect(result.usedSiteCount).toBe(2);
+    expect(result.logLikelihood).toBeCloseTo(expectedTerms[0] + expectedTerms[1], 5);
+    const {siteTerms, siteStatus} = await harness.readConditionals();
+    expect(Array.from(siteStatus)).toEqual([1, 0, 0]);
+    expect(siteTerms[1]).toBeCloseTo(expectedTerms[0], 5);
+    expect(siteTerms[2]).toBeCloseTo(expectedTerms[1], 5);
+
+    const fisher = await createVecchiaFisherHarness(scene);
+    destroyers.push(fisher.destroy);
+    const fisherResult = await fisher.evaluate(parameters);
+    expect(fisherResult.failedSiteCount).toBe(0);
+    expect(fisherResult.usedSiteCount).toBe(2);
+    expect(fisherResult.logLikelihood).toBeCloseTo(expectedTerms[0] + expectedTerms[1], 5);
   });
 
   it('computes a finite likelihood from raw parameters below the floor, unguarded by the kernel', async () => {

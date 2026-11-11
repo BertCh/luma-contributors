@@ -29,7 +29,7 @@ A lens is a Markdown leaf directive on a line of its own:
 
 | Attribute | Required | Meaning |
 | --- | --- | --- |
-| `scenario` | yes | Registered lens scenario, `<entry>.<element>[.<variant>]` in kebab case, for example `gpu-core.scan` |
+| `scenario` | yes | Registered lens scenario, `<entry>.<element>[.<variant>]` in kebab case, for example `gpu-spatial-analysis.local-moran` |
 | `rung` | yes | Level of abstraction to show; see [Rungs](#rungs) |
 | `bind` | no | Page coordinator the lens links through; lenses with the same name share selections. Defaults to `page` |
 | `datum` | no | Non-negative integer: the entity (row, cell, node) the view opens bound to |

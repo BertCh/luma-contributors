@@ -87,6 +87,39 @@ const record = createGPUComputationRecord({
 const report = validateGPUComputationRecord(record);
 ```
 
+### Kernel facts without a recorder prop
+
+Analysis contributors do not take a recorder. Every kernel they build through
+`createWGSLKernelNode` (directly, or through `createFillNode`, `createPublishNode`,
+`createWGSLDispatchGate` users and similar helpers) can still be described: call
+`recordWGSLKernelNodes(graph)` from `@luma-contributors/analysis/analysis-core`, or
+`recorder.recordKernels(graph)`, right after creating the graph and before adding contributors.
+`describeGPUCommandGraph(compiled, {graph, sourceText})` (or `{recorder}` after `recordKernels`)
+then gives each such node its operation name as `op`, a `wgsl:<hash>` source with module id
+`<operation>/<variant>`, entry point and `bodyHash`, its `workgroupSize`, `dispatch` (static bound,
+`indirect` when a GPU-written condition supplies it), per-pipeline `constants`, and its storage and
+sampled-texture `bindings` with access, element type, offset and length. Resources bound by those
+kernels get their real `transient` or `imported` ownership, and the graph gets the published
+transient allocation totals as `attrs` (`physicalTransientBufferCount`, `reusedTransientBytes`, ...).
+Annotations passed to `recorder.recordNode` win field by field, so packs add formulas, loops and
+`derivedFrom` on top. `getWGSLKernelNodeRecord(graph, nodeId)` returns the raw facts.
+
+```ts
+import {recordWGSLKernelNodes} from '@luma-contributors/analysis/analysis-core';
+
+const graph = new GPUCommandGraph(device, {id: 'documented-run'});
+recordWGSLKernelNodes(graph);
+graph.add(contributor); // any analysis contributor, unchanged
+const compiled = await graph.compileAsync();
+const description = describeGPUCommandGraph(compiled, {graph, sourceText: true});
+```
+
+The table is keyed weakly by graph and by node id within it (the compiled graph publishes node ids,
+and `graph.add` copies node objects). A graph that never calls `recordWGSLKernelNodes` keeps
+nothing; `createWGSLKernelNode` then costs one `WeakMap` lookup. Nodes of published `@luma.gl/graph`
+primitives (`GPUScan`, `GPUSort`, `GPUReduction`, `GPUGroupAggregation`, raster neighbourhoods) are
+not built by the helper and carry only published facts.
+
 Dependency edges are inferred from declared resource usage at buffer or texture granularity, in
 scheduled order, so a few edges can be conservative. `describeGPUCommandGraphEncoding(stats, props)`
 describes the realized passes of one encoding. Per-node pass membership is not published by
@@ -113,6 +146,21 @@ and mappings attached to unknown relations produce warnings.
 nanosecond metrics. GPU timestamps are relative to the earliest begin timestamp in that report.
 Nodes without timestamps keep their CPU encode time. Conditional outcomes distinguish executed,
 skipped, and GPU-gated indirect work. The helper does not read timestamps from the GPU.
+
+`submitGPUCommandGraphWithTimings(device, compiled, encodeOptions, {timestamps?})` encodes and
+submits once. When the device has `timestamp-query` (and `timestamps` is not false) it profiles
+every pass through the command encoder's public `timeProfilingQuerySet`; `readTimings()` then
+returns the published timing report for `createGPUComputationMetrics` and frees the query set.
+Without timestamps `timestamped` is false and `readTimings()` resolves to `undefined`, so a record
+states no timing rather than zero.
+
+A metrics sidecar captured on a device with `timestamp-query` therefore holds device- and
+run-specific timings, and a re-capture is not byte-identical. The varying fields are, per node of
+`nodes`, `gpuBegin` and `gpuEnd` (relative to the earliest begin of the report, in the sidecar's
+`timebase`, `'ms'` when the timing report is in milliseconds and `'ns'` otherwise) and
+`cpuEncodeMs`, together with `encoding.timestamped`, which is `true` only when the timestamps were
+written. Compare records by their graph, captures and counters, and treat these fields as
+measurements rather than as reproducible content.
 
 The required `encoding` flags describe observer effects: `coalesced`, `timestamped`, `taps`, and
 `lensTwin`, plus optional retained resource ids. Per-node timestamps disable compute-pass

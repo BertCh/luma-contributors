@@ -26,3 +26,16 @@ export type {GPUGeodesicModel} from './geodesic-kernels';
 export {GPULocalFrameProjection} from './gpu-local-frame-projection';
 export type {GPULocalFrameProjectionProps} from './gpu-local-frame-projection';
 export {GEODESIC_WGSL} from './geodesic-wgsl';
+
+// GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
+export {
+  computeLocalFrameProjectionOnCPU,
+  CPULocalFrameProjectionOperation
+} from './cpu-local-frame-projection-operation';
+export type {CPULocalFrameProjectionResult} from './cpu-local-frame-projection-operation';
+export {GPULocalFrameProjectionOperation} from './gpu-local-frame-projection-operation';
+export type {LocalFrameProjectionOperationProps} from './gpu-local-frame-projection-operation';
+export {computeGeodesicPairsOnCPU, CPUGeodesicPairsOperation} from './cpu-geodesic-pairs-operation';
+export type {CPUGeodesicPairsInput, CPUGeodesicPairsResult} from './cpu-geodesic-pairs-operation';
+export {GPUGeodesicPairsOperation} from './gpu-geodesic-pairs-operation';
+export type {GeodesicPairsOperationProps} from './gpu-geodesic-pairs-operation';

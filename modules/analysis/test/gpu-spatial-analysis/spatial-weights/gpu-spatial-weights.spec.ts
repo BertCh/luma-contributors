@@ -346,6 +346,87 @@ it('GPUContiguityWeights snapTolerance joins near-coincident vertices', async ()
   expect(snapped.csr.neighbors).toEqual(computeContiguityOracle(polygons, 'rook', 0.01).neighbors);
 });
 
+// polygon-topology-03, geometry-measures-04: the snap key was floor(x / tolerance + 0.5) on the
+// absolute coordinate, clamped at 2^31. Projected coordinates in the millions with a millimetre
+// tolerance pass the clamp (5e6 / 1e-3 = 5e9), so every vertex got one key: queen made every
+// feature a neighbor of every other and rook, whose edges all became degenerate, found none.
+it('GPUContiguityWeights snaps on a grid local to the data at projected coordinates', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Three 100 m squares in a row at UTM-like coordinates (exact in f32): A | B | C. A and C do
+  // not touch. Expected by inspection: A-B and B-C, for queen and for rook.
+  const square = (column: number): OraclePolygons[number] => [
+    [
+      [5000000 + column * 100, 4500000],
+      [5000100 + column * 100, 4500000],
+      [5000100 + column * 100, 4500100],
+      [5000000 + column * 100, 4500100]
+    ]
+  ];
+  const polygons: OraclePolygons = [square(0), square(1), square(2)];
+  for (const criterion of ['queen', 'rook'] as const) {
+    const {csr, overflow} = await runContiguity(device, polygons, criterion, {
+      capacity: 16,
+      snapTolerance: 1e-3
+    });
+    expect(overflow, criterion).toBe(0);
+    expect(csr.offsets, `${criterion} offsets`).toEqual([0, 1, 3, 4]);
+    expect(csr.neighbors, `${criterion} neighbors`).toEqual([1, 0, 2, 1]);
+  }
+  // Snapping still joins near-coincident vertices there: B moved 0.5 m to the right (the f32 step
+  // at 5e6) with a tolerance of 2 m.
+  const shiftedRing = square(1)[0].map(([x, y]): [number, number] => [x + 0.5, y]);
+  const shifted: OraclePolygons = [square(0), [shiftedRing]];
+  const shiftedResult = await runContiguity(device, shifted, 'queen', {
+    capacity: 16,
+    snapTolerance: 2
+  });
+  // Cells of pitch 2 anchored at x = 5000000: A's right corners at offset 100 are in cell 50, and
+  // B's left corners at offset 100.5 are in floor(50.25 + 0.5) = 50 as well, so they are neighbors.
+  expect(shiftedResult.csr.neighbors).toEqual([1, 0]);
+});
+
+// fr-geometry-08: from 2^23 snap steps the float32 quotient is already an integer, and adding 0.5
+// to an odd one is a tie that rounds to even, so floor(steps + 0.5) gave step 8388609 the key of
+// step 8388610. The key now uses the quotient as it is from 2^23 on (the coverage snap key).
+it('GPUContiguityWeights keeps odd snap steps above 2^23 apart', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Tolerance 1 and the first vertex at the origin, so a coordinate is its snap step. A has a
+  // corner at step 8388609 (odd, exact in f32), B a corner at 8388610 and no vertex of A or C,
+  // C the corner 8388609 of A. Expected by inspection: A-C only.
+  const polygons: OraclePolygons = [
+    [
+      [
+        [0, 0],
+        [8388609, 0],
+        [0, 10]
+      ]
+    ],
+    [
+      [
+        [8388610, 0],
+        [8388620, 0],
+        [8388620, 10]
+      ]
+    ],
+    [
+      [
+        [8388609, 0],
+        [8388609, 20],
+        [8388600, 20]
+      ]
+    ]
+  ];
+  const {csr, overflow} = await runContiguity(device, polygons, 'queen', {
+    capacity: 16,
+    snapTolerance: 1
+  });
+  expect(overflow).toBe(0);
+  expect(csr.offsets).toEqual([0, 1, 1, 2]);
+  expect(csr.neighbors).toEqual([2, 0]);
+});
+
 it('GPUContiguityWeights reports capacity and pair overflow with consistent rows', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

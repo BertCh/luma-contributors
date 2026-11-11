@@ -809,6 +809,141 @@ it('GPUGroupStatistics treats a large constant group as zero variance despite me
   harness.destroy();
 });
 
+it('GPUGroupStatistics sums, means and z-scores of small-magnitude columns are right to float32', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  // Group 1 and group 2 hold values far below 1 / 65536, the unit of the fixed-point `sums`
+  // words; group 3 shares the column with values ten orders of magnitude larger.
+  const groups: [bigint, number[]][] = [
+    [1n, [1.0e-4, 1.2e-4, 1.4e-4]],
+    [2n, [3e-6, 4e-6, 5e-6, 6e-6]],
+    [3n, [1e6, 2e6]]
+  ];
+  const keys: bigint[] = [];
+  const values: number[] = [];
+  for (const [key, groupValues] of groups) {
+    for (const value of groupValues) {
+      keys.push(key);
+      values.push(value);
+    }
+  }
+  const scene: Scene = {
+    keyBits: 32,
+    keys,
+    columns: [
+      {
+        values: Float32Array.from(values),
+        statistics: ['sum', 'mean', 'variance', 'standardDeviation', 'zScore']
+      }
+    ],
+    fractions: [],
+    capacity: 4
+  };
+  const run = await createRun(harness, scene);
+  try {
+    const actual = await run.run();
+    const column = actual.columns[0];
+    const tight = {relative: 2e-6, absolute: 0};
+    let row = 0;
+    for (const [group, [, groupValues]] of groups.entries()) {
+      // Float64 definitions on the float32 inputs the kernel sees.
+      const stored = groupValues.map(Math.fround);
+      const count = stored.length;
+      const sum = stored.reduce((total, value) => total + value, 0);
+      const mean = sum / count;
+      const variance =
+        stored.reduce((total, value) => total + (value - mean) ** 2, 0) / (count - 1);
+      expectClose(column.sumValues![group], sum, tight, `group ${group} sum`);
+      expectClose(column.means![group], mean, tight, `group ${group} mean`);
+      expectClose(column.variances![group], variance, {relative: 2e-5, absolute: 0}, 'variance');
+      for (const value of stored) {
+        const expectedScore = (value - mean) / Math.sqrt(variance);
+        expectClose(
+          column.zScores![row],
+          expectedScore,
+          {relative: 1e-4, absolute: 1e-4},
+          `group ${group} z-score of ${value}`
+        );
+        row++;
+      }
+    }
+    // Hand values: the first group is 1.0e-4, 1.2e-4, 1.4e-4, mean 1.2e-4, z-scores -1, 0, 1.
+    expect(column.means![0]).toBeCloseTo(1.2e-4, 9);
+    // Rounded to three decimals; adding 0 turns a rounded -0 into +0.
+    expect(column.zScores!.slice(0, 3).map(value => Math.round(value * 1000) / 1000 + 0)).toEqual([
+      -1, 0, 1
+    ]);
+    // The fixed-point words stay in units of 1 / sumScale: round(1e6 * 65536) + round(2e6 * 65536).
+    const largeSum = (BigInt(column.sums![2 * 2 + 1]) << 32n) | BigInt(column.sums![2 * 2]);
+    expect(largeSum).toBe(3_000_000n * 65536n);
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
+});
+
+it('GPUGroupStatistics z-scores keep the sub-unit part of a large mean', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  // Values 1e7 .. 1e7 + 3: the mean is 1e7 + 1.5, which float32 cannot hold (its step there is
+  // 1), so the shift mean is 1e7 + 2 and the correction S1 / n is -0.5. The sample deviation is
+  // sqrt(5 / 3), and the z-scores are (-1.5, -0.5, 0.5, 1.5) / sqrt(5 / 3). Without the
+  // correction every z-score is 0.5 / sqrt(5 / 3) = 0.39 too low. A second group one unit apart
+  // (mean 2e7 + 0.5) and a group of small values share the column.
+  const groups: [bigint, number[]][] = [
+    [1n, [1e7, 1e7 + 1, 1e7 + 2, 1e7 + 3]],
+    [2n, [2e7, 2e7 + 2, 2e7 - 2, 2e7 + 2]],
+    [3n, [1, 2, 4]]
+  ];
+  const keys: bigint[] = [];
+  const values: number[] = [];
+  for (const [key, groupValues] of groups) {
+    for (const value of groupValues) {
+      keys.push(key);
+      values.push(value);
+    }
+  }
+  const scene: Scene = {
+    keyBits: 32,
+    keys,
+    columns: [{values: Float32Array.from(values), statistics: ['variance', 'zScore']}],
+    fractions: [],
+    capacity: 4
+  };
+  const run = await createRun(harness, scene);
+  try {
+    const actual = await run.run();
+    const column = actual.columns[0];
+    let row = 0;
+    for (const [group, [, groupValues]] of groups.entries()) {
+      // Float64 definitions; every value here is exact in float32.
+      const count = groupValues.length;
+      const mean = groupValues.reduce((total, value) => total + value, 0) / count;
+      const variance =
+        groupValues.reduce((total, value) => total + (value - mean) ** 2, 0) / (count - 1);
+      expectClose(column.variances![group], variance, {relative: 1e-5, absolute: 0}, 'variance');
+      for (const value of groupValues) {
+        expectClose(
+          column.zScores![row],
+          (value - mean) / Math.sqrt(variance),
+          {relative: 1e-5, absolute: 1e-5},
+          `group ${group} z-score of ${value}`
+        );
+        row++;
+      }
+    }
+    // Hand values of the first group.
+    const deviation = Math.sqrt(5 / 3);
+    expect(column.zScores![0]).toBeCloseTo(-1.5 / deviation, 4);
+    expect(column.zScores![3]).toBeCloseTo(1.5 / deviation, 4);
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
+});
+
 it('GPUGroupStatistics dense mode returns one row per key with empty keys at count 0 and NaN', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

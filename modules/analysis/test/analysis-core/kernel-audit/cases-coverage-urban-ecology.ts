@@ -14,7 +14,8 @@ import {
   addPatchProximityRecipe,
   addResistanceConnectivityRecipe,
   addSegregationDecompositionRecipe,
-  addSparseResistanceConnectivityRecipe
+  addSparseResistanceConnectivityRecipe,
+  addRasterResistanceConnectivityRecipe
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KernelAuditCase} from './kernel-audit-context';
 
@@ -122,8 +123,8 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
           runs: {
             positions: view('float32x2', 128),
             offsets: view('uint32', 65),
-            leftLineIds: view('uint32', 64),
-            rightLineIds: view('uint32', 64),
+            leftSourceIds: view('uint32', 64),
+            rightSourceIds: view('uint32', 64),
             forward: view('uint32', 64)
           },
           status: {count: view('uint32', 1), overflow: view('uint32', 1)}
@@ -154,8 +155,8 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
           runs: {
             positions: view('float32x2', maximumRows(8)),
             offsets: view('uint32', runs + 1),
-            leftLineIds: view('uint32', runs),
-            rightLineIds: view('uint32', runs),
+            leftSourceIds: view('uint32', runs),
+            rightSourceIds: view('uint32', runs),
             forward: view('uint32', runs)
           },
           status: {
@@ -190,6 +191,21 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
         maximumDistance: 100,
         edgeCapacity: maximumRows(8),
         tolerance: 1e-5
+      });
+    }
+  },
+  {
+    exportName: 'addVisibilityGraphRecipe',
+    name: '256 viewpoints, every segment tested, with a region',
+    build({graph, view}) {
+      addVisibilityGraphRecipe(graph, {
+        positions: view('float32x2', 256),
+        segments: view('float32x4', 4096),
+        maximumDistance: 100,
+        edgeCapacity: 4096,
+        tolerance: 1e-5,
+        region: {fillRule: 'nonzero', freeSpace: 'outside'},
+        obstacleIndex: 'brute-force'
       });
     }
   },
@@ -283,6 +299,59 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
       });
     }
   },
+  ...(
+    [
+      [1024, 1024, 4, 'uniform', 'all edge outputs'],
+      [1024, 512, 8, 'geographic', 'all edge outputs'],
+      [1025, 1024, 4, 'uniform', 'grid cells above the maximum'],
+      [1024, 513, 8, 'uniform', 'edge slots above the maximum']
+    ] as const
+  ).map(
+    ([width, height, neighborhood, cellSizeMode, label]): KernelAuditCase => ({
+      exportName: 'addRasterResistanceConnectivityRecipe',
+      name:
+        label === 'all edge outputs'
+          ? `${width} x ${height} cells, neighborhood ${neighborhood}, ${cellSizeMode}, 4096 iterations, 1024 connectivity iterations, all edge outputs`
+          : label,
+      build({graph, view}) {
+        const cellCount = width * height;
+        const edgeCount = cellCount * (neighborhood === 4 ? 2 : 4);
+        addRasterResistanceConnectivityRecipe(graph, {
+          grid: {width, height, affine: [0.001, 0, 10, 0, -0.001, 50], pixelInterpretation: 'area'},
+          resistance: {
+            id: 'resistance',
+            format: 'float32',
+            storage: {kind: 'buffer', values: view('float32', cellCount)},
+            validity: view('uint32', cellCount)
+          },
+          parameters: view('float32', 8),
+          neighborhood,
+          cellSizeMode,
+          source: 0,
+          sink: cellCount - 1,
+          maximumIterations: 4096,
+          connectivityIterations: 1024,
+          tolerance: 1e-4,
+          output: {
+            potentials: view('float32', cellCount),
+            vertexCurrents: view('float32', cellCount),
+            diagnostics: view('float32x4', 1),
+            solverStatus: view('uint32x4', 1),
+            currents: view('float32', edgeCount),
+            edges: view('uint32x2', edgeCount),
+            conductances: view('float32', edgeCount),
+            status: {
+              invalidCellCount: view('uint32', 1),
+              converged: view('uint32', 1),
+              iterationCount: view('uint32', 1),
+              iterationLimitReached: view('uint32', 1),
+              invalidEdgeCount: view('uint32', 1)
+            }
+          }
+        });
+      }
+    })
+  ),
   {
     exportName: 'addSparseResistanceConnectivityRecipe',
     name: 'vertices above the maximum',

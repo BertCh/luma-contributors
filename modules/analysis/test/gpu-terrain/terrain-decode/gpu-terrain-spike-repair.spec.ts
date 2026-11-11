@@ -74,7 +74,9 @@ async function runRepair(
     values: createOutputBuffer(device, pixelCount),
     validity: createOutputBuffer(device, pixelCount),
     labels: createOutputBuffer(device, pixelCount),
-    statistics: createOutputBuffer(device, 5)
+    statistics: createOutputBuffer(device, 5),
+    converged: createOutputBuffer(device, 1),
+    iterationLimitReached: createOutputBuffer(device, 1)
   };
   const graph = new GPUCommandGraph(device, {id: 'terrain-spike-repair-test'});
   const props: GPUTerrainSpikeRepairProps = {
@@ -95,7 +97,17 @@ async function runRepair(
       values: importGraphBuffer(graph, 'values', outputs.values, 'float32', pixelCount),
       outputValidity: importGraphBuffer(graph, 'validity', outputs.validity, 'uint32', pixelCount),
       labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', pixelCount),
-      statistics: importGraphBuffer(graph, 'statistics', outputs.statistics, 'uint32', 5)
+      statistics: importGraphBuffer(graph, 'statistics', outputs.statistics, 'uint32', 5),
+      status: {
+        converged: importGraphBuffer(graph, 'converged-port', outputs.converged, 'uint32', 1),
+        iterationLimitReached: importGraphBuffer(
+          graph,
+          'limit-port',
+          outputs.iterationLimitReached,
+          'uint32',
+          1
+        )
+      }
     }
   };
   const contributor = new GPUTerrainSpikeRepair(props);
@@ -106,7 +118,9 @@ async function runRepair(
     values: await readFloat32(outputs.values, pixelCount),
     validity: await readUint32(outputs.validity, pixelCount),
     labels: await readUint32(outputs.labels, pixelCount),
-    statistics: await readUint32(outputs.statistics, 5)
+    statistics: await readUint32(outputs.statistics, 5),
+    converged: await readUint32(outputs.converged, 1),
+    iterationLimitReached: await readUint32(outputs.iterationLimitReached, 1)
   };
   compiled.destroy();
   contributor.destroy();
@@ -285,12 +299,16 @@ it('GPUTerrainSpikeRepair converges on a serpentine component and fails closed o
   addBlock(values, size, 200, 256, 3, 1, 256);
   const {gpu} = await expectMatchesOracle(device, values, validity, size, size);
   expect(gpu.statistics[S.converged]).toBe(1);
+  expect(gpu.converged).toEqual([1]);
+  expect(gpu.iterationLimitReached).toEqual([0]);
   expect(gpu.statistics[S.repairedPixelCount]).toBe(3);
 
   const failed = await runRepair(device, values, validity, size, size, {
     maximumComponentIterations: 1
   });
   expect(failed.statistics[S.converged]).toBe(0);
+  expect(failed.converged).toEqual([0]);
+  expect(failed.iterationLimitReached).toEqual([1]);
   expect(failed.statistics[S.repairedPixelCount]).toBe(0);
   expect(failed.statistics[S.shiftedComponentCount]).toBe(0);
   expect(failed.statistics[S.remainingJumpCount]).toBe(failed.statistics[S.jumpCount]);

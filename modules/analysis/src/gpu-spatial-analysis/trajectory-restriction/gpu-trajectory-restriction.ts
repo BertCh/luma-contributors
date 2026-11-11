@@ -16,6 +16,11 @@ import {
   type GPUTrajectoryTimeColumns,
   type GPUTrajectoryTimeFields
 } from '../trajectory-analysis/trajectory-common';
+import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {createTrajectoryPairwiseMergeNodes} from './trajectory-restriction-pair-merge-kernels';
 import {
   createRestrictionWordTimeNodes,
@@ -24,26 +29,49 @@ import {
 } from './trajectory-restriction-kernels';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
+/**
+ * Bits of the per-slot `output.status` word (and of `output.compactStatus`) of
+ * {@link GPUTrajectoryRestriction}. Bits 1 and 2 describe the interval a slot holds; bits 4, 8, 32
+ * and 16 are set on the first slot of a source observation (or query pair); bit 256 on the first
+ * slot of a source observation whose slots overflowed.
+ */
 export const GPU_TRAJECTORY_RESTRICTION_STATUS = {
+  /** The slot holds a positive-duration interval. */
   interval: 1,
+  /** The slot holds a single instant (zero duration). */
   singleton: 2,
+  /** The segment or pair is unknown: invalid parameters, nonfinite or decreasing data, or a pair track out of range. */
   invalid: 4,
+  /** The segment spans a gap longer than `maximumGap`: its support is unknown, never bridged. */
   gap: 8,
+  /** The whole temporal support of the segment lies inside the geometry. */
   fullTemporalSupportInside: 16,
+  /** The segment has temporal support inside the time window. */
   temporalSupport: 32,
+  /** The slot's interval excludes its start instant (open start boundary). */
   startOpen: 64,
+  /** The slot's interval excludes its end instant (open end boundary). */
   endOpen: 128,
+  /** More intervals than `intervalsPerSegment` or `intervalsPerPair` slots were found; extras are dropped. */
   capacityExceeded: 256
 } as const;
 
 type GPUTrajectoryRestrictionOptions = {
   id?: string;
+  /**
+   * Coordinate space of `positions`, the box and the polygon rings. Only planar coordinates are
+   * supported (segments are linearly interpolated in the plane); longitude-latitude, grid and
+   * topology contexts are rejected at construction. With `pairs` or `pairwiseTracks` the context
+   * also measures a distance, so it needs the native metric and no `local-lambert-equal-area`
+   * frame. Defaults to native planar.
+   */
+  spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
   /**
    * Word `times` only: per-frame `[low, high]` uint32 origin. `minimumTime`, `maximumTime` and
@@ -78,6 +106,14 @@ type GPUTrajectoryRestrictionOptions = {
   /** Rings are implicitly closed; coordinates follow the seven scalar parameters. Even-odd holes. */
   polygonRingVertexCounts?: readonly number[];
   timeBoundary?: 'closed' | 'open' | 'left-closed' | 'right-closed';
+  /**
+   * Whether the boundary of the box or polygon belongs to it (default `'closed'`). For a polygon a
+   * point is on the boundary only when its exact orientation against an edge is zero inside the
+   * edge's bounding box (the shared exact predicates, as `GPUZoneEvents`); there is no tolerance
+   * band. A point where a segment crosses an edge, and a piece of a segment that runs along an
+   * edge, are on the boundary by construction. Whether a segment meets an edge is decided with the
+   * same exact orientation signs; float32 only places a crossing that exists.
+   */
   geometryBoundary?: 'closed' | 'open';
   /** Fixed output slots per source observation, default one. Overflow is explicit. */
   intervalsPerSegment?: number;
@@ -88,6 +124,7 @@ type GPUTrajectoryRestrictionOptions = {
     intervals: GraphDataView<'float32x2'>;
     /** [startX,startY,endX,endY] per interval slot. */
     positions: GraphDataView<'float32x4'>;
+    /** One {@link GPU_TRAJECTORY_RESTRICTION_STATUS} bit set per interval slot; 0 for an absent slot. */
     status: GraphDataView<'uint32'>;
     /** Per track [ever, always, temporalSupportRows, unknownRows]; 0xffffffff denotes unknown relation. */
     relationships: GraphDataView<'uint32x4'>;
@@ -95,6 +132,7 @@ type GPUTrajectoryRestrictionOptions = {
     compactPositions?: GraphDataView<'float32x4'>;
     /** [first source row,last source row], preserving merged provenance ranges. */
     compactSources?: GraphDataView<'uint32x2'>;
+    /** The {@link GPU_TRAJECTORY_RESTRICTION_STATUS} bits of each compact interval's first source slot. */
     compactStatus?: GraphDataView<'uint32'>;
     /** [required interval count,written interval count,overflow count]. */
     compactSummary?: GraphDataView<'uint32'>;
@@ -127,23 +165,32 @@ export type GPUTrajectoryRestrictionResolvedProps = GPUTrajectoryRestrictionOpti
 export class GPUTrajectoryRestriction implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUTrajectoryRestrictionResolvedProps;
+  /** Resolved coordinate context: always planar. */
+  readonly spatialContext: GPUSpatialContext;
   constructor(input: GPUTrajectoryRestrictionProps) {
     this.id = input.id ?? 'trajectory-restriction';
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      input.spatialContext,
+      input.pairs || input.pairwiseTracks
+        ? Object.freeze({...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT, measure: 'distance'} as const)
+        : GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT
+    );
     const {times, offsets} = getGPUTrajectoryTimeColumns(this.id, input);
     resolveGPUTrajectoryTemporalContext(this.id, times, input.temporalContext);
     this.props = {...input, times, offsets};
     const {props} = this;
     for (const view of [props.positions, props.output.intervals])
-      validatePackedView(view, ['float32x2'], this.id);
-    validatePackedView(props.times, ['float32', 'uint32x2'], this.id);
-    validatePackedView(props.parameters, ['float32'], this.id);
+      validateSinglePackedView(view, ['float32x2'], this.id);
+    validateSinglePackedView(props.times, ['float32', 'uint32x2'], this.id);
+    validateSinglePackedView(props.parameters, ['float32'], this.id);
     validateRequirement(
       this.id,
       (props.times.format === 'uint32x2') === Boolean(props.timeOrigin),
       'word times need timeOrigin and float times must not have one'
     );
     if (props.timeOrigin) {
-      validatePackedView(props.timeOrigin, ['uint32'], this.id);
+      validateSinglePackedView(props.timeOrigin, ['uint32'], this.id);
       validateRequirement(
         this.id,
         props.timeOrigin.length >= 2,
@@ -151,9 +198,9 @@ export class GPUTrajectoryRestriction implements GPUCommandNodeProducer {
       );
     }
     for (const view of [props.offsets, props.output.status])
-      validatePackedView(view, ['uint32'], this.id);
-    validatePackedView(props.output.positions, ['float32x4'], this.id);
-    validatePackedView(props.output.relationships, ['uint32x4'], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
+    validateSinglePackedView(props.output.positions, ['float32x4'], this.id);
+    validateSinglePackedView(props.output.relationships, ['uint32x4'], this.id);
     const slots = props.intervalsPerSegment ?? 1;
     validateRequirement(
       this.id,
@@ -180,11 +227,11 @@ export class GPUTrajectoryRestriction implements GPUCommandNodeProducer {
         ),
         'compact outputs need compactPositions, compactSources, compactStatus and compactSummary'
       );
-      validatePackedView(props.output.compactIntervals, ['float32x2'], this.id);
-      validatePackedView(props.output.compactPositions!, ['float32x4'], this.id);
-      validatePackedView(props.output.compactSources!, ['uint32x2'], this.id);
-      validatePackedView(props.output.compactStatus!, ['uint32'], this.id);
-      validatePackedView(props.output.compactSummary!, ['uint32'], this.id);
+      validateSinglePackedView(props.output.compactIntervals, ['float32x2'], this.id);
+      validateSinglePackedView(props.output.compactPositions!, ['float32x4'], this.id);
+      validateSinglePackedView(props.output.compactSources!, ['uint32x2'], this.id);
+      validateSinglePackedView(props.output.compactStatus!, ['uint32'], this.id);
+      validateSinglePackedView(props.output.compactSummary!, ['uint32'], this.id);
       validateRequirement(
         this.id,
         props.output.compactPositions!.length === count &&
@@ -211,7 +258,7 @@ export class GPUTrajectoryRestriction implements GPUCommandNodeProducer {
     );
     if (props.pairs) {
       for (const view of [props.pairs.first, props.pairs.second, props.pairs.count])
-        if (view) validatePackedView(view, ['uint32'], this.id);
+        if (view) validateSinglePackedView(view, ['uint32'], this.id);
       validateRequirement(
         this.id,
         props.pairs.first.length === props.pairs.second.length,

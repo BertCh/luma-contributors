@@ -14,7 +14,7 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -84,12 +84,12 @@ export class GPUConvexStraightSkeleton implements GPUCommandNodeProducer {
     ) {
       throw new Error('Invalid wavefront parameters');
     }
-    validatePackedView(props.positions, ['float32x2'], this.id);
-    validatePackedView(props.ringOffsets, ['uint32'], this.id);
-    validatePackedView(props.output.segments, ['float32x4'], this.id);
-    validatePackedView(props.output.sourceEdges, ['uint32x2'], this.id);
-    validatePackedView(props.output.offsetPositions, ['float32x2'], this.id);
-    validatePackedView(props.output.status, ['uint32x4'], this.id);
+    validateSinglePackedView(props.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.ringOffsets, ['uint32'], this.id);
+    validateSinglePackedView(props.output.segments, ['float32x4'], this.id);
+    validateSinglePackedView(props.output.sourceEdges, ['uint32x2'], this.id);
+    validateSinglePackedView(props.output.offsetPositions, ['float32x2'], this.id);
+    validateSinglePackedView(props.output.status, ['uint32x4'], this.id);
     const rings = props.ringOffsets.length - 1;
     if (
       props.output.segments.length !== rings * this.segmentCapacity ||

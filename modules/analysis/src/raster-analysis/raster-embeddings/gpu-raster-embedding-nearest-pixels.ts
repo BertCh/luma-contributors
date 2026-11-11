@@ -33,7 +33,7 @@ export type GPURasterEmbeddingNearestPixelsProps = {
   dimensions: number;
   vectors: GraphDataView<'float32'>;
   /** Per-pixel QA; zero excludes the pixel from the candidates. A pixel with a non-finite component is excluded too. */
-  validity?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'>;
   /** Number of query vectors, in `[1, 64]`. */
   queryCount: number;
   /** Query vectors, `query * dimensions + band`. */
@@ -68,7 +68,7 @@ export class GPURasterEmbeddingNearestPixels {
       props.vectors,
       pixelCount,
       dimensions,
-      props.validity
+      props.mask
     );
     validateCapacity(id, 'queryCount', props.queryCount, 1, MAXIMUM_RASTER_EMBEDDING_QUERY_COUNT);
     validateCapacity(id, 'resultCount', props.resultCount);
@@ -79,7 +79,7 @@ export class GPURasterEmbeddingNearestPixels {
     );
     this.search = new GPUSimilaritySearch({
       id,
-      dataset: createRasterEmbeddingMatrix(props.vectors, pixelCount, dimensions, props.validity),
+      dataset: createRasterEmbeddingMatrix(props.vectors, pixelCount, dimensions, props.mask),
       queries: createRasterEmbeddingMatrix(props.queries, props.queryCount, dimensions),
       outputIds: output.pixelIds,
       outputScores: output.scores,

@@ -12,7 +12,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPULineGeometryFields,
@@ -147,12 +147,12 @@ export class GPUGeometryOrientation implements GPUCommandNodeProducer {
     if (props.mode !== 'reverse' && props.mode !== 'orient-polygons') {
       throw new Error(`${id} mode must be 'reverse' or 'orient-polygons'`);
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
     const {ringOffsets, polygonOffsets} = getOrientationLayout(props);
-    validatePackedView(ringOffsets, ['uint32'], `${id} ringOffsets`);
+    validateSinglePackedView(ringOffsets, ['uint32'], `${id} ringOffsets`);
     if (ringOffsets.length < 2) {
       throw new Error(`${id} ringOffsets must contain at least two rows`);
     }
@@ -161,12 +161,12 @@ export class GPUGeometryOrientation implements GPUCommandNodeProducer {
         throw new Error(`${id} 'orient-polygons' requires the four-level polygon layout`);
       }
       for (const name of ['polygonOffsets', 'featureOffsets'] as const) {
-        validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+        validateSinglePackedView(props[name], ['uint32'], `${id} ${name}`);
         if (props[name].length < 2) {
           throw new Error(`${id} ${name} must contain at least two rows`);
         }
       }
-      validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
       if (props.parameters.length < GPU_GEOMETRY_ORIENTATION_PARAMETER_LENGTH) {
         throw new Error(
           `${id} parameters must hold ${GPU_GEOMETRY_ORIENTATION_PARAMETER_LENGTH} float32 values`
@@ -174,12 +174,12 @@ export class GPUGeometryOrientation implements GPUCommandNodeProducer {
       }
     }
     const {output} = props;
-    validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+    validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
     if (output.positions.length !== props.positions.length) {
       throw new Error(`${id} output.positions length must equal positions length`);
     }
     if (output.reversedRings) {
-      validatePackedView(output.reversedRings, ['uint32'], `${id} output.reversedRings`);
+      validateSinglePackedView(output.reversedRings, ['uint32'], `${id} output.reversedRings`);
       if (output.reversedRings.length !== ringOffsets.length - 1) {
         throw new Error(`${id} output.reversedRings must hold one row per ring`);
       }

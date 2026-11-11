@@ -4,7 +4,10 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {GPUNetworkSnapping} from '../../../src/gpu-network/network-accessibility/index';
+import {
+  GPUNetworkSnapping,
+  GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK
+} from '../../../src/gpu-network/network-accessibility/index';
 import {createGPULocalFrame} from '../../../src/analysis-core/contracts/local-frame';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {addDriveTimeCatchmentRecipe} from '../../../src/gpu-network/recipes/drive-time-catchment-recipe';
@@ -163,4 +166,32 @@ it('drive-time recipe uses kilometer radii for both longitude/latitude metrics',
     sphereRadius: 6400
   });
   expect(snappings[0].spatialContext.sphereRadius).toBe(6400);
+});
+
+it('drive-time recipe still schedules the exact scan above the unindexed snapping limit', () => {
+  // 2^24 demand points on 16 edges are 2^28 point-edge tests, above the 2^27 a direct
+  // GPUNetworkSnapping accepts without candidateCapacity. This built before the limit existed.
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'drive-time-large'});
+  const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `drive-time-large-${serial++}`, format, length);
+  const recipe = addDriveTimeCatchmentRecipe(graph, {
+    topology: {
+      offsets: view('uint32', 5),
+      neighbors: view('uint32', 16),
+      weights: view('float32', 16),
+      nodePositions: view('float32x2', 4)
+    },
+    facilities: view('float32x2', 2),
+    demand: view('float32x2', 2 ** 24),
+    costBreaks: view('float32', 3)
+  });
+  const snappings = recipe.contributors.filter(
+    (contributor): contributor is GPUNetworkSnapping => contributor instanceof GPUNetworkSnapping
+  );
+  expect(snappings).toHaveLength(2);
+  expect(snappings[1].pointCount * snappings[1].edgeCount).toBeGreaterThan(
+    GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK
+  );
 });

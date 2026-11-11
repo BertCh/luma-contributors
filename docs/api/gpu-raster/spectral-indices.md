@@ -77,8 +77,9 @@ index is implicitly clipped, so valid results can lie outside `[-1, 1]`. An opti
 ## Usage
 
 ```typescript
-import {GPURasterEVI, type GPURasterBufferBand} from '@luma-contributors/analysis/raster-analysis';
+import {GPURasterEVI} from '@luma-contributors/analysis/raster-analysis';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 
 function addVegetationIndex(
   graph: GPUCommandGraph,

@@ -14,7 +14,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -51,9 +51,9 @@ export class GPUTrajectoryTrackRelativeTimes implements GPUCommandNodeProducer {
     this.id = props.id ?? 'trajectory-track-relative-times';
     this.props = props;
     const id = this.id;
-    validatePackedView(props.timestamps, ['uint32x2'], `${id} timestamps`);
-    validatePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
-    validatePackedView(props.output, ['float32'], `${id} output`);
+    validateSinglePackedView(props.timestamps, ['uint32x2'], `${id} timestamps`);
+    validateSinglePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateSinglePackedView(props.output, ['float32'], `${id} output`);
     validateViewLength(id, 'output', props.output, props.timestamps.length);
     validateRequirement(
       id,

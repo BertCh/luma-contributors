@@ -6,6 +6,8 @@
 export type ChangeDetectionCPUInput = {
   slices: Float32Array;
   mask?: Uint32Array;
+  /** Per-observation validity, `cell * sliceCount + slice`; zero makes the observation missing. */
+  validity?: Uint32Array;
   cellCount: number;
   sliceCount: number;
   bandCount?: number;
@@ -155,8 +157,12 @@ export function detectChangeOnCPU(input: ChangeDetectionCPUInput): ChangeDetecti
     changeDirection: new Float64Array(cellCount).fill(bandCount === 2 ? NaN : 0xffffffff),
     significance: new Uint32Array(cellCount)
   };
-  const valueAt = (cell: number, slice: number, band = 0) =>
-    slices[(cell * sliceCount + slice) * bandCount + band];
+  // A sample is missing (NaN here) when it is not finite or its observation is invalid.
+  const valueAt = (cell: number, slice: number, band = 0) => {
+    const value = slices[(cell * sliceCount + slice) * bandCount + band];
+    const isValid = !input.validity || input.validity[cell * sliceCount + slice] !== 0;
+    return Number.isFinite(value) && isValid ? value : NaN;
+  };
   const beforeValid = input.beforeSlice >= 0 && input.beforeSlice < sliceCount;
   const afterValid = input.afterSlice >= 0 && input.afterSlice < sliceCount;
   for (let cell = 0; cell < cellCount; cell++) {

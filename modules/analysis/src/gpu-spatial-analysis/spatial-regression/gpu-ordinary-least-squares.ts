@@ -18,7 +18,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH,
@@ -46,6 +46,8 @@ import {
 import type {GPUSolverStatusPort} from '../../analysis-core/contracts/index';
 import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../analysis-core/contracts/model-result';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 
 const OPERATION = 'GPUOrdinaryLeastSquares';
 const TILE_WORKGROUP_SIZE = 64;
@@ -127,24 +129,41 @@ export type GPUOrdinaryLeastSquaresProps = {
  * 1. Tile pass: one invocation per tile of `tileRowCount` consecutive rows sums the used rows in
  *    row order into a per-tile partial (plain f32; a tile is at most a few hundred rows, and the
  *    hot loop avoids depending on the compiler preserving compensation code). A merge pass then
- *    sums the partials in tile order with Kahan compensation. This yields the column means and the
+ *    sums the partials in a fixed pairwise order (`getPairwiseSumWGSL`; a float Kahan merge is
+ *    folded to a plain sum by the shader compiler of the test GPU). This yields the column means and the
  *    row count.
  * 2. A second tile and merge pass accumulates the centered cross-products `X'X`, `X'y`, `y'y`
- *    about those means, which removes the cancellation of the raw-moment formulation. The
- *    residual error left is the rounding of each mean (second order, negligible unless the mean is
- *    above roughly `1e3` standard deviations).
+ *    about those means, which removes the cancellation of the raw-moment formulation. A float32
+ *    mean misses the true mean of its column by up to a float32 step, so the same pass sums the
+ *    deviations of every column from its stored mean: each sum over `n` is the part of the mean
+ *    that float32 cannot hold. The cross-products are corrected by `n` times the product of two
+ *    such parts, which makes them moments about the true means.
  * 3. One single-invocation kernel scales the centered normal matrix to a correlation matrix (so
  *    columns of different units are comparable), adds the scaled ridge penalty, factors it with
  *    `choleskyFactor_p`, and solves for the slopes. A pivot below
  *    `GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE` reports status 1.
  * 4. A per-row pass writes residuals and fitted values from the centered form
- *    `e = (y - ybar) - sum(b (x - xbar))`, and a tile and merge pass sums `e^2`, `e^3`, `e^4`
- *    so the residual sum of squares is accurate even when `R2` is close to 1.
+ *    `e = (y - ybar) - sum(b (x - xbar)) - offset`, and a tile and merge pass sums `e^2`, `e^3`,
+ *    `e^4` so the residual sum of squares is accurate even when `R2` is close to 1. `offset` is
+ *    what the stored means miss of the true means, carried through the fit (the response part
+ *    minus the slopes times the predictor parts), so the residuals sum to zero as least squares
+ *    with an intercept requires, also for a response whose mean is thousands of residual
+ *    deviations (residuals of 0.002 around 10,000 match float64 to 1e-4 in the residual sum of
+ *    squares). `y - ybar` is fixed with `getRoundedDifference` first: the shader compiler of the
+ *    test GPU otherwise adds the offset to the mean, where it is lost. Each `x - xbar` of the
+ *    fitted value is fixed the same way, so the sum over the predictors cannot be regrouped
+ *    into `sum(b x) - sum(b xbar)` (not observed on the test GPU; the moment pass guards the
+ *    same difference). What remains is the float32 resolution of the inputs themselves.
  * 5. A single-invocation finish kernel computes the report. Standard errors are
  *    `sqrt(sigma2 * diag((X'X + lambda I)^-1))` (for a ridge fit they ignore the shrinkage bias),
  *    the intercept variance is `sigma2 (1/n + xbar' (X'X)^-1 xbar)`. The log-likelihood is
  *    Gaussian with `sigma2 = RSS / n`, floored at the smallest normal f32 so an exact fit stays
- *    finite. AIC and BIC count `p = predictorCount + 1` parameters (the GeoDa convention).
+ *    finite. AIC and BIC count `p = predictorCount + 1` parameters (the GeoDa convention): the
+ *    intercept and the predictors, not the error variance. The other estimators follow their own
+ *    reference: `GPUSpatialLagMaximumLikelihood` counts `p + 1` (it adds `rho`),
+ *    `GPUSpatialErrorMaximumLikelihood` counts `p` (not `lambda`), and the GWR family counts
+ *    `tr(S) + 1` (the error variance). Before comparing criteria across these models, put them
+ *    on one count: each uncounted parameter adds 2 to AIC and `ln(n)` to the Schwarz criterion.
  * 6. Jarque-Bera uses the residual moments about zero (the mean is zero with an intercept):
  *    `JB = n/6 (S^2 + (K - 3)^2 / 4)` with p-value `exp(-JB / 2)`. The same accumulation, solve and
  *    a small finish kernel run again with `e^2` as the response (no ridge) and give `R2_aux` of
@@ -195,8 +214,8 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
       1,
       SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT - 1
     );
-    validatePackedView(props.predictors, ['float32'], `${id} predictors`);
-    validatePackedView(props.response, ['float32'], `${id} response`);
+    validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
+    validateSinglePackedView(props.response, ['float32'], `${id} response`);
     const rows = props.response.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -205,13 +224,13 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
       throw new Error(`${id} predictors length must equal response length * predictorCount`);
     }
     if (props.mask) {
-      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal response length`);
       }
     }
     if (props.parameters) {
-      validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
       if (props.parameters.length < GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH) {
         throw new Error(
           `${id} parameters must hold ${GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH} float32 value`
@@ -220,25 +239,25 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
     }
     const coefficientCount = predictorCount + 1;
     for (const name of ['coefficients', 'standardErrors', 'tStatistics'] as const) {
-      validatePackedView(output[name], ['float32'], `${id} output.${name}`);
+      validateSinglePackedView(output[name], ['float32'], `${id} output.${name}`);
       if (output[name].length < coefficientCount) {
         throw new Error(`${id} output.${name} must hold predictorCount + 1 rows`);
       }
     }
-    validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+    validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
     if (output.summary.length < GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH) {
       throw new Error(
         `${id} output.summary must hold ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} float32 values`
       );
     }
-    validatePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
+    validateSinglePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
     if (output.status.code.length < 1) {
       throw new Error(`${id} output.status.code must hold one uint32 row`);
     }
     for (const name of ['residuals', 'fitted'] as const) {
       const view = output[name];
       if (view) {
-        validatePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length < rows) {
           throw new Error(`${id} output.${name} must hold one row per input row`);
         }
@@ -319,7 +338,7 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
         response: props.response,
         workspace: mainWorkspace,
         partialMeans: u32('partial-means', tileCount * (k + 2)),
-        partialMoments: u32('partial-moments', tileCount * layout.momentCount)
+        partialMoments: u32('partial-moments', tileCount * (layout.momentCount + k + 1))
       })
     );
     nodes.push(
@@ -360,14 +379,22 @@ ${getRowWGSL(rowCount, k, tileRowCount, Boolean(props.mask))}`,
   if (ws[wsOffset + W_STATUS] != 0u || !isRowValid(index)) {
     return;
   }
+  // Each x - xbar is rounded as written, as in the moment pass: a compiler that regrouped the sum
+  // into sum(b x) - sum(b xbar) would round every fitted value to a float32 step of b x.
   var fit = 0.0;
   for (var j = 0u; j < K; j++) {
-    fit = fit + wsGet(W_SLOPES + j) * (design[designOffset + index * K + j] - wsGet(W_MEANS + j));
+    fit = fit + wsGet(W_SLOPES + j) * getRoundedDifference(design[designOffset + index * K + j], wsGet(W_MEANS + j), ws[wsOffset + W_RUNTIME_ZERO]);
   }
   let meanResponse = wsGet(W_MEANS + K);
-  let residual = (response[responseOffset + index] - meanResponse) - fit;
+  // The stored means are float32: W_RESIDUAL_OFFSET is what they miss of the true means, carried
+  // through the fit, so the residuals sum to zero as least squares with an intercept requires.
+  let offset = wsGet(W_RESIDUAL_OFFSET);
+  // getRoundedDifference: without it the shader compiler of the test GPU adds the offset to the
+  // mean first, where it is lost below the float32 step of the mean.
+  let centeredResponse = getRoundedDifference(response[responseOffset + index], meanResponse, ws[wsOffset + W_RUNTIME_ZERO]);
+  let residual = (centeredResponse - fit) - offset;
   residualOut[residualOutOffset + index] = residual;
-  ${output.fitted ? 'fittedOut[fittedOutOffset + index] = meanResponse + fit;' : ''}
+  ${output.fitted ? 'fittedOut[fittedOutOffset + index] = meanResponse + (fit + offset);' : ''}
   squaredOut[squaredOutOffset + index] = residual * residual;`
       })
     );
@@ -415,14 +442,7 @@ ${FINITE_WGSL}`,
         invocationCount: RESIDUAL_SUM_COUNT,
         declarations: `${getSharedWGSL(layout, true)}
 const TILE_COUNT: u32 = ${tileCount}u;`,
-        body: `var sum = 0.0;
-  var compensation = 0.0;
-  for (var tile = 0u; tile < TILE_COUNT; tile++) {
-    let term = bitcast<f32>(partial[partialOffset + tile * ${RESIDUAL_SUM_COUNT}u + index]) - compensation;
-    let next = sum + term;
-    compensation = (next - sum) - term;
-    sum = next;
-  }
+        body: `${getPairwiseSumWGSL({count: 'TILE_COUNT', term: `bitcast<f32>(partial[partialOffset + sumItem * ${RESIDUAL_SUM_COUNT}u + index])`})}
   wsSet(W_RESIDUAL_SUMS + index, sum);`
       })
     );
@@ -457,7 +477,7 @@ ${getBelsleyConditionNumberWGSL(k)}`,
         response: squaredView,
         workspace: bpWorkspace,
         partialMeans: u32('bp-partial-means', tileCount * (k + 2)),
-        partialMoments: u32('bp-partial-moments', tileCount * layout.momentCount)
+        partialMoments: u32('bp-partial-moments', tileCount * (layout.momentCount + k + 1))
       })
     );
     nodes.push(
@@ -504,6 +524,12 @@ type WorkspaceLayout = {
   slopes: number;
   factor: number;
   moments: number;
+  /** Sums of the deviations of each column from its stored float32 mean (`k + 1` words). */
+  deviationSums: number;
+  /** `(true mean - stored mean)` of the response minus the same for the predictors times the slopes. */
+  residualOffset: number;
+  /** A `uint32` zero written at run time by the means merge (see `getRoundedDifference`). */
+  runtimeZero: number;
   /** Workspace length in 32-bit words. */
   length: number;
 };
@@ -512,7 +538,8 @@ type WorkspaceLayout = {
  * Word layout of one chain's `uint32` workspace (float32 values are stored with bitcast so counts
  * and statuses survive denormal handling):
  * means (k + 1), count, status, lambda, residual sums (3), scale (k), slopes (k), factor (k*k),
- * packed upper-triangular centered moments (d (d + 1) / 2 with d = k + 1).
+ * packed upper-triangular moments about the stored means (d (d + 1) / 2 with d = k + 1), the sums
+ * of the deviations from the stored means (d), the residual offset, and the runtime zero.
  */
 function getWorkspaceLayout(k: number): WorkspaceLayout {
   const d = k + 1;
@@ -526,6 +553,8 @@ function getWorkspaceLayout(k: number): WorkspaceLayout {
   const slopes = scale + k;
   const factor = slopes + k;
   const moments = factor + k * k;
+  const deviationSums = moments + momentCount;
+  const residualOffset = deviationSums + d;
   return {
     momentCount,
     means,
@@ -537,7 +566,10 @@ function getWorkspaceLayout(k: number): WorkspaceLayout {
     slopes,
     factor,
     moments,
-    length: moments + momentCount
+    deviationSums,
+    residualOffset,
+    runtimeZero: residualOffset + 1,
+    length: residualOffset + 2
   };
 }
 
@@ -564,6 +596,10 @@ const W_SCALE: u32 = ${layout.scale}u;
 const W_SLOPES: u32 = ${layout.slopes}u;
 const W_FACTOR: u32 = ${layout.factor}u;
 const W_MOMENTS: u32 = ${layout.moments}u;
+const W_DEVIATION_SUMS: u32 = ${layout.deviationSums}u;
+const W_RESIDUAL_OFFSET: u32 = ${layout.residualOffset}u;
+const W_RUNTIME_ZERO: u32 = ${layout.runtimeZero}u;
+${ROUNDED_DIFFERENCE_WGSL}
 ${FINITE_WGSL}
 fn wsGet(slot: u32) -> f32 {
   return bitcast<f32>(ws[wsOffset + slot]);
@@ -575,10 +611,18 @@ ${
 }`
     : ''
 }
+// The stored float32 mean of column c misses the true mean by getMeanCorrection(c), which is
+// exact to the rounding of a sum of small deviations.
+fn getMeanCorrection(column: u32) -> f32 {
+  return wsGet(W_DEVIATION_SUMS + column) / max(f32(ws[wsOffset + W_COUNT]), 1.0);
+}
+// Cross-product about the true means: the sum about the stored means less n times the product of
+// the two mean corrections.
 fn momentAt(first: u32, second: u32) -> f32 {
   let lo = min(first, second);
   let hi = max(first, second);
-  return wsGet(W_MOMENTS + lo * (2u * D - lo + 1u) / 2u + (hi - lo));
+  return wsGet(W_MOMENTS + lo * (2u * D - lo + 1u) / 2u + (hi - lo))
+    - wsGet(W_DEVIATION_SUMS + first) * getMeanCorrection(second);
 }
 `;
 }
@@ -640,14 +684,8 @@ function getAccumulationNodes<Parameters>(
 ${getRowWGSL(rowCount, k, tileRowCount, hasMask)}`;
   const mergeDeclarations = `${getSharedWGSL(layout, true)}
 const TILE_COUNT: u32 = ${tileCount}u;`;
-  const mergeLoop = (stride: string) => `var sum = 0.0;
-  var compensation = 0.0;
-  for (var tile = 0u; tile < TILE_COUNT; tile++) {
-    let term = bitcast<f32>(partial[partialOffset + tile * ${stride} + index]) - compensation;
-    let next = sum + term;
-    compensation = (next - sum) - term;
-    sum = next;
-  }`;
+  const mergeLoop = (stride: string) =>
+    `${getPairwiseSumWGSL({count: 'TILE_COUNT', term: `bitcast<f32>(partial[partialOffset + sumItem * ${stride} + index])`})}`;
   return [
     createKernel(graph, {
       id: `${prefix}-means-tiles`,
@@ -691,6 +729,8 @@ ${getRowWGSL(rowCount, k, tileRowCount, hasMask)}`,
   wsSet(W_MEANS + index, select(0.0, sum / f32(rows), rows > 0u));
   if (index == 0u) {
     ws[wsOffset + W_COUNT] = rows;
+    // A zero the compiler cannot see: the runtime zero of getRoundedDifference.
+    ws[wsOffset + W_RUNTIME_ZERO] = 0u;
   }`
     }),
     createKernel(graph, {
@@ -710,16 +750,20 @@ ${getRowWGSL(rowCount, k, tileRowCount, hasMask)}`,
   }
   let firstRow = index * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROW_COUNT);
-  var accumulator: array<f32, ${momentCount}>;
+  // Each deviation is rounded as written (getRoundedDifference): the shader compiler of the test
+  // GPU otherwise sums the raw values of a tile and subtracts the mean once, which loses the
+  // deviation sums to the float32 step of a tile total.
+  let runtimeZero = ws[wsOffset + W_RUNTIME_ZERO];
+  var accumulator: array<f32, ${momentCount + d}>;
   var centered: array<f32, ${d}>;
   for (var row = firstRow; row < lastRow; row++) {
     if (!isRowValid(row)) {
       continue;
     }
     for (var j = 0u; j < ROW_K; j++) {
-      centered[j] = design[designOffset + row * ROW_K + j] - means[j];
+      centered[j] = getRoundedDifference(design[designOffset + row * ROW_K + j], means[j], runtimeZero);
     }
-    centered[ROW_K] = response[responseOffset + row] - means[ROW_K];
+    centered[ROW_K] = getRoundedDifference(response[responseOffset + row], means[ROW_K], runtimeZero);
     var slot = 0u;
     for (var first = 0u; first < D; first++) {
       for (var second = first; second < D; second++) {
@@ -727,18 +771,24 @@ ${getRowWGSL(rowCount, k, tileRowCount, hasMask)}`,
         slot = slot + 1u;
       }
     }
+    // The deviations from the stored float32 means do not sum to zero: their sums give the part
+    // of each true mean that float32 cannot hold.
+    for (var column = 0u; column < D; column++) {
+      accumulator[${momentCount}u + column] = accumulator[${momentCount}u + column] + centered[column];
+    }
   }
-  for (var slot = 0u; slot < ${momentCount}u; slot++) {
-    partial[partialOffset + index * ${momentCount}u + slot] = bitcast<u32>(accumulator[slot]);
+  for (var slot = 0u; slot < ${momentCount + d}u; slot++) {
+    partial[partialOffset + index * ${momentCount + d}u + slot] = bitcast<u32>(accumulator[slot]);
   }`
     }),
     createKernel(graph, {
       id: `${prefix}-moments-merge`,
       variant: 'moments-merge',
       bindings: [read('partial', props.partialMoments, 'u32'), writeWorkspace(workspace)],
-      invocationCount: momentCount,
+      // The deviation sums follow the moments in the partials and in the workspace.
+      invocationCount: momentCount + d,
       declarations: mergeDeclarations,
-      body: `${mergeLoop(`${momentCount}u`)}
+      body: `${mergeLoop(`${momentCount + d}u`)}
   wsSet(W_MOMENTS + index, sum);`
     })
   ];
@@ -793,10 +843,13 @@ function getSolveBody(k: number, hasRidge: boolean): string {
     wsSet(W_FACTOR + i, a[i]);
   }
   choleskySolve_${k}(&a, &rhs);
+  var residualOffset = getMeanCorrection(K);
   for (var i = 0u; i < K; i++) {
     wsSet(W_SCALE + i, scale[i]);
     wsSet(W_SLOPES + i, rhs[i] / scale[i]);
+    residualOffset = residualOffset - (rhs[i] / scale[i]) * getMeanCorrection(i);
   }
+  wsSet(W_RESIDUAL_OFFSET, residualOffset);
   ws[wsOffset + W_STATUS] = 0u;`;
 }
 
@@ -833,6 +886,7 @@ function getFinishBody(k: number): string {
     intercept = intercept - wsGet(W_SLOPES + i) * wsGet(W_MEANS + i);
     u[i] = wsGet(W_MEANS + i) / wsGet(W_SCALE + i);
   }
+  intercept = intercept + wsGet(W_RESIDUAL_OFFSET);
   coefficientsOut[coefficientsOutOffset] = intercept;
   for (var i = 0u; i < K; i++) {
     coefficientsOut[coefficientsOutOffset + 1u + i] = wsGet(W_SLOPES + i);

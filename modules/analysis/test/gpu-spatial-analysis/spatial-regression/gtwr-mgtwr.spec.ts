@@ -138,7 +138,19 @@ for (const fixture of oracle.cases) {
     // Summary slots follow GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY: RSS, trace, AICc, R2, n, ..., sigma2, llf.
     close(result.summary[0], fixture.rss, 2e-3, 'rss');
     close(result.summary[1], fixture.trace, 2e-3, 'trace');
-    close(result.summary[2], fixture.aicc, 2e-3, 'aicc');
+    // The summary AICc is the GWR (mgwr) formula evaluated on mgtwr's log-likelihood and trace:
+    // -2 llf + 2 n (tr + 1) / (n - tr - 2). mgtwr's own aicc differs by a known penalty gap.
+    const penaltyGap =
+      (2 * fixture.rows * (fixture.trace + 1)) / (fixture.rows - fixture.trace - 2) -
+      (2 * (fixture.trace + 1) * (fixture.rows - 1)) / (fixture.rows - fixture.trace - 1);
+    close(
+      result.summary[2],
+      -2 * fixture.llf +
+        (2 * fixture.rows * (fixture.trace + 1)) / (fixture.rows - fixture.trace - 2),
+      2e-3,
+      'aicc'
+    );
+    close(result.summary[2] - fixture.aicc, penaltyGap, 2e-2, 'aicc gap to mgtwr');
     close(result.summary[3], fixture.r2, 2e-3, 'r2');
     expect(result.summary[4]).toBe(fixture.rows);
     close(result.summary[7], fixture.sigma2, 3e-3, 'sigma2');

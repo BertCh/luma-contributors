@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, GPUHistogram} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -504,6 +504,112 @@ it('GPUColumnProfile supports automatic and fixed histogram domains', async () =
     expectParity(await fixture.run(domains), scene, domains);
   }
   fixture.destroy();
+});
+
+/** Counts of the official `GPUHistogram` over a literal domain, in a graph of its own. */
+async function runOfficialHistogram(
+  device: Device,
+  values: Float32Array,
+  domain: readonly [number, number],
+  binCount: number
+): Promise<number[]> {
+  const graph = new GPUCommandGraph(device, {id: 'official-histogram-graph'});
+  const inputBuffer = createInputBuffer(device, values);
+  const outputBuffer = createOutputBuffer(device, binCount);
+  graph.add(
+    new GPUHistogram({
+      id: 'official-histogram',
+      input: importGraphBuffer(graph, 'official-input', inputBuffer, 'float32', values.length),
+      output: importGraphBuffer(graph, 'official-output', outputBuffer, 'uint32', binCount),
+      domain
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    return Array.from(await readUint32(outputBuffer, binCount));
+  } finally {
+    compiled.destroy();
+    inputBuffer.destroy();
+    outputBuffer.destroy();
+  }
+}
+
+it('GPUColumnProfile puts a value on a bin edge in the upper bin, as the official GPUHistogram', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Values on a 0.125 grid over [-3.5, 12.25] in 30 bins. The bin width is 15.75 / 30 = 0.525,
+  // so value i sits at i * 0.125 / 0.525 = 5 i / 21 bins from the minimum: in integers,
+  // bin = floor(5 i / 21), and the maximum (i = 126) joins the last bin. Every sixth edge is a
+  // grid value: i = 21 is -0.875, exactly edge 5, and belongs to bin 5.
+  const binCount = 30;
+  const domain = [-3.5, 12.25] as const;
+  const values = Float32Array.from({length: 127}, (_, index) => -3.5 + 0.125 * index);
+  const expected = new Array<number>(binCount).fill(0);
+  for (let index = 0; index < values.length; index++) {
+    expected[Math.min(Math.floor((5 * index) / 21), binCount - 1)]++;
+  }
+  expect(expected.slice(0, 7)).toEqual([5, 4, 4, 4, 4, 5, 4]);
+  const scene: Scene = {
+    columns: [{kind: 'numeric', values}],
+    histogramBinCount: binCount,
+    precision: 6,
+    topCategoryCount: 1
+  };
+  const fixture = createFixture(device, scene);
+  try {
+    const fixed = await fixture.run([domain]);
+    expect(Array.from(fixed.histograms), 'fixed domain').toEqual(expected);
+    // The automatic domain is the finite extent, the same interval.
+    const automatic = await fixture.run();
+    expect(Array.from(automatic.histograms), 'automatic domain').toEqual(expected);
+    expect(await runOfficialHistogram(device, values, domain, binCount), 'official').toEqual(
+      expected
+    );
+  } finally {
+    fixture.destroy();
+  }
+
+  // A domain near the float32 range: (v + 1e38) / 2e38 * 16 gives bins 8, 8, 4 and 12. (The
+  // official class with a GPU-resident domain view puts all four in bin 0 on the adapter this
+  // was written on; with a literal domain it agrees.)
+  const wideValues = Float32Array.of(0, 1, -5e37, 5e37);
+  const wideFixture = createFixture(device, {
+    columns: [{kind: 'numeric', values: wideValues}],
+    histogramBinCount: 16,
+    precision: 6,
+    topCategoryCount: 1
+  });
+  try {
+    const wide = await wideFixture.run([[-1e38, 1e38]]);
+    const wideExpected = new Array<number>(16).fill(0);
+    wideExpected[8] = 2;
+    wideExpected[4] = 1;
+    wideExpected[12] = 1;
+    expect(Array.from(wide.histograms), 'wide domain').toEqual(wideExpected);
+    expect(await runOfficialHistogram(device, wideValues, [-1e38, 1e38], 16)).toEqual(wideExpected);
+  } finally {
+    wideFixture.destroy();
+  }
+
+  // Parity with the official class on values that do not sit on a grid of the domain.
+  const scattered = createNumeric('ties', 77, 5000);
+  const scatteredDomain = [-7.3, 7.9] as const;
+  const scatteredScene: Scene = {
+    columns: [{kind: 'numeric', values: scattered}],
+    histogramBinCount: 23,
+    precision: 6,
+    topCategoryCount: 1
+  };
+  const scatteredFixture = createFixture(device, scatteredScene);
+  try {
+    const local = await scatteredFixture.run([scatteredDomain]);
+    const official = await runOfficialHistogram(device, scattered, scatteredDomain, 23);
+    expect(official.reduce((total, count) => total + count, 0)).toBeGreaterThan(4000);
+    expect(Array.from(local.histograms)).toEqual(official);
+  } finally {
+    scatteredFixture.destroy();
+  }
 });
 
 it('GPUColumnProfile runs several frames on one compiled graph without rebuilding', async () => {

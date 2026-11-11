@@ -15,7 +15,7 @@ import {
   getStorageBindingElementLimit,
   validateCapacity,
   validateMaximumCount,
-  validatePackedView
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUSpatialWeightsTranspose} from '../spatial-weights/gpu-spatial-weights-transpose';
 import {
@@ -84,7 +84,7 @@ export function validateRegionalizationParameters(
   parameters: GraphDataView,
   length: number
 ): void {
-  validatePackedView(parameters, ['uint32'], `${id} parameters`);
+  validateSinglePackedView(parameters, ['uint32'], `${id} parameters`);
   if (parameters.length < length) {
     throw new Error(`${id} parameters must hold ${length} words`);
   }
@@ -94,8 +94,11 @@ export function validateRegionalizationParameters(
  * Standardizes every column of a row-major attribute table to mean 0 and population standard
  * deviation 1 (divisor `n`, the `sklearn.preprocessing.StandardScaler` convention, not the sample
  * divisor `n - 1`). Statistics use the finite entries of the column only, so one missing value
- * does not turn the whole column into NaN; non-finite entries stay non-finite in the output. A
- * constant column becomes all zero.
+ * does not turn the whole column into NaN; non-finite entries are copied to the output as they
+ * are. A constant column becomes exactly zero: the column is first taken about its first finite
+ * entry, so the mean of a constant column is exactly 0 and not a rounded value one last place
+ * away from every entry. This is the one standardizer of AZP, Ward, max-p and the minimum
+ * spanning tree.
  *
  * One workgroup per column: each lane sums a strided share of the rows and a fixed binary tree
  * merges the lanes (deterministic order); the variance is a second pass about the mean.
@@ -147,24 +150,36 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
 }`,
     body: `let column = index / LANES;
   let lane = localInvocationIndex;
+  // Center before reducing: a rounded mean of a constant column can otherwise
+  // create a nonzero deviation and normalize every row to +1 or -1. The origin is the first
+  // finite entry; statistics skip non-finite entries, which stay as they are.
+  var origin = 0.0;
+  for (var row = 0u; row < ROWS; row++) {
+    let candidate = values[valuesOffset + row * COLUMNS + column];
+    if (isFiniteFloat(candidate)) { origin = candidate; break; }
+  }
   var sum = 0.0;
   var count = 0.0;
   for (var row = lane; row < ROWS; row += LANES) {
     let value = values[valuesOffset + row * COLUMNS + column];
-    if (isFiniteFloat(value)) { sum += value; count += 1.0; }
+    if (isFiniteFloat(value)) { sum += value - origin; count += 1.0; }
   }
   let finiteCount = max(reduceLanes(lane, count), 1.0);
   let mean = reduceLanes(lane, sum) / finiteCount;
   var squares = 0.0;
   for (var row = lane; row < ROWS; row += LANES) {
     let value = values[valuesOffset + row * COLUMNS + column];
-    if (isFiniteFloat(value)) { squares += (value - mean) * (value - mean); }
+    if (isFiniteFloat(value)) {
+      let delta = (value - origin) - mean;
+      squares += delta * delta;
+    }
   }
   let deviation = sqrt(reduceLanes(lane, squares) / finiteCount);
   let inverse = select(0.0, 1.0 / deviation, deviation > 1e-20);
   for (var row = lane; row < ROWS; row += LANES) {
+    let value = values[valuesOffset + row * COLUMNS + column];
     scaled[scaledOffset + row * COLUMNS + column] =
-      (values[valuesOffset + row * COLUMNS + column] - mean) * inverse;
+      select(value, ((value - origin) - mean) * inverse, isFiniteFloat(value));
   }`
   });
 }

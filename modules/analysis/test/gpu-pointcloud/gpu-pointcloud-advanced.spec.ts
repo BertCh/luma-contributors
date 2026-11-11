@@ -17,7 +17,11 @@ import {makeSpatialFixture, readFloats, readIntegers} from '../spatial-test-util
 import pdalOracle from './fixtures/pdal-pointcloud.json';
 import changeOracle from './fixtures/change.json';
 import {requireTestDevice} from '../utils/require-test-device';
-
+import {
+  arrangeRasterRows,
+  POINT_CLOUD_ROW_DIRECTIONS,
+  withPointCloudRowDirection
+} from './row-direction-fixtures';
 it('owned rows with full halos reproduce monolithic neighborhoods and flag insufficient support', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -58,53 +62,63 @@ it('owned rows with full halos reproduce monolithic neighborhoods and flag insuf
   }
 });
 
-it('bilinear HAG reproduces a tilted plane while bounded IDW fills missing cells and preserves negative heights', async () => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  const fixture = makeSpatialFixture(device);
-  try {
-    const positions = fixture.view('float32x3', new Float32Array([1, 1, 5, 0.5, 0.5, 0]));
-    const terrain = fixture.view('float32', new Float32Array([1, 3, 3, 5]));
-    const coverage = fixture.view('uint32', new Uint32Array([1, 1, 1, 1]));
-    const heights = fixture.view('float32', new Float32Array(2));
-    const status = fixture.view('uint32', new Uint32Array(2));
-    fixture.graph.add(
-      new GPUPointCloudHeight({
-        positions: positions.view,
-        terrain: terrain.view,
-        coverage: coverage.view,
-        grid: {origin: [0, 0], cellSize: 1, width: 2, height: 2},
-        interpolation: {method: 'bilinear'},
-        heights: heights.view,
-        status: status.view
-      })
-    );
-    const filled = fixture.view('float32', new Float32Array(2));
-    const filledStatus = fixture.view('uint32', new Uint32Array(2));
-    fixture.graph.add(
-      new GPUPointCloudHeight({
-        id: 'idw-height',
-        positions: positions.view,
-        terrain: terrain.view,
-        coverage: coverage.view,
-        grid: {origin: [0, 0], cellSize: 1, width: 2, height: 2},
-        interpolation: {method: 'idw', radius: 2, power: 2, minimumSupport: 2},
-        heights: filled.view,
-        status: filledStatus.view
-      })
-    );
-    await fixture.run();
-    expect(await readFloats(heights.buffer)).toEqual([2, -1]);
-    expect(await readIntegers(status.buffer)).toEqual([0, 0]);
-    coverage.buffer.write(new Uint32Array([1, 1, 1, 0]));
-    await fixture.run();
-    expect(await readIntegers(status.buffer)).toEqual([2, 0]);
-    expect((await readFloats(filled.buffer))[0]).toBeCloseTo(5 - 7 / 3, 5);
-    expect((await readFloats(filled.buffer))[1]).toBe(-1);
-  } finally {
-    fixture.destroy();
-  }
-});
+for (const {label, rowDirection} of POINT_CLOUD_ROW_DIRECTIONS) {
+  it(`bilinear HAG reproduces a tilted plane while bounded IDW fills missing cells and preserves negative heights, rows ${label}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = makeSpatialFixture(device);
+    try {
+      const positions = fixture.view('float32x3', new Float32Array([1, 1, 5, 0.5, 0.5, 0]));
+      // The rasters are written with row 0 at the minimum y and laid out for the direction under test.
+      const arrange = (values: number[]) => arrangeRasterRows(values, 2, 2, rowDirection);
+      const terrain = fixture.view('float32', new Float32Array(arrange([1, 3, 3, 5])));
+      const coverage = fixture.view('uint32', new Uint32Array([1, 1, 1, 1]));
+      const heights = fixture.view('float32', new Float32Array(2));
+      const status = fixture.view('uint32', new Uint32Array(2));
+      fixture.graph.add(
+        new GPUPointCloudHeight({
+          positions: positions.view,
+          terrain: terrain.view,
+          coverage: coverage.view,
+          grid: withPointCloudRowDirection(
+            {origin: [0, 0], cellSize: 1, width: 2, height: 2},
+            rowDirection
+          ),
+          interpolation: {method: 'bilinear'},
+          heights: heights.view,
+          status: status.view
+        })
+      );
+      const filled = fixture.view('float32', new Float32Array(2));
+      const filledStatus = fixture.view('uint32', new Uint32Array(2));
+      fixture.graph.add(
+        new GPUPointCloudHeight({
+          id: 'idw-height',
+          positions: positions.view,
+          terrain: terrain.view,
+          coverage: coverage.view,
+          grid: withPointCloudRowDirection(
+            {origin: [0, 0], cellSize: 1, width: 2, height: 2},
+            rowDirection
+          ),
+          interpolation: {method: 'idw', radius: 2, power: 2, minimumSupport: 2},
+          heights: filled.view,
+          status: filledStatus.view
+        })
+      );
+      await fixture.run();
+      expect(await readFloats(heights.buffer)).toEqual([2, -1]);
+      expect(await readIntegers(status.buffer)).toEqual([0, 0]);
+      coverage.buffer.write(new Uint32Array(arrange([1, 1, 1, 0])));
+      await fixture.run();
+      expect(await readIntegers(status.buffer)).toEqual([2, 0]);
+      expect((await readFloats(filled.buffer))[0]).toBeCloseTo(5 - 7 / 3, 5);
+      expect((await readFloats(filled.buffer))[1]).toBe(-1);
+    } finally {
+      fixture.destroy();
+    }
+  });
+}
 
 it('indexed robust ICP merges multiple moment blocks and rejects Tukey outliers', async () => {
   const device = await getWebGPUTestDevice();
@@ -463,7 +477,7 @@ it('block-merged statistical filtering matches independent population moments ac
         capacity: 1,
         standardDeviations: 1.5,
         meanDistances: means.view,
-        mask: mask.view
+        validity: mask.view
       })
     );
     const supported = distances.filter((_, index) => support[index]);
@@ -514,7 +528,7 @@ it('outlier classification and coincident-cell height sampling agree with actual
         capacity: 3,
         standardDeviations: 2,
         meanDistances: means.view,
-        mask: mask.view
+        validity: mask.view
       })
     );
     const heightPositions = fixture.view(
@@ -605,55 +619,64 @@ it('change uncertainty overflow invalidates finite observations and recovers on 
   }
 });
 
-it.each([
-  0.001, 1, 1000
-])('IDW height weights remain finite near cell centres at cell size %s', async cellSize => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  const fixture = makeSpatialFixture(device);
-  try {
-    const positions = fixture.view(
-      'float32x3',
-      new Float32Array([
-        (0.5 + 1e-6) * cellSize,
-        0.5 * cellSize,
-        0,
-        (1.5 - 1e-6) * cellSize,
-        1.5 * cellSize,
-        0,
-        cellSize,
-        cellSize,
-        0,
-        0.5 * cellSize,
-        0.5 * cellSize,
-        0
-      ])
-    );
-    const terrain = fixture.view('float32', new Float32Array([10, 20, 30, 40]));
-    const coverage = fixture.view('uint32', new Uint32Array([1, 1, 1, 1]));
-    const heights = fixture.view('float32', new Float32Array(4));
-    const status = fixture.view('uint32', new Uint32Array(4));
-    fixture.graph.add(
-      new GPUPointCloudHeight({
-        positions: positions.view,
-        terrain: terrain.view,
-        coverage: coverage.view,
-        grid: {origin: [0, 0], cellSize, width: 2, height: 2},
-        interpolation: {method: 'idw', radius: 2 * cellSize, power: 8},
-        heights: heights.view,
-        status: status.view
-      })
-    );
-    await fixture.run();
-    expect(await readIntegers(status.buffer)).toEqual([0, 0, 0, 0]);
-    const actual = await readFloats(heights.buffer);
-    [-10, -40, -25, -10].forEach((expected, index) =>
-      expect(actual[index]).toBeCloseTo(expected, 4)
-    );
-  } finally {
-    fixture.destroy();
-  }
-});
+for (const {label, rowDirection} of POINT_CLOUD_ROW_DIRECTIONS) {
+  it.each([
+    0.001, 1, 1000
+  ])(`IDW height weights remain finite near cell centres at cell size %s, rows ${label}`, async cellSize => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = makeSpatialFixture(device);
+    try {
+      const positions = fixture.view(
+        'float32x3',
+        new Float32Array([
+          (0.5 + 1e-6) * cellSize,
+          0.5 * cellSize,
+          0,
+          (1.5 - 1e-6) * cellSize,
+          1.5 * cellSize,
+          0,
+          cellSize,
+          cellSize,
+          0,
+          0.5 * cellSize,
+          0.5 * cellSize,
+          0
+        ])
+      );
+      // Written with row 0 at the minimum y: the cell under (0.5, 0.5) holds 10.
+      const terrain = fixture.view(
+        'float32',
+        new Float32Array(arrangeRasterRows([10, 20, 30, 40], 2, 2, rowDirection))
+      );
+      const coverage = fixture.view('uint32', new Uint32Array([1, 1, 1, 1]));
+      const heights = fixture.view('float32', new Float32Array(4));
+      const status = fixture.view('uint32', new Uint32Array(4));
+      fixture.graph.add(
+        new GPUPointCloudHeight({
+          positions: positions.view,
+          terrain: terrain.view,
+          coverage: coverage.view,
+          grid: withPointCloudRowDirection(
+            {origin: [0, 0], cellSize, width: 2, height: 2},
+            rowDirection
+          ),
+          interpolation: {method: 'idw', radius: 2 * cellSize, power: 8},
+          heights: heights.view,
+          status: status.view
+        })
+      );
+      await fixture.run();
+      expect(await readIntegers(status.buffer)).toEqual([0, 0, 0, 0]);
+      const actual = await readFloats(heights.buffer);
+      [-10, -40, -25, -10].forEach((expected, index) =>
+        expect(actual[index]).toBeCloseTo(expected, 4)
+      );
+    } finally {
+      fixture.destroy();
+    }
+  });
+}
 
 it('voxel sufficient-statistic merges avoid overflow for opposite finite centroids and attributes', async () => {
   const device = await getWebGPUTestDevice();
@@ -744,7 +767,7 @@ it('statistical filtering keeps finite population moments when their unnormalize
         capacity: 1,
         standardDeviations: 2,
         meanDistances: meanDistances.view,
-        mask: mask.view
+        validity: mask.view
       })
     );
     await fixture.run();
@@ -763,64 +786,73 @@ it('statistical filtering keeps finite population moments when their unnormalize
   }
 });
 
-it.each([
-  'cell',
-  'bilinear',
-  'idw'
-] as const)('height %s sampling rejects overflowing differences and recovers on resident updates', async method => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  const fixture = makeSpatialFixture(device);
-  try {
-    const magnitude = Math.fround(3e38);
-    const positions = fixture.view(
-      'float32x3',
-      new Float32Array([1, 1, magnitude, 1, 1, -magnitude, 0.5, 0.5, 0])
-    );
-    const terrain = fixture.view('float32', new Float32Array(4).fill(magnitude));
-    const coverage = fixture.view('uint32', new Uint32Array(4).fill(1));
-    const heights = fixture.view('float32', new Float32Array(3));
-    const status = fixture.view('uint32', new Uint32Array(3));
-    fixture.graph.add(
-      new GPUPointCloudHeight({
-        positions: positions.view,
-        terrain: terrain.view,
-        coverage: coverage.view,
-        grid: {origin: [0, 0], cellSize: 1, width: 2, height: 2},
-        interpolation:
-          method === 'idw'
-            ? {method, radius: 2, power: 8}
-            : method === 'bilinear'
-              ? {method}
-              : undefined,
-        heights: heights.view,
-        status: status.view
-      })
-    );
-    for (const sign of [1, -1]) {
-      terrain.buffer.write(new Float32Array(4).fill(sign * magnitude));
-      await fixture.run();
-      expect(await readIntegers(status.buffer)).toEqual(sign === 1 ? [0, 3, 0] : [3, 0, 0]);
-      const actual = await readFloats(heights.buffer);
-      expect(actual.every(Number.isFinite)).toBe(true);
-      expect(actual[sign === 1 ? 1 : 0]).toBe(0);
-      expect(Math.abs(actual[sign === 1 ? 0 : 1]) / magnitude).toBeLessThan(1e-6);
-      expect(actual[2] / magnitude).toBeCloseTo(-sign, 6);
-    }
-    terrain.buffer.write(new Float32Array(4));
-    await fixture.run();
-    expect(await readIntegers(status.buffer)).toEqual([0, 0, 0]);
-    expect(await readFloats(heights.buffer)).toEqual([magnitude, -magnitude, 0]);
-    if (method !== 'cell') {
-      terrain.buffer.write(new Float32Array([magnitude, -magnitude, -magnitude, magnitude]));
+for (const {label, rowDirection} of POINT_CLOUD_ROW_DIRECTIONS) {
+  it.each([
+    'cell',
+    'bilinear',
+    'idw'
+  ] as const)(`height %s sampling rejects overflowing differences and recovers on resident updates, rows ${label}`, async method => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = makeSpatialFixture(device);
+    try {
+      const magnitude = Math.fround(3e38);
+      const positions = fixture.view(
+        'float32x3',
+        new Float32Array([1, 1, magnitude, 1, 1, -magnitude, 0.5, 0.5, 0])
+      );
+      const terrain = fixture.view('float32', new Float32Array(4).fill(magnitude));
+      const coverage = fixture.view('uint32', new Uint32Array(4).fill(1));
+      const heights = fixture.view('float32', new Float32Array(3));
+      const status = fixture.view('uint32', new Uint32Array(3));
+      fixture.graph.add(
+        new GPUPointCloudHeight({
+          positions: positions.view,
+          terrain: terrain.view,
+          coverage: coverage.view,
+          grid: withPointCloudRowDirection(
+            {origin: [0, 0], cellSize: 1, width: 2, height: 2},
+            rowDirection
+          ),
+          interpolation:
+            method === 'idw'
+              ? {method, radius: 2, power: 8}
+              : method === 'bilinear'
+                ? {method}
+                : undefined,
+          heights: heights.view,
+          status: status.view
+        })
+      );
+      for (const sign of [1, -1]) {
+        terrain.buffer.write(new Float32Array(4).fill(sign * magnitude));
+        await fixture.run();
+        expect(await readIntegers(status.buffer)).toEqual(sign === 1 ? [0, 3, 0] : [3, 0, 0]);
+        const actual = await readFloats(heights.buffer);
+        expect(actual.every(Number.isFinite)).toBe(true);
+        expect(actual[sign === 1 ? 1 : 0]).toBe(0);
+        expect(Math.abs(actual[sign === 1 ? 0 : 1]) / magnitude).toBeLessThan(1e-6);
+        expect(actual[2] / magnitude).toBeCloseTo(-sign, 6);
+      }
+      terrain.buffer.write(new Float32Array(4));
       await fixture.run();
       expect(await readIntegers(status.buffer)).toEqual([0, 0, 0]);
-      const actual = await readFloats(heights.buffer);
-      [1, -1, -1].forEach((expected, index) =>
-        expect(actual[index] / magnitude).toBeCloseTo(expected, 6)
-      );
+      expect(await readFloats(heights.buffer)).toEqual([magnitude, -magnitude, 0]);
+      if (method !== 'cell') {
+        terrain.buffer.write(
+          new Float32Array(
+            arrangeRasterRows([magnitude, -magnitude, -magnitude, magnitude], 2, 2, rowDirection)
+          )
+        );
+        await fixture.run();
+        expect(await readIntegers(status.buffer)).toEqual([0, 0, 0]);
+        const actual = await readFloats(heights.buffer);
+        [1, -1, -1].forEach((expected, index) =>
+          expect(actual[index] / magnitude).toBeCloseTo(expected, 6)
+        );
+      }
+    } finally {
+      fixture.destroy();
     }
-  } finally {
-    fixture.destroy();
-  }
-});
+  });
+}

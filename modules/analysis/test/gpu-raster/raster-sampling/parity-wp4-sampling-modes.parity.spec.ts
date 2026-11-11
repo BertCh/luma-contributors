@@ -49,9 +49,7 @@ for (const scene of samplingCases) {
                 omitMask && !validity[index] ? -9999 : value
               )
             ),
-            validity: omitMask
-              ? undefined
-              : rig.input('validity', 'uint32', new Uint32Array(validity)),
+            mask: omitMask ? undefined : rig.input('validity', 'uint32', new Uint32Array(validity)),
             noDataValue: -9999,
             positions: rig.input('points', 'float32x2', new Float32Array(points)),
             pointCount: omitCount ? undefined : activeCount.importToGraph(rig.graph),

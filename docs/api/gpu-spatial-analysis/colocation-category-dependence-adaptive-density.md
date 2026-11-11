@@ -17,9 +17,11 @@ For a row `i` of category `a`, the neighbour share `f(i, b)` is the weight on ne
 
 ## `GPULocalCategoryDependence`
 
-Reference: Boots (2003), "Developing local measures of spatial association for categorical data", Journal of Geographical Systems 5, in the form of `licd_multi` of the R package spdep (GPL; R is not installed, so there is no R fixture). Implemented: the local composition part. Per row (`GPU_LOCAL_CATEGORY_DEPENDENCE_COLUMNS`): own-category neighbours, neighbours, their proportion, the global share `N_c / N`, the binomial upper tail `P(X >= like)` for `Binomial(neighbours, N_c / N)` (spdep `pbinom_like_BW`, alternative greater), and a z score (a column of this class, not of spdep). Weight values are ignored (binary).
+Reference: Boots (2003), "Developing local measures of spatial association for categorical data", Journal of Geographical Systems 5, which defines the LICD family. Implemented: a local composition measure. Per row (`GPU_LOCAL_CATEGORY_DEPENDENCE_COLUMNS`), with the row itself never counted: own-category neighbours (`likeCount`), neighbours with a category (`neighborCount`, `k`), the local share `likeCount / k` (`proportion`), the global share `N_c / N` (`expectedProportion`), the binomial upper tail `P(X >= likeCount)` for `Binomial(k, N_c / N)` and the z score of the same binomial. A neighbour is an active slot of the shared rule (positive weight, another row); the size of a positive weight is not used.
 
-Not implemented: the local configuration part (local join counts and the chi-square), the permutation p-values and the unlike-neighbour tails. Because the spdep formulas were not available beyond the output names, the binomial test and its share `N_c / N` are the documented reading, checked against a binary64 evaluation and one hand-computed tail (0.648).
+This is not the output of `licd_multi` of the R package spdep, and no parity with it is claimed (R is not installed, so it cannot be checked here). spdep counts the focal row among its own neighbours (`k + 1` trials, the focal row always a like), reports the global share as `prop_i`, and its `pbinom_like_BW` is the lower tail `P(X <= like)`. Example: 4 neighbours, 3 of them like, share 0.5. This class gives `P(X >= 3) = 0.3125` on `Binomial(4, 0.5)`; spdep's `pbinom_like_BW` is `P(X <= 4) = 0.96875` on `Binomial(5, 0.5)`.
+
+Not implemented: the local configuration part (local join counts and the chi-square), the permutation p-values and the unlike-neighbour tails. The binomial test is checked against hand-computed tails (0.3125, 0.648) and a binary64 evaluation.
 
 {/* lens:GPULocalCategoryDependence */}
 

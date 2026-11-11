@@ -27,13 +27,19 @@ import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  FIXED_POINT_WGSL,
+  getFixedPointHeadroomBits
+} from '../../analysis-core/kernels/fixed-point-accumulator';
 import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {
   checkTerrainViews,
   checkTerrainGraph,
+  createTerrainStatusPortNodes,
   createTerrainValidityMask,
   getTerrainGroundMeasureWGSL,
   terrainBinding,
+  validateTerrainStatusPorts,
   validateTerrainValidityView,
   TERRAIN_FINITE_WGSL
 } from './terrain-processing-utils';
@@ -67,8 +73,37 @@ export type GPUTerrainDepressionHierarchyProps = {
     curves: GraphDataView<'float32'>;
     /** [stored node count, required node count, overflow]. Any overflow invalidates the whole hierarchy. */
     status: GraphDataView<'uint32'>;
+    /**
+     * Optional named one-row copies of words of the loose `status` view. `output.status` stays the
+     * packed `[stored, required, overflow]` view, so the named ports sit under `ports.status`.
+     */
+    ports?: {
+      status: {
+        /** One-row copy of `status[1]`: the node count the merge tree needs. Equals `status[0]` unless `overflow`. */
+        requiredCount?: GraphDataView<'uint32'>;
+        /** One-row copy of `status[2]`: 1 when `nodeCapacity` was too small, which invalidates the whole hierarchy. */
+        overflow?: GraphDataView<'uint32'>;
+      };
+    };
   };
 };
+
+/** The views the output writes, with the named status ports flattened. */
+function getOutputViews(output: GPUTerrainDepressionHierarchyProps['output']): GraphDataView[] {
+  const views: GraphDataView[] = [
+    output.nodes,
+    output.levels,
+    output.cellNodes,
+    output.curves,
+    output.status
+  ];
+  for (const port of [output.ports?.status.requiredCount, output.ports?.status.overflow]) {
+    if (port) {
+      views.push(port);
+    }
+  }
+  return views;
+}
 
 /**
  * Stable GPU-sorted sublevel-set merge tree with compressed component roots and linear stage reductions.
@@ -96,10 +131,18 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
       props.nodeCapacity * props.stages.length * 2
     );
     validateViewLength(this.id, 'output.status', props.output.status, 3);
+    validateTerrainStatusPorts(
+      this.id,
+      {
+        requiredCount: props.output.ports?.status.requiredCount,
+        overflow: props.output.ports?.status.overflow
+      },
+      'output.ports.status'
+    );
     checkTerrainViews(
       this.id,
       [props.elevation, props.outlets, props.stages, ...(props.validity ? [props.validity] : [])],
-      Object.values(props.output)
+      getOutputViews(props.output)
     );
   }
   getCommandNodes<Parameters>(
@@ -112,7 +155,7 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
       ...(props.validity ? [props.validity] : []),
       props.outlets,
       props.stages,
-      ...Object.values(props.output)
+      ...getOutputViews(props.output)
     ]);
     const masked = createTerrainValidityMask(graph, {
       id,
@@ -130,12 +173,25 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
     const cells = createTransientView(graph, `${id}-cells`, 'uint32', count);
     const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', count);
     const sortedCells = createTransientView(graph, `${id}-sorted-cells`, 'uint32', count);
-    const curveCompensation = createTransientView(
+    // One fixed-point sum (three words) per curve value: [area, volume] per node and stage. The
+    // words are kept in three planes of the output's own size so that no scratch binding is larger
+    // than the caller's curves: the low words live in `output.curves` itself until a value is
+    // decoded, the middle and high words in these two views.
+    const curveValueCount = Math.max(1, props.nodeCapacity * props.stages.length * 2);
+    const curveSumsMiddle = createTransientView(
       graph,
-      `${id}-curve-compensation`,
-      'float32',
-      Math.max(1, props.nodeCapacity * props.stages.length * 2)
+      `${id}-curve-sums-middle`,
+      'uint32',
+      curveValueCount
     );
+    const curveSumsHigh = createTransientView(
+      graph,
+      `${id}-curve-sums-high`,
+      'uint32',
+      curveValueCount
+    );
+    // A cell enters each curve value of its owner and of every ancestor at most once.
+    const headroomBits = getFixedPointHeadroomBits(count);
     const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [
       ...masked.nodes,
@@ -151,7 +207,7 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
         declarations: TERRAIN_FINITE_WGSL,
         body: `let value = elevation[elevationOffset + index];
 let bits = bitcast<u32>(select(value, 0.0, value == 0.0));
-keys[keysOffset + index] = select(0xffffffffu, select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u), finite(value));
+keys[keysOffset + index] = select(0xffffffffu, select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u), isFiniteValue(value));
 cells[cellsOffset + index] = index;`
       }),
       ...new GPUSort({
@@ -181,7 +237,7 @@ var nodeCount = 0u;
 for (var iteration = 0u; iteration < ${count}u; iteration++) {
  let selected = order[orderOffset + iteration];
  let selectedHeight = elevation[elevationOffset + selected];
- if (!finite(selectedHeight)) { break; }
+ if (!isFiniteValue(selectedHeight)) { break; }
  var neighbors: array<u32, 8>; var neighborCount = 0u;
  for (var direction = 0u; direction < 8u; direction++) {
   let cell = getFlowReceiver(selected, 1u << direction); if (cell == NO_CELL) { continue; }
@@ -231,7 +287,7 @@ status[statusOffset] = min(nodeCount, ${props.nodeCapacity}u); status[statusOffs
         declarations: TERRAIN_FINITE_WGSL,
         body: `let valid = status[statusOffset + 2u] == 0u && index < status[statusOffset];
 for (var component = 0u; component < 4u; component++) { nodes[nodesOffset + index * 4u + component] = 0xffffffffu; }
-levels[levelsOffset + index * 2u] = missing(); levels[levelsOffset + index * 2u + 1u] = missing();
+levels[levelsOffset + index * 2u] = getNaN(); levels[levelsOffset + index * 2u + 1u] = getNaN();
 nodes[nodesOffset + index * 4u + 3u] = 0u;
 if (valid) {
  for (var component = 0u; component < 4u; component++) { nodes[nodesOffset + index * 4u + component] = tree[treeOffset + index * 4u + component]; }
@@ -239,6 +295,25 @@ if (valid) {
 }`
       })
     ];
+    nodes.push(
+      ...createTerrainStatusPortNodes(graph, {
+        id,
+        operation: 'GPUTerrainDepressionHierarchy',
+        source: props.output.status,
+        ports: [
+          {
+            name: 'requiredCount',
+            view: props.output.ports?.status.requiredCount,
+            expression: 'source[sourceOffset + 1u]'
+          },
+          {
+            name: 'overflow',
+            view: props.output.ports?.status.overflow,
+            expression: 'source[sourceOffset + 2u]'
+          }
+        ]
+      })
+    );
     if (props.stages.length > 0)
       nodes.push(
         createWGSLKernelNode(graph, {
@@ -247,32 +322,20 @@ if (valid) {
           invocationCount: props.stages.length,
           declarations: `${TERRAIN_FINITE_WGSL}
 ${isUniform ? '' : `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${getTerrainGroundMeasureWGSL(props.grid, props.cellSizeMode)}`}
-// Recover positive-addition rounding error through integer significands. Unlike a floating
-// two-sum transform, shader fast-math cannot algebraically eliminate this correction.
-fn positiveAdditionError(first: f32, second: f32, sum: f32) -> f32 {
- if (first == 0.0 || second == 0.0 || !finite(sum)) { return 0.0; }
- let firstBits = bitcast<u32>(first); let secondBits = bitcast<u32>(second);
- let larger = max(firstBits, secondBits); let smaller = min(firstBits, secondBits);
- let largerExponent = max((larger >> 23u) & 255u, 1u);
- let smallerExponent = max((smaller >> 23u) & 255u, 1u);
- let largerMantissa = (larger & 0x7fffffu) | select(0u, 0x800000u, (larger & 0x7f800000u) != 0u);
- let smallerMantissa = (smaller & 0x7fffffu) | select(0u, 0x800000u, (smaller & 0x7f800000u) != 0u);
- let gap = largerExponent - smallerExponent;
- var aligned = 0u; var remainder = smallerMantissa;
- if (gap < 32u) { aligned = smallerMantissa >> gap; remainder = smallerMantissa & ((1u << gap) - 1u); }
- let sumBits = bitcast<u32>(sum); let sumExponent = max((sumBits >> 23u) & 255u, 1u);
- let sumMantissa = (sumBits & 0x7fffffu) | select(0u, 0x800000u, (sumBits & 0x7f800000u) != 0u);
- let difference = i32(largerMantissa + aligned) - i32(sumMantissa << (sumExponent - largerExponent));
- return f32(difference) * exp2(f32(i32(largerExponent) - 150)) + f32(remainder) * exp2(f32(i32(smallerExponent) - 150));
+// Areas and volumes are fixed-point sums (fixed-point-accumulator.ts): integer additions in a
+// unit set by the largest term of the stage, so no float32 partial sum rounds per cell and the
+// compiler has no float identity to fold. A compensated float sum kept its correction in one
+// float32 word, which itself rounds once a node holds a few hundred thousand cells.
+// 'curves' is the float32 output bound as u32: it holds the low word of each sum until the value
+// is decoded, then the bits of the float32 result.
+${FIXED_POINT_WGSL}
+const MISSING_BITS: u32 = 0x7fc00000u;
+fn loadCurveSum(slot: u32) -> vec3<u32> {
+ return vec3<u32>(curves[curvesOffset + slot], sumsMiddle[sumsMiddleOffset + slot], sumsHigh[sumsHighOffset + slot]);
 }
-fn addCurve(offset: u32, area: f32, volume: f32) {
- let additions = vec2<f32>(area, volume);
- for (var component = 0u; component < 2u; component++) {
-  let current = curves[curvesOffset + offset + component];
-  let next = current + additions[component];
-  compensation[compensationOffset + offset + component] += positiveAdditionError(current, additions[component], next);
-  curves[curvesOffset + offset + component] = next;
- }
+fn addCurveSum(slot: u32, value: vec3<u32>) {
+ let next = addFixedPoint(loadCurveSum(slot), value);
+ curves[curvesOffset + slot] = next.x; sumsMiddle[sumsMiddleOffset + slot] = next.y; sumsHigh[sumsHighOffset + slot] = next.z;
 }`,
           bindings: [
             terrainBinding('elevation', elevation),
@@ -280,41 +343,62 @@ fn addCurve(offset: u32, area: f32, volume: f32) {
             terrainBinding('nodes', props.output.nodes),
             terrainBinding('stages', props.stages),
             terrainBinding('status', props.output.status),
-            terrainBinding('curves', props.output.curves, 'read_write'),
-            terrainBinding('compensation', curveCompensation, 'read_write')
+            {name: 'curves', view: props.output.curves, type: 'u32', access: 'read_write'},
+            terrainBinding('sumsMiddle', curveSumsMiddle, 'read_write'),
+            terrainBinding('sumsHigh', curveSumsHigh, 'read_write')
           ],
           body: `let stage = stages[stagesOffset + index];
-let valid = status[statusOffset + 2u] == 0u && finite(stage);
+let valid = status[statusOffset + 2u] == 0u && isFiniteValue(stage);
 let nodeCount = status[statusOffset];
 for (var node = 0u; node < ${props.nodeCapacity}u; node++) {
- let offset = curvesOffset + (node * ${props.stages.length}u + index) * 2u;
- curves[offset] = select(missing(), 0.0, valid && node < nodeCount);
- curves[offset + 1u] = select(missing(), 0.0, valid && node < nodeCount);
- compensation[compensationOffset + (node * ${props.stages.length}u + index) * 2u] = 0.0;
- compensation[compensationOffset + (node * ${props.stages.length}u + index) * 2u + 1u] = 0.0;
+ let slot = (node * ${props.stages.length}u + index) * 2u;
+ // A zero sum for the nodes that exist, NaN for the others and for an invalid hierarchy or stage.
+ let initial = select(MISSING_BITS, 0u, valid && node < nodeCount);
+ for (var component = 0u; component < 2u; component++) {
+  curves[curvesOffset + slot + component] = initial;
+  sumsMiddle[sumsMiddleOffset + slot + component] = 0u;
+  sumsHigh[sumsHighOffset + slot + component] = 0u;
+ }
 }
 if (!valid) { return; }
 ${isUniform ? `let uniformCellArea = ${getWGSLFloatLiteral(Math.abs(props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3]))};` : ''}
+// The largest area and volume term of this stage set the two fixed-point units.
+var areaExponent = 0u; var volumeExponent = 0u;
+for (var cell = 0u; cell < ${count}u; cell++) {
+ ${isUniform ? 'let cellArea = uniformCellArea;' : 'let cellArea = getGroundCellArea(cell);'}
+ let depth = stage - elevation[elevationOffset + cell];
+ if (ownership[ownershipOffset + cell] < nodeCount && depth >= 0.0) {
+  areaExponent = max(areaExponent, getFixedPointExponentBits(cellArea));
+  volumeExponent = max(volumeExponent, getFixedPointExponentBits(depth * cellArea));
+ }
+}
+let areaUnit = getFixedPointUnitExponent(areaExponent, ${headroomBits}u);
+let volumeUnit = getFixedPointUnitExponent(volumeExponent, ${headroomBits}u);
 for (var cell = 0u; cell < ${count}u; cell++) {
  ${isUniform ? 'let cellArea = uniformCellArea;' : 'let cellArea = getGroundCellArea(cell);'}
  let owner = ownership[ownershipOffset + cell];
  let depth = stage - elevation[elevationOffset + cell];
  if (owner < nodeCount && depth >= 0.0) {
-  let offset = curvesOffset + (owner * ${props.stages.length}u + index) * 2u;
-  addCurve(offset - curvesOffset, cellArea, depth * cellArea);
+  let slot = (owner * ${props.stages.length}u + index) * 2u;
+  addCurveSum(slot, quantizeFixedPoint(cellArea, areaUnit));
+  addCurveSum(slot + 1u, quantizeFixedPoint(depth * cellArea, volumeUnit));
  }
 }
-// Parents are created after their children. Each exclusive cell contribution moves once per edge.
+// Parents are created after their children. Each exclusive cell contribution moves once per edge,
+// as an exact integer. A node is decoded once every child has been added to it and it has been
+// added to its parent: decoding replaces its low word by the float32 bits.
 for (var node = 0u; node < nodeCount; node++) {
- let localOffset = (node * ${props.stages.length}u + index) * 2u;
- curves[curvesOffset + localOffset] += compensation[compensationOffset + localOffset];
- curves[curvesOffset + localOffset + 1u] += compensation[compensationOffset + localOffset + 1u];
+ let slot = (node * ${props.stages.length}u + index) * 2u;
+ let areaSum = loadCurveSum(slot);
+ let volumeSum = loadCurveSum(slot + 1u);
  let parent = nodes[nodesOffset + node * 4u];
  if (parent < nodeCount) {
-  let source = curvesOffset + (node * ${props.stages.length}u + index) * 2u;
-  let destination = curvesOffset + (parent * ${props.stages.length}u + index) * 2u;
-  addCurve(destination - curvesOffset, curves[source], curves[source + 1u]);
+  let destination = (parent * ${props.stages.length}u + index) * 2u;
+  addCurveSum(destination, areaSum);
+  addCurveSum(destination + 1u, volumeSum);
  }
+ curves[curvesOffset + slot] = bitcast<u32>(getFixedPointFloat(areaSum, areaUnit));
+ curves[curvesOffset + slot + 1u] = bitcast<u32>(getFixedPointFloat(volumeSum, volumeUnit));
 }`
         })
       );

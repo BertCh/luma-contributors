@@ -6,9 +6,14 @@ https://scikit-image.org/docs/stable/api/skimage.measure.html#skimage.measure.fi
 https://shapely.readthedocs.io/en/stable/manual.html#shapely.ops.polygonize
 
 Marching squares uses linear edge interpolation. Select skimage's high/low
-connectivity separately per cell according to the documented arithmetic-centre
-saddle convention. Negated samples adapt skimage strict-> equality to the
-API >= high-side ownership without perturbing any input/break; this is NOT GDAL/asymptotic-decider equivalence. Polygonize
+connectivity separately per cell according to the documented bilinear
+(asymptotic) saddle decider, the rule of luma.gl's GPURasterContours: see
+saddle_joined. Until 2026-11-10 the kernels and this generator used the
+arithmetic centre; the committed fixture was generated with that rule and was
+not regenerated, because no cell of any committed case is decided differently
+by the two rules (every parity spec passes unchanged). Negated samples adapt
+skimage strict-> equality to the
+API >= high-side ownership without perturbing any input/break; this is NOT GDAL equivalence. Polygonize
 those independent contours with the cell boundary, identify the above-level
 faces by their high-valued corners, and difference nested above-level regions.
 Shapely triangulates the resulting polygons, independently of GPU fan order.
@@ -51,12 +56,25 @@ def pack(values):
     return base64.b64encode(gzip.compress(json.dumps(numbers,separators=(',',':')).encode(),mtime=0)).decode()
 
 
+def saddle_joined(values, level):
+    """Bilinear (asymptotic) decider for a 2x2 cell [[v0, v1], [v3, v2]].
+
+    The saddle value of the bilinear surface is (v0 v2 - v1 v3) / (v0 + v2 - v1 - v3). The high
+    corners are joined when it is at or above the level. With d = v - level its sign relative to
+    the level is the sign of d0 d2 - d1 d3 when (v0, v2) is the high diagonal and the opposite
+    otherwise. Only used for saddles; any answer is harmless elsewhere.
+    """
+    d = np.asarray(values, dtype=float) - level
+    determinant = d[0, 0] * d[1, 1] - d[0, 1] * d[1, 0]
+    return determinant >= 0 if d[0, 0] >= 0 else determinant <= 0
+
+
 def above_level(values, level, square):
     if np.all(values >= level): return square
     if np.all(values < level): return Polygon()
     # skimage marks strictly greater samples high; negate to make original
     # values equal to the break belong to the >= region, as the API declares.
-    contours = find_contours(-values, -level, fully_connected='low' if np.mean(values) >= level else 'high')
+    contours = find_contours(-values, -level, fully_connected='low' if saddle_joined(values, level) else 'high')
     lines = [square.boundary, *[LineString(contour[:, ::-1]) for contour in contours if len(contour)>1]]
     faces = list(polygonize(unary_union(lines)))
     high = [Point(column,row) for row,column in np.ndindex(2,2) if values[row,column] > level]

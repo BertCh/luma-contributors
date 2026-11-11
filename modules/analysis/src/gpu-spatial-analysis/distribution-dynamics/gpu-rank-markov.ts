@@ -12,7 +12,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validatePackedView,
+  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -37,7 +37,9 @@ export type GPURankMarkovProps = {
 };
 
 /**
- * giddy 2.3.9 full-rank and geographic-rank transition conventions. Full rank follows each
+ * giddy full-rank and geographic-rank transition conventions, pinned to giddy 2.3.6 (the version
+ * that generated the reference in `test/oracles/fixtures/statistics-upstream.json`; the other
+ * Markov contributors are pinned to giddy 2.3.9 in `statistics-markov.json`). Full rank follows each
  * location through rank states. Geographic rank follows the occupant of each fixed rank through
  * location states. No discretization, rank averaging or synthetic self-loops. Common complete
  * cases keep the population comparable over time. The n-by-n matrix retains original capacity
@@ -63,7 +65,7 @@ export class GPURankMarkov implements GPUCommandNodeProducer {
       [props.output.mobility, 'float32', props.periodCount - 1]
     ] as const)
       if (view) {
-        validatePackedView(view, [format], this.id);
+        validateSinglePackedView(view, [format], this.id);
         if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
       }
     validateGraphOutputsDisjointFromInputs(

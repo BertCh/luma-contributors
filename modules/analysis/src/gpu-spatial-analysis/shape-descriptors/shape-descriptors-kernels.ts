@@ -7,8 +7,9 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {GUARDED_ATAN2_WGSL, IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
+import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 
 /** Number of float32 elements in a `GPUShapeDescriptors` parameter buffer. */
 export const GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH = 4;
@@ -126,17 +127,14 @@ export function createMomentsNode<Parameters>(
     declarations: `${getRingDeclarations(props)}
 ${IS_NAN_BITS_WGSL}
 
-// accumulator = (sum, compensation).
+${ADDITION_ROUNDING_ERROR_WGSL}
+// accumulator = (sum, compensation). The compensation is the rounding error of each addition,
+// read off the integer significands: the float Neumaier term ((sum - total) + value) is
+// algebraically zero and the test GPU's shader compiler folds it away.
 fn addNeumaier(accumulator: ptr<function, vec2<f32>>, value: f32) {
   let sum = (*accumulator).x;
   let total = sum + value;
-  var compensation = (*accumulator).y;
-  if (abs(sum) >= abs(value)) {
-    compensation += (sum - total) + value;
-  } else {
-    compensation += (value - total) + sum;
-  }
-  *accumulator = vec2<f32>(total, compensation);
+  *accumulator = vec2<f32>(total, (*accumulator).y + getAdditionRoundingError(sum, value, total));
 }`,
     body: /* wgsl */ `let ringStart = getRingStart(index);
   let ringEnd = max(getRingEnd(index), ringStart);
@@ -383,7 +381,8 @@ export function createOrientationNode<Parameters>(
     variant: 'orientation',
     bindings,
     invocationCount: props.featureCount,
-    declarations: `fn getNan(seed: u32) -> f32 {
+    declarations: `${GUARDED_ATAN2_WGSL}
+fn getNan(seed: u32) -> f32 {
   // A runtime operand keeps the compiler from folding a constant NaN.
   return bitcast<f32>(0x7fc00000u | (seed & 0u));
 }`,
@@ -397,7 +396,7 @@ export function createOrientationNode<Parameters>(
   let minor = max(mean - radius, 0.0);
   let isValid = major > 0.0;
   ${props.elongation ? 'elongation[elongationOffset + index] = select(getNan(index), 1.0 - sqrt(minor / major), isValid);' : ''}
-  ${props.orientation ? 'orientation[orientationOffset + index] = select(getNan(index), select(0.0, 0.5 * atan2(2.0 * xy, xx - yy), (xy != 0.0) || (xx != yy)), isValid);' : ''}
+  ${props.orientation ? 'orientation[orientationOffset + index] = select(getNan(index), select(0.0, 0.5 * guardedAtan2(2.0 * xy, xx - yy), (xy != 0.0) || (xx != yy)), isValid);' : ''}
   ${props.clockwise ? 'clockwise[clockwiseOffset + index] = select(0u, 1u, firstArea < 0.0);' : ''}`
   });
 }

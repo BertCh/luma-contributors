@@ -13,17 +13,17 @@ raster contributors from `@luma-contributors/analysis/raster-analysis`, terrain 
 | Proposal | Public API | Contract and current boundary |
 | --- | --- | --- |
 | C04 | `GPURasterFractionalCoverage`, `GPURasterFractionalZonalStatistics` | Triangulates polygons including holes, clips every triangle to affine raster cells, and emits compact `(zoneId, cellId, fraction)` tuples. Overlapping features retain separate tuples. Coverage candidates are explicitly capped at 4,194,304 zone/cell pairs; positive pairs are compacted in parallel (flag, scan, scatter) in zone-major, cell-ascending order. Weighted aggregation distinguishes extensive cell totals from density/intensive area integrals. |
-| C05 | `GPURasterFillNoData` | Disk search of original valid donors, with nearest or all-donor inverse-distance interpolation. Radius 1–256 pixels. Preserves observed calibrated values; returns filled mask, validity and unresolved count. The IDW method is **not** GDAL's four-quadrant method. |
+| C05 | `GPURasterFillNoData` | Disk search of original valid donors, with nearest or all-donor inverse-distance interpolation. Radius 1–256 pixels. Preserves observed calibrated values; returns filled mask, validity and the remaining invalid count in `status.invalidCount`. The IDW method is **not** GDAL's four-quadrant method. |
 | C06 | `GPURasterRankFilter` | Square footprints with radius 0–8. Quantile selects `min(floor(q*n),n-1)` (upper middle for an even median). Clamp or nodata borders; strict or ignored missing neighbors. Invalid centers stay invalid. |
 | C07 | `GPUTerrainFlowDistance` | D8 paths stop at streams or terminal cells. Defaults to planar affine distance; explicit nonnegative transition costs support other units. Cycles, unresolved directions/stream masks, numerical overflow and budget exhaustion remain unresolved. |
 | C08 | `GPUTerrainStreamNetwork` | Compact polylines between headwaters, junctions and outlets, with source/target raster cell IDs, vertex offsets, affine cell-center positions and lengths. Valid D8 stream paths only. Reach order is source-cell order. Stream order can be gathered from the source-cell IDs. |
 | C10 | `GPUConcaveHull`, `GPUGroupConcaveHull` | Alpha-complex area hulls retain Delaunay triangles by maximum circumradius. Directed boundary edges preserve holes and disconnected components. This is radius-based alpha geometry, not GEOS ratio-based concave hull. Collinear/isolated points emit no area. |
-| C21 | `GPURasterWalkingCost` | Directed eight-neighbor movement from elevation and friction. Tobler time or explicitly supplied GRASS-style energy coefficients; nonnegative finite edges only. Whole-grid Jacobi rounds are gated on the GPU and stop once a round changes nothing; the current costs are always published and `status.converged` tells whether they are final. |
-| C22 | `GPURasterReconstruction`, `GPURasterFillHoles` | Grayscale geodesic dilation/erosion under a mask; hole filling reconstructs background from the boundary. Four/eight connectivity is explicit. The current values are always published; `status.converged=0` marks an unfinished run, whose hole mask reports background the boundary flood has not reached as holes. |
-| C23 | `GPURasterReprojection` | Generates destination centers, applies an explicit inverse `CompiledProjection`, inverts a nonsingular source affine and samples nearest/bilinear values. Supports rotated grids. One caller-selected source tile; no tile fetching. Float32 projection path only. |
+| C21 | `GPURasterWalkingCost` | Directed eight-neighbor movement from elevation and friction. Tobler time or explicitly supplied GRASS-style energy coefficients; nonnegative finite edges only. Whole-grid Jacobi rounds are gated on the GPU and stop once a round changes nothing; the current costs are always published and `status.converged` tells whether they are final. Required `parameters` (packed by `getGPURasterWalkingCostParameterValues`, 16 float32 values) carry the affine, row edges, `frictionWeight` and GRASS coefficients per frame, so a changed georeference does not recompile. Optional `cellSizeMode` (`'uniform'` default, `'web-mercator'`, `'geographic'`) converts steps and slopes to WGS84 ground meters per row. |
+| C22 | `GPURasterReconstruction`, `GPURasterFillHoles` | Grayscale geodesic dilation/erosion under a mask; hole filling reconstructs background from the boundary. `connectivity` is 4 or 8: reconstruction defaults to 8 (the 3 x 3 square, the default footprint of `skimage.morphology.reconstruction` and of the published `GPURasterDilation`; it was 4 before 2026-11-10), hole filling defaults to a 4-connected background (the rule of `scipy.ndimage.binary_fill_holes`). The current values are always published; `status.converged=0` marks an unfinished run, whose hole mask reports background the boundary flood has not reached as holes. |
+| C23 | `GPURasterReprojection` | Generates destination centers, applies an explicit inverse `CompiledProjection`, inverts a nonsingular source affine and samples nearest/bilinear values. Supports rotated grids. One caller-selected source tile; no tile fetching. Float32 projection path only. Grids in the same CRS are differenced at their origins in float64, so large projected origins (UTM northings) keep sub-cell accuracy; with an inverse projection, keep `destinationGrid` in a local frame and set the projection's `destinationOrigin` near the source grid origin. |
 | C24 | `GPUConstrainedDelaunayTriangulation` | Existing shell/hole triangulation followed by bounded constrained Lawson flips. Boundary edges remain fixed. Per-polygon triangulation validity and Delaunay convergence are separate; exhaustion retains a valid initial/refined mesh with `output.status.converged=0`. |
-| C25 | `GPURasterWatershedSegmentation` | Default `method: 'fifo'` preserves marker priority flooding by path maximum elevation and discovery age, within 16,384 cells. Explicit `'minimum-spanning-forest'` uses parallel rooted Boruvka contraction with linear scratch and device-sized domains. Both support four/eight connectivity and fixed markers; their plateau tie policies differ. |
-| C26 | `GPURasterSkeleton`, `GPURasterMedialAxis` | Zhang–Suen thinning is separate from maximal Euclidean disk centers. Medial axis uses an exact distance transform and an integer lattice-step containment test, with linear storage and dimensions up to 32,768 subject to device storage limits. Exterior pixels are background; radii remain in pixel units. Even-width plateaus can retain multiple centers. |
+| C25 | `GPURasterWatershedSegmentation` | Default `method: 'fifo'` preserves marker priority flooding by path maximum elevation and discovery age, within 16,384 cells. Explicit `'minimum-spanning-forest'` uses parallel rooted Boruvka contraction with linear scratch and device-sized domains. Both support four/eight connectivity and fixed markers; their plateau tie policies differ. The FIFO order is by path maximum, not by the cell's own value as in `skimage.segmentation.watershed`, so the two can differ where fronts from higher markers meet on lower ground. |
+| C26 | `GPURasterSkeleton`, `GPURasterMedialAxis` | Zhang–Suen thinning is separate from maximal Euclidean disk centers. The thinning is the 1984 algorithm unchanged, so an isolated 2 x 2 block is deleted completely and two-pixel-thick strokes can vanish. Medial axis uses an exact distance transform and an integer lattice-step containment test, with linear storage and dimensions up to 32,768 subject to device storage limits. Exterior pixels are background; radii remain in pixel units. Even-width plateaus can retain multiple centers. |
 
 ### Watershed methods
 
@@ -38,6 +38,13 @@ Signed zero elevations compare equally. Parallel contraction keeps each marker f
 invalid pixels and reserved marker words. Unseeded connected components retain label zero.
 This static edge order can assign plateaus differently from FIFO; it is an explicit alternative,
 not FIFO or scikit-image output parity.
+
+Neither method reproduces `skimage.segmentation.watershed` in general. The FIFO method orders by
+the maximum elevation along the flood path; scikit-image orders its queue by the cell's own value.
+For the row `5, 2, 2, 2, 2, 2, 5` with markers on the two ends the FIFO method labels
+`1 1 1 1 2 2 2` (both fronts hold priority 5 and advance in turn) and scikit-image labels
+`1 1 1 1 1 1 2`. The committed scikit-image watershed fixture is a case where the two orders
+agree; it checks the labelling of that case, not parity of the queue order.
 
 The forest method accepts `maximumIterations` from 1 through 32, defaulting to
 `ceil(log2(width * height)) + 1`. It requires fewer than 2^30 cells and scratch buffers that fit
@@ -66,7 +73,13 @@ memory or throughput guarantee.
 layout. Allocate `zoneIds`, `cellIds`, and `fractions` with a common tuple capacity, plus scalar
 `status.count`, `status.requiredCount`, `status.overflow`, and per-feature `zoneValidity`. A failed polygon triangulation
 invalidates its feature; that feature contributes no tuples. `status.requiredCount` counts all positive
-coverage tuples even when output capacity is insufficient.
+coverage tuples even when output capacity is insufficient. A vertex whose pixel coordinate is
+within four float32 steps of an integer (`4 * 2^-23 * max(|k|, 1)`) is placed on that cell
+boundary, so a zone edge that follows a cell boundary leaves no sliver tuple in the neighbouring
+cell, also when the cell size is not a float32 number (0.3, a third of a degree). The snap cannot
+absorb the rounding of `position - origin`: keep the grid origin near the geometry. The required `parameters` view
+(`getGPURasterFractionalCoverageParameterValues(grid)`, 8 float32 values) carries the affine, so a
+moved georeference of the same size does not recompile.
 
 `GPURasterFractionalZonalStatistics` consumes those views, a calibrated band, `zoneCount`, and
 `quantity`. It returns `totals`, coverage-weighted raw-value `means`, `coveredArea`, `validArea`,
@@ -75,7 +88,22 @@ and `validity`. Extensive cell totals use `value * fraction`; density and intens
 Means divide the value/fraction sum by observed fractions. Empty or wholly unobserved zones have
 invalid totals/means; covered/observed areas remain available. Incomplete coverage invalidates all
 aggregates. Area units are source-coordinate units squared; project geographic polygons before
-interpreting physical area.
+interpreting physical area. The determinant is that of `grid.affine`, fixed at compile time, unless
+the optional `parameters` prop is given: pass the same per-frame georeference view as the coverage
+class, and the cell area is read from it on every encoding. Do so whenever the coverage
+`parameters` are rewritten for another cell size; otherwise the fractions follow the new
+georeference while `coveredArea`, `validArea` and density `totals` keep the compiled cell area.
+`GPURasterFractionalCategoricalStatistics` and `GPURasterFractionalZonalDistribution` take the
+same prop.
+
+{/* parameters: GPURasterFractionalCoverage generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPURasterFractionalCoverage` parameters
+
+- Packer: `getGPURasterFractionalCoverageParameterValues(grid)`, writes `GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH` (8) `float32` values.
+  - `grid` (`GPURasterMetadata`): Grid whose affine is packed; it must be invertible.
+
+{/* /parameters */}
 
 ### Preparing continuous surfaces
 
@@ -85,7 +113,7 @@ const preparation = new GPURasterFillNoData({
   input: elevationBand,
   maximumDistance: 8,
   method: 'nearest',
-  output: {values: preparedValues, validity: preparedValidity, filled, unresolvedCount}
+  output: {values: preparedValues, validity: preparedValidity, filled, status: {invalidCount}}
 });
 graph.add(preparation);
 ```
@@ -125,6 +153,39 @@ and memory should be bounded by the caller. It preserves original point indices 
 components. Default convex behavior is unchanged. Empty area has zero area/perimeter and undefined
 centroid. Nonconverged groups report invalid measures.
 
+### `GPURasterWalkingCost` georeference
+
+Walking cost reads the grid's linear affine terms, its row edges, `frictionWeight` and the GRASS
+coefficients from `parameters`, a `GPUParameterBuffer` view written with
+`getGPURasterWalkingCostParameterValues(settings, grid)`. Rewriting it between encodings moves the
+same compiled graph to a new georeference, cell size or friction weight without recompiling. Only
+`model.kind` (Tobler or GRASS) and `cellSizeMode` change the kernels. `cellSizeMode: 'uniform'` (the
+default) treats affine units as meters; `'geographic'` (degrees) and `'web-mercator'` (EPSG:3857
+meters) scale each step on the WGS84 ellipsoid at the latitude between the two cell centres, so
+slopes divide meters of rise by meters of run.
+
+Pack `parameters` for the same `model.kind` the contributor was compiled with. The packed slots
+8 to 12 identify the model (all zero for Tobler, a negative threshold for GRASS), and the kernel
+checks them on the GPU: parameters packed for the other model move nothing (sources cost 0, every
+other cell stays `+Infinity`) and set the optional `status.invalidCount` to 1. Before this check, a
+GRASS kernel given Tobler's zero coefficients charged only friction, silently.
+
+{/* parameters: GPURasterWalkingCost generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPURasterWalkingCost` parameters
+
+- Packer: `getGPURasterWalkingCostParameterValues(settings, grid)`, writes `GPU_RASTER_WALKING_COST_PARAMETER_LENGTH` (16) `float32` values.
+  - `grid` (`GPURasterMetadata`): Grid whose georeference is packed. Its width and height must match the compiled one.
+
+Settings of `getGPURasterWalkingCostParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `frictionWeight` (optional) | `number` | Coefficient multiplying additive average-friction * ground-distance cost. Default 1. |
+| `model` (optional) | `GPURasterWalkingCostModel` | Movement model; only the GRASS coefficients and threshold are packed. Default Tobler. |
+
+{/* /parameters */}
+
 ### Projection ownership and incomplete iteration
 
 `GPURasterReprojection` accepts an inverse projection already compiled for destination-to-source
@@ -149,7 +210,7 @@ markers identifiable but publishes unresolved non-marker pixels when its step bu
 
 ## Reference evidence
 
-[`raster-terrain-expansion.py`](../../../../modules/analysis/test/oracles/raster-terrain-expansion.py)
+[`raster-terrain-expansion.py`](../../../modules/analysis/test/oracles/raster-terrain-expansion.py)
 records exact package versions and produces committed fixtures using SciPy median/hole filling,
 scikit-image reconstruction/watershed, NetworkX path lengths, Shapely intersections/CDT, and a
 SciPy-Delaunay/Shapely alpha-complex composition. The matching browser tests execute actual GPU

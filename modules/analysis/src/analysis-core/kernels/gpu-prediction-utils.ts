@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
-import {validateGraphOutputsDisjointFromInputs, validatePackedView} from './gpu-contributor-utils';
+import {
+  validateGraphOutputsDisjointFromInputs,
+  validateSinglePackedView
+} from './gpu-contributor-utils';
 
 /** Per-query status: successful, missing/invalid input, rank failure, or exhausted geometric capacity. */
 export const GPU_PREDICTION_STATUS = {success: 0, invalid: 1, singular: 2, capacity: 3} as const;
@@ -15,7 +18,7 @@ export function validatePredictionViews(
   outputs: readonly GraphDataView[]
 ): void {
   for (const view of [...inputs, ...outputs]) {
-    validatePackedView(view, [view.format], id);
+    validateSinglePackedView(view, [view.format], id);
   }
   validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
   if (new Set(outputs.map(view => view.buffer)).size !== outputs.length) {

@@ -13,6 +13,7 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
 
 /** Invocations per workgroup of a row-tile pass (one invocation reduces one tile of rows). */
 export const REGRESSION_TILE_WORKGROUP_SIZE = 64;
@@ -65,7 +66,7 @@ export type RowTileSumProps<Parameters> = {
   rowCount: number;
   /** Tile layout from {@link getRegressionTileLayout}. */
   layout: RegressionTileLayout;
-  /** Slots `[0, sumCount)` are summed (compensated over tiles). */
+  /** Slots `[0, sumCount)` are summed (plain within a tile, pairwise over the tiles). */
   sumCount: number;
   /** Slots `[sumCount, sumCount + maximumCount)` are maxima (of nonnegative terms, start 0). */
   maximumCount?: number;
@@ -104,8 +105,10 @@ export function getRowTileSumDispatchShapes(
  * Deterministic row reduction in two nodes, the pattern of `GPUOrdinaryLeastSquares`:
  * 1. One invocation per tile of consecutive rows calls `accumulateRow` for each row in row order
  *    (plain float32 within the tile, at most a few hundred rows) and writes its partials.
- * 2. One invocation per term merges the tile partials in tile order: Neumaier-compensated sums
- *    for the sum slots, maxima for the others.
+ * 2. One invocation per term merges the tile partials: a fixed pairwise (cascade) sum for the
+ *    sum slots, whose error is about `log2(tileCount)` roundings of the partial totals, and
+ *    maxima for the others. This replaces a Neumaier-compensated merge, which the shader compiler
+ *    of the test GPU folded to a plain serial sum (see `getPairwiseSumWGSL`).
  *
  * The summation order depends only on the layout, so results are bitwise reproducible. Row and
  * tile counts are pipeline overrides, so passes that differ only in row count share a module.
@@ -159,24 +162,18 @@ ${props.declarations}`,
       declarations: `override TILE_COUNT: u32;
 ${termDeclarations}
 const OUTPUT_SLOT: u32 = ${props.outputSlot ?? 0}u;`,
-      body: `var sum = 0.0;
-  var compensation = 0.0;
-  for (var tile = 0u; tile < TILE_COUNT; tile++) {
-    let term = tilePartial[tilePartialOffset + tile * TERM_COUNT + index];
-    if (index < SUM_COUNT) {
-      // Neumaier: exact to about one rounding of the total, whatever the term magnitudes.
-      let total = sum + term;
-      if (abs(sum) >= abs(term)) {
-        compensation = compensation + ((sum - total) + term);
-      } else {
-        compensation = compensation + ((term - total) + sum);
-      }
-      sum = total;
-    } else {
-      sum = max(sum, term);
-    }
+      // Sum slots: fixed pairwise order over the tiles (see getPairwiseSumWGSL for why this is
+      // not a compensated sum). Maximum slots: a running maximum.
+      body: `if (index < SUM_COUNT) {
+    ${getPairwiseSumWGSL({count: 'TILE_COUNT', term: 'tilePartial[tilePartialOffset + sumItem * TERM_COUNT + index]'})}
+    tileTotal[tileTotalOffset + OUTPUT_SLOT + index] = sum;
+    return;
   }
-  tileTotal[tileTotalOffset + OUTPUT_SLOT + index] = sum + compensation;`
+  var largest = 0.0;
+  for (var tile = 0u; tile < TILE_COUNT; tile++) {
+    largest = max(largest, tilePartial[tilePartialOffset + tile * TERM_COUNT + index]);
+  }
+  tileTotal[tileTotalOffset + OUTPUT_SLOT + index] = largest;`
     })
   ];
 }

@@ -105,6 +105,32 @@ describe('GPUColocationQuotient', () => {
     expect(local.slice(0, 2)).toEqual([3, 0].map(value => expect.closeTo(value, 6)));
   });
 
+  it('reproduces hand-computed weighted quotients of five points', async () => {
+    // Categories A A B B B: N = 5, N_A = 2, N_B = 3. Weighted neighbour shares f(i, b):
+    // row 0 (A): A w 1, B w 3 -> 0.25, 0.75;   row 1 (A): A w 1, B w 1 -> 0.5, 0.5;
+    // row 2 (B): A w 2, B w 2 -> 0.5, 0.5;     row 3 (B): B w 1 -> 0, 1;
+    // row 4 (B): A w 1, B w 2 + 1 -> 0.25, 0.75.
+    // Chance shares (N_b - [a = b]) / (N - 1): A->A 1/4, A->B 3/4, B->A 2/4, B->B 2/4.
+    // CLQ(A->A) = mean(0.25, 0.5) / 0.25 = 1.5;   CLQ(A->B) = mean(0.75, 0.5) / 0.75 = 5/6;
+    // CLQ(B->A) = mean(0.5, 0, 0.25) / 0.5 = 0.5; CLQ(B->B) = mean(0.5, 1, 0.75) / 0.5 = 1.5.
+    const csr = {
+      offsets: [0, 2, 4, 6, 7, 10],
+      neighbors: [1, 2, 0, 3, 0, 3, 4, 1, 2, 3],
+      weights: [1, 3, 1, 1, 2, 2, 1, 1, 2, 1]
+    };
+    const {global, local, rows} = await runColocation(csr, [0, 0, 1, 1, 1], 2);
+    expect(rows).toEqual([2, 3]);
+    expect(global[0]).toBeCloseTo(1.5, 5);
+    expect(global[1]).toBeCloseTo(0.833333, 5);
+    expect(global[2]).toBeCloseTo(0.5, 5);
+    expect(global[3]).toBeCloseTo(1.5, 5);
+    // Local quotients of row 0: 0.25 / 0.25 and 0.75 / 0.75; of row 3: 0 / 0.5 and 1 / 0.5.
+    expect(local[0]).toBeCloseTo(1, 5);
+    expect(local[1]).toBeCloseTo(1, 5);
+    expect(local[6]).toBeCloseTo(0, 5);
+    expect(local[7]).toBeCloseTo(2, 5);
+  });
+
   it('is one for a mixed pair: A has a single B neighbour among one other B (chance 1)', async () => {
     // A B: 0>1, 1>0. N = 2. CLQ(A->B) = (1/1) / (1/1) = 1; the A->A chance share is 0, so NaN.
     const csr = {offsets: [0, 1, 2], neighbors: [1, 0], weights: [1, 1]};

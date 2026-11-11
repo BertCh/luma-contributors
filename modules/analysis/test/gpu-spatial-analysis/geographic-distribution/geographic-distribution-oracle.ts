@@ -14,7 +14,7 @@ export type GeographicDistributionOracleInput = {
   lineEnds?: ArrayLike<number>;
   origin?: readonly [number, number];
   standardDeviations?: number;
-  ellipseConvention?: 'arcgis' | 'standard';
+  ellipseConvention?: 'root-two' | 'standard';
   orientationOnly?: boolean;
   medianTolerance?: number;
   maximumMedianIterations?: number;
@@ -50,7 +50,7 @@ export function computeGeographicDistribution(
   const rowCount = input.positions.length / 2;
   const [originX, originY] = input.origin ?? [0, 0];
   const multiplier = input.standardDeviations ?? 1;
-  const scale = (input.ellipseConvention ?? 'arcgis') === 'arcgis' ? Math.SQRT2 : 1;
+  const scale = (input.ellipseConvention ?? 'root-two') === 'root-two' ? Math.SQRT2 : 1;
   const iterations = input.maximumMedianIterations ?? 24;
   const tolerance = input.medianTolerance ?? 1e-3;
   const vertexCount = input.vertexCount ?? 64;

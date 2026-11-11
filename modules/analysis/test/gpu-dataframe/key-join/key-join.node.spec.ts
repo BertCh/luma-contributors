@@ -50,9 +50,10 @@ it('joinOnCPU oracle joins duplicates, masks, reserved keys and aggregates', () 
   expect(result.innerTotal).toBe(3);
   expect(result.innerOverflow).toBe(1);
   expect(result.aggregates[1].values).toEqual([1, 2, 0, 0, 1, 0]);
-  // sumScale 1 rounds half to even: round(1.5) = 2, plus 3 = 5.
+  // The `sums` words at sumScale 1 round half to even: round(1.5) = 2, plus 3 = 5.
   expect(result.aggregates[0].sums).toEqual([2n, 5n, 0n, 0n, 2n, 0n]);
-  expect(result.aggregates[0].values.slice(0, 2)).toEqual([2, 5]);
+  // The float sum is the sum of the values, 1.5 + 3 = 4.5, whatever the scale of the words.
+  expect(result.aggregates[0].values.slice(0, 2)).toEqual([2, 4.5]);
   expect(Number.isNaN(result.aggregates[0].values[2])).toBe(true);
 });
 

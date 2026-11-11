@@ -18,7 +18,7 @@ import {
 import {createScanCarryNode} from '../../analysis-core/kernels/scan-total';
 import {
   validateGraphViewsBelongToGraph,
-  validatePackedView,
+  validateSinglePackedView,
   validateMaximumCount,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -166,7 +166,7 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
       if (!geometry) {
         continue;
       }
-      validatePackedView(geometry.positions, ['float32x2'], `${id} ${name}.positions`);
+      validateSinglePackedView(geometry.positions, ['float32x2'], `${id} ${name}.positions`);
       const offsetViews =
         geometry.kind === 'lines'
           ? [['lineOffsets', geometry.lineOffsets] as const]
@@ -232,7 +232,7 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
       ['endPoints', props.output.endPoints]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32x2'], `${id} ${name}`);
+        validateSinglePackedView(view, ['float32x2'], `${id} ${name}`);
         if (view.length !== this.pairCapacity) {
           throw new Error(`${id} ${name} length must equal the pair capacity`);
         }

@@ -29,6 +29,13 @@ type MergeResult = {
   lineChains: number[];
   lineOrders: number[];
   lineReversed: number[];
+  /** Rule 8 outputs: chain source rows and the generated-geometry status scalars. */
+  sourceIds: number[];
+  requiredCount: number;
+  overflow: number;
+  vertexCount: number;
+  requiredVertexCount: number;
+  writtenVertexCount: number;
 };
 
 async function runLineMerge(
@@ -75,6 +82,11 @@ async function runLineMerge(
   const lineChains = output('line-chains', 'uint32', lineCount);
   const lineOrders = output('line-orders', 'uint32', lineCount);
   const lineReversed = output('line-reversed', 'uint32', lineCount);
+  const sourceIds = output('source-ids', 'uint32', lineCount);
+  const requiredCount = output('required-count', 'uint32', 1);
+  const overflow = output('overflow', 'uint32', 1);
+  const vertexCount = output('vertex-count', 'uint32', 1);
+  const requiredVertexCount = output('required-vertex-count', 'uint32', 1);
   graph.add(
     new GPULineMerge({
       id: 'merge',
@@ -85,7 +97,14 @@ async function runLineMerge(
       output: {
         chainOffsets: chainOffsets.view,
         positions: positions.view,
-        status: {count: count.view},
+        status: {
+          count: count.view,
+          requiredCount: requiredCount.view,
+          overflow: overflow.view,
+          vertexCount: vertexCount.view,
+          requiredVertexCount: requiredVertexCount.view
+        },
+        sourceIds: sourceIds.view,
         lineChains: lineChains.view,
         lineOrders: lineOrders.view,
         lineReversed: lineReversed.view
@@ -113,7 +132,13 @@ async function runLineMerge(
     chains,
     lineChains: await readUint32(lineChains.buffer, lineCount),
     lineOrders: await readUint32(lineOrders.buffer, lineCount),
-    lineReversed: await readUint32(lineReversed.buffer, lineCount)
+    lineReversed: await readUint32(lineReversed.buffer, lineCount),
+    sourceIds: await readUint32(sourceIds.buffer, lineCount),
+    requiredCount: (await readUint32(requiredCount.buffer, 1))[0],
+    overflow: (await readUint32(overflow.buffer, 1))[0],
+    vertexCount: (await readUint32(vertexCount.buffer, 1))[0],
+    requiredVertexCount: (await readUint32(requiredVertexCount.buffer, 1))[0],
+    writtenVertexCount: offsetValues[chainCount]
   };
   compiled.destroy();
   for (const buffer of buffers) {
@@ -558,4 +583,64 @@ it('GPULineMerge merges longitude-latitude lines by exact endpoint coordinates',
   expect(joined).toBeDefined();
   expect(result.lineChains[0]).toBe(result.lineChains[2]);
   expect(result.lineChains[3]).not.toBe(result.lineChains[4]);
+});
+
+/**
+ * CPU reference for the chain source rows: the input lines (two or more vertices) whose vertices,
+ * forward or reversed, start the chain.
+ */
+function getChainStartLines(lines: Vertex[][], chain: Vertex[]): number[] {
+  const text = (vertices: unknown) => JSON.stringify(vertices);
+  return lines.flatMap((line, lineIndex) => {
+    if (line.length < 2) {
+      return [];
+    }
+    const prefix = text(chain.slice(0, line.length));
+    return prefix === text(line) || prefix === text([...line].reverse()) ? [lineIndex] : [];
+  });
+}
+
+it('GPULineMerge writes chain source rows and rule 8 status', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const lines of [LINE_MERGE_LINES, LINE_MERGE_LINES.slice().reverse()]) {
+    const result = await runLineMerge(device, lines);
+    const chainCount = result.chains.length;
+    expect(result.requiredCount).toBe(chainCount);
+    expect(result.overflow).toBe(0);
+    expect(result.vertexCount).toBe(result.writtenVertexCount);
+    expect(result.requiredVertexCount).toBe(result.writtenVertexCount);
+    result.chains.forEach((chain, chainIndex) => {
+      const sourceRow = result.sourceIds[chainIndex];
+      expect(getChainStartLines(lines, chain)).toContain(sourceRow);
+      // The source row is the chain's first member in the inverse map.
+      expect(result.lineChains[sourceRow]).toBe(chainIndex);
+      expect(result.lineOrders[sourceRow]).toBe(0);
+    });
+    for (let row = chainCount; row < lines.length; row++) {
+      expect(result.sourceIds[row]).toBe(GPU_LINE_MERGE_NONE);
+    }
+  }
+});
+
+it('GPULineMerge kernels fit the default eight storage buffers with every optional output', async () => {
+  // Regression: the offsets kernel once wrote the rule 8 status and the chain source rows itself and
+  // bound ten storage buffers, so construction threw on a device with default limits.
+  const device = await getWebGPUTestDevice('core');
+  requireTestDevice(device);
+  expect(device.limits.maxStorageBuffersPerShaderStage).toBe(8);
+  const result = await runLineMerge(device, LINE_MERGE_LINES);
+  expect(sortChains(result.chains)).toEqual(sortChains(LINE_MERGE_SHAPELY_CHAINS));
+  expect(result.requiredCount).toBe(result.chains.length);
+  expect(result.overflow).toBe(0);
+  expect(result.vertexCount).toBe(result.writtenVertexCount);
+  expect(result.requiredVertexCount).toBe(result.writtenVertexCount);
+  result.chains.forEach((_, chainIndex) => {
+    const sourceRow = result.sourceIds[chainIndex];
+    expect(result.lineChains[sourceRow]).toBe(chainIndex);
+    expect(result.lineOrders[sourceRow]).toBe(0);
+  });
+  for (let row = result.chains.length; row < LINE_MERGE_LINES.length; row++) {
+    expect(result.sourceIds[row]).toBe(GPU_LINE_MERGE_NONE);
+  }
 });

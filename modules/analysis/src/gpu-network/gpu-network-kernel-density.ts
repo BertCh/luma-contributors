@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  GPUReduction,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -46,8 +47,31 @@ export type GPUNetworkKernelDensityProps = {
     kernelMass: GraphDataView<'float32'>;
     /** Per query: 0 valid, 1 invalid distance/length or an event with zero quadrature support. */
     status: GraphDataView<'uint32'>;
+    /**
+     * Optional named one-row status ports. `status` stays the per-query view, so the named ports
+     * sit under `ports.status`.
+     */
+    ports?: {
+      status: {
+        /**
+         * One-row `GPUInvalidStatusPort.invalidCount`: the number of queries whose `status` is 1.
+         * Nothing is read back; it is a GPU reduction over `status`.
+         */
+        invalidCount?: GraphDataView<'uint32'>;
+      };
+    };
   };
 };
+
+/** The views the output writes, with the named status ports flattened. */
+function getOutputViews(output: GPUNetworkKernelDensityProps['output']): GraphDataView[] {
+  return [
+    output.intensity,
+    output.kernelMass,
+    output.status,
+    ...(output.ports?.status.invalidCount ? [output.ports.status.invalidCount] : [])
+  ];
+}
 
 /**
  * Triangular shortest-path network KDE corrected by each event's total kernel mass over all
@@ -83,7 +107,10 @@ export class GPUNetworkKernelDensity implements GPUCommandNodeProducer {
     validatePointProcessView(props.output.intensity, 'float32', queryCount);
     validatePointProcessView(props.output.kernelMass, 'float32', props.eventCount);
     validatePointProcessView(props.output.status, 'uint32', queryCount);
-    validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
+    if (props.output.ports?.status.invalidCount) {
+      validatePointProcessView(props.output.ports.status.invalidCount, 'uint32', 1);
+    }
+    validateGraphOutputsDisjointFromInputs(this.id, getOutputViews(props.output), [
       props.distances,
       props.quadratureLengths,
       props.excludedEventIds
@@ -98,7 +125,7 @@ export class GPUNetworkKernelDensity implements GPUCommandNodeProducer {
       props.distances,
       props.quadratureLengths,
       props.excludedEventIds,
-      ...Object.values(props.output)
+      ...getOutputViews(props.output)
     ]);
     const invalidEvents = createTransientView(
       graph,
@@ -109,7 +136,7 @@ export class GPUNetworkKernelDensity implements GPUCommandNodeProducer {
     const declarations = `${IS_FINITE_FLOAT_WGSL}
 fn kernel(distance: f32) -> f32 { return max(0.0, 1.0 - distance / ${Math.fround(props.bandwidth)}f) / ${Math.fround(props.bandwidth)}f; }
 fn validDistance(distance: f32) -> bool { return distance >= 0.0 && (isFiniteFloat(distance) || bitcast<u32>(distance) == 0x7f800000u); }`;
-    return [
+    const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode(graph, {
         id: `${id}-mass`,
         operation: 'GPUNetworkKernelDensity',
@@ -170,5 +197,16 @@ fn validDistance(distance: f32) -> bool { return distance >= 0.0 && (isFiniteFlo
   status[statusOffset + index] = select(1u, 0u, valid);`
       })
     ];
+    if (props.output.ports?.status.invalidCount) {
+      nodes.push(
+        ...new GPUReduction({
+          id: `${id}-invalid-count`,
+          input: props.output.status,
+          output: props.output.ports.status.invalidCount,
+          operation: 'sum'
+        }).getCommandNodes(graph)
+      );
+    }
+    return nodes;
   }
 }

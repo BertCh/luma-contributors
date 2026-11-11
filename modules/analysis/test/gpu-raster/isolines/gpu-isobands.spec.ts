@@ -102,7 +102,7 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
     id: 'isobands',
     grid,
     values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', sampleCount),
-    validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', sampleCount),
+    mask: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', sampleCount),
     noDataValue: -9999,
     breaks: importGraphBuffer(graph, 'breaks', breaksBuffer, 'float32', MAXIMUM_BREAK_COUNT),
     parameters: parameterBuffer.importToGraph(graph),

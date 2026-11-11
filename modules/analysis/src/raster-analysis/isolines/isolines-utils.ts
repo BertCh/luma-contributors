@@ -51,6 +51,44 @@ export function validateIsolinesAliasing(
 }
 
 /**
+ * WGSL `isSaddleJoined(v, level)`: the saddle rule shared by {@link GPUIsolines} and
+ * {@link GPUIsobands}, the bilinear (asymptotic) decider of the published `GPURasterContours`.
+ *
+ * `v` holds the corners in boundary order, so `(v0, v2)` and `(v1, v3)` are the two diagonals, and
+ * exactly one diagonal is high (`value >= level`). The bilinear surface through the four corners
+ * has its saddle point at the value `(v0 * v2 - v1 * v3) / (v0 + v2 - v1 - v3)`. The two high
+ * corners are joined through the cell when that value is at or above the level and separated
+ * when it is below. With `d = v - level` the saddle value minus the level is
+ * `(d0 * d2 - d1 * d3) / (d0 + d2 - d1 - d3)`, and the denominator is positive when `(v0, v2)` is
+ * the high diagonal and negative otherwise, so only the sign of the determinant
+ * `d0 * d2 - d1 * d3` is needed and nothing is divided. A saddle value exactly at the level joins,
+ * in keeping with `value >= level` being high and with the published rule ("an exact determinant
+ * tie connects the high-valued diagonal").
+ *
+ * The differences are taken unscaled, so on integer rasters with integer levels (elevations in
+ * whole metres) the determinant is exact and a tie is a tie. Only when a magnitude is above 1e18,
+ * where the products could overflow, are the corners divided by the largest magnitude first, as
+ * the published kernel always does. The published kernel's unconditional scaling rounds the
+ * differences, so on an exact tie its choice is decided by rounding; the two kernels can
+ * therefore differ on exact ties and only there.
+ *
+ * The result is meaningless for a cell that is not a saddle; callers use it only for masks 5 and
+ * 10.
+ *
+ * @internal
+ */
+export const ISOLINES_SADDLE_WGSL = /* wgsl */ `
+fn isSaddleJoined(v: vec4<f32>, level: f32) -> bool {
+  let magnitude = max(abs(level), max(max(abs(v.x), abs(v.y)), max(abs(v.z), abs(v.w))));
+  var delta = v - vec4<f32>(level);
+  if (magnitude > 1.0e18) {
+    delta = v / magnitude - vec4<f32>(level / magnitude);
+  }
+  let determinant = delta.x * delta.z - delta.y * delta.w;
+  return select(determinant <= 0.0, determinant >= 0.0, v.x >= level);
+}`;
+
+/**
  * WGSL `getNaN`, `Corners` and `loadCorners(cx, cy)` for a raster binding `raster` with optional
  * `validity`. A cell is nodata when it is non-finite (NaN or an infinity, which a crossing cannot
  * interpolate), equals the optional sentinel, or has a zero validity word. Cell `(cx, cy)` reads samples v0 `(cx, cy)`, v1 `(cx + 1,

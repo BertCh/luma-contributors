@@ -9,7 +9,7 @@ export const GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH = 8;
 export const GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE = 1e-3;
 
 /** Axis scaling of the standard deviational ellipse. */
-export type GPUGeographicDistributionEllipseConvention = 'arcgis' | 'standard';
+export type GPUGeographicDistributionEllipseConvention = 'root-two' | 'standard';
 
 /**
  * CPU settings packed into the per-frame `parameters` of `GPUGeographicDistribution`.
@@ -29,9 +29,9 @@ export type GPUGeographicDistributionSettings = {
    */
   standardDeviations?: number;
   /**
-   * Axis scaling of the ellipse: `'arcgis'` scales the axes by `sqrt(2)` as the ArcGIS Directional
+   * Axis scaling of the ellipse: `'root-two'` scales the axes by `sqrt(2)` as the ArcGIS Directional
    * Distribution tool does, `'standard'` uses the plain standard deviation along each principal
-   * axis. Defaults to `'arcgis'`.
+   * axis. Defaults to `'root-two'`.
    */
   ellipseConvention?: GPUGeographicDistributionEllipseConvention;
   /**
@@ -53,7 +53,7 @@ export type GPUGeographicDistributionSettings = {
  * `GPUGeographicDistribution`.
  *
  * Layout: `[originX, originY, standardDeviations, ellipseScale, orientationOnly,
- * medianTolerance, 0, 0]`, where `ellipseScale` is `sqrt(2)` for the `'arcgis'` convention and `1`
+ * medianTolerance, 0, 0]`, where `ellipseScale` is `sqrt(2)` for the `'root-two'` convention and `1`
  * for `'standard'`.
  *
  * @param settings Settings to encode.
@@ -72,7 +72,7 @@ export function getGPUGeographicDistributionParameterValues(
   }
   const [originX, originY] = settings.origin ?? [0, 0];
   const standardDeviations = settings.standardDeviations ?? 1;
-  const convention = settings.ellipseConvention ?? 'arcgis';
+  const convention = settings.ellipseConvention ?? 'root-two';
   const medianTolerance =
     settings.medianTolerance ?? GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE;
   for (const value of [originX, originY, standardDeviations, medianTolerance]) {
@@ -88,14 +88,14 @@ export function getGPUGeographicDistributionParameterValues(
   if (medianTolerance < 0) {
     throw new Error('Geographic distribution medianTolerance must not be negative');
   }
-  if (convention !== 'arcgis' && convention !== 'standard') {
-    throw new Error('Geographic distribution ellipseConvention must be arcgis or standard');
+  if (convention !== 'root-two' && convention !== 'standard') {
+    throw new Error('Geographic distribution ellipseConvention must be root-two or standard');
   }
   target.set([
     originX,
     originY,
     standardDeviations,
-    convention === 'arcgis' ? Math.SQRT2 : 1,
+    convention === 'root-two' ? Math.SQRT2 : 1,
     settings.orientationOnly ? 1 : 0,
     medianTolerance,
     0,
