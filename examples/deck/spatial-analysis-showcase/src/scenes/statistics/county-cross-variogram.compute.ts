@@ -198,6 +198,8 @@ export async function createCountyCrossVariogram(
         new GPUSpaceTimeVariogram({
           ...commonProps,
           times: view('times', timesBuffer, 'float32', rows),
+          // The space-time variogram always searches a lattice; the size changes speed only.
+          gridSize: [8, 8],
           temporalLagCount: TEMPORAL_LAG_COUNT
         })
       );

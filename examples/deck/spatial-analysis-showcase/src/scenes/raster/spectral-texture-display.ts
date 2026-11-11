@@ -199,7 +199,7 @@ export function addSpectralDisplayGraph(
       id: 'spectral-profile',
       grid,
       values: view('profile-nir', sourceNir, 'float32', pixelCount),
-      validity: view('profile-validity', sourceValidity, 'uint32', pixelCount),
+      mask: view('profile-validity', sourceValidity, 'uint32', pixelCount),
       positions: view(
         'profile-vertices',
         profileCellPositions,

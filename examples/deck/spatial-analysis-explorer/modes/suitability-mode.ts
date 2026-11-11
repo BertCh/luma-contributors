@@ -446,7 +446,7 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
               'float32',
               cellCount
             ),
-            validity,
+            mask: validity,
             breaks: importGraphBuffer(
               graph,
               `breaks-${name}`,
@@ -600,7 +600,7 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
           id: 'elevation-profile',
           grid: flippedGrid,
           values: elevation,
-          validity,
+          mask: validity,
           positions: pathPositions,
           lineOffsets: pathOffsets,
           parameters: profileView,

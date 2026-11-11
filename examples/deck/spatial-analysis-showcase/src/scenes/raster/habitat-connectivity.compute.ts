@@ -15,6 +15,8 @@ import {
   GPURasterErosion
 } from '@luma.gl/graph/gpu-raster';
 import {
+  getGPURasterWalkingCostParameterValues,
+  GPU_RASTER_WALKING_COST_PARAMETER_LENGTH,
   GPURasterPatchMetrics,
   GPURasterWalkingCost,
   makeGPURasterMetadata
@@ -298,7 +300,7 @@ async function createHabitatConnectivityInstance(
       grid: rasterGrid,
       countRasterBorder: ctx.options.countRasterBorder,
       labels: labelsView,
-      validity: labelValidityView,
+      mask: labelValidityView,
       status: {
         converged: convergedView,
         componentCount: componentCountView,
@@ -364,6 +366,17 @@ async function createHabitatConnectivityInstance(
     float('proximity-metrics-output', buffers.proximityMetrics, PATCH_CAPACITY * 4),
     {id: 'publish-proximity-metrics', afterNode: 'patch-proximity-patch-summary'}
   );
+  const walkingModel = {
+    kind: 'grass' as const,
+    coefficients: [1, 0.05, 0.05, 0.05] as const,
+    downhillSlopeThreshold: -0.3
+  };
+  const walkingCostParameters = resources.createParameterBuffer(
+    'walking-cost-parameters',
+    'float32',
+    GPU_RASTER_WALKING_COST_PARAMETER_LENGTH,
+    getGPURasterWalkingCostParameterValues({model: walkingModel}, rasterGrid)
+  );
   graph.add(
     new GPURasterWalkingCost({
       id: 'walking-cost-scenario',
@@ -379,7 +392,8 @@ async function createHabitatConnectivityInstance(
         storage: {kind: 'buffer', values: float('friction', buffers.friction)}
       },
       sources: proximity.outputs.core,
-      model: {kind: 'grass', coefficients: [1, 0.05, 0.05, 0.05], downhillSlopeThreshold: -0.3},
+      model: walkingModel,
+      parameters: walkingCostParameters.importToGraph(graph),
       maximumIterations: 128,
       output: {
         costs: float('walking-costs', buffers.costs),

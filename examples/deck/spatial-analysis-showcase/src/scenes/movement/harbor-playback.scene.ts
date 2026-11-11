@@ -501,7 +501,9 @@ import {
   GPUTrajectoryPlayhead, GPUTrajectoryMetrics, GPUTrajectoryResample,
   getGPUTrajectoryPlayheadParameterValues, getGPUTrajectoryMetricsParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
+import {
+  GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 // positions: float32x2 AEQD frame meters, timestamps: float32 seconds, trackOffsets: uint32 (tracks + 1)
 const playGraph = new GPUCommandGraph(device, {id: 'playback'});

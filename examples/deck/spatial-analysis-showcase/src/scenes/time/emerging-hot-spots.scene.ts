@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUInferenceMetadata} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUInferenceMetadata} from '@luma-contributors/analysis/analysis-core';
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {
@@ -447,7 +447,7 @@ import {
   addSpaceTimeHotSpotsRecipe,
   GPUEmergingHotSpots, GPUNeighborSearch
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTemporalReduction} from '@luma.gl/graph/gpu-dataframe';
+import {GPUTemporalReduction} from '@luma-contributors/analysis/dataframe-analysis';
 
 const hotSpotSettings = {
   radius: ${state.radius}, temporalWindow: ${state.temporalWindow}, confidenceLevel: ${state.confidence},

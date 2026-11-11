@@ -24,10 +24,12 @@ import {
   GPUGlobalPermutationTest,
   GPUGlobalSpatialStatistics,
   GPUSpatialLag,
-  type GPUGlobalPermutationStatistic,
+  type GPUGlobalPermutationStatistic
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   type GPUInferenceAlternative,
   type GPUParameterBuffer
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassBreaks, getClassCounts, getExtent} from '../../cartography/breaks';
 import {getClassIndexOf, getClassTableLayerProps} from '../../cartography/class-table';

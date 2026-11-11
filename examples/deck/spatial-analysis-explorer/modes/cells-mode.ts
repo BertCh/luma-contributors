@@ -45,7 +45,6 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  type GPULocalFrame,
   GPUCellAggregation,
   GPUCellCompaction,
   GPUCellCover,
@@ -59,6 +58,7 @@ import {
   type GPUCellCoverContainment,
   type GPUCellIndexFamily
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';

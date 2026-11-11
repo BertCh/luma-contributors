@@ -14,7 +14,7 @@ import {
   evaluateProjectionPlan,
   GPUProjectionProgram
 } from '@luma.gl/graph/gpu-project';
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {addKernelPass} from '../../engine/mode-kernels';
@@ -358,13 +358,8 @@ export async function createGridAlignment(
               ambiguityTolerance: Number(options.ambiguityTolerance)
             }
           : {
-              referenceValidity: view(
-                'reference-validity',
-                referenceMaskBuffer,
-                'uint32',
-                CELL_COUNT
-              ),
-              movingValidity: view('moving-validity', maskedMovingMaskBuffer, 'uint32', CELL_COUNT),
+              referenceMask: view('reference-validity', referenceMaskBuffer, 'uint32', CELL_COUNT),
+              movingMask: view('moving-validity', maskedMovingMaskBuffer, 'uint32', CELL_COUNT),
               maximumShift: [Number(options.maximumShift), Number(options.maximumShift)] as const,
               minimumOverlapFraction: Number(options.minimumOverlapFraction),
               minimumOverlapCount: Number(options.minimumOverlapCount),

@@ -333,7 +333,7 @@ export async function createBurnSeverity(
         parameters: cloudParameters.importToGraph(main),
         output: {
           values: f('cloud-flag', product.cloudFlag),
-          outputMask: w('cloud-mask', product.cloudMask)
+          conditionResult: w('cloud-mask', product.cloudMask)
         }
       })
     );
@@ -355,7 +355,7 @@ export async function createBurnSeverity(
         parameters: burnedParameters.importToGraph(main),
         output: {
           values: f('burned-flag', product.burnedFlag),
-          outputMask: w('burned-mask', product.burnedMask)
+          conditionResult: w('burned-mask', product.burnedMask)
         }
       })
     );
@@ -367,7 +367,7 @@ export async function createBurnSeverity(
         parameters: patchMaskParameters.importToGraph(main),
         output: {
           values: f('patch-flag', makeFloat('patch-flag')),
-          outputMask: w('patch-mask', product.patchMask)
+          conditionResult: w('patch-mask', product.patchMask)
         }
       })
     );
@@ -490,7 +490,7 @@ export async function createBurnSeverity(
     const patchInput = {
       grid: rasterGrid,
       labels,
-      validity: labelValidity,
+      mask: labelValidity,
       // Guards from the labeling passes: metrics skip labels above the bounded component count.
       status: {converged: sparseConverged, componentCount, overflow}
     };

@@ -1241,13 +1241,12 @@ function createPolygonSurface(
       positions: output('buffer-positions', 'float32x2', vertexCapacity, 8),
       ringOffsets: output('buffer-ring-offsets', 'uint32', ringCapacity + 1, 4),
       polygonOffsets: output('buffer-polygon-offsets', 'uint32', polygonCapacity + 1, 4),
-      featureOffsets: output('buffer-feature-offsets', 'uint32', polygonCapacity + 1, 4),
-      sourceIds: output('buffer-source-ids', 'uint32', polygonCapacity, 4)
+      featureOffsets: output('buffer-feature-offsets', 'uint32', polygonCapacity + 1, 4)
     },
     status: {
       count: output('buffer-count', 'uint32', 1, 4),
       overflow: output('buffer-overflow', 'uint32', 1, 4),
-      requiredCount: output('buffer-required-count', 'uint32', 1, 4),
+      requiredRingCount: output('buffer-required-count', 'uint32', 1, 4),
       candidateOverflow: output('buffer-candidate-overflow', 'uint32', 1, 4),
       uncertainCount: output('buffer-uncertain', 'uint32', 1, 4)
     },

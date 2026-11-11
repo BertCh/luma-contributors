@@ -301,7 +301,9 @@ export default defineScene<SatellitePlaybackOptions>({
 import {
   GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
+import {
+  GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 // positions: float32x2 [longitude, latitude] degrees, cut at the antimeridian so no track wraps
 // timestamps: float32 seconds since the window start; altitudes: float32 meters per vertex

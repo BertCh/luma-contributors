@@ -578,7 +578,7 @@ import {
   GPUTerrainRGBDecode, GPUTerrainDerivatives, GPUTerrainRuggedness,
   getGPUTerrainDerivativesParameterValues, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-terrain';
-import {makeGPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 
 // the tile is Web Mercator: EPSG:3857 meters, origin [minX, maxY], cellSize the equatorial pixel size
 const grid = makeGPURasterMetadata({width: 2048, height: 2048, cellSize: 9.5546, origin: [minX, maxY]});

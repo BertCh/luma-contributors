@@ -13,9 +13,9 @@ import {
 import {
   GPUSphericalArcOverlay,
   GPUSphericalConvexContains,
-  GPUSphericalConvexIntersection,
-  GPU_EARTH_MEAN_RADIUS_METERS
+  GPUSphericalConvexIntersection
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';

@@ -1096,7 +1096,7 @@ import {
   GPUTerrainHorizon, GPUReliefShading, GPUSimpleLocalRelief, GPUReliefBlend,
   getGPUReliefShadingParameterValues, GPU_RELIEF_BLEND_VAT_ARCHAEOLOGICAL
 } from '@luma-contributors/analysis/gpu-terrain';
-import {makeGPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 
 // Web Mercator tile: EPSG:3857 meters, origin [minX, maxY], cellSize the equatorial pixel size
 const grid = makeGPURasterMetadata({width, height, cellSize: 9.5546, origin: [minX, maxY]});

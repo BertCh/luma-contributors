@@ -37,9 +37,9 @@ import {
   GPULocalPermutationTest,
   GPUNeighborSearch,
   GPUPointInPolygonJoin,
-  GPUSpatialEmpiricalBayesRates,
-  type GPUInferenceAlternative
+  GPUSpatialEmpiricalBayesRates
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUInferenceAlternative} from '@luma-contributors/analysis/analysis-core';
 import {importGraphBuffer} from '../graph-buffers';
 import {type SpatialAnalysisPolygons} from '../spatial-analysis-data';
 import {

@@ -5,9 +5,9 @@
 import type {Buffer} from '@luma.gl/core';
 import {
   GPURandomPointsInPolygon,
-  getGPUDotDensityParameterValues,
-  type GPUSpatialContext
+  getGPUDotDensityParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {addKernelPass} from '../../engine/mode-kernels';

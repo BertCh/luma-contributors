@@ -117,7 +117,7 @@ function getLegends(
 }
 
 function getSnippet(state: GroupStatisticsOptions): string {
-  return `import {GPUGroupStatistics, GPUKeyJoin} from '@luma.gl/graph/gpu-dataframe';
+  return `import {GPUGroupStatistics, GPUKeyJoin} from '@luma-contributors/analysis/dataframe-analysis';
 
 // keys: community area index per record (0xffffffff = none); a dense table of 77 groups.
 // mask: one word per record, rewritten from the filters (group ${state.natureGroup}, hours ${state.hours[0]} to ${state.hours[1]}, identification ${state.gradeFilter}).

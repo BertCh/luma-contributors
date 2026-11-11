@@ -8,7 +8,7 @@ import {
   type AnalysisFrameProjection,
   createAnalysisFrameProjection
 } from '../../engine/analysis-frame';
-import type {GPUSpatialContext} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 import {LocalMetricProjection} from '../../engine/projection';
 import {
   BOUNDARY_FAMILY_OF_CLASS,

@@ -97,8 +97,8 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     'San Francisco ZIP codes as a coverage. Drag the tolerance: shared boundaries stay gap-free ' +
     '(white) while independent per-polygon simplification (red) opens gaps, marked by yellow dots. ' +
     'The coverage result is topology-preserving: arc ends stay fixed, rings keep three vertices, ' +
-    'and simplified segments that would cross are repaired (readouts show crossings found, fixed ' +
-    'and remaining; toggle "Preserve topology" to compare). ' +
+    'and simplified segments that would cross are repaired (readouts show crossings and swept spans found, ' +
+    'fixed and remaining; toggle "Preserve topology" to compare). ' +
     'Fills are a GPU map coloring of the rook contiguity graph; the seed picks another coloring.',
   initialViewState: {longitude: -122.44, latitude: 37.76, zoom: 11.6},
 
@@ -485,8 +485,8 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       'Independent simplification decides each ring alone, so a vertex on a shared boundary can be ' +
         'kept by one polygon and dropped by its neighbor: that is where gaps and overlaps open. ' +
         'The coverage contributor shares the decision through point IDs, so its count stays 0. ' +
-        'With "Preserve topology" on, simplified segments that would cross are found with exact ' +
-        'predicates and the farthest original vertex is restored, rings keep three vertices, and ' +
+        'With "Preserve topology" on, simplified segments that would cross, and shortcuts that ' +
+        "would sweep over another polygon's island, are found with exact predicates and the farthest original vertex is restored, rings keep three vertices, and " +
         'nodes never move; turn it off to see the crossings and collapsed rings of plain ' +
         'Douglas-Peucker. The independent control never preserves topology.'
     );
@@ -503,10 +503,14 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     const independentKeptReadout = context.controls.addReadout('Independent kept vertices');
     const gapReadout = context.controls.addReadout('Gap vertices (coverage / independent)');
     const collapsedReadout = context.controls.addReadout('Collapsed rings (< 3 vertices)');
-    const inputCrossingsReadout = context.controls.addReadout('Crossings in the input itself');
-    const crossingsFoundReadout = context.controls.addReadout('Crossings found (before repair)');
+    const inputCrossingsReadout = context.controls.addReadout(
+      'Crossings and swept spans in the input itself'
+    );
+    const crossingsFoundReadout = context.controls.addReadout(
+      'Crossings and swept spans found (before repair)'
+    );
     const crossingsRemainingReadout = context.controls.addReadout(
-      'Crossings remaining / fixed (0 on a clean input)'
+      'Remaining / fixed (0 on a clean input)'
     );
     const restoredReadout = context.controls.addReadout('Vertices restored by repair');
     const convergenceReadout = context.controls.addReadout('Simplification converged');

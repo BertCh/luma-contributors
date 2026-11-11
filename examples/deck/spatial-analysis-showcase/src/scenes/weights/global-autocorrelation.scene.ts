@@ -191,7 +191,9 @@ parameters.write(getGPUPermutationParameterValues({seed: ${state.seed}, permutat
   return `import {
   GPUSpatialLag, GPUGlobalSpatialStatistics, GPUGlobalPermutationTest, getGPUPermutationParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUSpatialCorrelogram, getGPUSpatialCorrelogramParameterValues} from '@luma.gl/graph/gpu-dataframe';
+import {
+  GPUSpatialCorrelogram, getGPUSpatialCorrelogramParameterValues
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 // The neighbour average of every county: the y axis of the Moran scatterplot.
 graph.add(new GPUSpatialLag({weights, values, mask, normalize: true, output: lag}));

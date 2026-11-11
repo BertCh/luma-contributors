@@ -76,7 +76,7 @@ const stubPlugin = {
       loader: 'text'
     }));
     // Frames are built at module load, so the spatial-analysis contracts (pure CPU code) are real.
-    builder.onResolve({filter: /^@luma-contributors\/analysis\/gpu-spatial-analysis$/}, args => ({
+    builder.onResolve({filter: /^@luma-contributors\/analysis\/analysis-core$/}, args => ({
       path: args.path,
       namespace: 'contracts'
     }));

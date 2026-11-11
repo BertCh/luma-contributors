@@ -9,7 +9,7 @@ order: 5
 A pile of points (wildlife sightings, shops, trips) raises the same few questions, and each has a GPU contributor that answers it without sending the points back to the CPU.
 
 1. **How much is where?** Bin the points into cells and count them: [`GPUPointDensity`](#/reference/GPUPointDensity). Story: [Where does Chicago wildlife get noticed?](#/story/nature-density).
-2. **Which groups of points form places?** Cluster them and describe each cluster: [`GPUSpatialClustering`](#/reference/GPUSpatialClustering) (DBSCAN), [`GPUKMeans`](#/reference/GPUKMeans), then [`GPUGroupGeometry`](#/reference/GPUGroupGeometry), [`GPUGroupConvexHull`](#/reference/GPUGroupConvexHull) and [`GPUGeographicDistribution`](#/reference/GPUGeographicDistribution). Story: [Where do sightings form hot spots?](#/story/nature-clusters).
+2. **Which groups of points form places?** Cluster them and describe each cluster: [`GPUSpatialClustering`](#/reference/GPUSpatialClustering) (DBSCAN), [`GPUSpatialKMeans`](#/reference/GPUSpatialKMeans), then [`GPUGroupGeometry`](#/reference/GPUGroupGeometry), [`GPUGroupConvexHull`](#/reference/GPUGroupConvexHull) and [`GPUGeographicDistribution`](#/reference/GPUGeographicDistribution). Story: [Where do sightings form hot spots?](#/story/nature-clusters).
 3. **Is the pattern clustered, random or regular, and at what scale?** [`GPURipley`](#/reference/GPURipley), [`GPURipleyDistanceFunctions`](#/reference/GPURipleyDistanceFunctions) and [`GPUPointPatternIndices`](#/reference/GPUPointPatternIndices). Story: [Are the points clustered, random or regular?](#/story/point-patterns).
 4. **What is inside the shape I just drew?** [`GPURegionStatistics`](#/reference/GPURegionStatistics), with [`GPURegionMask`](#/reference/GPURegionMask) and [`GPUPickRegionMask`](#/reference/GPUPickRegionMask) as alternative ways to produce the selection. Story: [What gets logged inside the area I draw?](#/story/lasso-explorer).
 5. **How much line is where?** The same questions for streets and other lines: [`GPULineDensity`](#/reference/GPULineDensity) and [`GPULineLengthPerPolygon`](#/reference/GPULineLengthPerPolygon). Story: [How much street does each part of Chicago have?](#/story/street-density).
@@ -22,7 +22,7 @@ All five stories use real Chicago data: 43,557 iNaturalist observations of wild 
 | --- | --- | --- |
 | Where activity is concentrated, as a surface | `GPUPointDensity` | A count, sum or mean per square or hexagonal cell, optionally smoothed |
 | Hot spots as named places with outlines | `GPUSpatialClustering` + hulls | Labels, noise, per-cluster size, centre, hull |
-| A forced partition into k groups | `GPUKMeans` | Labels and centres for every point, no noise |
+| A forced partition into k groups | `GPUSpatialKMeans` | Labels and centres for every point, no noise |
 | A single summary of a whole pattern | `GPUGeographicDistribution` | Mean and median centre, standard distance, standard ellipse |
 | Whether the pattern departs from randomness | `GPURipley` and friends | K, L, G, F, J curves, Clark-Evans R, quadrat variance-to-mean |
 | Numbers for a shape the user draws | `GPURegionStatistics` | Count, sum, mean, min, max, histogram, optional mask and id list |

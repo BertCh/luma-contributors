@@ -1107,8 +1107,8 @@ function makeSharedPathBuffers(resources: SpatialAnalysisResources, importView: 
       runs: {
         positions: importView(positions, 'float32x2', SHARED_VERTEX_CAPACITY),
         offsets: importView(offsets, 'uint32', SHARED_RUN_CAPACITY + 1),
-        leftLineIds: importView(leftLineIds, 'uint32', SHARED_RUN_CAPACITY),
-        rightLineIds: importView(rightLineIds, 'uint32', SHARED_RUN_CAPACITY),
+        leftSourceIds: importView(leftLineIds, 'uint32', SHARED_RUN_CAPACITY),
+        rightSourceIds: importView(rightLineIds, 'uint32', SHARED_RUN_CAPACITY),
         forward: importView(forward, 'uint32', SHARED_RUN_CAPACITY)
       },
       status: {
@@ -1244,12 +1244,11 @@ function makeBufferSurfaceOutput(
       positions: importView(positions, 'float32x2', BUFFER_VERTEX_CAPACITY),
       featureOffsets: importView(featureOffsets, 'uint32', BUFFER_RING_CAPACITY + 1),
       polygonOffsets: importView(polygonOffsets, 'uint32', BUFFER_RING_CAPACITY + 1),
-      ringOffsets: importView(ringOffsets, 'uint32', BUFFER_RING_CAPACITY + 1),
-      sourceIds: importView(sourceIds, 'uint32', BUFFER_RING_CAPACITY)
+      ringOffsets: importView(ringOffsets, 'uint32', BUFFER_RING_CAPACITY + 1)
     },
     status: {
       count: importView(geometryStatus.count, 'uint32', 1),
-      requiredCount: importView(geometryStatus.requiredCount, 'uint32', 1),
+      requiredRingCount: importView(geometryStatus.requiredCount, 'uint32', 1),
       overflow: importView(geometryStatus.overflow, 'uint32', 1),
       candidateOverflow: importView(geometryStatus.candidateOverflow, 'uint32', 1),
       uncertainCount: importView(geometryStatus.uncertainCount, 'uint32', 1)
@@ -1385,8 +1384,8 @@ function makeSharedPathInput(
     runs: {
       positions: importView(positionsBuffer, 'float32x2', rows.positions.length / 2),
       offsets: importView(offsetsBuffer, 'uint32', rows.offsets.length),
-      leftLineIds: importView(leftBuffer, 'uint32', rows.leftLineIds.length),
-      rightLineIds: importView(rightBuffer, 'uint32', rows.rightLineIds.length),
+      leftSourceIds: importView(leftBuffer, 'uint32', rows.leftLineIds.length),
+      rightSourceIds: importView(rightBuffer, 'uint32', rows.rightLineIds.length),
       forward: importView(forwardBuffer, 'uint32', rows.forward.length)
     },
     status: {
@@ -2065,9 +2064,15 @@ function makeTessellationReadbackBuffers(
         body: 'copiedOutput[copiedOutputOffset + index] = source[sourceOffset + index];'
       });
     }
+    const requiredRingCount = output.status.requiredRingCount;
+    if (!requiredRingCount) {
+      throw new Error(
+        'block-relationships: the tessellation output has no status.requiredRingCount'
+      );
+    }
     for (const [name, sourceView, destination] of [
       ['count', output.status.count, target.count],
-      ['required', output.status.requiredCount, target.requiredCount],
+      ['required', requiredRingCount, target.requiredCount],
       ['overflow', output.status.overflow, target.overflow],
       ['candidate-overflow', output.status.candidateOverflow, target.candidateOverflow]
     ] as const) {

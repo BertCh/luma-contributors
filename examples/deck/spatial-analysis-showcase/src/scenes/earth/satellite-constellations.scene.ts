@@ -18,7 +18,7 @@ export default defineScene<SatelliteConstellationsOptions>({
   order: 12,
   summary:
     'Let GPU k-means group loaded satellites by orbital inclination and altitude, then inspect the iterative assignments and sensitivity of the resulting shells.',
-  contributors: ['GPUKMeans', 'GPUTrajectoryPlayhead', 'GPUTimeWindowFilter'],
+  contributors: ['GPUSpatialKMeans', 'GPUTrajectoryPlayhead', 'GPUTimeWindowFilter'],
   datasets: [{id: 'celestrak-ground-tracks', role: 'SGP4 ground tracks (7 October 2026, 3 h)'}],
   initialView: VIEW,
 
@@ -45,7 +45,7 @@ export default defineScene<SatelliteConstellationsOptions>({
       group: 'Shells (k-means)',
       apply: 'param',
       default: '24',
-      help: 'Runs GPUKMeans for the selected authored iteration limit, so the linked map and scatter show its actual intermediate assignments and centres before the final 24-iteration result.',
+      help: 'Runs GPUSpatialKMeans for the selected authored iteration limit, so the linked map and scatter show its actual intermediate assignments and centres before the final 24-iteration result.',
       options: [
         {value: '1', label: '1. Assign'},
         {value: '2', label: '2. Move centres'},
@@ -63,7 +63,7 @@ export default defineScene<SatelliteConstellationsOptions>({
       max: 8,
       step: 1,
       default: 5,
-      help: 'How many clusters GPUKMeans looks for. k is a compile-time property of the contributor, so each value compiles its own graph on first use. Too small merges real shells; too large splits one shell by tiny altitude differences.'
+      help: 'How many clusters GPUSpatialKMeans looks for. k is a compile-time property of the contributor, so each value compiles its own graph on first use. Too small merges real shells; too large splits one shell by tiny altitude differences.'
     },
     {
       kind: 'select',
@@ -194,7 +194,7 @@ export default defineScene<SatelliteConstellationsOptions>({
       textAlternative:
         'Satellite clusters are explained as a two-feature partition rather than physical orbital planes.',
       optionsMode: 'fresh',
-      body: 'Every satellite first becomes a point in a deliberately small feature space: inclination in degrees and mean altitude on a logarithmic scale. The linked scatter shows those measured points with units; the map is only the playback view. `GPUKMeans` then assigns every point to its nearest centre and moves that centre until it stops changing.\n\nThis is a classification, not recovered physical orbital planes: RAAN is absent. Start the clock with **Play** and read the provisional shell labels with the feature chart.',
+      body: 'Every satellite first becomes a point in a deliberately small feature space: inclination in degrees and mean altitude on a logarithmic scale. The linked scatter shows those measured points with units; the map is only the playback view. `GPUSpatialKMeans` then assigns every point to its nearest centre and moves that centre until it stops changing.\n\nThis is a classification, not recovered physical orbital planes: RAAN is absent. Start the clock with **Play** and read the provisional shell labels with the feature chart.',
       camera: {...VIEW, transitionMs: 1400},
       options: {family: 'both', k: 5, altitudeWeight: 30, play: true},
       controls: ['play', 'k', 'family'],
@@ -280,7 +280,7 @@ export default defineScene<SatelliteConstellationsOptions>({
       id: 'shellChart',
       label: 'Satellites per shell',
       kind: 'chart',
-      help: 'Cluster sizes from GPUKMeans, labeled by inclination / altitude (km).'
+      help: 'Cluster sizes from GPUSpatialKMeans, labeled by inclination / altitude (km).'
     },
     {
       id: 'featureChart',
@@ -304,14 +304,15 @@ export default defineScene<SatelliteConstellationsOptions>({
     {id: 'satellites', label: 'Dataset'}
   ],
 
-  snippet: state => `import {GPUKMeans} from '@luma-contributors/analysis/gpu-spatial-analysis';
+  snippet:
+    state => `import {GPUSpatialKMeans} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One 2D point per satellite: [inclination (deg), ${state.altitudeWeight} * log10(mean altitude in km)]
-graph.add(new GPUKMeans({
+graph.add(new GPUSpatialKMeans({
   positions: features,
   k: ${state.k},                    // compile-time: a new k compiles a new graph
   maximumIterations: 24, initialization: 'kmeans++',
-  parameters: kmeansParameters.importToGraph(graph),   // getGPUKMeansParameterValues({seed: ${state.seed}})
+  parameters: kmeansParameters.importToGraph(graph),   // getGPUSpatialKMeansParameterValues({seed: ${state.seed}})
   output: {labels, centers, sizes, status: {iterationCount, converged}}
 }));
 compiled.encode(commandEncoder, {parameters: undefined});
@@ -320,7 +321,7 @@ compiled.encode(commandEncoder, {parameters: undefined});
 // The playhead scene colors each satellite by labels[satellite] and lifts it by its altitude.`,
 
   about: {
-    what: 'A look at constellation geometry: satellites grouped by orbital inclination and altitude with `GPUKMeans`, then flown on the globe with the same GPU playhead as the playback scene. The dataset holds a bounded 800-object Starlink sample, 32 GPS records and other families, all propagated with SGP4 from a dated CelesTrak TLE snapshot.',
+    what: 'A look at constellation geometry: satellites grouped by orbital inclination and altitude with `GPUSpatialKMeans`, then flown on the globe with the same GPU playhead as the playback scene. The dataset holds a bounded 800-object Starlink sample, 32 GPS records and other families, all propagated with SGP4 from a dated CelesTrak TLE snapshot.',
     why: 'Clustering is a way to inspect a chosen feature space. It does not recover orbital planes, coverage, or conjunctions.',
     howToRead:
       'Colors are k-means clusters in the plane of inclination and log altitude, lowest shell first. The chart counts satellites per shell. Clusters depend on k, the seed and the altitude weight, so treat them as a way to look, not as truth. Altitude is the mean over three hours. Close approaches are deliberately not computed: `GPUTrajectoryEncounters` is two-dimensional.'

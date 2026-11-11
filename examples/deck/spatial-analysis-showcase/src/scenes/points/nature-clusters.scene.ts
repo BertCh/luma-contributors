@@ -43,7 +43,7 @@ export default defineScene<NatureClusterOptions>({
     'DBSCAN turns a haze of bird records into named hot spots coloured by size, and shows that its radius is a scale you can draw. Convex hulls, centres and a water check describe the winner; k-means and the centre of gravity answer different questions.',
   contributors: [
     'GPUSpatialClustering',
-    'GPUKMeans',
+    'GPUSpatialKMeans',
     'GPUGroupGeometry',
     'GPUGroupConvexHull',
     'GPUGeographicDistribution',
@@ -293,10 +293,10 @@ export default defineScene<NatureClusterOptions>({
       group: 'Shapes',
       apply: 'param',
       default: 'standard',
-      help: 'ArcGIS scales each axis by the square root of 2; standard uses the plain standard deviation along each principal axis.',
+      help: 'Root two scales each axis by the square root of 2, as the ArcGIS Directional Distribution tool does; standard uses the plain standard deviation along each principal axis.',
       options: [
         {value: 'standard', label: 'Standard (plain sigma)'},
-        {value: 'arcgis', label: 'ArcGIS Directional Distribution'}
+        {value: 'root-two', label: 'Root two (axes scaled by sqrt 2)'}
       ]
     },
     {
@@ -621,11 +621,11 @@ export default defineScene<NatureClusterOptions>({
       return `const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
 // Project source longitude/latitude with projection; draw outputs with analysisFrame: projection.frame.
 const graph = new GPUCommandGraph(device, {id: 'clusters'});
-graph.add(new GPUKMeans({spatialContext: projection.spatialContext,
+graph.add(new GPUSpatialKMeans({spatialContext: projection.spatialContext,
   positions,                               // float32x2 meters of the chosen group
   k: ${state.k},
   maximumIterations: ${cap},                // compile-time cap: each cap is its own graph
-  parameters: kmeansParameters,             // getGPUKMeansParameterValues({seed: ${state.seed}, tolerance: ${state.tolerance}}): meters a centre may still move
+  parameters: kmeansParameters,             // getGPUSpatialKMeansParameterValues({seed: ${state.seed}, tolerance: ${state.tolerance}}): meters a centre may still move
   initialization: '${state.initialization}',
   output: {labels, centers, sizes, status: {iterationCount, converged}}   // iterationCount: iterations that moved centres
 }));
@@ -680,7 +680,7 @@ const sizeClass = size => breaks.filter(boundary => size >= boundary).length;`;
   },
 
   about: {
-    what: '`GPUSpatialClustering` runs DBSCAN on the GPU in five stages: a lattice of cells at least epsilon wide, a neighbour count that flags core records, a lock-free union-find that joins cores, borders that attach to the smallest root, and canonical labels. Epsilon and the minimum points are parameter words, so they never recompile. `GPUKMeans` assigns every record to the nearest of k moving centres. `GPUGroupGeometry` and `GPUGroupConvexHull` describe every cluster, and `GPUGeographicDistribution` summarises the whole pattern with a mean, a median, a standard distance and an ellipse.',
+    what: '`GPUSpatialClustering` runs DBSCAN on the GPU in five stages: a lattice of cells at least epsilon wide, a neighbour count that flags core records, a lock-free union-find that joins cores, borders that attach to the smallest root, and canonical labels. Epsilon and the minimum points are parameter words, so they never recompile. `GPUSpatialKMeans` assigns every record to the nearest of k moving centres. `GPUGroupGeometry` and `GPUGroupConvexHull` describe every cluster, and `GPUGeographicDistribution` summarises the whole pattern with a mean, a median, a standard distance and an ellipse.',
     why: 'Clustering turns a cloud of sightings into places you can name, visit and compare. DBSCAN suits irregular patterns such as a park, a pond or a path and tells you what is not a hot spot; k-means is for dividing a city into balanced areas and never answers "nothing here". Epsilon is a scale: change it and places merge or vanish.',
     howToRead:
       'Hot spots are coloured by their size in four fixed classes (darker is bigger), never by an arbitrary id. Grey points are noise. A convex hull outlines a cluster and often swallows water; its area is not the footprint of the place. In the k-means view colours are nominal and only keep neighbouring groups apart. Counts follow observers, not only birds.'

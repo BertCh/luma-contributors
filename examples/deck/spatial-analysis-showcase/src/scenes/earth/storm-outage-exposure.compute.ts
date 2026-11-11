@@ -21,12 +21,14 @@ import {
   GPUTimeWindowFilter
 } from '@luma-contributors/analysis/dataframe-analysis';
 import {
-  GPU_EARTH_AUTHALIC_RADIUS_METERS,
   GPULineLengthPerPolygon,
   GPUZonalStatistics,
-  type GPUSpatialContext,
   type GPUZonalStatisticsSumOrder
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPU_EARTH_AUTHALIC_RADIUS_METERS,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Track lengths: longitude/latitude positions, great-circle meters. */
 const GREAT_CIRCLE_METERS: GPUSpatialContext = {

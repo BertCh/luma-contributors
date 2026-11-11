@@ -6,23 +6,25 @@ import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
   addHotSpotAnalysisRecipe,
-  createGPULocalFrame,
   GPULocalFrameProjection,
-  GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   getGPUNeighborSearchParameterValues,
   getGPUPermutationParameterValues,
   getGPUSpatialAutocorrelationParameterValues,
-  GPU_EARTH_MEAN_RADIUS_METERS,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_PERMUTATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
   type GPUCellFamily,
   type GPUHotSpotAnalysisRecipeResult,
-  type GPUHotSpotAnalysisRecipeSettings,
+  type GPUHotSpotAnalysisRecipeSettings
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  createGPULocalFrame,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
+  GPU_EARTH_MEAN_RADIUS_METERS,
   type GPUInferenceAlternative,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   CLASSIFICATION_METHOD_INFO,

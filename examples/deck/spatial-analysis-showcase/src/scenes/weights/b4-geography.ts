@@ -5,7 +5,7 @@
 import {
   GPU_EARTH_MEAN_RADIUS_METERS,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 import {earcut} from '@math.gl/polygon';
 import type {LoadedDataset} from '../../data/catalog';
 import {fetchJson, getDataFileUrl} from '../../data/loaders';

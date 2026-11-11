@@ -952,7 +952,7 @@ export default defineScene<LandformOptions>({
   GPUGeomorphons, GPUTerrainCurvature, GPUTerrainTopographicPosition, GPUTerrainWeissLandforms,
   getGPUGeomorphonsParameterValues, getGPUTerrainWeissLandformsParameterValues
 } from '@luma-contributors/analysis/gpu-terrain';
-import {makeGPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 
 // the tile is Web Mercator: the grid is in EPSG:3857 meters, cellSize the equatorial pixel size
 const grid = makeGPURasterMetadata({width, height, cellSize: 9.5546, origin: [minX, maxY]});

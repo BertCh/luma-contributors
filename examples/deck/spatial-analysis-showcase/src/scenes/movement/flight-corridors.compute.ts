@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -17,9 +17,9 @@ import {
   GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH,
   GPU_TRAJECTORY_PLAYHEAD_STATUS,
   GPULineDensity,
-  GPUParameterBuffer,
   GPUTrajectoryPlayhead
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   DrawCommandBuffer,
   GPUCommandGraph,

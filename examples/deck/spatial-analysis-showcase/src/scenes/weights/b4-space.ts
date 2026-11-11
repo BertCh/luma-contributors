@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUSpatialContext} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
 import {
   GPU_NEIGHBORHOOD_SUMMARY_NO_MODE,

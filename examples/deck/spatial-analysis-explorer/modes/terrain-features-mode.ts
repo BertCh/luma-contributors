@@ -526,7 +526,7 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
           id: 'profile',
           grid: pixelGrid,
           values: importGraphBuffer(graph, 'dem', workValues, 'float32', pixelCount),
-          validity: importGraphBuffer(graph, 'dem-validity', workValidity, 'uint32', pixelCount),
+          mask: importGraphBuffer(graph, 'dem-validity', workValidity, 'uint32', pixelCount),
           positions: importGraphBuffer(graph, 'path-positions', pathPositions, 'float32x2', 2),
           lineOffsets: importGraphBuffer(graph, 'path-offsets', pathOffsets, 'uint32', 2),
           sampleCapacity: PROFILE_CAPACITY,

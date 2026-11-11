@@ -379,7 +379,7 @@ export default defineScene<TerrainFlowOptions>({
 import {
   GPUParticleAdvection, getGPUParticleAdvectionParameterValues,
   getGPUParticleAdvectionUint32ParameterValues
-} from '@luma.gl/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 
 // Wind field: one kernel; raster is south-first so +y is north.
 windGraph.add(new GPUTerrainFlowField({

@@ -9,7 +9,7 @@
  */
 
 import {toRadians} from '@math.gl/core';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
 import type {ExpandedEdges, FlightNetwork} from './b11-flight-data';
 import {CONTINENT_NAMES} from './b11-geography';
 

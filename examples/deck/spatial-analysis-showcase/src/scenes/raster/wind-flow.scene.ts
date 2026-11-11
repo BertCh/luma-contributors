@@ -485,34 +485,38 @@ export default defineScene<WindFlowOptions>({
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUParticleAdvection, GPULineIntegralConvolution, GPUStreamlines,
-  getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionWordParameterValues,
-  getGPULineIntegralConvolutionParameterValues, getGPUStreamlinesParameterValues
-} from '@luma.gl/graph/gpu-raster';
+  getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionUint32ParameterValues,
+  getGPULineIntegralConvolutionParameterValues, getGPULineIntegralConvolutionUint32ParameterValues,
+  getGPUStreamlinesParameterValues, getGPUStreamlinesUint32ParameterValues,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 
 // velocities: float32x2 (u, v) per cell in degrees per second, row 0 = smallest latitude
 const particleGraph = new GPUCommandGraph(device, {id: 'particles'});
 particleGraph.add(new GPUParticleAdvection({
   velocities, fieldWidth: 181, fieldHeight: 153,
-  parameters, wordParameters,
+  parameters, uint32Parameters,
   state: {positions, ages, generations},
-  speeds,
-  trails: {positions: trailRing, length: ${state.trailLength}}      // ${state.particleCount} particles (compile-time)
+  output: {speeds, trails: {positions: trailRing, length: ${state.trailLength}}}  // ${state.particleCount} particles (compile-time)
 }));
 const lic = new GPUCommandGraph(device, {id: 'lic'});
 lic.add(new GPULineIntegralConvolution({velocities, fieldWidth: 181, fieldHeight: 153,
-  width: 896, height: 704, stepCount: ${state.licSteps}, parameters: licParameters, wordParameters: licWords,
+  grid: makeGPURasterMetadata({width: 896, height: 704}), stepCount: ${state.licSteps},
+  parameters: licParameters, uint32Parameters: licWords,
   output: {values: licValues}}));
 const streamlines = new GPUCommandGraph(device, {id: 'streamlines'});
 streamlines.add(new GPUStreamlines({velocities, fieldWidth: 181, fieldHeight: 153,
   gridWidth: 128, gridHeight: 112, seedColumns: 192, seedRows: 160,
-  stepsPerDirection: 48, roundCount: 16, parameters: streamParameters, wordParameters: streamWords,
-  output: {lines: {ids, count, overflow}, pathOffsets, points, pointCount, unconverged}}));
+  stepsPerDirection: 48, maximumIterations: 16,
+  parameters: streamParameters, uint32Parameters: streamWords,
+  output: {lines: {ids, status: {count, overflow}}, lineOffsets, positions: points, positionCount,
+    status: {iterationLimitReached: unconverged}}}));
 
 // per frame: parameters only
 particleParameters.write(getGPUParticleAdvectionParameterValues({
   fieldExtent: [-105.125, 11.875, 0.25, 0.25], timeStep: 120, speedScale: ${state.speedScale},
   dropRate: ${state.dropRate}, spawnBounds: viewportBounds}, [181, 153]));
-particleWords.write(getGPUParticleAdvectionWordParameterValues({
+particleWords.write(getGPUParticleAdvectionUint32ParameterValues({
   seed: ${state.seed}, frame, maximumAge: ${state.maximumAge}, reset: false}));
 licParameters.write(getGPULineIntegralConvolutionParameterValues({
   fieldExtent, outputExtent: viewportExtent, stepLength: ${state.licStep}, phase, period: ${state.licPeriod}}));

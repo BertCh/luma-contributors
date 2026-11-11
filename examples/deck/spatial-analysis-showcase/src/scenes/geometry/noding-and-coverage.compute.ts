@@ -1517,7 +1517,7 @@ async function createGeneraliseView(env: Environment): Promise<View> {
         ctx.setReadout('coverageConverged', words[1] ? 'yes' : 'no: stopped at the round cap');
         ctx.setReadout(
           'coverageTopology',
-          `${formatCount(words[3])} crossings found, ${formatCount(words[4])} remain, ${formatCount(words[5])} vertices restored${words[6] ? ', pair capacity overflow' : ''}`
+          `${formatCount(words[3])} crossings and swept spans found, ${formatCount(words[4])} remain, ${formatCount(words[5])} vertices restored${words[6] ? ', pair capacity overflow' : ''}`
         );
         ctx.setReadout(
           'independentKept',

@@ -543,7 +543,9 @@ import {
   getGPUTrajectoryMetricsParameterValues, getGPUTrajectoryPlayheadParameterValues,
   getGPUOutlineGeometryParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
+import {
+  GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 // Longitude/latitude positions with a great-circle context: speeds in m/s, headings are initial bearings.
 const metrics = new GPUCommandGraph(device, {id: 'metrics'});

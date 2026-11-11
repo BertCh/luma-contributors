@@ -292,7 +292,7 @@ export async function createReshapeView(env: CityLineEnvironment): Promise<Geome
         mode,
         spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : env.projection.spatialContext,
         parameters: parameters.importToGraph(graph),
-        output: importPathOutput(graph, output, {lineCount: true, sourceLineIndices: chunkMode})
+        output: importPathOutput(graph, output, {sourceLineIndices: chunkMode})
       })
     );
     const compiled = resources.track(await graph.compileAsync());
@@ -613,8 +613,8 @@ export async function createSnapView(env: CityLineEnvironment): Promise<Geometry
         signedOffsets: imp('signed-offsets', signedOffsets, 'float32', pointCount),
         lineIndices: imp('path-indices', pathIndices, 'uint32', pointCount),
         status: {
-          overflow: imp('overflow', overflow, 'uint32', 1),
-          candidateCount: imp('candidate-count', candidateCount, 'uint32', 1)
+          candidateOverflow: imp('overflow', overflow, 'uint32', 1),
+          requiredCandidateCount: imp('candidate-count', candidateCount, 'uint32', 1)
         }
       }
     })

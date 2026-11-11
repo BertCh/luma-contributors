@@ -4,7 +4,11 @@
 
 import type {Layer} from '@deck.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPURasterFractionalCoverageParameterValues,
+  GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   addDasymetricRedistributionRecipe,
   addExposureByZoneRecipe,
@@ -318,7 +322,19 @@ export async function createChicagoPopulationSupport(
   const recipe = addDasymetricRedistributionRecipe(graph, {
     id: 'hyde-park-redistribution',
     grid: GRID,
-    source: {kind: 'polygons', zones, tupleCapacity: TUPLE_CAPACITY},
+    source: {
+      kind: 'polygons',
+      zones,
+      tupleCapacity: TUPLE_CAPACITY,
+      parameters: resources
+        .createParameterBuffer(
+          'coverage-parameters',
+          'float32',
+          GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH,
+          getGPURasterFractionalCoverageParameterValues(GRID)
+        )
+        .importToGraph(graph)
+    },
     sourceTotals: totals,
     targetZones,
     targetZoneCount: TARGET_COUNT,

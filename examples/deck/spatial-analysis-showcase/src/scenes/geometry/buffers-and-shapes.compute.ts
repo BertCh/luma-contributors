@@ -1443,8 +1443,7 @@ async function createClipView(env: ViewEnvironment): Promise<View> {
     const graph = new GPUCommandGraph<void>(device, {id: `clip-${geometry}`});
     const imp = createGraphImporter(graph);
     const outputViews = importPathOutput(graph, output, {
-      sourceLineIndices: lines,
-      lineCount: lines
+      sourceLineIndices: lines
     });
     const clipPositions = imp(
       'positions',

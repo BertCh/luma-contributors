@@ -13,10 +13,12 @@ import {
 import {GPUMarkedPointStatistics} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   GPUInhomogeneousPointPattern,
-  GPUStudyWindowPreparation,
+  GPUStudyWindowPreparation
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   GPU_STUDY_WINDOW_FLAG_EMPTY,
   GPU_STUDY_WINDOW_FLAG_ORIENTATION_UNCERTAIN
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';

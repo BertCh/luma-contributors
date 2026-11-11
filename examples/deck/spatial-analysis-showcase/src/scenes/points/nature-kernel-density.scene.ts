@@ -367,7 +367,15 @@ export default defineScene<NatureKernelDensityOptions>({
     }
   ],
   snippet: state =>
-    `new GPUKernelDensity({ kernel: '${state.kernel}', edgeCorrection: '${state.edgeCorrection}', normalization: '${state.normalization}', method: '${state.method}', bandwidth: ${state.bandwidth} /* metres */ });`,
+    `graph.add(new GPUKernelDensity({
+  spatialContext, positions, weights, grid, indexGridSize, indexBounds,
+  kernel: '${state.kernel}', edgeCorrection: '${state.edgeCorrection}',
+  normalization: '${state.normalization}', method: '${state.method}',
+  parameters: parameters.importToGraph(graph),
+  output: {values, weightSum, status}
+}));
+// The bandwidth is a parameter write, not a constructor prop.
+parameters.write(getGPUKernelDensityParameterValues({bandwidth: ${state.bandwidth}, window: extent}, grid));  // metres`,
   about: {
     what: 'This companion estimates a spatial point-process intensity from Chicago iNaturalist observation locations. The existing nature-density story bins observations into a camera-following grid; this fixed-window scene evaluates a metric kernel at each raster cell.',
     why: 'Bandwidth and edge correction determine how local observation effort is smoothed and how the finite study rectangle is treated.',

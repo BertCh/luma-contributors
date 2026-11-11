@@ -32,9 +32,9 @@ import {
   getGPUDotDensityParameterValues,
   GPU_DOT_DENSITY_PARAMETER_LENGTH,
   GPUDotDensity,
-  type GPULocalFrame,
   GPURandomPointsInPolygon
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 import {
   getDatasetFrame,
   getFrameDisplayModelMatrix,

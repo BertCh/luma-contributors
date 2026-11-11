@@ -22,7 +22,7 @@ export default defineScene<RegionalizationOptions>({
     'GPUSpatialWeightsMinimumSpanningTree',
     'GPUSkaterRegions',
     'GPURegionPartitionEvaluation',
-    'GPUKMeans',
+    'GPUSpatialKMeans',
     'GPUContiguityWeights'
   ],
   datasets: [{id: 'chicago-tracts', role: 'tract polygons with ACS, SVI and PLACES attributes'}],
@@ -304,7 +304,7 @@ export default defineScene<RegionalizationOptions>({
 
   snippet: state => `import {
   GPUContiguityWeights, GPUSpatialWeightsMinimumSpanningTree, GPUSkaterRegions,
-  GPURegionPartitionEvaluation, GPUKMeans, getGPUSkaterRegionsParameterValues
+  GPURegionPartitionEvaluation, GPUSpatialKMeans, getGPUSkaterRegionsParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One row per tract (feature); a multipart tract is one row.
@@ -335,9 +335,9 @@ skaterParameters.write(getGPUSkaterRegionsParameterValues({regionCount: ${state.
 graph.add(new GPURegionPartitionEvaluation({
   values: standardizedValues, columnCount: 8, labels, weights, output: {summary}
 }));
-graph.add(new GPUKMeans({
+graph.add(new GPUSpatialKMeans({
   positions: principalPlane, k: ${state.kmeansClusters}, maximumIterations: 24, initialization: 'kmeans++',
-  parameters: kmeansParameters,                // getGPUKMeansParameterValues({seed: 7})
+  parameters: kmeansParameters,                // getGPUSpatialKMeansParameterValues({seed: 7})
   output: {labels: kLabels, centers, status: {iterationCount, converged}}
 }));`,
 
@@ -412,7 +412,7 @@ graph.add(new GPUKMeans({
       headline: 'Aspatial clusters split into disconnected pieces',
       textAlternative:
         'K-means colors recur in separated Chicago tracts, unlike the connected SKATER regions.',
-      body: 'Plain **`GPUKMeans`** groups tracts by attribute similarity alone (here on the first two principal components of the same attributes). Switch **Fill** to *k-means clusters (aspatial)* and set **k-means clusters (for comparison)** to match **Regions**. Every cluster is labelled, but look at the map and the **Connected pieces** readout: a cluster is scattered across many tracts that do not touch.\n\n**`GPURegionPartitionEvaluation`** scores both partitions with one metric. The measured explained variance is **{{explained}}**. Contiguity can have a substantial cost in attribute fit; compare **Boundary links** as well as variance. Choose by purpose: typologies for statistics (k-means), territories for action (SKATER).',
+      body: 'Plain **`GPUSpatialKMeans`** groups tracts by attribute similarity alone (here on the first two principal components of the same attributes). Switch **Fill** to *k-means clusters (aspatial)* and set **k-means clusters (for comparison)** to match **Regions**. Every cluster is labelled, but look at the map and the **Connected pieces** readout: a cluster is scattered across many tracts that do not touch.\n\n**`GPURegionPartitionEvaluation`** scores both partitions with one metric. The measured explained variance is **{{explained}}**. Contiguity can have a substantial cost in attribute fit; compare **Boundary links** as well as variance. Choose by purpose: typologies for statistics (k-means), territories for action (SKATER).',
       options: {standardize: true, regions: 8, map: 'kmeans', showCuts: false},
       controls: ['map', 'kmeansClusters', 'regions'],
       readouts: ['pieces', 'explained', 'boundary']

@@ -21,8 +21,6 @@ import {
   type GPURipleyEdgeCorrection
 } from '@luma-contributors/analysis/dataframe-analysis';
 import {
-  GPU_STUDY_WINDOW_SUMMARY_LENGTH,
-  type GPUPolygonGeometryFields,
   GPUStudyWindowPreparation,
   GPURectangleClip,
   GPURandomPointsInPolygon,
@@ -31,6 +29,10 @@ import {
   getGPUNeighborSearchParameterValues,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPU_STUDY_WINDOW_SUMMARY_LENGTH,
+  type GPUPolygonGeometryFields
+} from '@luma-contributors/analysis/analysis-core';
 import {
   createTransientView,
   GPUCommandGraph,

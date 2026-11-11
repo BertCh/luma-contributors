@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
 /**
  * CPU probes of a DEM for the terrain chapter: bilinear sampling, Horn's 3 x 3 neighbourhood,
  * a sight line with earth curvature, a horizon fan, geomorphon rays and the summit disc and ring.
@@ -263,8 +263,13 @@ export type DemProbe = {
   sampleAt(lngLat: readonly [number, number]): number;
   /** Bilinear elevation at pixel-edge coordinates (see the module doc). */
   sampleAtPixel(x: number, y: number): number;
-  /** Horn's 3 x 3 neighbourhood, gradients, slope and aspect of a cell. */
-  hornAt(column: number, row: number): HornNeighbourhood;
+  /**
+   * Horn's 3 x 3 neighbourhood, gradients, slope and aspect of a cell. `border` is the rule for
+   * stencil samples off the raster, as `borderMode` of `GPUTerrainDerivatives`: `'clamp'` (the
+   * default here) repeats the edge cell; `'one-sided'` extends the surface by the quadratic
+   * through the three nearest cells, which is what the library does when `borderMode` is left out.
+   */
+  hornAt(column: number, row: number, border?: 'clamp' | 'one-sided'): HornNeighbourhood;
   /**
    * Samples the straight ground line between two points every `stepMeters` and evaluates the
    * line of sight in the curvature-lowered frame (heights minus `c d^2`), the same model as the
@@ -384,11 +389,56 @@ export function createDemProbe(dem: TerrainDem): DemProbe {
     return sampleAtPixel(x, y);
   };
 
-  const hornAt = (column: number, row: number): HornNeighbourhood => {
+  // The value 'overshoot' cells past the edge sample a, from a and its inward neighbours b and c
+  // (the quadratic through them; the line through two on a grid two cells wide).
+  const extrapolate = (a: number, b: number, c: number, overshoot: number, extent: number) => {
+    if (extent < 2) return a;
+    const firstDifference = a - b;
+    if (extent < 3) return a + overshoot * firstDifference;
+    const secondDifference = b - c;
+    return (
+      a +
+      0.5 * overshoot * (3 * firstDifference - secondDifference) +
+      0.5 * overshoot * overshoot * (firstDifference - secondDifference)
+    );
+  };
+  const getRowExtended = (column: number, row: number): number => {
+    if (row >= 0 && row < height) return values[row * width + column];
+    const before = row < 0;
+    const edge = before ? 0 : height - 1;
+    const inward = before ? 1 : -1;
+    return extrapolate(
+      values[edge * width + column],
+      values[clamp(edge + inward, 0, height - 1) * width + column],
+      values[clamp(edge + 2 * inward, 0, height - 1) * width + column],
+      before ? -row : row - (height - 1),
+      height
+    );
+  };
+  const getOneSided = (column: number, row: number): number => {
+    if (column >= 0 && column < width) return getRowExtended(column, row);
+    const before = column < 0;
+    const edge = before ? 0 : width - 1;
+    const inward = before ? 1 : -1;
+    return extrapolate(
+      getRowExtended(edge, row),
+      getRowExtended(clamp(edge + inward, 0, width - 1), row),
+      getRowExtended(clamp(edge + 2 * inward, 0, width - 1), row),
+      before ? -column : column - (width - 1),
+      width
+    );
+  };
+
+  const hornAt = (
+    column: number,
+    row: number,
+    border: 'clamp' | 'one-sided' = 'clamp'
+  ): HornNeighbourhood => {
     const neighbours: number[] = [];
+    const getSample = border === 'one-sided' ? getOneSided : getClamped;
     for (let rowOffset = -1; rowOffset <= 1; rowOffset++) {
       for (let columnOffset = -1; columnOffset <= 1; columnOffset++) {
-        neighbours.push(getClamped(column + columnOffset, row + rowOffset));
+        neighbours.push(getSample(column + columnOffset, row + rowOffset));
       }
     }
     const [a, b, c, d, , f, g, h, i] = neighbours;

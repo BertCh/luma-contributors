@@ -601,12 +601,14 @@ export default defineScene<BurnSeverityOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
-  GPURasterArithmetic, GPURasterConditional, GPURasterReclassify, GPURasterStretch,
-  GPURasterConnectedComponents, GPURasterDenseComponents, GPURasterPatchMetrics, GPURasterSieve,
-  getGPURasterArithmeticParameterValues, getGPURasterConditionalParameterValues,
-  getGPURasterReclassifyParameterValues, getGPURasterStretchParameterValues,
-  getGPURasterSieveParameterValues
+  GPURasterConnectedComponents, GPURasterDenseComponents
 } from '@luma.gl/graph/gpu-raster';
+import {
+  GPURasterArithmetic, GPURasterConditional, GPURasterReclassify, GPURasterStretch,
+  GPURasterPatchMetrics, GPURasterSieve, getGPURasterArithmeticParameterValues,
+  getGPURasterConditionalParameterValues, getGPURasterReclassifyParameterValues,
+  getGPURasterStretchParameterValues, getGPURasterSieveParameterValues
+} from '@luma-contributors/analysis/raster-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'burn'});
 // Band math: bands are float32 digital numbers (0 = no data); scale puts them in reflectance.
@@ -618,11 +620,11 @@ graph.add(new GPURasterArithmetic({id: 'dnbr', cellCount, a: nbrBefore, b: nbrAf
   parameters: changeParameters, output: {values: dnbr}}));
 // Cloud screen and the burned condition
 graph.add(new GPURasterConditional({id: 'cloud', cellCount, conditionValues: scl,
-  parameters: cloudParameters, output: {values: cloudFlag, outputMask: cloudMask}}));
+  parameters: cloudParameters, output: {values: cloudFlag, conditionResult: cloudMask}}));
 graph.add(new GPURasterConditional({id: 'clean', cellCount, mask: cloudMask, b: dnbr,
   parameters: cleanParameters, output: {values: cleanDnbr}}));
 graph.add(new GPURasterConditional({id: 'burned', cellCount, conditionValues: cleanDnbr,
-  parameters: burnedParameters, output: {values: burnedFlag, outputMask: burnedMask}}));
+  parameters: burnedParameters, output: {values: burnedFlag, conditionResult: burnedMask}}));
 graph.add(new GPURasterReclassify({id: 'severity', values: cleanDnbr, breaks, parameters: reclassifyParameters,
   output: {classes, classCounts}}));
 const compiled = await graph.compileAsync();              // once

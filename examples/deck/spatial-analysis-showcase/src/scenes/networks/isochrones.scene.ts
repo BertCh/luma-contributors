@@ -379,9 +379,8 @@ export default defineScene<IsochronesOptions>({
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {addStraightLineCatchmentsRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  getGPUDistanceFieldParameterValues,
-  makeGPURasterMetadata
-} from '@luma.gl/graph/gpu-raster';
+  getGPUDistanceFieldParameterValues, makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   addDriveTimeCatchmentRecipe,
   getGPUNetworkIsochronesParameterValues

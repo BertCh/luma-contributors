@@ -23,9 +23,9 @@ import {
 import {
   getGPULineSimplificationParameterValues,
   GPULineSimplification,
-  GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

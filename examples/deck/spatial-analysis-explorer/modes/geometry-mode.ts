@@ -324,7 +324,7 @@ function importPathOutput(
   output: PathOutputBuffers,
   vertexCapacity: number,
   pathCapacity: number,
-  options: {measures?: boolean; lineCount?: boolean; sourceLineIndices?: boolean} = {}
+  options: {measures?: boolean; sourceLineIndices?: boolean} = {}
 ) {
   return {
     positions: importGraphBuffer(
@@ -342,12 +342,11 @@ function importPathOutput(
       pathCapacity + 1
     ),
     status: {
-      count: importGraphBuffer(graph, 'out-count', output.count, 'uint32', 1),
+      // `count` counts lines; the vertex totals have their own names (contributor contract rule 8).
+      count: importGraphBuffer(graph, 'out-path-count', output.pathCount, 'uint32', 1),
       overflow: importGraphBuffer(graph, 'out-overflow', output.overflow, 'uint32', 1),
-      requiredCount: importGraphBuffer(graph, 'out-total', output.requiredCount, 'uint32', 1),
-      ...(options.lineCount
-        ? {lineCount: importGraphBuffer(graph, 'out-path-count', output.pathCount, 'uint32', 1)}
-        : {})
+      vertexCount: importGraphBuffer(graph, 'out-count', output.count, 'uint32', 1),
+      requiredVertexCount: importGraphBuffer(graph, 'out-total', output.requiredCount, 'uint32', 1)
     },
     ...(options.sourceLineIndices
       ? {
@@ -1182,7 +1181,6 @@ async function createChunkView(
       mode,
       parameters: parameters.importToGraph(graph),
       output: importPathOutput(graph, output, vertexCapacity, pieceCapacity, {
-        lineCount: true,
         sourceLineIndices: chunkMode
       })
     })
@@ -1224,7 +1222,7 @@ async function createChunkView(
     });
     context.controls.addNote(
       'Consecutive chunks of one road share their boundary point. The piece count is data ' +
-        'dependent: lineCount reports it and the offsets past it equal the vertex count.'
+        'dependent: status.count reports it (lines, not vertices) and the offsets past it equal the vertex count.'
     );
   } else {
     context.controls.addSlider({
@@ -1388,8 +1386,14 @@ async function createSnapView(
         ),
         lineIndices: importGraphBuffer(graph, 'path-indices', pathIndices, 'uint32', pointCount),
         status: {
-          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-          candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)
+          candidateOverflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+          requiredCandidateCount: importGraphBuffer(
+            graph,
+            'candidate-count',
+            candidateCount,
+            'uint32',
+            1
+          )
         }
       }
     })

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUSpatialContext} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 import {
   type AnalysisFrame,
   createAnalysisFrameProjection,

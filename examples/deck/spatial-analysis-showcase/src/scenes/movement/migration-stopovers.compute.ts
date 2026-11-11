@@ -10,9 +10,9 @@ import {
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
   GPUSpatialClustering,
-  type GPUSpatialContext,
   GPUTrajectoryMetrics
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';

@@ -560,7 +560,7 @@ export async function createSpectralTexture(
         id: 'spectral-glcm',
         grid,
         values: floatView('texture-input', sourceNir),
-        validity: wordView('texture-validity', sourceValidity),
+        mask: wordView('texture-validity', sourceValidity),
         levels: Number(options.textureLevels),
         range: [0, 0.6],
         radius: options.textureRadius,

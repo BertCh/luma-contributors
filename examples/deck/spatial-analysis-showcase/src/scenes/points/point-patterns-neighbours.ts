@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  GPUNeighborSearch,
-  type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUNeighborSearch} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 import {
   createTransientView,
   GPUReduction,

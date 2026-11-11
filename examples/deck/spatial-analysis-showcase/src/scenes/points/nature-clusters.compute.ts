@@ -7,20 +7,20 @@ import type {Buffer} from '@luma.gl/core';
 import {
   addClusterAndOutlineRecipe,
   getGPUGeographicDistributionParameterValues,
-  getGPUKMeansParameterValues,
+  getGPUSpatialKMeansParameterValues,
   getGPUSpatialClusteringParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
   GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW,
   GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW,
-  GPU_KMEANS_PARAMETER_LENGTH,
+  GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   GPUGeographicDistribution,
   GPUGroupConvexHull,
   GPUGroupGeometry,
-  GPUKMeans,
-  GPUSpatialClustering,
-  type GPUParameterBuffer
+  GPUSpatialKMeans,
+  GPUSpatialClustering
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassTableLayerProps} from '../../cartography/class-table';
 import {CHICAGO, findPlace, nearestPlace, nearestPlaceLabel} from '../../cartography/gazetteer';
@@ -95,7 +95,7 @@ export type NatureClusterOptions = {
   prefilterLevels: string;
   weight: 'none' | 'researchGrade' | 'introduced';
   standardDeviations: '1' | '2' | '3';
-  ellipseConvention: 'arcgis' | 'standard';
+  ellipseConvention: 'root-two' | 'standard';
   showHulls: boolean;
   showClusterEllipses: boolean;
   showBounds: boolean;
@@ -551,11 +551,11 @@ export async function createNatureClusters(
         const kmeansParameters = resources.createParameterBuffer(
           'kmeans-parameters',
           'uint32',
-          GPU_KMEANS_PARAMETER_LENGTH,
-          getGPUKMeansParameterValues({seed: options.seed, tolerance: options.tolerance})
+          GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
+          getGPUSpatialKMeansParameterValues({seed: options.seed, tolerance: options.tolerance})
         );
         graph.add(
-          new GPUKMeans({
+          new GPUSpatialKMeans({
             spatialContext: projection.spatialContext,
             id: 'kmeans',
             positions: importGraphBuffer(

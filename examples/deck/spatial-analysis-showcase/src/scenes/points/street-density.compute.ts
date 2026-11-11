@@ -8,9 +8,9 @@ import {
   getGPULineDensityParameterValues,
   GPU_LINE_DENSITY_PARAMETER_LENGTH,
   GPULineDensity,
-  GPULineLengthPerPolygon,
-  type GPUParameterBuffer
+  GPULineLengthPerPolygon
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassBreaks, getClassCounts, getGoodnessOfVarianceFit} from '../../cartography/breaks';
 import {

@@ -6,15 +6,15 @@ import type {Layer} from '@deck.gl/core';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import {
   GPUContiguityWeights,
-  GPUKMeans,
+  GPUSpatialKMeans,
   GPURegionPartitionEvaluation,
   GPUSkaterRegions,
   GPUSpatialWeightsMinimumSpanningTree,
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
-  GPU_KMEANS_PARAMETER_LENGTH,
+  GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
   GPU_SKATER_NO_CUT,
   GPU_SKATER_REGIONS_PARAMETER_LENGTH,
-  getGPUKMeansParameterValues,
+  getGPUSpatialKMeansParameterValues,
   getGPUSkaterRegionsParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -193,7 +193,7 @@ function computePrincipalPlane(
 /**
  * Regionalization of Chicago tracts. One graph per (contiguity criterion, standardization) holds
  * `GPUContiguityWeights`, `GPUSpatialWeightsMinimumSpanningTree`, `GPUSkaterRegions` and a
- * `GPURegionPartitionEvaluation`; a second graph per k-means size holds an aspatial `GPUKMeans`
+ * `GPURegionPartitionEvaluation`; a second graph per k-means size holds an aspatial `GPUSpatialKMeans`
  * on the first two principal components of the same attributes and a second evaluation over the
  * same attribute table, so the two partitions are scored by one metric. Attribute switches, the
  * region count and the minimum region size are buffer writes. Variants compile the first time
@@ -322,8 +322,8 @@ export async function createRegionalization(
   const kParameters = resources.createParameterBuffer(
     'kmeans-parameters',
     'uint32',
-    GPU_KMEANS_PARAMETER_LENGTH,
-    getGPUKMeansParameterValues({seed: 7})
+    GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
+    getGPUSpatialKMeansParameterValues({seed: 7})
   );
   const kSummaryBuffer = resources.createBuffer(
     'kmeans-summary',
@@ -523,7 +523,7 @@ export async function createRegionalization(
     });
     const labels = importGraphBuffer(graph, 'kmeans-labels', kLabelsBuffer, 'uint32', rowCount);
     graph.add(
-      new GPUKMeans({
+      new GPUSpatialKMeans({
         id: 'kmeans',
         positions: importGraphBuffer(graph, 'principal-plane', planeBuffer, 'float32x2', rowCount),
         k: clusters,

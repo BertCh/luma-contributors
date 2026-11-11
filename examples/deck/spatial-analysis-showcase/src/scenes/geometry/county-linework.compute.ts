@@ -573,13 +573,13 @@ function makeSharedOutput(
   return {
     output: {
       runs: {
-        leftLineIds: importView(
+        leftSourceIds: importView(
           `shared-left-line-ids-${key}`,
           leftLineIds,
           'uint32',
           SHARED_RUN_CAPACITY
         ),
-        rightLineIds: importView(
+        rightSourceIds: importView(
           `shared-right-line-ids-${key}`,
           rightLineIds,
           'uint32',

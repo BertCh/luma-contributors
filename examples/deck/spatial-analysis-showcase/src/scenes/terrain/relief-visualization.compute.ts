@@ -1451,7 +1451,7 @@ export async function createReliefVisualization(
     const text = state.product === 'ground' ? null : session.getTooltip(event);
     const pixel = event.coordinate ? grid.getPixel(event.coordinate[0], event.coordinate[1]) : null;
     if (!pixel) return null;
-    const horn = probe.hornAt(pixel[0], pixel[1]);
+    const horn = probe.hornAt(pixel[0], pixel[1], 'one-sided');
     const elevation = grid.cpuElevation[pixel[1] * width + pixel[0]];
     const rows: TooltipRow[] = [];
     if (text) {

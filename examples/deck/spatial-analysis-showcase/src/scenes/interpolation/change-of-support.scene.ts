@@ -344,7 +344,7 @@ export default defineScene<ChangeOfSupportOptions>({
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUPolygonRasterizationParameterValues, makeGPURasterMetadata
-} from '@luma.gl/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   addChangeOfSupportRecipe, GPUGridGenerator, GPUPycnophylactic
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -384,7 +384,7 @@ const result = addChangeOfSupportRecipe(graph, {
 });
 graph.add(new GPUPycnophylactic({
   spatialContext: projection.spatialContext,
-  width: 320, height: 384, zones: sourceZones, zoneCount: 791, totals,
+  grid, zones: sourceZones, zoneCount: 791, totals,
   maximumIterations: ${ITERATION_LADDER[state.iterations]}, kernel: '${state.kernel}', output: {mass: surface}
 }));
 const compiled = await graph.compileAsync();  // once

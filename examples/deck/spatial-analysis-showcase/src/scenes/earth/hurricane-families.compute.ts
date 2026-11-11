@@ -7,13 +7,13 @@ import {getGreatCircleDistanceMeters} from '../../cartography/reference-geometry
 import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import type {Buffer} from '@luma.gl/core';
 import {
-  GPUKMeans,
-  GPU_KMEANS_PARAMETER_LENGTH,
-  getGPUKMeansParameterValues,
-  type GPUParameterBuffer,
+  GPUSpatialKMeans,
+  GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
+  getGPUSpatialKMeansParameterValues,
   GPUTrackSimilarity,
   GPUTrajectoryResample
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
@@ -146,7 +146,7 @@ type KMeansVariant = {
  * Hurricane families: every Atlantic storm since 1980 is resampled to a fixed number of points
  * (`GPUTrajectoryResample`), all 273,000 pairs are scored with the discrete Frechet and Hausdorff
  * distances (`GPUTrackSimilarity`), the distance matrix is embedded in two dimensions on the CPU
- * (classical multidimensional scaling) and `GPUKMeans` clusters the embedding into families.
+ * (classical multidimensional scaling) and `GPUSpatialKMeans` clusters the embedding into families.
  *
  * Routes are resampled on the sphere (`GPUTrajectoryResample` with a great-circle context, so
  * arc-length spacing is true meters) and compared as longitude/latitude with great-circle
@@ -432,11 +432,11 @@ export async function createHurricaneFamilies(
     const kmeansParameters = resources.createParameterBuffer(
       `kmeans-parameters-${key}`,
       'uint32',
-      GPU_KMEANS_PARAMETER_LENGTH,
-      getGPUKMeansParameterValues({seed: options.seed})
+      GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
+      getGPUSpatialKMeansParameterValues({seed: options.seed})
     );
     graph.add(
-      new GPUKMeans({
+      new GPUSpatialKMeans({
         id: 'families',
         positions: importGraphBuffer(graph, 'embedding', embeddingBuffer, 'float32x2', trackCount),
         k,

@@ -848,7 +848,7 @@ graph.add(new GPUContiguityWeights({
 }));
 graph.add(new GPUMapColoring({
   weights, parameters: coloringParameters,   // getGPUMapColoringParameterValues({seed: ${state.colorSeed}})
-  maximumIterations: ${state.maxRounds}, output: {colors, colorCount, converged}
+  maximumIterations: ${state.maxRounds}, output: {colors, colorCount, conflictCount, status: {converged, iterationCount}}
 }));
 
 const compiled = await graph.compileAsync();

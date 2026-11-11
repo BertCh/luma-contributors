@@ -13,8 +13,6 @@ import {
 } from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addSpaceTimeHotSpotsRecipe,
-  type GPUInferenceMetadata,
-  type GPUMultipleTestingMethod,
   getGPUNeighborSearchParameterValues,
   GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
@@ -23,6 +21,10 @@ import {
   type GPUSpaceTimeHotSpotsRecipeSettings,
   type GPUSpatialWeightsOutput
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  type GPUInferenceMetadata,
+  type GPUMultipleTestingMethod
+} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {createPlaybackClock} from '../../engine/playback';

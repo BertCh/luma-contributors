@@ -218,7 +218,7 @@ export default defineScene<TransitFrequencyOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPULineDensity, getGPULineDensityParameterValues, GPUTrajectoryMetrics} from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUGroupStatistics} from '@luma.gl/graph/gpu-dataframe';
+import {GPUGroupStatistics} from '@luma-contributors/analysis/dataframe-analysis';
 
 // densityPositions: WGS84 Lambert meters; positions: AEQD meters, both about trips.origin
 // lineOffsets: one path per trip

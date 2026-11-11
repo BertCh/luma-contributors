@@ -424,7 +424,7 @@ export async function createMissingObservations(
           values: view(`${key}-values`, output.values, 'float32', CELL_COUNT),
           validity: view(`${key}-validity`, output.validity, 'uint32', CELL_COUNT),
           filled: view(`${key}-filled`, output.filled, 'uint32', CELL_COUNT),
-          unresolvedCount: view(`${key}-unresolved`, output.unresolved, 'uint32', 1)
+          status: {invalidCount: view(`${key}-unresolved`, output.unresolved, 'uint32', 1)}
         };
         graph.add(
           new GPURasterFillNoData({
@@ -1094,14 +1094,14 @@ export async function createMissingObservations(
     });
     const reconstructionState = latestSummary.reconstruction.converged
       ? `converged within ${ctx.options.maximumIterations} rounds`
-      : `not converged within ${ctx.options.maximumIterations} rounds; no partial reconstruction is published`;
+      : `not converged within ${ctx.options.maximumIterations} rounds; the contributor publishes the unfinished iterate, which this scene hides because it is not final`;
     ctx.setReadout(
       'reconstructionStatus',
       `${ctx.options.reconstructionMode} by ${ctx.options.reconstructionMode === 'opening' ? 'dilation' : 'erosion'} · ${ctx.options.reconstructionConnectivity}-connected · ${reconstructionState}`
     );
     ctx.setReadout(
       'holeFillStatus',
-      `Binary support mask · ${ctx.options.holeConnectivity}-connected background · ${latestSummary.holes.converged ? `${latestSummary.holes.filledCount.toLocaleString()} enclosed missing cells classified inside holes` : 'not converged; no topology result is shown'}`
+      `Binary support mask · ${ctx.options.holeConnectivity}-connected background · ${latestSummary.holes.converged ? `${latestSummary.holes.filledCount.toLocaleString()} enclosed missing cells classified inside holes` : 'not converged; the unfinished fill would over-report holes, so this scene hides it'}`
     );
     const caseCounts = new Uint32Array(16);
     for (const cellCase of summary.contours.cases) caseCounts[cellCase & 15]++;

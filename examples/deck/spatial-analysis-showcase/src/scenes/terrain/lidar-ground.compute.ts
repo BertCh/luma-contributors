@@ -332,7 +332,7 @@ export async function createLidarGround(
       counts: neighborhoodCounts,
       capacity: NEIGHBOR_CAPACITY,
       meanDistances,
-      mask: inliers
+      validity: inliers
     })
   );
   graph.add(

@@ -254,7 +254,9 @@ export default defineScene<HurricaneSeasonOptions>({
 import {
   GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
+import {
+  GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 // timestamps: float32 DAYS since 1 January 00:00 UTC of each storm's own year, so every season
 // lies on one calendar. positions: float32x2 longitude/latitude, trackOffsets: uint32.

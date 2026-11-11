@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GPU_EARTH_MEAN_RADIUS_METERS,
   getGPULineDensityParameterValues,
   GPULineDensity,
   GPUZoneEvents,
   GPU_LINE_DENSITY_PARAMETER_LENGTH,
   GPU_ZONE_EVENT_TYPE
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {
   createAnalysisFrameProjection,
   type AnalysisFrameProjection,

@@ -8,7 +8,7 @@ import {
   getGPUTimeWindowFilterParameterValues,
   GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/dataframe-analysis';
-import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUFlowAggregation} from '@luma-contributors/analysis/gpu-network';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassIndexOf, getClassTableLayerProps} from '../../cartography/class-table';

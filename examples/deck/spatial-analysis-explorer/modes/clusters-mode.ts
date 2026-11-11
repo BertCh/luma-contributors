@@ -12,23 +12,25 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/graph/gpu-core';
 import {
-  type GPULocalFrame,
   getGPUGeographicDistributionParameterValues,
-  getGPUKMeansParameterValues,
+  getGPUSpatialKMeansParameterValues,
   getGPUSpatialClusteringParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
   GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW,
   GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW,
-  GPU_KMEANS_PARAMETER_LENGTH,
+  GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
   GPU_SPATIAL_CLUSTERING_NOISE,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   GPUGroupConvexHull,
   GPUGroupGeometry,
-  GPUKMeans,
+  GPUSpatialKMeans,
   GPUSpatialClustering,
-  type GPUKMeansInitialization,
-  type GPUParameterBuffer
+  type GPUSpatialKMeansInitialization
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  type GPULocalFrame,
+  type GPUParameterBuffer
+} from '@luma-contributors/analysis/analysis-core';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer} from '../spatial-analysis-layers';
 import type {
@@ -53,7 +55,7 @@ const CLUSTER_CAPACITY = 2048;
 const READBACK_INTERVAL_FRAMES = 12;
 /** Padding added around the data extent so every point is inside the inclusive bounds. */
 const BOUNDS_PADDING_METERS = 10;
-/** Most Lloyd iterations of `GPUKMeans` (compile-time); the graph stops early on convergence. */
+/** Most Lloyd iterations of `GPUSpatialKMeans` (compile-time); the graph stops early on convergence. */
 const KMEANS_ITERATIONS = 48;
 /**
  * K-means convergence tolerance as a fraction of the data extent diagonal: the largest center shift
@@ -105,10 +107,10 @@ const POINT_SET_OPTIONS: readonly {value: PointSetId; label: string}[] = [
 
 const METHOD_OPTIONS: readonly {value: ClusterMethod; label: string}[] = [
   {value: 'dbscan', label: 'DBSCAN (GPUSpatialClustering)'},
-  {value: 'kmeans', label: 'K-means (GPUKMeans)'}
+  {value: 'kmeans', label: 'K-means (GPUSpatialKMeans)'}
 ];
 
-const INITIALIZATION_OPTIONS: readonly {value: GPUKMeansInitialization; label: string}[] = [
+const INITIALIZATION_OPTIONS: readonly {value: GPUSpatialKMeansInitialization; label: string}[] = [
   {value: 'first-valid', label: 'First k valid points'},
   {value: 'kmeans++', label: 'Seeded k-means++ (library default)'}
 ];
@@ -126,7 +128,7 @@ type ClusterConfig = {
   pointSet: PointSetId;
   method: ClusterMethod;
   k: number;
-  initialization: GPUKMeansInitialization;
+  initialization: GPUSpatialKMeansInitialization;
   seed: number;
   denseBoxShortcut: boolean;
 };
@@ -193,7 +195,7 @@ type ClusterSet = {
 /**
  * Clustering of New York points on the GPU, then a description of every cluster.
  *
- * - Method: `GPUSpatialClustering` (DBSCAN) or `GPUKMeans`. The point set, method, `k`, k-means
+ * - Method: `GPUSpatialClustering` (DBSCAN) or `GPUSpatialKMeans`. The point set, method, `k`, k-means
  *   initialization and seed and the DBSCAN dense-box shortcut are compile-time choices (they
  *   rebuild the graphs, labeled in the controls); DBSCAN `epsilon` and `minimumPoints` are written
  *   into a parameter buffer, so dragging them never recompiles, and the graphs run only when a
@@ -206,7 +208,12 @@ type ClusterSet = {
 export const clustersMode: SpatialAnalysisModeDefinition = {
   id: 'clusters',
   title: 'Clusters',
-  contributors: ['GPUSpatialClustering', 'GPUKMeans', 'GPUGroupGeometry', 'GPUGroupConvexHull'],
+  contributors: [
+    'GPUSpatialClustering',
+    'GPUSpatialKMeans',
+    'GPUGroupGeometry',
+    'GPUGroupConvexHull'
+  ],
   description:
     'DBSCAN or k-means of taxi points on the GPU, then per-cluster convex hulls, standard ' +
     'ellipses, bounds, mean and weighted centers and medoids. Drag epsilon and the minimum ' +
@@ -489,13 +496,13 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         const kmeansParameters = resources.createParameterBuffer(
           'kmeans-parameters',
           'uint32',
-          GPU_KMEANS_PARAMETER_LENGTH,
-          getGPUKMeansParameterValues({seed: setConfig.seed, tolerance: kmeansTolerance})
+          GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
+          getGPUSpatialKMeansParameterValues({seed: setConfig.seed, tolerance: kmeansTolerance})
         );
         centroids = resources.createBuffer('centers', setConfig.k * 8);
         const graph = new GPUCommandGraph<void>(device, {id: `clusters-kmeans-${setSerial}`});
         graph.add(
-          new GPUKMeans({
+          new GPUSpatialKMeans({
             spatialContext: data.frame.spatialContext,
             id: 'kmeans',
             positions: importGraphBuffer(
@@ -817,7 +824,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         scheduleRebuild();
       }
     });
-    const initializationControl = context.controls.addSelect<GPUKMeansInitialization>({
+    const initializationControl = context.controls.addSelect<GPUSpatialKMeansInitialization>({
       label: 'K-means initialization (compile-time)',
       options: INITIALIZATION_OPTIONS,
       value: config.initialization,

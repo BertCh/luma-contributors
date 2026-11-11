@@ -328,10 +328,10 @@ export default defineScene<OsmContributorsOptions>({
     variance: 'sample',               // n - 1 SD for group summaries and row z-scores
     columns: [{
       values: days,
-      statistics: ['minimum', 'maximum', 'mean', 'median', 'standardDeviation', 'skewness', 'kurtosis', 'zScore'],
-      output: {minimums, maximums, means, medians, standardDeviations, skewness, kurtosis, zScores}
+      statistics: ['minimum', 'maximum', 'count', 'mean', 'median', 'standardDeviation', 'skewness', 'kurtosis', 'zScore'],
+      output: {counts: dayCounts, minimums, maximums, means, medians, standardDeviations, skewness, kurtosis, zScores}
     }],
-    output: {keys, counts, count, overflow}
+    output: {keys, counts, status: {count, overflow}}
   })
 );
 // after readback: sort counts ascending on the CPU -> Lorenz curve, Gini`,

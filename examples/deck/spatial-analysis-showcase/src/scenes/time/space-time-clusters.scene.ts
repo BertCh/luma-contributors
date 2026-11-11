@@ -349,7 +349,7 @@ export default defineScene<SpaceTimeClustersOptions>({
   getGPUSpatialScanStatisticParameterValues,
   GPUKnoxTest, GPUMantelTest, GPUNeighborSearch, GPUSpatialScanStatistic
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTemporalReduction} from '@luma.gl/graph/gpu-dataframe';
+import {GPUTemporalReduction} from '@luma-contributors/analysis/dataframe-analysis';
 
 // Pairs: events within ${state.spatialRadius} m are the spatial pairs of both tests
 pairs.spatialContext = projection.spatialContext;

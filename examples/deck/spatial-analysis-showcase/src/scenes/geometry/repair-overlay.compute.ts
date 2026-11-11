@@ -476,7 +476,6 @@ export async function createRepairOverlay(
       'overlay-output-rings',
       (RING_CAPACITY + 1) * 4
     );
-    const overlaySourceIds = resources.createBuffer('overlay-output-source-ids', RING_CAPACITY * 4);
     const overlayStatus = {
       count: resources.createBuffer('overlay-count', 4),
       requiredCount: resources.createBuffer('overlay-required', 4),
@@ -520,12 +519,11 @@ export async function createRepairOverlay(
           overlayRingOffsets,
           'uint32',
           RING_CAPACITY + 1
-        ),
-        sourceIds: importView('overlay-output-sources', overlaySourceIds, 'uint32', RING_CAPACITY)
+        )
       },
       status: {
         count: importView('overlay-status-count', overlayStatus.count, 'uint32', 1),
-        requiredCount: importView(
+        requiredRingCount: importView(
           'overlay-status-required',
           overlayStatus.requiredCount,
           'uint32',

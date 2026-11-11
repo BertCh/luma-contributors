@@ -8,7 +8,7 @@
  * TypeScript, no GPU. All coordinates are `[longitude, latitude]` in degrees.
  */
 
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
 import type {GeoJsonGeometry} from '../data/loaders';
 import type {Place} from './gazetteer/types';
 import {getFeatureLabelPoint} from './polygon-mesh';

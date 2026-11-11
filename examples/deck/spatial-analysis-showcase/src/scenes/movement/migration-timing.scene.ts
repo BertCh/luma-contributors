@@ -394,7 +394,9 @@ export default defineScene<MigrationTimingOptions>({
   legends: getLegends,
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@luma.gl/graph/gpu-dataframe';
+import {
+  GPUTemporalReduction, getGPUTemporalReductionParameterValues
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 // One cell per (species, 3-degree latitude band); 128 time buckets.
 // cellIds: uint32 per fix, timestamps: float32 seconds of the folded year,

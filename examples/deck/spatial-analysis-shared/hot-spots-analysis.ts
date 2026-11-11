@@ -32,10 +32,12 @@ import {
   GPU_PERMUTATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
-  type GPUInferenceAlternative,
-  type GPULocalMoranQuadrantGating,
-  type GPUSpatialContext
+  type GPULocalMoranQuadrantGating
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  type GPUInferenceAlternative,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 import {clamp} from '@math.gl/core';
 import type {
   AnalysisLegend,

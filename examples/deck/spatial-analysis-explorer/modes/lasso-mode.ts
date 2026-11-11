@@ -22,7 +22,6 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  type GPULocalFrame,
   getGPURegionStatisticsSummaryLength,
   GPUPickRegionMask,
   GPURegionMask,
@@ -31,6 +30,7 @@ import {
   type GPURegionSelection,
   type GPURegionStatisticsResult
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 import {importGraphBuffer, submitGraph} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {createSeededRandom} from '../spatial-analysis-data';

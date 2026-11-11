@@ -60,7 +60,7 @@ When to use which: use **distance field** when only geometry matters (nearest hy
 - **Resolution and quantisation.** Terrarium is 0.5 m in elevation and often resampled; flats and spurious pits are normal. Fill and flat resolution exist for that reason; do not read single-cell features as real.
 - **Edges.** Water that leaves the window is not routed further, and watersheds touching the window edge are cut off.
 - **Models, not measurements.** Tobler’s function is symmetric here, cliffs are a slope threshold, HAND is not a hydraulic model and the wind field has no pressure. State the model when you show the map.
-- **Raster orientation.** The grid says which way rows run: `rowDirection: 'south'` (the default) for north-up rasters, `'north'` with a bottom-left origin for rasters flipped to row 0 at the minimum y (contours and terrain wind flip the DEM this way so the particles share the map's y-up frame). The distance field takes either direction, so its seeds are plain map coordinates.
+- **Raster orientation.** The grid says which way rows run, and the terrain classes read it from the sign of `grid.affine[4]` when `rowDirection` is left out: `'south'` for north-up rasters, `'north'` with a bottom-left origin for rasters flipped to row 0 at the minimum y (contours and terrain wind flip the DEM this way so the particles share the map's y-up frame). A `rowDirection` that contradicts the grid throws at construction. The distance field takes either direction, so its seeds are plain map coordinates.
 
 ## Next steps
 

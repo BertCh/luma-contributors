@@ -5,7 +5,7 @@
 import {
   GPU_PLANAR_SPATIAL_CONTEXT,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 import earcut from 'earcut';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import type {Layer} from '@deck.gl/core';
@@ -413,7 +413,7 @@ export function createPathOutputBuffers(
 export function importPathOutput(
   graph: GPUCommandGraph<void>,
   output: PathOutputBuffers,
-  options: {measures?: boolean; lineCount?: boolean; sourceLineIndices?: boolean} = {}
+  options: {measures?: boolean; sourceLineIndices?: boolean} = {}
 ) {
   const {vertexCapacity, pathCapacity} = output;
   return {
@@ -432,12 +432,11 @@ export function importPathOutput(
       pathCapacity + 1
     ),
     status: {
-      count: importGraphBuffer(graph, 'out-count', output.count, 'uint32', 1),
+      // `count` counts lines; the vertex totals have their own names (contributor contract rule 8).
+      count: importGraphBuffer(graph, 'out-path-count', output.pathCount, 'uint32', 1),
       overflow: importGraphBuffer(graph, 'out-overflow', output.overflow, 'uint32', 1),
-      requiredCount: importGraphBuffer(graph, 'out-total', output.requiredCount, 'uint32', 1),
-      ...(options.lineCount
-        ? {lineCount: importGraphBuffer(graph, 'out-path-count', output.pathCount, 'uint32', 1)}
-        : {})
+      vertexCount: importGraphBuffer(graph, 'out-count', output.count, 'uint32', 1),
+      requiredVertexCount: importGraphBuffer(graph, 'out-total', output.requiredCount, 'uint32', 1)
     },
     ...(options.sourceLineIndices
       ? {

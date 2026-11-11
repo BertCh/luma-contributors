@@ -474,7 +474,9 @@ import {
   GPUTrajectoryMetrics, GPULineSimplification, GPUTrajectoryResample, GPUTrackSimilarity,
   getGPUTrajectoryMetricsParameterValues, getGPULineSimplificationParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@luma.gl/graph/gpu-dataframe';
+import {
+  GPUTemporalReduction, getGPUTemporalReductionParameterValues
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 // positions: float32x2 longitude/latitude degrees, great-circle metric (meters),
 // simplification and similarity use the same great-circle context,

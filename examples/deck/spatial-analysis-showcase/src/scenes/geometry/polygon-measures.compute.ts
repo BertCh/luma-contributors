@@ -24,7 +24,6 @@ import {
   GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK,
   GPU_MAP_COLORING_PARAMETER_LENGTH,
   GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH,
-  GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   GPUContiguityWeights,
   GPUGeometryMeasures,
   GPUGeometryValidity,
@@ -32,6 +31,7 @@ import {
   GPUMapColoring,
   GPUShapeDescriptors
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

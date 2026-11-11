@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  GPU_EARTH_MEAN_RADIUS_METERS,
-  GPU_POINT_DENSITY_HEXAGON_WGSL
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {
   type AlbersAnalysisFrame,
   type AnalysisFrame,

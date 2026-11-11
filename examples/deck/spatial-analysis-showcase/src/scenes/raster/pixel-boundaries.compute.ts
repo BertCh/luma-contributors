@@ -7,6 +7,8 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-
 import {
   GPURasterConservativeRemapping,
   GPURasterFractionalCategoricalStatistics,
+  getGPURasterFractionalCoverageParameterValues,
+  GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH,
   GPURasterFractionalCoverage,
   GPURasterFractionalZonalDistribution,
   GPURasterFractionalZonalStatistics,
@@ -346,6 +348,14 @@ export async function createPixelBoundaries(
       id: 'fractional-coverage',
       grid,
       zones: zonesView,
+      parameters: resources
+        .createParameterBuffer(
+          'coverage-parameters',
+          'float32',
+          GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH,
+          getGPURasterFractionalCoverageParameterValues(grid)
+        )
+        .importToGraph(graph),
       output: coverage
     })
   );
@@ -647,7 +657,7 @@ export async function createPixelBoundaries(
           spacing: [DESTINATION_CELL_SIZE, DESTINATION_CELL_SIZE]
         },
         values: prepareView('prepare-after-values', remapInputs.after, 'float32', CELL_COUNT),
-        validity: prepareView(
+        mask: prepareView(
           'prepare-after-validity',
           remapInputs.afterValidity,
           'uint32',
@@ -735,7 +745,7 @@ export async function createPixelBoundaries(
             },
             destination,
             values: view(`remap-values-${key}`, valueBuffer, 'float32', CELL_COUNT),
-            validity: view(
+            mask: view(
               `remap-validity-${key}`,
               remapInputs[date === 'before' ? 'beforeValidity' : 'afterValidity'],
               'uint32',

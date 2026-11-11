@@ -20,10 +20,12 @@ import {
   getGPUNeighborSearchParameterValues,
   GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
   GPU_PERMUTATION_PARAMETER_LENGTH,
-  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 import {formatCount} from '../spatial-analysis-resources';
 import {PackedColorRasterLayer, PackedQuadbinCellLayer} from './classification-layers';
 import {

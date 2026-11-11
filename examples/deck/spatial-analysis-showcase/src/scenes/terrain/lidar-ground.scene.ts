@@ -287,8 +287,10 @@ export default defineScene<LidarGroundOptions>({
     howToRead:
       'Ground and relative-height colours are GPU outputs. The last step draws only the GPU-selected representative row from every occupied 2 m cube. Hover the data attribution for the source catalogue and public-domain terms.'
   },
-  snippet:
-    state => `import {GPUPointCloudGround, GPUPointCloudHeight, GPUPointCloudFeatures, GPUPointCloudVoxelDownsample} from '@luma.gl/graph/gpu-pointcloud';
+  snippet: state => `import {GPUPointCloudVoxelDownsample} from '@luma.gl/graph/gpu-pointcloud';
+import {
+  GPUPointCloudGround, GPUPointCloudHeight, GPUPointCloudFeatures
+} from '@luma-contributors/analysis/pointcloud-analysis';
 import {GPUElementwise, GPUCompaction} from '@luma.gl/graph/gpu-core';
 
 // One bounded USGS return sample, analysed in local metres.

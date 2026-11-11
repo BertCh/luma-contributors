@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GPU_EARTH_MEAN_RADIUS_METERS,
   getGPUGreatCircleArcsParameterValues,
   getGPULineSimplificationParameterValues,
   getGPULineSmoothParameterValues,
@@ -16,6 +15,7 @@ import {
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH,
   GPU_LINE_SMOOTH_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {

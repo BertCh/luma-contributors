@@ -58,9 +58,9 @@ import {
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
   GPUGeographicDistribution,
   GPURectangleClip,
-  GPUStudyWindowPreparation,
-  GPU_STUDY_WINDOW_SUMMARY_LENGTH
+  GPUStudyWindowPreparation
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_STUDY_WINDOW_SUMMARY_LENGTH} from '@luma-contributors/analysis/analysis-core';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {NEW_YORK_LAND} from '../new-york-land';
@@ -268,7 +268,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     let modelType: VariogramModelType = 'spherical';
     let categoryChoice: CategoryChoice = 'all';
     let standardDeviations = 1;
-    let ellipseConvention: 'arcgis' | 'standard' = 'arcgis';
+    let ellipseConvention: 'root-two' | 'standard' = 'root-two';
     let weighted = false;
     let inspectedGroup = 0;
     const visibleGroups = new Array<boolean>(GROUP_COUNT).fill(true);
@@ -1043,10 +1043,10 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         writeDistributionParameters();
       }
     });
-    context.controls.addSelect<'arcgis' | 'standard'>({
+    context.controls.addSelect<'root-two' | 'standard'>({
       label: 'Ellipse convention (per-frame parameter)',
       options: [
-        {value: 'arcgis', label: 'ArcGIS (axes scaled by sqrt 2)'},
+        {value: 'root-two', label: 'Root two (axes scaled by sqrt 2)'},
         {value: 'standard', label: 'Standard deviation'}
       ],
       value: ellipseConvention,

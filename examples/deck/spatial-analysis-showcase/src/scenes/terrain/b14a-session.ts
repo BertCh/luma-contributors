@@ -25,7 +25,7 @@ import {
   GPU_RELIEF_SHADING_PARAMETER_LENGTH,
   GPUReliefShading
 } from '@luma-contributors/analysis/gpu-terrain';
-import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUCommandGraph,
   GPUReadbackRing,

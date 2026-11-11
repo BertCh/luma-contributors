@@ -445,8 +445,9 @@ export default defineScene<OceanDriftersVsModelOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
-  GPUParticleAdvection, getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionUint32ParameterValues
-} from '@luma.gl/graph/gpu-raster';
+  GPUParticleAdvection, getGPUParticleAdvectionParameterValues,
+  getGPUParticleAdvectionUint32ParameterValues
+} from '@luma-contributors/analysis/raster-analysis';
 import {GPUGeodesicPairs, GPULineDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // velocities: float32x2 (u, v) in degrees per day on a 720 x 320 lon/lat grid, row 0 = south

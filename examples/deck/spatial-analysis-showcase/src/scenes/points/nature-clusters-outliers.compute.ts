@@ -8,9 +8,9 @@ import {
   getGPULocalOutlierFactorParameterValues,
   getGPUNeighborSearchParameterValues,
   GPULocalOutlierFactor,
-  GPUNeighborSearch,
-  type GPUParameterBuffer
+  GPUNeighborSearch
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {formatCount} from '../../cartography/live-text';
 import {DENSE_POINT_RADIUS_STOPS} from '../../cartography/zoom';

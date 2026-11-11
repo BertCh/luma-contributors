@@ -19,7 +19,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
-import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {importGraphBuffer} from '../graph-buffers';
 import type {
   SpatialAnalysisFrame,

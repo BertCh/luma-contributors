@@ -6,11 +6,11 @@ import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
   getGPUOutlineGeometryParameterValues,
-  GPU_EARTH_MEAN_RADIUS_METERS,
   getGPUOutlineGeometryVerticesPerInput,
   GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH,
   GPUOutlineGeometry
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {addKernelPass} from '../../engine/mode-kernels';

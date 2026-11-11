@@ -14,7 +14,7 @@
  */
 
 import type {Buffer, Device} from '@luma.gl/core';
-import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {ClassTable} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';

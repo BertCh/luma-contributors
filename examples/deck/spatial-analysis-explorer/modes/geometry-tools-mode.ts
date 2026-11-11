@@ -488,7 +488,15 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
             positions: clippedPositions,
             lineOffsets: clippedOffsets,
             status: {
-              count: countView,
+              // `count` counts rings; the vertex total (read below) is `vertexCount`.
+              count: importGraphBuffer(
+                clipGraph,
+                'clip-ring-count',
+                resources.createBuffer('clip-ring-count', 4),
+                'uint32',
+                1
+              ),
+              vertexCount: countView,
               overflow: importGraphBuffer(clipGraph, 'clip-overflow', clipOverflow, 'uint32', 1)
             }
           }

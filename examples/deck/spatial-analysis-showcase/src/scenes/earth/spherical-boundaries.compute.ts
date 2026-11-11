@@ -11,13 +11,13 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  GPU_EARTH_MEAN_RADIUS_METERS,
   GPUSphericalPolygonContains,
   GPUSphericalPolygonOverlay,
   GPUS2PolygonCovering,
   GPUCellGeometry,
   GPUS2CellMeasures
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {GraphSwap} from '../../engine/graph-swap';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
@@ -188,13 +188,12 @@ function allocateOverlay(
           featureOffsets,
           'uint32',
           OVERLAY_SEGMENT_CAPACITY + 1
-        ),
-        sourceIds: view('source-ids', sourceIds, 'uint32', OVERLAY_SEGMENT_CAPACITY)
+        )
       },
       complement: view('complement', complement, 'uint32', 1),
       status: {
         count: view('count', count, 'uint32', 1),
-        requiredCount: view('required', required, 'uint32', 1),
+        requiredRingCount: view('required', required, 'uint32', 1),
         overflow: view('overflow', overflow, 'uint32', 1),
         candidateOverflow: view('candidate-overflow', candidateOverflow, 'uint32', 1),
         uncertainCount: view('uncertain', uncertain, 'uint32', 1)

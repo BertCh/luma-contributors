@@ -606,7 +606,7 @@ import {
   GPURipley, GPURipleyDistanceFunctions, GPUPointPatternIndices,
   getGPURipleyParameterValues, getGPURipleyDistanceFunctionsParameterValues,
   getGPUPointPatternIndicesParameterValues
-} from '@luma.gl/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 // Project points AND polygon columns with one Lambert equal-area frame.
 // Each graph imports its own views of those buffers.

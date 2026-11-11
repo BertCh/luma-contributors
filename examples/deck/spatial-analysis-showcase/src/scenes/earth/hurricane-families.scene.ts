@@ -33,7 +33,7 @@ export default defineScene<HurricaneFamiliesOptions>({
   order: 5,
   summary:
     'Resample Atlantic storm tracks, score route similarity, then test whether k-means summaries remain useful as their settings change. Select a storm to compare it with the closest route and its rendered discrete-Frechet leash.',
-  contributors: ['GPUTrajectoryResample', 'GPUTrackSimilarity', 'GPUKMeans'],
+  contributors: ['GPUTrajectoryResample', 'GPUTrackSimilarity', 'GPUSpatialKMeans'],
   datasets: [{id: 'ibtracs-north-atlantic', role: 'storm tracks (IBTrACS, 1980-2025)'}],
   initialView: BASIN_VIEW,
 
@@ -118,7 +118,7 @@ export default defineScene<HurricaneFamiliesOptions>({
       max: 8,
       step: 1,
       default: 5,
-      help: 'k, the number of clusters. It is fixed when GPUKMeans is compiled, so changing it rebuilds the clustering graph (the distances are not recomputed).'
+      help: 'k, the number of clusters. It is fixed when GPUSpatialKMeans is compiled, so changing it rebuilds the clustering graph (the distances are not recomputed).'
     },
     {
       kind: 'select',
@@ -309,7 +309,7 @@ export default defineScene<HurricaneFamiliesOptions>({
     {
       id: 'embedding',
       label: 'Two-dimensional embedding',
-      help: 'GPUKMeans clusters points in the plane, so the distance matrix is first embedded in two dimensions (classical multidimensional scaling, on the CPU). This is how much of the distance variance the plane keeps.'
+      help: 'GPUSpatialKMeans clusters points in the plane, so the distance matrix is first embedded in two dimensions (classical multidimensional scaling, on the CPU). This is how much of the distance variance the plane keeps.'
     },
     {
       id: 'kmeans',
@@ -352,7 +352,7 @@ export default defineScene<HurricaneFamiliesOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
-  GPUTrajectoryResample, GPUTrackSimilarity, GPUKMeans
+  GPUTrajectoryResample, GPUTrackSimilarity, GPUSpatialKMeans
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // positions: float32x2 longitude/latitude degrees, timestamps: float32 seconds since each storm's start
@@ -375,16 +375,16 @@ similarity.add(new GPUTrackSimilarity({
 
 // distances -> two-dimensional embedding on the CPU (classical scaling), then:
 const families = new GPUCommandGraph(device, {id: 'families'});
-families.add(new GPUKMeans({
+families.add(new GPUSpatialKMeans({
   positions: embedding,                    // float32x2 per storm
   k: ${state.familyCount}, maximumIterations: ${state.iterations},
   initialization: '${state.initialization}',
-  parameters: kmeansParameters.importToGraph(families),   // getGPUKMeansParameterValues({seed: ${state.seed}})
+  parameters: kmeansParameters.importToGraph(families),   // getGPUSpatialKMeansParameterValues({seed: ${state.seed}})
   output: {labels, centers, sizes, squaredDistances, status: {iterationCount, converged}}
 }));`,
 
   about: {
-    what: '`GPUTrajectoryResample` rebuilds every storm as the same number of points, evenly spaced along the path (or in time). `GPUTrackSimilarity` scores each pair of routes with the discrete Frechet distance (and the Hausdorff distance) on the GPU. The 739 x 739 distance matrix is embedded in two dimensions on the CPU, and `GPUKMeans` groups the embedded storms into families.',
+    what: '`GPUTrajectoryResample` rebuilds every storm as the same number of points, evenly spaced along the path (or in time). `GPUTrackSimilarity` scores each pair of routes with the discrete Frechet distance (and the Hausdorff distance) on the GPU. The 739 x 739 distance matrix is embedded in two dimensions on the CPU, and `GPUSpatialKMeans` groups the embedded storms into families.',
     why: 'Forecasters and insurers talk about hurricane "types": Cape Verde storms that cross the whole Atlantic, storms born in the western Caribbean or Gulf, storms that recurve north and out to sea. A shape-aware distance lets the data propose those groups instead of drawing them by hand, and pick-a-storm distance shows which past storms had the most similar route.',
     howToRead:
       'Each line is one storm. In family colors, lines of one color follow a similar route; the thick lines are the mean route of each family. In distance colors, bright is close to the selected storm and dark is far. The histogram shows how many storms lie at each distance. Families are a summary of a continuum, not natural classes: change the number of families and the groups split or merge.'
@@ -455,7 +455,7 @@ families.add(new GPUKMeans({
       headline: 'Clusters change when choices change',
       textAlternative: 'Qualitative family routes pair with their linked clustering summary.',
       optionsMode: 'fresh',
-      body: 'Clustering needs points in a plane, so the distance matrix is **embedded in two dimensions** (classical scaling) and **`GPUKMeans`** groups the storms: assign every storm to the nearest center, move the centers, repeat. The colors are families and the bars show how many storms each holds.\n\nTurn on family representatives. The default **medoid** is a real, central route: the member with the smallest total route distance to its family. The **mean** averages resample points and can be useful but need not be a storm that occurred. The live **Families** readout gives each group’s start, end, length and hurricane share. Slide **Number of families**: groups split and merge because routes form a continuum.',
+      body: 'Clustering needs points in a plane, so the distance matrix is **embedded in two dimensions** (classical scaling) and **`GPUSpatialKMeans`** groups the storms: assign every storm to the nearest center, move the centers, repeat. The colors are families and the bars show how many storms each holds.\n\nTurn on family representatives. The default **medoid** is a real, central route: the member with the smallest total route distance to its family. The **mean** averages resample points and can be useful but need not be a storm that occurred. The live **Families** readout gives each group’s start, end, length and hurricane share. Slide **Number of families**: groups split and merge because routes form a continuum.',
       camera: {...BASIN_VIEW, transitionMs: 1200},
       options: {
         colorBy: 'family',
@@ -474,7 +474,7 @@ families.add(new GPUKMeans({
       textAlternative:
         'A linked embedding scatter uses the same family colours as the faint Atlantic routes.',
       optionsMode: 'fresh',
-      body: 'The scatter is the space `GPUKMeans` actually sees: each dot is a route after the distance matrix is embedded in two dimensions. Near dots mean similar **paths**, not nearby locations. Click a dot to select its matching Atlantic route.\n\nk-means can settle into different local splits. Change **Starting centers** or the **k-means++ seed** and watch the family colours move across the same continuum. The live **k-means** readout reports the iterations and the variance explained; the default is an example, never a natural taxonomy.',
+      body: 'The scatter is the space `GPUSpatialKMeans` actually sees: each dot is a route after the distance matrix is embedded in two dimensions. Near dots mean similar **paths**, not nearby locations. Click a dot to select its matching Atlantic route.\n\nk-means can settle into different local splits. Change **Starting centers** or the **k-means++ seed** and watch the family colours move across the same continuum. The live **k-means** readout reports the iterations and the variance explained; the default is an example, never a natural taxonomy.',
       options: {colorBy: 'family', showFamilyMeans: true, familyCount: 5},
       controls: ['initialization', 'seed', 'iterations'],
       readouts: ['embeddingChart', 'kmeans', 'embedding', 'familyChart']

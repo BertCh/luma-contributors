@@ -5,9 +5,9 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  GPUKMeans,
-  GPU_KMEANS_PARAMETER_LENGTH,
-  getGPUKMeansParameterValues
+  GPUSpatialKMeans,
+  GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
+  getGPUSpatialKMeansParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
@@ -96,7 +96,7 @@ type KMeansGraph = {
 };
 
 /**
- * Constellation geometry: `GPUKMeans` groups the satellites of a family by orbital inclination and
+ * Constellation geometry: `GPUSpatialKMeans` groups the satellites of a family by orbital inclination and
  * altitude (on the GPU, deterministic per seed), and the playhead scene colors every satellite by its
  * shell. The k-means graphs depend on the family, k and seed (compile time), so each combination
  * compiles on first use; the altitude weight only rewrites the feature buffer.
@@ -167,12 +167,12 @@ export async function createSatelliteConstellations(
     const kmeansParameters = resources.createParameterBuffer(
       `${key}-kmeans-parameters`,
       'uint32',
-      GPU_KMEANS_PARAMETER_LENGTH,
-      getGPUKMeansParameterValues({seed: Number(seed)})
+      GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
+      getGPUSpatialKMeansParameterValues({seed: Number(seed)})
     );
     const graph = new GPUCommandGraph<void>(ctx.device, {id: `satellite-kmeans-${key}`});
     graph.add(
-      new GPUKMeans({
+      new GPUSpatialKMeans({
         id: 'shells',
         positions: importGraphBuffer(graph, 'features', features, 'float32x2', count),
         k: effectiveK,
@@ -351,7 +351,7 @@ export async function createSatelliteConstellations(
       yLabel: 'satellites',
       formatY: value => `${Math.round(value)}`,
       description:
-        'Satellites in each shell found by GPUKMeans, labeled by the center of the shell.'
+        'Satellites in each shell found by GPUSpatialKMeans, labeled by the center of the shell.'
     });
     const inclinations = Float32Array.from(
       graph.satellites,
@@ -402,7 +402,7 @@ export async function createSatelliteConstellations(
       xLabel: 'current k-means stage',
       yLabel: 'records / centres / iterations',
       formatY: value => `${Math.round(value)}`,
-      description: `Actual GPUKMeans assignment after the active ${stage}-iteration run; convergence used ${convergence?.[0] ?? 0} iterations.`
+      description: `Actual GPUSpatialKMeans assignment after the active ${stage}-iteration run; convergence used ${convergence?.[0] ?? 0} iterations.`
     });
     if (before) {
       const size = graph.k;

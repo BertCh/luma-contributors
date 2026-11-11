@@ -253,11 +253,9 @@ export default defineScene<RasterJoinOptions>({
   },
 
   snippet: state => `import {
-  getGPUPolygonRasterizationParameterValues,
-  GPUPolygonRasterization,
-  GPURasterJoin,
+  getGPUPolygonRasterizationParameterValues, GPUPolygonRasterization, GPURasterJoin,
   makeGPURasterMetadata
-} from '@luma.gl/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 
 const width = ${64 * 2 ** state.resolutionLevel}, height = ${'/* long side scaled to the city */ '}width;
 // Planar metres, rows advance north from the bottom-left corner. The size is compile-time;

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUSpatialContext} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 /**
  * Analysis kit of the weights scenes, adapted from the explorer's weights mode. It works on any
  * weights source (polygon contiguity, kNN or distance band on centroids, a regular lattice): the

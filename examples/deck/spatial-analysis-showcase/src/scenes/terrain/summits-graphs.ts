@@ -15,7 +15,7 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUTerrainContours,
   GPUTerrainCriticalPoints,

@@ -192,7 +192,7 @@ export const patchesMode: SpatialAnalysisModeDefinition = {
       const patchInput = {
         grid,
         labels,
-        validity: labelValidity,
+        mask: labelValidity,
         converged: sparseConverged,
         componentCount,
         overflow

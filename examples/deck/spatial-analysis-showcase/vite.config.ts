@@ -1,3 +1,7 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
 import {createHash} from 'node:crypto';
 import {readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';

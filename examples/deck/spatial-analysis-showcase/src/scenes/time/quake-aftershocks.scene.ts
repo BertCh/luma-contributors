@@ -539,7 +539,9 @@ export default defineScene<QuakeAftershocksOptions>({
   snippet: state => `import {
   GPUNeighborSearch, GPUKnoxTest, getGPUNeighborSearchParameterValues, getGPUSpaceTimeParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@luma.gl/graph/gpu-dataframe';
+import {
+  GPUTemporalReduction, getGPUTemporalReductionParameterValues
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 // Pairs within ${state.spatialRadius} km (azimuthal equidistant meters around the window center), then the Knox test.
 pairs.spatialContext = events.spatialContext;

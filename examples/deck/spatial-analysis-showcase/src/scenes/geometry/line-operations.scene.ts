@@ -421,7 +421,7 @@ The colour is the measure output, from 0 at the start to the length of the longe
         'Chicago L routes are divided into one-kilometre pieces with cyclic categorical colours and a reported piece count; adjacent pieces share a boundary point, and repeated colours do not identify unique pieces.',
       body: `Now split each route into **one-kilometre chunks** with \`GPULineChunk\` in \`chunk\` mode (turf \`lineChunk\`). The colours cycle through the output pieces, so you can count kilometres along each line; consecutive chunks share their boundary point.
 
-The number of pieces depends on the data, so the contributor reports it through the \`lineCount\` output (see the readout) and the offsets past it equal the vertex count. Slide **Chunk length** below from 100 m to 10 km. Set **Line tool** to *Substring* to extract the stretch between a start and an end measure instead, as ST_LineSubstring does: a quick way to reveal a route a bit at a time.`,
+The number of pieces depends on the data, so the contributor reports it through the \`status.count\` output, which counts lines (see the readout) and the offsets past it equal the vertex count. Slide **Chunk length** below from 100 m to 10 km. Set **Line tool** to *Substring* to extract the stretch between a start and an end measure instead, as ST_LineSubstring does: a quick way to reveal a route a bit at a time.`,
       options: {lineTool: 'chunk', chunkLength: 3},
       highlight: {readout: 'reshapePieces'},
       controls: ['chunkLength', 'lineTool'],
@@ -589,7 +589,7 @@ Orange is the simplified track over the faint original. Slide **Tolerance** belo
     {
       id: 'reshapePieces',
       label: 'Pieces / events',
-      help: 'Chunks and substrings from the lineCount output; for Locate the status counts.'
+      help: 'Chunks and substrings from the status count output; for Locate the status counts.'
     },
     {id: 'reshapeOverflow', label: 'Overflow'},
     {id: 'snapInputs', label: 'Eligible places and streets'},
@@ -623,7 +623,7 @@ graph.add(new GPULineSegmentize({
   positions, lineOffsets,
   ${state.lineSystem === 'spherical' ? GREAT_CIRCLE_SNIPPET : PLANAR_SNIPPET}
   parameters: segmentize.importToGraph(graph),
-  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow}, measures}
+  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow, vertexCount, requiredVertexCount}, measures}
 }));
 
 segmentize.write(getGPULineSegmentizeParameterValues({maximumSegmentLength: ${Math.round(10 ** state.densifyLength)}}));`;
@@ -637,7 +637,7 @@ graph.add(new GPULineChunk({
   mode: '${state.lineTool}',
   ${state.lineSystem === 'spherical' ? GREAT_CIRCLE_SNIPPET : PLANAR_SNIPPET}
   parameters: chunk.importToGraph(graph),
-  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow, lineCount}${state.lineTool === 'chunk' ? ', sourceLineIndices' : ''}}
+  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow, vertexCount, requiredVertexCount}${state.lineTool === 'chunk' ? ', sourceLineIndices' : ''}}
 }));
 
 chunk.write(getGPULineChunkParameterValues(${state.lineTool === 'chunk' ? `{chunkLength: ${Math.round(10 ** state.chunkLength)}}` : `{startMeasure: ${state.substringStart * 1000}, endMeasure: ${state.substringEnd * 1000}}`}));`;
@@ -668,7 +668,7 @@ graph.add(new GPULinearReferencing({
   spatialSort: true,
   output: {
     footPoints, distances, measures, signedOffsets, lineIndices,
-    status: {overflow, candidateCount}
+    status: {candidateOverflow, requiredCandidateCount}
   }
 }));`;
     }
@@ -682,7 +682,7 @@ graph.add(new GPULineSmooth({
   iterationCount: ${state.smoothIterations},    // compile-time: output holds n * 2^iterations vertices
   closed: false,
   parameters: smooth.importToGraph(graph),
-  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow}}
+  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow, vertexCount, requiredVertexCount}}
 }));
 
 smooth.write(getGPULineSmoothParameterValues({ratio: ${state.smoothRatio}}));`;

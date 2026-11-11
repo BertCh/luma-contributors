@@ -546,7 +546,9 @@ export default defineScene<TaxiFlowOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUFlowAggregation} from '@luma-contributors/analysis/gpu-network';
-import {getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
+import {
+  getGPUTimeWindowFilterParameterValues
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'flows'});
 graph.add(

@@ -536,7 +536,7 @@ displayValues[displayValuesOffset + ${displayOffset}u + (index / ${OWNED_CORE_SI
       adjacency: regionAdjacencyView,
       weights: regionWeightsView,
       mapping: regionMappingView,
-      status: regionStatusView
+      status: {iterationLimitReached: regionStatusView}
     }
   });
 

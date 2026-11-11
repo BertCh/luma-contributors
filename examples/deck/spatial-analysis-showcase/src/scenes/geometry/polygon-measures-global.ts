@@ -4,11 +4,11 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {
-  getGPUAuthalicSphereRadius,
   getGPULonLatPolygonPreparationParameterValues,
   GPUGeometryMeasures,
   GPULonLatPolygonPreparation
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getGPUAuthalicSphereRadius} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';

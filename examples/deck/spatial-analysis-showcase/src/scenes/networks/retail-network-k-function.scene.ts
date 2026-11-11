@@ -257,7 +257,7 @@ export default defineScene<RetailNetworkKOptions>({
   ],
   snippet: state =>
     `const k = new GPUNetworkKFunction({
-      spatialContext: projection.spatialContext,positions: points, topology: {offsets, neighbors, weights, nodePositions}, maximumDistance, bandCount: ${state.bandCount}, simulationCount: 19, output: {kValues, envelope}});\nparameters.write(getGPUNetworkKFunctionParameterValues({seed: ${state.envelopeSeed}, activeSimulations: ${state.simulations}}));`,
+      spatialContext: projection.spatialContext,positions: points, topology: {offsets, neighbors, weights, nodePositions}, maximumDistance, parameters: parameters.importToGraph(graph), bandCount: ${state.bandCount}, simulationCount: 19, output: {kValues, envelope}});\nparameters.write(getGPUNetworkKFunctionParameterValues({seed: ${state.envelopeSeed}, activeSimulations: ${state.simulations}}));`,
   about: {
     what: '`GPUNetworkKFunction` snaps sampled mapped places to a street graph, measures shortest-path distances, and counts unordered pairs strictly closer than each distance band.',
     why: 'A street-bound dataset looks clustered against a uniform plane. This null scatters points along streets in proportion to street length; it does not control footfall, zoning, or Overture coverage.',

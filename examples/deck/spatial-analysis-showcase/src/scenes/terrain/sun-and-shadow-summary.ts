@@ -121,7 +121,8 @@ export function getSunTooltip(input: SunTooltipInput): TooltipContent | null {
       unit: 'm'
     });
   }
-  const horn = probe.hornAt(cell.column, cell.row);
+  // GPUTerrainDerivatives runs with its default border rule, so the readout does too.
+  const horn = probe.hornAt(cell.column, cell.row, 'one-sided');
   rows.push({label: 'Slope', value: horn.slopeDeg.toFixed(0), unit: '°'});
   if (Number.isFinite(horn.aspectDeg) && horn.slopeDeg >= 5) {
     rows.push({

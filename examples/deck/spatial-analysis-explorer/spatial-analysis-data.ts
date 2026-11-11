@@ -2,10 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  createGPULocalFrame,
-  type GPULocalFrame
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createGPULocalFrame, type GPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 import {addMetersToLngLat, getDistanceScales} from '@math.gl/web-mercator';
 
 import {clamp} from '@math.gl/core';

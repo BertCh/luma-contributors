@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {LocalMetricProjection} from '../../engine/projection';
 import {getLatitudeFromMercatorY, getMercatorY} from '../../engine/web-mercator';
 import type {UtmFrame} from './b16-common';

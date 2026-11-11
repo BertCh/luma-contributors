@@ -467,36 +467,39 @@ export default defineScene<WildfireTerrainOptions>({
   ],
 
   snippet: state => `import {
-  getGPUDistanceFieldParameterValues,
-  getGPUPolygonRasterizationExtentValues,
-  GPUDistanceField,
-  GPUPolygonRasterization,
-  GPURasterZonalStatistics
-} from '@luma.gl/graph/gpu-raster';
+  getGPUDistanceFieldParameterValues, getGPUPolygonRasterizationParameterValues,
+  GPUDistanceField, GPUPolygonRasterization, GPURasterZonalStatistics, makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {GPUTerrainDerivatives} from '@luma-contributors/analysis/gpu-terrain';
 
 // Polygons in raster space: x east from the grid edge, y south from its north edge (row order).
+const rasterGrid = makeGPURasterMetadata({width, height, extent});   // extent: [0, 0, cell, cell]
+extentParameters.write(getGPUPolygonRasterizationParameterValues(rasterGrid));
+distanceSettings.write(getGPUDistanceFieldParameterValues({maximumDistance: 1e7}, rasterGrid));
 graph.add(new GPUPolygonRasterization({
-  width, height, extent,                 // [0, 0, cell, cell]
-  polygonPositions, featureOffsets, polygonOffsets, ringOffsets,
+  grid: rasterGrid, parameters: extentParameters.importToGraph(graph),
+  positions: polygonPositions, featureOffsets, polygonOffsets, ringOffsets,
   crossingCapacity,                      // sized from the (edge, row) crossings
-  zones, boundary, overflow
+  output: {zones, boundary, status: {overflow, crossingCount}}
 }));
 graph.add(new GPUDistanceField({
-  width, height, settings, seedMask,     // seedMask = zone + 1, 0 elsewhere
-  mode: '${state.distanceMode}',${state.distanceMode === 'jump-flood' ? `\n  jumpFloodRefinementPasses: ${state.refinement},` : ''}
+  grid: rasterGrid, parameters: distanceSettings.importToGraph(graph),
+  seedMask,                              // seedMask = zone + 1, 0 elsewhere
+  mode: '${state.distanceMode}',${state.distanceMode === 'jump-flood' ? `\n  jumpFloodRefinementIterationCount: ${state.refinement},` : ''}
   output: {distances, allocation}        // nearest fire id per cell
 }));
 graph.add(new GPUTerrainDerivatives({
-  width, height, elevation, settings, slope, aspect, hillshade,
-  cellSizeMode: 'web-mercator', rowDirection: 'south', borderMode: '${state.borderMode}'
+  grid: mercatorGrid, elevation, parameters: terrainSettings.importToGraph(graph),
+  output: {slope, aspect, hillshade},
+  cellSizeMode: 'web-mercator', rowDirection: 'south', slopeUnits: 'degrees',
+  borderMode: '${state.borderMode}'
 }));
 // ring zone = nearest fire where ${state.ringInner} km <= distance <= ${state.ringOuter} km (a kernel)
 graph.add(new GPURasterZonalStatistics({
-  width, height, zones: zoneId,          // 2 * fire (+1 for the ring)
+  grid: mercatorGrid, zones: zoneId,     // 2 * fire (+1 for the ring)
   values: slopeBand, zoneCapacity: 2 * fireCount,
   sumOrder: '${state.sumOrder}',
-  output: {valueCounts, sums, maximums}
+  output: {cellCounts, valueCounts, sums, maximums}
 }));`,
 
   about: {

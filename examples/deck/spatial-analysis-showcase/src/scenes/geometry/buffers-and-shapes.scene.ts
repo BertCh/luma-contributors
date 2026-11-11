@@ -649,7 +649,7 @@ graph.add(new GPURectangleClip({
   positions,
   geometryType: '${state.clipGeometry === 'roads' ? 'lines' : 'polygons'}',${state.clipGeometry === 'roads' ? '\n  lineOffsets,' : '\n  featureOffsets, polygonOffsets, ringOffsets,'}
   parameters: clipParameters.importToGraph(graph),
-  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow${state.clipGeometry === 'roads' ? ', requiredCount, lineCount' : ''}}${state.clipGeometry === 'roads' ? ', sourceLineIndices' : ''}}
+  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow, vertexCount, requiredVertexCount}${state.clipGeometry === 'roads' ? ', sourceLineIndices' : ''}}
 }));
 
 // the rectangle is a per-frame parameter

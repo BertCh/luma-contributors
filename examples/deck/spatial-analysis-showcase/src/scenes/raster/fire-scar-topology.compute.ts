@@ -721,7 +721,7 @@ export async function createFireScarTopology(
           adjacency: views.classAdjacency,
           weights: views.classWeights,
           mapping: views.classMapping,
-          status: views.classStatus
+          status: {iterationLimitReached: views.classStatus}
         }
       })
     );
@@ -1062,7 +1062,7 @@ export async function createFireScarTopology(
           adjacency: focusSourceViews.regionAdjacency,
           weights: focusSourceViews.regionWeights,
           mapping: focusSourceViews.regionMapping,
-          status: focusSourceViews.regionStatus
+          status: {iterationLimitReached: focusSourceViews.regionStatus}
         }
       })
     );

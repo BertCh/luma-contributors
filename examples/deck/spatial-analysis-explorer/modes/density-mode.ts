@@ -17,7 +17,7 @@ import {
 } from '../spatial-analysis-data';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {type GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,

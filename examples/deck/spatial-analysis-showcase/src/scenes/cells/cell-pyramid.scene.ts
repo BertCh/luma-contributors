@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {CHICAGO_CITY_VIEW, MONTROSE_POINT} from '../../cartography/gazetteer';
 import {ground} from '../../cartography/grounds';
 import {sampleRamp} from '../../engine/ramps';
@@ -543,7 +543,7 @@ graph.add(new GPUCellRollup({
 }));`;
     }
     if (state.view === 'classes') {
-      return `import {GPUClassBreaks, GPUColorScale} from '@luma.gl/graph/gpu-dataframe';
+      return `import {GPUClassBreaks, GPUColorScale} from '@luma-contributors/analysis/dataframe-analysis';
 
 // Cell table to a value column and an occupied-row mask (adapter node, as in the hot-spot recipe).
 addCellTableColumnsNode(graph, 'classes', {counts, ${state.classValue === 'confirmed' ? 'sumValues' : ''}}, {values, mask});

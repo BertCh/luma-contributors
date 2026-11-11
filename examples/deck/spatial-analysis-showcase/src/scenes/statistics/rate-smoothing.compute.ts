@@ -16,10 +16,12 @@ import {
   addExcessRiskRecipe,
   addSpatialRateRecipe,
   type GPUContiguityCriterion,
-  type GPUInferenceAlternative,
-  type GPUInferenceMetadata,
   type GPURateClusterMapRecipeResult
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  type GPUInferenceAlternative,
+  type GPUInferenceMetadata
+} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassTableLayerProps, makeClassTable} from '../../cartography/class-table';
 import {US} from '../../cartography/gazetteer';

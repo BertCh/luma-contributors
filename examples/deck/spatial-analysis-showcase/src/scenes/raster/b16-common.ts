@@ -5,7 +5,7 @@
 import {
   GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   GPU_WGS84_FLATTENING
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 /**
  * Shared helpers of the raster chapter (B16): the UTM display frame of the Sentinel-2 grids, a
  * raster layer that draws a UTM grid rotated onto the true-north basemap, small formatters and the

@@ -9,9 +9,9 @@ import {
   addClockEncounters,
   getGPUTrajectoryClockParameterValues,
   GPUTrajectoryClosestApproach,
-  GPUTrajectoryRestriction,
-  type GPUParameterBuffer
+  GPUTrajectoryRestriction
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {SpatialAnalysisResources} from '../../engine/resources';

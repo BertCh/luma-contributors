@@ -253,7 +253,7 @@ export default defineScene<ContoursOptions>({
       headline: 'Contour segments follow each selected elevation level',
       textAlternative:
         'Thin contour segments cross the terrain at regular elevation intervals, with the level and segment counts reported beside the map.',
-      body: '`GPUIsolines` walks every cell of the raster once. A corner is *high* when its value is at least the level; a cell with both high and low corners is crossed by the contour, and the crossing points on its edges are found by linear interpolation. When opposite corners agree and the other two do not (a *saddle*) the cell-centre average decides which way the line goes. The segments come out ordered by cell, level and slot, so the result is deterministic.\n\nBands are off now so only lines remain, at 50 m. Drag **Elevation interval** below: the levels are a buffer write and the lines re-extract on the next frame, no recompile. Zoom to the Bright Angel Trail: the lines bunch into the Redwall cliff and spread over the Tonto bench.',
+      body: '`GPUIsolines` walks every cell of the raster once. A corner is *high* when its value is at least the level; a cell with both high and low corners is crossed by the contour, and the crossing points on its edges are found by linear interpolation. When opposite corners agree and the other two do not (a *saddle*) the value of the bilinear surface at its saddle point (the asymptotic decider) says which way the line goes. The segments come out ordered by cell, level and slot, so the result is deterministic.\n\nBands are off now so only lines remain, at 50 m. Drag **Elevation interval** below: the levels are a buffer write and the lines re-extract on the next frame, no recompile. Zoom to the Bright Angel Trail: the lines bunch into the Redwall cliff and spread over the Tonto bench.',
       camera: {longitude: -112.125, latitude: 36.07, zoom: 12.7, transitionMs: 1800},
       options: {showBands: false, elevationInterval: 50, showRelief: true},
       controls: ['elevationInterval', 'lineWidth'],
@@ -436,9 +436,9 @@ export default defineScene<ContoursOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
-  GPUIsolines, GPUIsobands, GPUIsobandRings,
-  getGPUIsolinesParameterValues, getGPUIsobandsParameterValues
-} from '@luma.gl/graph/gpu-raster';
+  GPUIsolines, GPUIsobands, GPUIsobandRings, getGPUIsolinesParameterValues,
+  getGPUIsobandsParameterValues
+} from '@luma-contributors/analysis/raster-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'contours'});
 graph.add(new GPUIsobands({

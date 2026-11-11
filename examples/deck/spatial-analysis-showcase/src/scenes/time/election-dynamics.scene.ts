@@ -417,7 +417,7 @@ export default defineScene<ElectionDynamicsOptions>({
 
   snippet: state => `import {
   getGPUClassBreaksParameterValues, GPUClassBreaks
-} from '@luma.gl/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUSpatialAutocorrelationParameterValues,
   GPUClassAssignment, GPULISAMarkov, GPURankMarkov, GPUSpatialMarkov, GPUTransitionMatrix

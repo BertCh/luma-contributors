@@ -7,7 +7,6 @@ import {PathLayer, ScatterplotLayer} from '@deck.gl/layers';
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
-  GPU_EARTH_MEAN_RADIUS_METERS,
   GPUCellGeometry,
   GPUPointToCell,
   GPUNeighborSearch,
@@ -16,6 +15,7 @@ import {
   GPUS2CellMeasures,
   getGPUNeighborSearchParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/analysis-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisResources, formatCount} from '../../engine/resources';
 import {GraphSwap} from '../../engine/graph-swap';

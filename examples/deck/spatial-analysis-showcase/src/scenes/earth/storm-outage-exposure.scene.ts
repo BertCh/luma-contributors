@@ -281,7 +281,9 @@ export default defineScene<StormOutageExposureOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPULineLengthPerPolygon, GPUZonalStatistics} from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUGroupStatistics, GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
+import {
+  GPUGroupStatistics, GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 // Once: join every flash to its county and keep the point-to-county rows.
 staticGraph.add(new GPUZonalStatistics({

@@ -6,12 +6,14 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
   GPUHotSpotAnalysis,
-  type GPUSpatialContext,
   GPULocalMoran,
-  GPULocalPermutationTest,
+  GPULocalPermutationTest
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  type GPUSpatialContext,
   type GPUInferenceAlternative,
   type GPUParameterBuffer
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUCommandGraph,
   GPUHistogram,
