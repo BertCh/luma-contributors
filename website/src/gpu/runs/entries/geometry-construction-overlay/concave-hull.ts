@@ -13,16 +13,20 @@ import {defineOperationRun} from '../../define-run';
 import {createClusteredPoints} from '../../inputs';
 import {addEdgeDrawing} from './shared/edges';
 
-import {createPointCarry, getCarriedPositions, updatePointCarry} from './shared/carry';
 import {HIGHLIGHT_COLOR} from './shared/lines';
+import {getCentroid, getReachLevel, getReachRest} from './shared/reach';
 import {parameters} from './concave-hull.parameters';
+
+// The circumradius limits the pointer's reach picks among.
+const LEVELS = [0.04, 0.09, 0.16, 0.26, 0.4] as const;
+const REST_LEVEL = 1;
 
 export default defineOperationRun({
   parameters,
   caption: 'Alpha-shape boundary of scattered points; muted dots are the input.',
   createInputs: ({random, world}) => {
     const points = createClusteredPoints(random, world, 260, 3, 0.04);
-    return {...points, carry: createPointCarry(points.positions)};
+    return {...points, anchor: getCentroid(points.positions)};
   },
   build(builder, points, values) {
     const pointCount = points.count;
@@ -48,26 +52,27 @@ export default defineOperationRun({
     );
     const drawing = addEdgeDrawing(builder, 'hull', positions, boundaryEdges, edgeValidity);
     return {
-      outputs: {positions, ...drawing},
-      update: () => positions.write(getCarriedPositions(points.positions, points.carry))
+      outputs: {positions, ...drawing}
     };
   },
   rebuildOn: ['maximumCircumradius'],
-  // The pointer carries the nearest point and the hull re-forms around it; the dashed ball at the
-  // cursor is the circumradius limit that decides which triangles stay.
+  buildCache: 5,
+  // The distance from the cloud's centroid to the pointer picks the circumradius limit among five
+  // values (applied once it rests); the dashed ball at the cursor is that limit.
   interaction: {
-    kind: 'drag',
-    hint: 'carry a point',
-    rest: ({inputs, toUnit}) => toUnit([inputs.positions[0], inputs.positions[1]]),
-    resolve(pointer, {inputs, values}) {
-      const carried = updatePointCarry(inputs.carry, inputs.positions, [pointer.x, pointer.y]);
+    kind: 'reach',
+    hint: 'reach out to loosen the hull',
+    rest: ({inputs, toUnit}) => toUnit(getReachRest(inputs.anchor, REST_LEVEL, LEVELS.length)),
+    resolve(pointer, {inputs}) {
+      const level = getReachLevel(inputs.anchor, [pointer.x, pointer.y], LEVELS.length);
       return {
-        rerun: carried.changed,
+        settle: {maximumCircumradius: LEVELS[level]},
         glyphs: [
-          {shape: 'ring', at: carried.at, radius: values.maximumCircumradius, dashed: true},
-          {shape: 'dot', at: carried.at}
+          {shape: 'dot', at: inputs.anchor},
+          {shape: 'line', from: inputs.anchor, to: [pointer.x, pointer.y], dashed: true},
+          {shape: 'ring', at: [pointer.x, pointer.y], radius: LEVELS[level], dashed: true}
         ],
-        readout: `maximumCircumradius ${values.maximumCircumradius.toFixed(2)} · point ${carried.row} carried`
+        readout: `maximumCircumradius ${LEVELS[level].toFixed(2)}`
       };
     }
   },

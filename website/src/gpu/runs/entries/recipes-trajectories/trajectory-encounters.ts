@@ -2,8 +2,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUTrajectoryEncounters over tracks resampled to a shared clock. The dots are the resampled
-// table; each bar is one encounter pair (sorted by track) whose height is the number of time
-// buckets the two tracks spent within `distance`.
+// table, one column per bucket; a link joins the two tracks of a pair at the first bucket where they
+// were within `distance`; each bar is one encounter pair (sorted by track) whose height is the number
+// of buckets they spent within it.
 
 import {
   GPUTrajectoryEncounters,
@@ -11,7 +12,9 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {findParameter, snapToParameter} from '../../interaction';
+import {createLegend, mergeText} from '../../text';
 import {createFleet, raiseFleet} from './lib/fleet';
+import {addBucketLinks} from './lib/pair-links';
 import {findBusiestFix} from './lib/track-lookup';
 import {parameters} from './trajectory-encounters.parameters';
 
@@ -39,6 +42,8 @@ export default defineOperationRun({
     const overflow = builder.allocate('pair-overflow', 'uint32', 1);
     const bucketCounts = builder.allocate('bucket-counts', 'uint32', PAIR_CAPACITY);
     const candidateOverflow = builder.allocate('candidate-overflow', 'uint32', 1);
+    const partners = builder.allocate('pair-partners', 'uint32', PAIR_CAPACITY);
+    const firstBuckets = builder.allocate('pair-first-buckets', 'uint32', PAIR_CAPACITY);
     builder.graph.add(
       new GPUTrajectoryResample({
         positions: builder.upload('positions', 'float32x2', fleet.positions).view,
@@ -61,15 +66,28 @@ export default defineOperationRun({
           pairs: {
             ids: ids.view,
             status: {count: count.view, overflow: overflow.view},
+            partners: partners.view,
+            firstBuckets: firstBuckets.view,
             bucketCounts: bucketCounts.view
           },
           status: {candidateOverflow: candidateOverflow.view}
         }
       })
     );
+    const pairLinks = addBucketLinks(builder, {
+      ids,
+      partners,
+      firstBuckets,
+      count,
+      samples,
+      bucketCount,
+      pairCapacity: PAIR_CAPACITY
+    });
     return {
       outputs: {
         samples,
+        links: pairLinks.links,
+        linkEnds: pairLinks.ends,
         count,
         bucketCounts,
         segments: builder.upload('segments', 'float32x4', fleet.segments)
@@ -102,15 +120,39 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
+  draw: ({inputs, outputs, theme, world}) => [
     {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},
     {layer: 'dots', context: true, positions: outputs.samples, radius: 3.5},
+    {layer: 'lines', segments: outputs.links, radius: 2.6, color: [...theme.categories[2], 1]},
+    {layer: 'dots', positions: outputs.linkEnds, radius: 6, color: [...theme.categories[2], 1]},
     {
       layer: 'chart',
       kind: 'bars',
       values: outputs.bucketCounts,
       ramp: 'sequential',
       rectangle: [0.06, 0.05, 0.94, 0.38]
+    },
+    {
+      layer: 'text',
+      ...mergeText(
+        {
+          labels: [
+            {
+              text: 'bars: buckets each pair spent within the distance, one bar per pair',
+              at: [0.06 * world.width, 0.385],
+              anchor: 'bottom-left',
+              role: 'title'
+            }
+          ]
+        },
+        createLegend({
+          corner: 'top-left',
+          entries: [
+            {label: 'resampled position (one per bucket)', swatch: [...theme.muted]},
+            {label: 'pair in the same bucket (first one)', swatch: 2}
+          ]
+        })
+      )
     }
   ]
 });

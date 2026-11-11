@@ -580,7 +580,8 @@ const compiled = await graph.compileAsync();`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUCellLevelSelection, GPUParameterBuffer} from '${IMPORT_PATH}';
+import {GPUCellLevelSelection} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'level-select'});
 const activeLevel = new GPUParameterBuffer(device, {id: 'level', format: 'uint32', length: 1});
@@ -2537,7 +2538,8 @@ const compiled = await graph.compileAsync();`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUBufferSelection, GPUParameterBuffer} from '${IMPORT_PATH}';
+import {GPUBufferSelection} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'buffer-select'});
 const distance = new GPUParameterBuffer(device, {id: 'distance', format: 'float32', length: 1});

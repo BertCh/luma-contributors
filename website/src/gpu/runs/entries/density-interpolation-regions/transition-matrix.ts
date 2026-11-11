@@ -10,6 +10,7 @@ import {
   GPUTransitionMatrix
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {createChartAxes, createMatrixTicks, getChartRectangle, mergeText} from '../../text';
 import {parameters} from './transition-matrix.parameters';
 import {addSlice} from './support/gather';
 import {
@@ -138,50 +139,89 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs, values}) => [
-    {
-      layer: 'polygons',
-      positions: outputs.vertices,
-      indices: outputs.indices,
-      owners: outputs.owners,
-      values: outputs.classes,
-      triangleCount: inputs.tracts.triangleCount,
-      ramp: 'sequential',
-      range: [0, values.classCount - 1]
-    },
-    drawRegionOutline(inputs, outputs.highlight),
-    {
-      layer: 'polygons',
-      positions: outputs.matrixMesh.vertices,
-      indices: outputs.matrixMesh.indices,
-      owners: outputs.matrixMesh.owners,
-      values: outputs.probabilities,
-      triangleCount: outputs.matrixMesh.triangleCount,
-      range: [0, 1]
-    },
-    {
-      layer: 'lines',
-      context: true,
-      segments: outputs.matrixOutline,
-      count: outputs.matrixOutlineCount,
-      alpha: 0.5
-    },
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.steadyStates,
-      range: [0, 0.6],
-      rectangle: [0.56, 0.05, 0.84, 0.22],
-      ramp: 'sequential'
-    },
-    {
-      // Sparse and empty states (fewer than minimumTransitions moves).
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.sparsity,
-      range: [0, values.classCount],
-      rectangle: [0.87, 0.05, 0.97, 0.22],
-      ramp: 'sequential'
-    }
-  ]
+  draw: ({inputs, outputs, values, world}) => {
+    const classNames = Array.from({length: values.classCount}, (_, index) => `${index + 1}`);
+    const steadyRectangle = [0.56, 0.05, 0.84, 0.22] as const;
+    const steadyAxes = createChartAxes({
+      rectangle: getChartRectangle(world, steadyRectangle),
+      x: {categories: classNames}
+    });
+    return [
+      {
+        layer: 'polygons',
+        positions: outputs.vertices,
+        indices: outputs.indices,
+        owners: outputs.owners,
+        values: outputs.classes,
+        triangleCount: inputs.tracts.triangleCount,
+        ramp: 'sequential',
+        range: [0, values.classCount - 1]
+      },
+      drawRegionOutline(inputs, outputs.highlight),
+      {
+        layer: 'polygons',
+        positions: outputs.matrixMesh.vertices,
+        indices: outputs.matrixMesh.indices,
+        owners: outputs.matrixMesh.owners,
+        values: outputs.probabilities,
+        triangleCount: outputs.matrixMesh.triangleCount,
+        range: [0, 1]
+      },
+      {
+        layer: 'lines',
+        context: true,
+        segments: outputs.matrixOutline,
+        count: outputs.matrixOutlineCount,
+        alpha: 0.5
+      },
+      {
+        layer: 'chart',
+        kind: 'bars',
+        values: outputs.steadyStates,
+        range: [0, 0.6],
+        rectangle: [0.56, 0.05, 0.84, 0.22],
+        ramp: 'sequential'
+      },
+      {
+        // Sparse and empty states (fewer than minimumTransitions moves).
+        layer: 'chart',
+        kind: 'bars',
+        values: outputs.sparsity,
+        range: [0, values.classCount],
+        rectangle: [0.87, 0.05, 0.97, 0.22],
+        ramp: 'sequential'
+      },
+      {
+        layer: 'text',
+        ...mergeText(
+          createMatrixTicks({
+            rectangle: [...MATRIX(world.width)],
+            rows: classNames,
+            columns: classNames,
+            rowTitle: 'from class',
+            columnTitle: 'to class'
+          }),
+          steadyAxes,
+          {
+            labels: [
+              {
+                text: 'steady state',
+                at: [0.56 * world.width, 0.22],
+                anchor: 'bottom-left',
+                offset: [0, 2],
+                role: 'label'
+              },
+              {
+                text: 'sparse',
+                at: [0.87 * world.width, 0.22],
+                anchor: 'bottom-left',
+                offset: [0, 2],
+                role: 'label'
+              }
+            ]
+          }
+        )
+      }
+    ];
+  }
 });

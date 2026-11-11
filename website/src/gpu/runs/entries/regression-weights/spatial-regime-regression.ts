@@ -115,8 +115,8 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
+  draw: ({inputs, outputs, theme}) => [
     ...drawTractMap(inputs, outputs.mesh, outputs.fitted, {ramp: 'sequential', range: [-2, 4]}),
-    ...drawCoefficientPanel(outputs.panel)
+    ...drawCoefficientPanel(outputs.panel, {ink: theme.ink})
   ]
 });

@@ -8,6 +8,7 @@
 
 import {GPUSeeminglyUnrelatedRegression} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {createChartAxes, getChartRectangle, mergeText} from '../../text';
 import {parameters} from './seemingly-unrelated-regression.parameters';
 import {
   createCoefficientPanel,
@@ -57,7 +58,14 @@ export default defineOperationRun({
         }
       })
     );
-    const panel = createCoefficientPanel(builder, coefficients, 1, COEFFICIENTS);
+    const panel = createCoefficientPanel(builder, coefficients, 1, COEFFICIENTS, [
+      '1:int',
+      '1:x1',
+      '1:x2',
+      '2:int',
+      '2:x1',
+      '2:x2'
+    ]);
     // The two equations' residuals as separate columns, for the scatter.
     const firstResiduals = builder.allocate('first-residuals', 'float32', rowCount);
     const secondResiduals = builder.allocate('second-residuals', 'float32', rowCount);
@@ -135,20 +143,44 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
-    ...drawResidualMap(inputs, outputs.mesh, outputs.firstResiduals),
-    ...drawCoefficientPanel(outputs.panel, {rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9]}),
-    // Each tract as a point of its two equations' residuals; the cloud tilts with the correlation.
-    {
-      layer: 'chart',
-      kind: 'scatter',
-      values: outputs.secondResiduals,
-      xValues: outputs.firstResiduals,
-      xRange: RESIDUAL_RANGE,
-      range: RESIDUAL_RANGE,
-      radius: 2.6,
-      color: [0.55, 0.65, 0.95, 0.9],
-      rectangle: SCATTER_RECTANGLE
-    }
-  ]
+  draw: ({inputs, outputs, world, theme}) => {
+    const scatterAxes = createChartAxes({
+      rectangle: getChartRectangle(world, SCATTER_RECTANGLE),
+      y: {range: RESIDUAL_RANGE, ticks: [-1, 0, 1], title: 'residual of eq 2 (x: eq 1)'}
+    });
+    const mapTitle = mergeText({
+      labels: [
+        {
+          text: 'residuals of equation 1',
+          at: [inputs.mapWidth / 2, world.height],
+          offset: [0, -12],
+          role: 'label',
+          priority: 4
+        }
+      ]
+    });
+    return [
+      {layer: 'text', ...scatterAxes.grid},
+      ...drawResidualMap(inputs, outputs.mesh, outputs.firstResiduals),
+      ...drawCoefficientPanel(outputs.panel, {
+        rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9],
+        world,
+        ink: theme.ink
+      }),
+      // Each tract as a point of its two equations' residuals; the cloud tilts with the correlation.
+      {
+        layer: 'chart',
+        kind: 'scatter',
+        values: outputs.secondResiduals,
+        xValues: outputs.firstResiduals,
+        xRange: RESIDUAL_RANGE,
+        range: RESIDUAL_RANGE,
+        radius: 2.6,
+        color: [0.55, 0.65, 0.95, 0.9],
+        rectangle: SCATTER_RECTANGLE
+      },
+      {layer: 'text', ...scatterAxes},
+      {layer: 'text', ...mapTitle}
+    ];
+  }
 });

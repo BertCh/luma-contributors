@@ -93,7 +93,7 @@ export default defineOperationRun({
   draw: ({outputs, values, theme}) => [
     getRoadContext(outputs),
     getRoadValues(outputs, values.measure === 0 ? outputs.gravity : outputs.cumulative, {
-      radius: 2.4,
+      radius: 3.6,
       range: [0, values.measure === 0 ? 8 : 8]
     }),
     ...getFacilityMarkers(outputs.facilities, theme, {radius: 7})

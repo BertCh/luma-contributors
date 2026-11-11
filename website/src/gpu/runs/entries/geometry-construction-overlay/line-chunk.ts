@@ -82,8 +82,8 @@ export default defineOperationRun({
       nodes: outputs.points,
       edges: outputs.edges,
       values: outputs.lineIds,
-      radius: 2.2
+      radius: 3.6
     },
-    {layer: 'dots', positions: outputs.points, values: outputs.lineIds, radius: 3.2}
+    {layer: 'dots', positions: outputs.points, values: outputs.lineIds, radius: 6}
   ]
 });

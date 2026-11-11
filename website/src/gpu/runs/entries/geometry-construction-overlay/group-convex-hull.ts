@@ -86,7 +86,7 @@ export default defineOperationRun({
       nodes: outputs.points,
       edges: outputs.edges,
       values: outputs.lineIds,
-      radius: 2.6
+      radius: 4
     }
   ]
 });

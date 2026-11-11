@@ -13,6 +13,7 @@ import {defineOperationRun} from '../../define-run';
 import type {RunGlyph} from '../../interaction';
 import {addPackedSegments, findNearestLine} from './shared/lines';
 import {createRingSegments} from './shared/polygons';
+import {createLegend} from '../../text';
 import {parameters} from './segment-ring-assembly.parameters';
 
 function getHash(index: number): number {
@@ -126,14 +127,30 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs}) => [
-    {layer: 'lines', context: true, segments: outputs.endpoints, radius: 1.5},
+  draw: ({outputs, theme}) => [
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.endpoints,
+      radius: 2.5,
+      color: [...theme.ink, 0.55]
+    },
     {
       layer: 'segments',
       nodes: outputs.points,
       edges: outputs.edges,
       values: outputs.lineIds,
       radius: 4.5
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        entries: [
+          {label: 'input segment', swatch: [...theme.ink]},
+          {label: 'assembled ring (one color each)', swatch: 0}
+        ]
+      })
     }
   ]
 });

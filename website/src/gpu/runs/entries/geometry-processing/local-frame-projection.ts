@@ -5,10 +5,8 @@
 // muted grid is the degrees laid out as-is (equirectangular); the bright grid is the projected
 // meters the operation wrote, so the squeeze of the meridians with latitude is visible.
 
-import {
-  createGPULocalFrame,
-  GPULocalFrameProjection
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPULocalFrameProjection} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createGPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 import {getCoastlineWindow} from '../../../data/coastline';
 import {defineOperationRun} from '../../define-run';
 import {addKernel} from './shared/shape-segments';

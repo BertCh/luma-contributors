@@ -59,12 +59,11 @@ export default defineOperationRun<Inputs, Outputs>({
         coverage: builder.allocate('coverage', 'uint32', cellCount).view
       })
     );
-    const flip = {flipColumns: grid.width};
     return {
       outputs: {
-        terrain: addFloatCopy(builder, 'terrain-grid', terrain, cellCount, flip),
-        surface: addFloatCopy(builder, 'surface-grid', surface, cellCount, flip),
-        canopy: addFloatCopy(builder, 'canopy-grid', canopy, cellCount, flip)
+        terrain: addFloatCopy(builder, 'terrain-grid', terrain, cellCount),
+        surface: addFloatCopy(builder, 'surface-grid', surface, cellCount),
+        canopy: addFloatCopy(builder, 'canopy-grid', canopy, cellCount)
       },
       update: current => positions.write(getJitteredPositions(cloud, current.noise))
     };

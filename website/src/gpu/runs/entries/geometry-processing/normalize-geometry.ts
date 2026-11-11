@@ -1,43 +1,92 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUNormalizeGeometry canonicalizes a collection of rings, lines and points. The input lists its
-// children in a shuffled order with ring starts rotated; the output is colored by each leaf's
-// canonical rank in the collection (right), while the input (left) is colored by its own shuffled
-// order, so only the left colors move when the child order changes.
+// GPUNormalizeGeometry canonicalizes a collection of rings, lines and points. Each panel lists the
+// collection's children in slots, in reading order: the input (left) in its shuffled child order,
+// the output (right) in the order the operation wrote, so a leaf jumps slots between the panels.
+// Color is the kind of leaf (ring, line, point), the same in both panels.
 
 import {GPUNormalizeGeometry} from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {defineOperationRun} from '../../define-run';
-import type {RunGlyph} from '../../interaction';
-import {chooseSticky, createPointIndex} from '../../pick';
+import {defineOperationRun, type RunBuffer, type RunBuilder} from '../../define-run';
+import type {RunLabel} from '../../text';
 import {createGeometryTree} from './shared/geometry-tree';
-import {addKernel, addPanel} from './shared/shape-segments';
+import {addKernel} from './shared/shape-segments';
 import {parameters} from './normalize-geometry.parameters';
 
 const PANEL = {scaleX: 0.5, scaleY: 0.8, offsetY: 0.1};
+const SLOT_COLUMNS = 4;
+const SLOT_ROWS = 3;
+const KIND_NAMES = ['ring', 'line', 'point'] as const;
+
+type World = {width: number; height: number};
+
+/** Center of a slot in a panel, in world units. Slot 0 is the top left; slots read along rows. */
+function getSlotCenter(world: World, slot: number, offsetX: number): [number, number] {
+  const column = slot % SLOT_COLUMNS;
+  const row = Math.floor(slot / SLOT_COLUMNS);
+  return [
+    ((column + 0.5) / SLOT_COLUMNS) * world.width * PANEL.scaleX + offsetX,
+    (1 - (row + 0.5) / SLOT_ROWS) * world.height * PANEL.scaleY + PANEL.offsetY * world.height
+  ];
+}
+
+/** The slot of a panel nearest a world position. */
+function getSlotAt(world: World, x: number, offsetX: number, y: number): number {
+  const columnFraction = (x - offsetX) / (world.width * PANEL.scaleX);
+  const rowFraction = 1 - (y - PANEL.offsetY * world.height) / (world.height * PANEL.scaleY);
+  const column = Math.min(SLOT_COLUMNS - 1, Math.max(0, Math.floor(columnFraction * SLOT_COLUMNS)));
+  const row = Math.min(SLOT_ROWS - 1, Math.max(0, Math.floor(rowFraction * SLOT_ROWS)));
+  return row * SLOT_COLUMNS + column;
+}
+
+/**
+ * Places every leaf of a panel in the slot given per vertex: the vertex keeps its offset from the
+ * center of its leaf's original cell, shrunk to the panel.
+ */
+function addSlotPanel(
+  builder: RunBuilder,
+  id: string,
+  positions: RunBuffer<'float32x2'>,
+  leafOfVertex: RunBuffer<'uint32'>,
+  slotOfVertex: RunBuffer<'uint32'>,
+  world: World,
+  offsetX: number
+): RunBuffer<'float32x2'> {
+  const placed = builder.allocate(`${id}-slots`, 'float32x2', positions.length);
+  const width = world.width.toFixed(6);
+  const height = world.height.toFixed(6);
+  addKernel(builder, {
+    id: `${id}-slots-kernel`,
+    invocationCount: positions.length,
+    bindings: [
+      {name: 'positions', buffer: positions, access: 'read'},
+      {name: 'leafOfVertex', buffer: leafOfVertex, access: 'read'},
+      {name: 'slotOfVertex', buffer: slotOfVertex, access: 'read'},
+      {name: 'placed', buffer: placed, access: 'read_write'}
+    ],
+    body: `let leaf = leafOfVertex[leafOfVertexOffset + index];
+  let slot = slotOfVertex[slotOfVertexOffset + index];
+  let originalX = (f32(leaf % ${SLOT_COLUMNS}u) + 0.5) / ${SLOT_COLUMNS}.0 * ${width};
+  let originalY = (f32(leaf / ${SLOT_COLUMNS}u) + 0.5) / ${SLOT_ROWS}.0 * ${height};
+  let slotX = (f32(slot % ${SLOT_COLUMNS}u) + 0.5) / ${SLOT_COLUMNS}.0 * ${width} * ${PANEL.scaleX} + ${offsetX.toFixed(6)};
+  let slotY = (1.0 - (f32(slot / ${SLOT_COLUMNS}u) + 0.5) / ${SLOT_ROWS}.0) * ${height} * ${PANEL.scaleY} + ${PANEL.offsetY} * ${height};
+  placed[placedOffset + index * 2u] = (positions[positionsOffset + index * 2u] - originalX) * ${PANEL.scaleX} + slotX;
+  placed[placedOffset + index * 2u + 1u] = (positions[positionsOffset + index * 2u + 1u] - originalY) * ${PANEL.scaleY} + slotY;`
+  });
+  return placed;
+}
 
 export default defineOperationRun({
   parameters,
-  caption: 'Leaves colored by canonical rank; the input order and ring starts do not matter.',
+  caption:
+    'Leaves colored by kind (ring, line, point); the input order and ring starts do not matter.',
   createInputs: ({world}) => {
     const tree = createGeometryTree(world, {shuffleSeed: 3, start: 2});
-    // Leaf centers in the input panel; the normalized panel is the same layout shifted right.
-    const centers = new Float32Array(tree.leafCount * 2);
-    for (let leaf = 0; leaf < tree.leafCount; leaf++) {
-      const first = tree.nodes[leaf * 4 + 1];
-      const count = tree.nodes[leaf * 4 + 2];
-      for (let vertex = first; vertex < first + count; vertex++) {
-        centers[leaf * 2] += (tree.positions[vertex * 2] * PANEL.scaleX) / count;
-        centers[leaf * 2 + 1] +=
-          (tree.positions[vertex * 2 + 1] * PANEL.scaleY + PANEL.offsetY) / count;
-      }
-    }
     return {
       world,
       tree,
-      centers,
-      index: createPointIndex(centers),
-      focus: {leaf: -1},
+      focus: {slot: -1},
+      // Slot of every leaf in the shuffled child list.
       inputRank: Uint32Array.from(tree.children).map((_, leaf) => tree.children.indexOf(leaf))
     };
   },
@@ -88,17 +137,25 @@ export default defineOperationRun({
       body: 'vertexRanks[vertexRanksOffset + index] = rank[rankOffset + leafOfVertex[leafOfVertexOffset + index]];'
     });
     const inputRanks = builder.allocate('input-ranks', 'uint32', tree.leafOfVertex.length);
-    const half = PANEL;
+    const kindOfVertex = builder.upload(
+      'kind-of-vertex',
+      'uint32',
+      Uint32Array.from(tree.leafOfVertex, leaf => leaf % KIND_NAMES.length)
+    );
     return {
       outputs: {
         rank,
-        input: addPanel(builder, 'input', positions, {...half, offsetX: 0}),
-        normalized: addPanel(builder, 'normalized', normalized, {
-          ...half,
-          offsetX: world.width / 2
-        }),
-        inputRanks,
-        vertexRanks,
+        input: addSlotPanel(builder, 'input', positions, leafOfVertex, inputRanks, world, 0),
+        normalized: addSlotPanel(
+          builder,
+          'normalized',
+          normalized,
+          leafOfVertex,
+          vertexRanks,
+          world,
+          world.width * PANEL.scaleX
+        ),
+        kindOfVertex,
         edges: builder.upload('edges', 'uint32x2', tree.edges)
       },
       update: values => {
@@ -113,71 +170,89 @@ export default defineOperationRun({
       }
     };
   },
-  // The pointer picks a leaf in either panel; a link joins it to its counterpart and the ranks are read.
+  // The pointer picks a slot in either panel; a link joins the slot of that leaf in the input to its
+  // slot in the output, and both ranks are read.
   interaction: {
     kind: 'probe',
     hint: 'hover a leaf',
-    rest: ({inputs, toUnit}) => toUnit([inputs.centers[5 * 2], inputs.centers[5 * 2 + 1]]),
+    rest: ({inputs, toUnit}) => toUnit(getSlotCenter(inputs.world, 5, 0)),
     resolve(pointer, {inputs, outputs, world, peek}) {
-      const isRight = pointer.x > world.width / 2;
-      const localX = isRight ? pointer.x - world.width / 2 : pointer.x;
-      const leaf = chooseSticky(inputs.index, localX, pointer.y, inputs.focus.leaf);
-      inputs.focus.leaf = leaf;
+      const rankOfLeaf = peek(outputs.rank);
+      const outputX = world.width * PANEL.scaleX;
+      const isRight = pointer.x > outputX;
+      const slot = getSlotAt(world, pointer.x, isRight ? outputX : 0, pointer.y);
+      if (!rankOfLeaf) return {};
+      // The leaf sitting in that slot of the panel that was hovered.
+      const leaf = isRight ? Array.from(rankOfLeaf).indexOf(slot) : inputs.tree.children[slot];
       if (leaf < 0) return {};
-      const node = [inputs.tree.nodes[leaf * 4 + 1], inputs.tree.nodes[leaf * 4 + 2]];
-      const glyphs: RunGlyph[] = [];
-      const from: [number, number] = [inputs.centers[leaf * 2], inputs.centers[leaf * 2 + 1]];
-      const to: [number, number] = [from[0] + world.width / 2, from[1]];
-      for (const offset of [0, world.width / 2]) {
-        if (node[1] === 1) {
-          glyphs.push({shape: 'ring', at: [from[0] + offset, from[1]], radius: 0.02});
-        } else {
-          const points: number[] = [];
-          for (let vertex = node[0]; vertex < node[0] + node[1]; vertex++) {
-            points.push(
-              inputs.tree.positions[vertex * 2] * PANEL.scaleX + offset,
-              inputs.tree.positions[vertex * 2 + 1] * PANEL.scaleY + PANEL.offsetY
-            );
-          }
-          glyphs.push({shape: 'polyline', points});
-        }
-      }
-      glyphs.push({shape: 'line', from, to, dashed: true});
-      const canonical = peek(outputs.rank)?.[leaf];
+      inputs.focus.slot = slot;
+      const inputSlot = inputs.inputRank[leaf];
+      const outputSlot = rankOfLeaf[leaf];
+      const from = getSlotCenter(world, inputSlot, 0);
+      const to = getSlotCenter(world, outputSlot, outputX);
+      const radius =
+        0.4 *
+        Math.min(
+          (world.width * PANEL.scaleX) / SLOT_COLUMNS,
+          (world.height * PANEL.scaleY) / SLOT_ROWS
+        );
       return {
         focus: leaf,
-        glyphs,
-        readout: `input #${inputs.inputRank[leaf]} -> canonical #${canonical ?? '...'}`
+        glyphs: [
+          {shape: 'ring', at: from, radius},
+          {shape: 'ring', at: to, radius},
+          {shape: 'arrow', from, to}
+        ],
+        readout: `${KIND_NAMES[leaf % KIND_NAMES.length]}: input #${inputSlot} -> canonical #${outputSlot}`
       };
     }
   },
-  draw: ({outputs, inputs}) => {
-    const look = {ramp: 'sequential', range: [-5, inputs.tree.leafCount - 1]} as const;
+  draw: ({outputs, theme}) => {
+    const titles: RunLabel[] = [
+      {
+        text: 'input order (shuffled)',
+        at: [0.25, 0],
+        space: 'canvas',
+        anchor: 'top',
+        offset: [0, -4],
+        role: 'title'
+      },
+      {
+        text: 'canonical order',
+        at: [0.75, 0],
+        space: 'canvas',
+        anchor: 'top',
+        offset: [0, -4],
+        role: 'title'
+      }
+    ];
+    const kinds: RunLabel[] = KIND_NAMES.map((name, index) => ({
+      text: name,
+      at: [0.38 + index * 0.11, 1],
+      space: 'canvas',
+      anchor: 'left',
+      offset: [0, 9],
+      swatch: index,
+      role: 'label'
+    }));
     return [
       {
         layer: 'segments',
         nodes: outputs.input,
         edges: outputs.edges,
-        values: outputs.inputRanks,
-        radius: 2.6,
-        ...look
+        values: outputs.kindOfVertex,
+        radius: 2.6
       },
-      {layer: 'dots', positions: outputs.input, values: outputs.inputRanks, radius: 4, ...look},
+      {layer: 'dots', positions: outputs.input, values: outputs.kindOfVertex, radius: 4},
       {
         layer: 'segments',
         nodes: outputs.normalized,
         edges: outputs.edges,
-        values: outputs.vertexRanks,
-        radius: 2.6,
-        ...look
+        values: outputs.kindOfVertex,
+        radius: 2.6
       },
-      {
-        layer: 'dots',
-        positions: outputs.normalized,
-        values: outputs.vertexRanks,
-        radius: 4,
-        ...look
-      }
+      {layer: 'dots', positions: outputs.normalized, values: outputs.kindOfVertex, radius: 4},
+      {layer: 'text', labels: [...titles, ...kinds]}
     ];
   }
 });

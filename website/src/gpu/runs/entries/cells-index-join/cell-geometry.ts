@@ -24,9 +24,10 @@ import {parameters} from './cell-geometry.parameters';
 export default defineOperationRun({
   parameters,
   geographicWindow: HONSHU_WINDOW,
-  caption: 'Cell keys decoded to boundary polygons (fill) and centers (dots).',
+  caption:
+    'The cell under the pointer, keyed and decoded: its boundary (fill), corners (blue) and center (red). Faint cells are the decoded keys of the epicenters.',
   createInputs: ({random}) => ({
-    ...getHonshuEvents(random, 200),
+    ...getHonshuEvents(random, 120),
     pointer: [...getWindowCenter(HONSHU_WINDOW)] as [number, number]
   }),
   build(builder, points, values) {
@@ -102,7 +103,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, theme}) => [
     {layer: 'dots', context: true, positions: outputs.positions, radius: 1.6},
     {
       layer: 'polygons',
@@ -111,16 +112,39 @@ export default defineOperationRun({
       owners: outputs.owners,
       values: outputs.owners,
       triangleCount: outputs.triangleCount,
-      color: [0.4, 0.7, 1, 0.16]
+      color: [0.4, 0.7, 1, 0.07]
     },
     {
       layer: 'triangles',
       positions: outputs.boundaries,
       triangles: outputs.wireframe,
       count: outputs.wireframeCount,
-      radius: 1.2
+      radius: 1,
+      alpha: 0.35
     },
-    drawPointerCell(outputs.pointerCell),
-    {layer: 'dots', positions: outputs.centers, radius: 3, color: [1, 1, 1, 0.9]}
+    // The decoded cell under the pointer, large: boundary fill, its corners and its center, all
+    // read from the GPUCellGeometry output for the pointer's key.
+    drawPointerCell(outputs.pointerCell, [1, 0.82, 0.3, 0.7]),
+    {
+      layer: 'dots',
+      positions: outputs.pointerCell.boundaries,
+      count: outputs.pointerCell.vertexCount,
+      radius: 9,
+      color: [...theme.ink, 1]
+    },
+    {
+      layer: 'dots',
+      positions: outputs.pointerCell.boundaries,
+      count: outputs.pointerCell.vertexCount,
+      radius: 6,
+      color: [...theme.categories[0], 1]
+    },
+    {layer: 'dots', positions: outputs.pointerCell.centers, radius: 9, color: [...theme.ink, 1]},
+    {
+      layer: 'dots',
+      positions: outputs.pointerCell.centers,
+      radius: 6,
+      color: [...theme.categories[2], 1]
+    }
   ]
 });

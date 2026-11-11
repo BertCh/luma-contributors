@@ -254,6 +254,30 @@ symmetric about zero), `logarithmic` (the ramp takes `log2(max(value, 1))`, so i
 `count` may be a GPU-written `uint32` buffer, so the picture shows exactly what the operation
 produced. Charts plot a buffer's rows; set `range` for the y axis or leave `'auto'`.
 
+### Text
+
+Pictures can carry labels: a `text` layer, drawn on the GPU from a glyph atlas, so posters and live
+pictures show the same words in both themes (`src/gpu/runs/text/`). Add `{layer: 'text', ...}` to
+`draw`; the helpers in `../../text` build the usual cases and take the same rectangle as the layer
+they label (use `getChartRectangle(world, fractions)` for a `chart` layer's `rectangle`):
+
+| helper | for |
+| --- | --- |
+| `createChartAxes({rectangle, x, y, references})` | ticks and a short title with its unit; `.grid` goes in its own text layer before the chart, the rest after it |
+| `createBarValueLabels({rectangle, values, range})` | a number above each bar (`values` is a CPU copy: `afterRun`, `peek` or the inputs) |
+| `createLegend({title, entries})` | a corner legend for classed maps |
+| `createMatrixTicks({rectangle, rows, columns})` | row and column names of a matrix |
+| `mergeText(a, b)` | several of the above in one layer |
+
+Rules: text is `context: false` by default and is hidden in the inputs-only render; it never counts as
+drawn output (the verifier requires another non-context layer). Label only what a reader needs
+(few labels: a card is 265 CSS pixels wide, 111 on a phone), take names, values and units from the
+operation, and never put information only in a label (the readout says it too). Labels are sized for
+the card and thin themselves when crowded. Keep them away from where the gesture draws glyphs and
+away from the bottom 30 pixels of a card, where the hover hint covers the picture until the reader
+moves. A narrow bar chart names its bars up the bars (`regression-weights/shared/labels.ts`). The
+text of a `draw` function runs every render, so cheap CPU copies only; take numbers from `afterRun`.
+
 ### Input data
 
 See the [website data notice](../../../../THIRD-PARTY-DATA.md#website-demo-extracts) for sample

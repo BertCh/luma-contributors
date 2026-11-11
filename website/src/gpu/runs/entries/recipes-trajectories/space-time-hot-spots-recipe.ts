@@ -8,9 +8,9 @@
 import {getGPUCalendarBucketsParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
-  GPUParameterBuffer,
   addSpaceTimeHotSpotsRecipe
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {earthquakeEvents, getEventDots, getEventPosition} from './lib/earthquakes';
 import {defineOperationRun} from '../../define-run';
 import {getRasterCell, getRasterCellCenter} from '../../pick';

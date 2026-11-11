@@ -8,6 +8,7 @@
 import {GPUChunkedSpatialWeightsTranspose} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createKnnWeights, createUniformPoints} from '../../inputs';
+import type {RunGlyph} from '../../interaction';
 import {chooseSticky, createPointIndex} from '../../pick';
 import {parameters} from './chunked-weights-transpose.parameters';
 import {
@@ -23,6 +24,7 @@ import {
   stretchPoints
 } from './shared/weights';
 import {getArrowGlyphs} from './shared/probes';
+import {mergeText} from '../../text';
 
 export default defineOperationRun({
   parameters,
@@ -77,25 +79,56 @@ export default defineOperationRun({
       const from = [inputs.positions[row * 2], inputs.positions[row * 2 + 1]] as const;
       const outgoing = outputs.chunkLinks.flatMap(links => getSegmentTargets(peek(links), from));
       const incoming = getSegmentTargets(peek(outputs.links), from);
+      // Outgoing links are solid arrows; the sources the transpose lists are dashed lines ending
+      // in a dot, so the two directions differ in more than the arrow head.
+      const sources: RunGlyph[] = incoming.flatMap(source => [
+        {shape: 'line' as const, from: source, to: from, dashed: true},
+        {shape: 'dot' as const, at: source}
+      ]);
       return {
         focus: row,
         glyphs: [
+          ...sources,
           ...getArrowGlyphs(from, outgoing, 'outgoing'),
-          ...getArrowGlyphs(from, incoming, 'incoming'),
           {shape: 'ring', at: from, radius: 0.012}
         ],
         readout: `row ${row} (chunk ${getChunkNumber(outputs.chunkStarts, row)}) · out ${outgoing.length} · in ${incoming.length}`
       };
     }
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, theme}) => [
     {
       layer: 'lines',
       context: true,
       segments: outputs.boundaries,
       count: outputs.chunkStarts.length - 1
     },
-    {layer: 'lines', segments: outputs.links, color: [0.8, 0.85, 1, 0.3], radius: 1},
-    {layer: 'dots', positions: outputs.positions, values: outputs.inDegree, radius: 3.6}
+    {layer: 'lines', segments: outputs.links, color: [...theme.muted, 0.45], radius: 1},
+    {layer: 'dots', positions: outputs.positions, values: outputs.inDegree, radius: 4.8},
+    {
+      layer: 'text',
+      ...mergeText({
+        labels: [
+          {
+            text: 'dot color: in-degree',
+            at: [0, 0],
+            space: 'canvas',
+            anchor: 'left',
+            offset: [8, -10],
+            role: 'label',
+            priority: 4
+          },
+          {
+            text: 'hover: solid arrows out, dashed lines in',
+            at: [0, 0],
+            space: 'canvas',
+            anchor: 'left',
+            offset: [8, -23],
+            role: 'tick',
+            priority: 3
+          }
+        ]
+      })
+    }
   ]
 });

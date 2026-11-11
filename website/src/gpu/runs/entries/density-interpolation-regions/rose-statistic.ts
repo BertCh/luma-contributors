@@ -7,6 +7,7 @@
 import {GPURoseStatistic} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createTrajectories} from '../../inputs';
+import {mergeText} from '../../text';
 import {parameters} from './rose-statistic.parameters';
 
 const ROSE_RADIUS = 0.4;
@@ -168,7 +169,7 @@ export default defineOperationRun({
       context: true,
       segments: outputs.segments,
       count: inputs.count,
-      color: [0.8, 0.85, 1, 0.6]
+      color: [0.3, 0.55, 0.95, 0.75]
     },
     {
       layer: 'lines',
@@ -185,6 +186,26 @@ export default defineOperationRun({
       values: outputs.bins,
       triangleCount: extra.triangleCount,
       ramp: 'sequential'
+    },
+    {
+      layer: 'text',
+      ...mergeText({
+        labels: (
+          [
+            ['E', 1, 0],
+            ['N', 0, 1],
+            ['W', -1, 0],
+            ['S', 0, -1]
+          ] as const
+        ).map(([text, dx, dy]) => ({
+          text,
+          at: [
+            inputs.center[0] + dx * (ROSE_RADIUS + 0.04),
+            inputs.center[1] + dy * (ROSE_RADIUS + 0.04)
+          ] as const,
+          role: 'label' as const
+        }))
+      })
     }
   ]
 });

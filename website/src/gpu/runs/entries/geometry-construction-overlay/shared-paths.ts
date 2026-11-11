@@ -60,8 +60,8 @@ export default defineOperationRun({
         intersectionCapacity: 1024,
         output: {
           runs: {
-            leftLineIds: leftLineIds.view,
-            rightLineIds: rightLineIds.view,
+            leftSourceIds: leftLineIds.view,
+            rightSourceIds: rightLineIds.view,
             forward: forward.view,
             offsets: offsets.view,
             positions: positions.view

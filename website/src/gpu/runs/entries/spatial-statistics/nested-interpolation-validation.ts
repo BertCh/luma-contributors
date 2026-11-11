@@ -197,7 +197,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs, interaction, theme}): readonly RunLayer[] => {
+  draw: ({outputs, interaction, theme, world}): readonly RunLayer[] => {
     const [count, highlightCount] = Array.isArray(interaction.focus) ? interaction.focus : [0, 0];
     return [
       {layer: 'lines', context: true, segments: outputs.diagonal, radius: 1},
@@ -223,7 +223,46 @@ export default defineOperationRun({
               radius: 3.5
             }
           ]
-        : [])
+        : []),
+      {
+        layer: 'text',
+        labels: [
+          {
+            text: 'stations by outer fold',
+            at: [0.02 * world.width, 0.94 * world.height],
+            anchor: 'left',
+            role: 'title'
+          },
+          {
+            text: 'held-out fold: observed vs predicted',
+            at: [PLOT[0] * world.width, 0.94 * world.height],
+            anchor: 'left',
+            role: 'title'
+          },
+          {
+            text: 'observed log rain',
+            at: [((PLOT[0] + PLOT[2]) / 2) * world.width, PLOT[1] * world.height],
+            anchor: 'top',
+            offset: [0, -4],
+            role: 'label'
+          },
+          {
+            text: 'nested prediction',
+            at: [PLOT[0] * world.width, ((PLOT[1] + PLOT[3]) / 2) * world.height],
+            anchor: 'bottom',
+            offset: [-3, 0],
+            role: 'label',
+            angle: 90
+          },
+          {
+            text: 'on the line = predicted well',
+            at: [PLOT[2] * world.width, PLOT[1] * world.height],
+            anchor: 'bottom-right',
+            offset: [0, 3],
+            role: 'tick'
+          }
+        ]
+      }
     ];
   }
 });

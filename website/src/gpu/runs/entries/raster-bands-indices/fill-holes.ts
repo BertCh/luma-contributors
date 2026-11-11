@@ -3,8 +3,8 @@
 
 // GPURasterFillHoles on a binary mask (a landmass with lakes, peppered with pits): background
 // regions not connected to the border are filled. The pointer stamps a closed ring of land into the
-// mask, and the ring's interior fills. Few iterations leave the result unpublished: it is only
-// written once the fill has converged.
+// mask, and the ring's interior fills. Few iterations stop at the limit: the result publishes what
+// it has so far and reports `converged = 0`.
 
 import {GPURasterFillHoles} from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';

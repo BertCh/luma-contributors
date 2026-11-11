@@ -110,7 +110,7 @@ export default defineOperationRun({
       radius: 1.7,
       color: [...theme.ink, 0.85]
     },
-    {layer: 'dots', positions: outputs.queries, values: outputs.contains, radius: 3.6},
+    {layer: 'dots', positions: outputs.queries, values: outputs.contains, radius: 5},
     {
       layer: 'lines',
       context: true,

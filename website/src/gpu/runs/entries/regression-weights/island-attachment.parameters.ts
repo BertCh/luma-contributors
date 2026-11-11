@@ -17,9 +17,9 @@ export const parameters: GpuSceneParameter[] = [
   {
     id: 'radius',
     label: 'Data: band radius',
-    min: 0.03,
+    min: 0.02,
     max: 0.12,
     step: 0.005,
-    default: 0.06
+    default: 0.04
   }
 ];

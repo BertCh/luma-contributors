@@ -12,6 +12,7 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {uploadSpatialWeights} from '../../inputs';
+import {createLegend, createMatrixTicks, mergeText} from '../../text';
 import {parameters} from './lisa-markov.parameters';
 import {
   createDynamics,
@@ -123,7 +124,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
+  draw: ({inputs, outputs, world}) => [
     {
       layer: 'polygons',
       positions: outputs.vertices,
@@ -149,6 +150,26 @@ export default defineOperationRun({
       segments: outputs.matrixOutline,
       count: outputs.matrixOutlineCount,
       alpha: 0.4
+    },
+    {
+      layer: 'text',
+      ...mergeText(
+        createMatrixTicks({
+          rectangle: [...MATRIX(world.width)],
+          rows: QUADRANT_NAMES.map(name => (name === 'not significant' ? 'n.s.' : name)),
+          columns: QUADRANT_NAMES.map(name => (name === 'not significant' ? 'n.s.' : name)),
+          rowTitle: 'from',
+          columnTitle: 'to'
+        }),
+        createLegend({
+          title: 'Moran quadrant',
+          corner: 'bottom-left',
+          entries: QUADRANT_NAMES.map((name, index) => ({
+            label: name,
+            swatch: QUADRANT_COLORS[index]
+          }))
+        })
+      )
     }
   ]
 });

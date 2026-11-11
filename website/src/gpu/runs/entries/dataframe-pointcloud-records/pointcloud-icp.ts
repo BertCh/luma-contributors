@@ -2,12 +2,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUPointCloudICP registering a rotated and shifted copy of a terrain cloud onto the original.
-// Gray dots are the target, orange dots are the source after the transform the GPU solved; the
-// curve below is the RMSE per iteration from the history output.
+// Gray dots are the target, blue dots the misaligned source, orange dots the source after the
+// transform the GPU solved, each blue dot joined to its orange one by a line (a subset of the
+// points is drawn so the three clouds can be told apart); the curve is the RMSE per iteration
+// from the history output.
 
 import {GPUPointCloudICP} from '@luma-contributors/analysis/pointcloud-analysis';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {bindAxes} from '../../interaction';
+import {createChartAxes, createLegend, getChartRectangle, mergeText} from '../../text';
 import {addFloatCopy} from './_lib/convert';
 import {createTerrainCloud} from './_lib/helpers';
 import {addTransformedFootprint} from './_lib/transform-points';
@@ -15,6 +18,13 @@ import {parameters} from './pointcloud-icp.parameters';
 
 const TERRAIN_COUNT = 9000;
 const POINT_COUNT = 1500;
+// Dots drawn per cloud, and every this many of those get a line from before to after.
+const DRAWN_COUNT = 400;
+const LINK_STRIDE = 4;
+const RMSE_RECTANGLE = [0.66, 0.07, 0.97, 0.3] as const;
+const COLOR_TARGET = [0.62, 0.66, 0.76] as const;
+const COLOR_SOURCE = [0.3, 0.7, 1] as const;
+const COLOR_ALIGNED = [1, 0.6, 0.2] as const;
 // The misalignment's shift is along this unit direction; the `shift` parameter is its length.
 const SHIFT_DIRECTION = [0.832, -0.555] as const;
 
@@ -36,10 +46,12 @@ function createInputs({
 type Inputs = ReturnType<typeof createInputs>;
 type Outputs = Record<'target' | 'initial' | 'aligned' | 'rmse', RunBuffer>;
 
-export default defineOperationRun<Inputs, Outputs>({
+type Extra = {links: RunBuffer; iterations: number};
+
+export default defineOperationRun<Inputs, Outputs, Extra>({
   parameters,
   caption:
-    'A misaligned copy of the King County scan (faint orange) after ICP (orange) over the original (gray); the curve is the RMSE per iteration.',
+    'The King County scan (gray), a rotated and shifted copy of it (blue) and that copy after ICP (orange); the curve is the RMSE per iteration. Closest-point matching on this nearly flat terrain approaches the scan gradually, so a large rotation may not be fully undone within the iterations.',
   createInputs,
   build(builder, inputs, values) {
     const target = builder.upload('target', 'float32x3', inputs.target);
@@ -101,6 +113,28 @@ export default defineOperationRun<Inputs, Outputs>({
     };
   },
   rebuildOn: ['iterations', 'maximumDistance'],
+  // The aligned points are read back to draw a line from every source point to where ICP put it.
+  async afterRun({outputs, upload, values}) {
+    const bytes = await outputs.aligned.buffer.readAsync();
+    const aligned = new Float32Array(
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    );
+    const initialBytes = await outputs.initial.buffer.readAsync();
+    const initial = new Float32Array(
+      initialBytes.buffer.slice(
+        initialBytes.byteOffset,
+        initialBytes.byteOffset + initialBytes.byteLength
+      )
+    );
+    const links: number[] = [];
+    for (let row = 0; row < DRAWN_COUNT; row += LINK_STRIDE) {
+      links.push(initial[row * 2], initial[row * 2 + 1], aligned[row * 2], aligned[row * 2 + 1]);
+    }
+    return {
+      links: upload('links', 'float32x4', Float32Array.from(links)),
+      iterations: values.iterations
+    };
+  },
   // The pointer sets the misalignment ICP has to undo: x is the rotation of the source about the
   // cloud center, y its shift. An arc at the center marks the rotation.
   interaction: bindAxes<Inputs, Outputs>(parameters, {
@@ -130,32 +164,73 @@ export default defineOperationRun<Inputs, Outputs>({
       };
     }
   }),
-  draw: ({inputs, outputs}) => [
-    {
-      layer: 'dots',
-      context: true,
-      positions: outputs.target,
-      color: [0.6, 0.65, 0.75, 0.7],
-      radius: 3.4
-    },
-    {
-      layer: 'dots',
-      context: true,
-      positions: outputs.initial,
-      color: [1, 0.6, 0.2, 0.7],
-      radius: 2
-    },
-    {layer: 'dots', positions: outputs.aligned, color: [1, 0.6, 0.2, 0.9], radius: 2},
-    {
-      layer: 'chart',
-      kind: 'line',
-      values: outputs.rmse,
-      range: [0, inputs.rmseTop],
-      rectangle: [0.62, 0.06, 0.97, 0.3],
-      radius: 2.4,
-      color: [0.3, 0.75, 1, 1]
-    }
-  ]
+  draw: ({inputs, outputs, extra, theme, world}) => {
+    const rectangle = getChartRectangle(world, RMSE_RECTANGLE);
+    const axes = createChartAxes({
+      rectangle,
+      x: {range: [1, Math.max(2, extra?.iterations ?? 2)], ticks: 3, title: 'iteration'},
+      y: {range: [0, inputs.rmseTop], ticks: 2, title: 'RMSE'}
+    });
+    return [
+      {
+        layer: 'dots',
+        context: true,
+        positions: outputs.target,
+        count: DRAWN_COUNT,
+        color: [...COLOR_TARGET, 0.9],
+        radius: 5.2
+      },
+      {
+        layer: 'dots',
+        context: true,
+        positions: outputs.initial,
+        count: DRAWN_COUNT,
+        color: [...COLOR_SOURCE, 0.95],
+        radius: 2.6
+      },
+      ...(extra
+        ? [
+            {
+              layer: 'lines' as const,
+              segments: extra.links,
+              color: [...theme.ink, 0.6] as const,
+              radius: 0.9
+            }
+          ]
+        : []),
+      {
+        layer: 'dots',
+        positions: outputs.aligned,
+        count: DRAWN_COUNT,
+        color: [...COLOR_ALIGNED, 1],
+        radius: 2.6
+      },
+      {layer: 'text', ...axes.grid},
+      {
+        layer: 'chart',
+        kind: 'line',
+        values: outputs.rmse,
+        range: [0, inputs.rmseTop],
+        rectangle: RMSE_RECTANGLE,
+        radius: 2.4,
+        color: [0.3, 0.75, 1, 1]
+      },
+      {
+        layer: 'text',
+        ...mergeText(
+          axes,
+          createLegend({
+            corner: 'top-left',
+            entries: [
+              {label: 'target', swatch: COLOR_TARGET},
+              {label: 'source before ICP', swatch: COLOR_SOURCE},
+              {label: 'source after ICP', swatch: COLOR_ALIGNED}
+            ]
+          })
+        )
+      }
+    ];
+  }
 });
 
 function identityTransform(builder: Parameters<typeof addTransformedFootprint>[0]) {

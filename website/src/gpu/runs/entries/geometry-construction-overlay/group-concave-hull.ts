@@ -10,16 +10,21 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createClusteredPoints} from '../../inputs';
-import {createPointCarry, getCarriedPositions, updatePointCarry} from './shared/carry';
+import {getCentroid, getReachLevel, getReachRest} from './shared/reach';
 import {addEdgeDrawing} from './shared/edges';
+import {createLegend} from '../../text';
 import {parameters} from './group-concave-hull.parameters';
+
+// The circumradius limits the pointer's reach picks among.
+const LEVELS = [0.04, 0.1, 0.16, 0.26, 0.4] as const;
+const REST_LEVEL = 1;
 
 export default defineOperationRun({
   parameters,
   caption: 'One concave hull per label; each boundary has its group color.',
   createInputs: ({random, world}) => {
     const points = createClusteredPoints(random, world, 300, 3, 0.08);
-    return {...points, carry: createPointCarry(points.positions)};
+    return {...points, anchor: getCentroid(points.positions)};
   },
   build(builder, points, values) {
     const groupCount = values.groupCount;
@@ -56,36 +61,31 @@ export default defineOperationRun({
       groupCapacity * 3
     );
     return {
-      outputs: {positions, groupIds, ...drawing},
-      update: () => positions.write(getCarriedPositions(points.positions, points.carry))
+      outputs: {positions, groupIds, ...drawing}
     };
   },
   rebuildOn: ['maximumCircumradius', 'groupCount'],
-  // The pointer carries the nearest point (it keeps its label) and that group's hull re-forms.
+  buildCache: 5,
+  // The distance from the centroid of all groups to the pointer picks the circumradius limit among
+  // five values (applied once it rests); the dashed ball at the cursor is that limit.
   interaction: {
-    kind: 'drag',
-    hint: 'carry a point',
-    rest: ({inputs, toUnit}) => toUnit([inputs.positions[0], inputs.positions[1]]),
-    resolve(pointer, {inputs}) {
-      const carried = updatePointCarry(
-        inputs.carry,
-        inputs.positions,
-        [pointer.x, pointer.y],
-        0.6,
-        1.2
-      );
-      const group = carried.row >= 0 ? inputs.labels[carried.row] : 0;
+    kind: 'reach',
+    hint: 'reach out to loosen the hulls',
+    rest: ({inputs, toUnit}) => toUnit(getReachRest(inputs.anchor, REST_LEVEL, LEVELS.length)),
+    resolve(pointer, {inputs, values}) {
+      const level = getReachLevel(inputs.anchor, [pointer.x, pointer.y], LEVELS.length);
       return {
-        rerun: carried.changed,
+        settle: {maximumCircumradius: LEVELS[level]},
         glyphs: [
-          {shape: 'ring', at: carried.at, radius: 0.025},
-          {shape: 'dot', at: carried.at}
+          {shape: 'dot', at: inputs.anchor},
+          {shape: 'line', from: inputs.anchor, to: [pointer.x, pointer.y], dashed: true},
+          {shape: 'ring', at: [pointer.x, pointer.y], radius: LEVELS[level], dashed: true}
         ],
-        readout: `group ${group} · point ${carried.row} carried`
+        readout: `maximumCircumradius ${LEVELS[level].toFixed(2)} · ${values.groupCount} groups`
       };
     }
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, values}) => [
     {layer: 'dots', positions: outputs.positions, values: outputs.groupIds, alpha: 0.55, radius: 3},
     {
       layer: 'segments',
@@ -93,6 +93,21 @@ export default defineOperationRun({
       edges: outputs.nodeEdges,
       values: outputs.groups,
       radius: 2.4
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        title: `circumradius limit ${values.maximumCircumradius.toFixed(2)}`,
+        entries: [
+          ...Array.from({length: values.groupCount}, (_, group) => ({
+            label: `group ${group + 1} hull`,
+            swatch: group
+          })),
+          // The scattered 8% of the points belong to no group and take the fourth color.
+          {label: 'noise point', swatch: 3}
+        ]
+      })
     }
   ]
 });

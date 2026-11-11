@@ -9,10 +9,13 @@
 import {GPULinearReferencing} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {addKernelPass} from './shared/kernel';
+import {findNearestSegment} from '../../pick';
 import {createLineSet, createPackedSegments, OUTPUT_COLOR} from './shared/lines';
+import {createLegend} from '../../text';
 import {parameters} from './linear-referencing.parameters';
 
 const QUERY_COUNT = 60;
+const RADIUS_RANGE = [0.01, 0.25] as const;
 
 export default defineOperationRun({
   parameters,
@@ -21,12 +24,7 @@ export default defineOperationRun({
     const queries = Float32Array.from({length: QUERY_COUNT * 2}, (_, slot) =>
       slot % 2 === 0 ? (0.04 + 0.92 * random()) * world.width : 0.02 + 0.96 * random()
     );
-    // Query 0 is the one the pointer carries.
-    return {
-      lines: createLineSet(random, world, 4, 8),
-      queries,
-      initial: [queries[0], queries[1]] as const
-    };
+    return {lines: createLineSet(random, world, 4, 8), queries, world};
   },
   build(builder, inputs) {
     const positions = builder.upload('positions', 'float32x2', inputs.lines.positions);
@@ -48,7 +46,7 @@ export default defineOperationRun({
           lineIndices: lineIndices.view,
           footPoints: footPoints.view,
           normalizedMeasures: normalizedMeasures.view,
-          status: {overflow: overflow.view}
+          status: {candidateOverflow: overflow.view}
         }
       })
     );
@@ -74,46 +72,86 @@ export default defineOperationRun({
     );
     return {
       outputs: {original, queries, lineIndices, footPoints, normalizedMeasures, connectors},
-      update: current => {
-        radius.write(Float32Array.of(current.radius));
-        queries.write(inputs.queries);
-      }
+      update: current => radius.write(Float32Array.of(current.radius))
     };
   },
-  // The pointer is query point 0: the operation snaps it to the nearest road within radius, and the
-  // foot point, connector and measure are its answer.
+  // The distance from the pointer to the nearest road is the search radius: every one of the 60
+  // points snaps to the road when it lies within that distance, so the matches grow with the ring.
   interaction: {
-    kind: 'place',
-    hint: 'move the query point',
-    rest: ({inputs, toUnit}) => toUnit(inputs.initial),
-    resolve(pointer, {inputs, outputs, values, peek}) {
-      inputs.queries[0] = pointer.x;
-      inputs.queries[1] = pointer.y;
-      const lineIndex = peek(outputs.lineIndices)?.[0];
-      const measure = peek(outputs.normalizedMeasures)?.[0];
-      const isSnapped = measure !== undefined && Number.isFinite(measure);
+    kind: 'reach',
+    hint: 'move off a road',
+    rest: ({inputs, toUnit}) => {
+      const target = parameters[0].default;
+      // The point to the right of the first road vertex that is `radius` away from every road.
+      const vertex: [number, number] = [inputs.lines.positions[0], inputs.lines.positions[1]];
+      let best: [number, number] = vertex;
+      let bestError = Infinity;
+      for (let step = 0; step < 200; step++) {
+        const x = Math.min(vertex[0] + step * 0.005, inputs.world.width);
+        const distance = findNearestSegment(inputs.lines.segments, x, vertex[1])?.distance ?? 0;
+        if (Math.abs(distance - target) < bestError) {
+          bestError = Math.abs(distance - target);
+          best = [x, vertex[1]];
+        }
+      }
+      return toUnit(best);
+    },
+    resolve(pointer, {inputs, outputs, peek}) {
+      const hit = findNearestSegment(inputs.lines.segments, pointer.x, pointer.y);
+      if (!hit) return {};
+      // Rounded up to the slider step (0.005), so the nearest road is always inside the ring.
+      const steppedDistance = Number((Math.ceil(hit.distance * 200 - 1e-6) / 200).toFixed(3));
+      const radius = Math.min(Math.max(steppedDistance, RADIUS_RANGE[0]), RADIUS_RANGE[1]);
+      const measures = peek(outputs.normalizedMeasures);
+      let snapped = 0;
+      for (let row = 0; measures && row < measures.length; row++) {
+        if (Number.isFinite(measures[row])) snapped++;
+      }
       return {
-        rerun: true,
+        values: {radius},
         glyphs: [
-          {shape: 'ring', at: [pointer.x, pointer.y], radius: values.radius, dashed: true},
+          {shape: 'ring', at: [pointer.x, pointer.y], radius, dashed: true},
+          {shape: 'line', from: [pointer.x, pointer.y], to: hit.point, dashed: true},
           {shape: 'crosshair', at: [pointer.x, pointer.y]}
         ],
-        readout: isSnapped
-          ? `radius ${values.radius.toFixed(3)} · road ${lineIndex} · measure ${measure.toFixed(2)}`
-          : `radius ${values.radius.toFixed(3)} · no road in reach`
+        readout: `radius ${radius.toFixed(3)} · ${measures ? `${snapped} of ${QUERY_COUNT}` : '…'} snapped`
       };
     }
   },
-  draw: ({outputs}) => [
-    {layer: 'lines', context: true, segments: outputs.original, radius: 4},
-    {layer: 'dots', positions: outputs.queries, color: [0.82, 0.84, 0.9, 0.85], radius: 3.5},
-    {layer: 'lines', segments: outputs.connectors, color: OUTPUT_COLOR, alpha: 0.8, radius: 2},
+  draw: ({outputs, theme}) => [
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.original,
+      radius: 4.5,
+      color: [...theme.ink, 0.5]
+    },
+    {layer: 'dots', positions: outputs.queries, color: [...theme.muted, 1], radius: 6},
+    {layer: 'lines', segments: outputs.connectors, color: OUTPUT_COLOR, alpha: 0.95, radius: 4},
     {
       layer: 'dots',
       positions: outputs.footPoints,
       values: outputs.normalizedMeasures,
       range: [0, 1],
-      radius: 8
+      radius: 11
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        entries: [
+          {label: 'road', swatch: theme.ink},
+          {label: 'query point', swatch: theme.muted},
+          {
+            label: 'link to its foot point',
+            swatch: [OUTPUT_COLOR[0], OUTPUT_COLOR[1], OUTPUT_COLOR[2]]
+          },
+          {
+            label: 'foot point, color = measure',
+            swatch: theme.ramp[Math.floor(theme.ramp.length * 0.6)]
+          }
+        ]
+      })
     }
   ]
 });

@@ -12,6 +12,7 @@ import {
 } from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
 import {findParameter, getFractionOf, getParameterAt} from '../../interaction';
+import {createLegend, mergeText, type RunLabel} from '../../text';
 import {parameters} from './change-detection.parameters';
 import {getCellAt, getCellBox} from './support/gestures';
 import {createStackInput} from './support/stacks';
@@ -128,8 +129,36 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs, values}) => {
+  draw: ({inputs, outputs, values, world}) => {
     const statistic = STATISTICS[Math.round(values.statistic)];
+    const labels: RunLabel[] = [
+      {
+        text: 'NDVI of the pointed cell at the twelve dates',
+        at: [STRIP[0] * world.width, STRIP[3] + 0.005],
+        anchor: 'bottom-left',
+        role: 'label'
+      }
+    ];
+    const legend =
+      statistic === 'significance'
+        ? createLegend({
+            corner: 'top-right',
+            title: 'significance',
+            entries: CLASS_NAMES.map((label, index) => ({
+              label,
+              swatch: SIGNIFICANCE_COLORS[index]
+            }))
+          })
+        : {
+            labels: [
+              {
+                text: `${statistic} (diverging colours)`,
+                at: [world.width - 0.02, 0.97] as const,
+                anchor: 'top-right' as const,
+                role: 'title' as const
+              }
+            ]
+          };
     return [
       {
         layer: 'raster',
@@ -146,7 +175,8 @@ export default defineOperationRun({
         values: outputs.series,
         range: [0, 1],
         rectangle: STRIP
-      }
+      },
+      {layer: 'text', ...mergeText({labels}, legend)}
     ];
   }
 });

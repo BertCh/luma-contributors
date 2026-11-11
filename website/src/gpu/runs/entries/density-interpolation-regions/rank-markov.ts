@@ -8,6 +8,7 @@
 import {GPURankMarkov} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {bindAxes} from '../../interaction';
+import {createChartAxes, getChartRectangle, mergeText} from '../../text';
 import {parameters} from './rank-markov.parameters';
 import {addSlice} from './support/gather';
 import {createDynamics, createMatrixMesh, PERIOD_COUNT, uploadMatrixMesh} from './support/dynamics';
@@ -76,33 +77,68 @@ export default defineOperationRun({
       readout: `period ${values.period + 1} of ${PERIOD_COUNT} · ranks of ${values.mode === 0 ? 'full' : 'geographic'} mode`
     })
   }),
-  draw: ({inputs, outputs, world}) => [
-    {
-      layer: 'polygons',
-      positions: outputs.vertices,
-      indices: outputs.indices,
-      owners: outputs.owners,
-      values: outputs.ranks,
-      triangleCount: inputs.tracts.triangleCount,
-      ramp: 'sequential',
-      range: [0, outputs.placeCount - 1]
-    },
-    {
-      layer: 'polygons',
-      positions: outputs.matrixMesh.vertices,
-      indices: outputs.matrixMesh.indices,
-      owners: outputs.matrixMesh.owners,
-      values: outputs.probabilities,
-      triangleCount: outputs.matrixMesh.triangleCount,
-      range: [0, 0.5]
-    },
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.mobility,
-      range: 'auto',
-      rectangle: [(world.width * 0.58) / world.width, 0.05, 0.97, 0.2],
-      ramp: 'sequential'
-    }
-  ]
+  draw: ({inputs, outputs, values, world}) => {
+    const mobilityRectangle = [0.58, 0.05, 0.97, 0.2] as const;
+    const axes = createChartAxes({
+      rectangle: getChartRectangle(world, mobilityRectangle),
+      x: {
+        categories: Array.from({length: PERIOD_COUNT - 1}, (_, step) => `${step + 1}-${step + 2}`)
+      }
+    });
+    return [
+      {
+        layer: 'polygons',
+        positions: outputs.vertices,
+        indices: outputs.indices,
+        owners: outputs.owners,
+        values: outputs.ranks,
+        triangleCount: inputs.tracts.triangleCount,
+        ramp: 'sequential',
+        range: [0, outputs.placeCount - 1]
+      },
+      {
+        layer: 'polygons',
+        positions: outputs.matrixMesh.vertices,
+        indices: outputs.matrixMesh.indices,
+        owners: outputs.matrixMesh.owners,
+        values: outputs.probabilities,
+        triangleCount: outputs.matrixMesh.triangleCount,
+        range: [0, 0.5]
+      },
+      {
+        layer: 'chart',
+        kind: 'bars',
+        values: outputs.mobility,
+        range: 'auto',
+        rectangle: mobilityRectangle,
+        ramp: 'sequential'
+      },
+      {
+        layer: 'text',
+        ...mergeText(axes, {
+          labels: [
+            {
+              text: `rank in period ${values.period + 1}`,
+              at: [0.02 * world.width, 0.97],
+              anchor: 'top-left',
+              role: 'title'
+            },
+            {
+              text: 'rank now (down) to rank next (across)',
+              at: [0.58 * world.width, 0.93],
+              anchor: 'bottom-left',
+              role: 'label'
+            },
+            {
+              text: 'rank mobility, period step',
+              at: [0.58 * world.width, 0.2],
+              anchor: 'bottom-left',
+              offset: [0, 2],
+              role: 'label'
+            }
+          ]
+        })
+      }
+    ];
+  }
 });

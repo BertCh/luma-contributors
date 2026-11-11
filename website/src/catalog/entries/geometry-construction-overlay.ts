@@ -82,8 +82,8 @@ export const entries: CatalogEntry[] = [
       },
       {
         name: 'status',
-        type: 'GPUBoundedResultStatusPort',
-        description: 'Count, overflow and required counts for capacity checks.'
+        type: "GPUPolygonOverlayOutput['status']",
+        description: 'count is polygons; requiredRingCount sizes the ring capacity; overflow flags.'
       },
       {
         name: 'boundary',
@@ -92,11 +92,8 @@ export const entries: CatalogEntry[] = [
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUBufferSurface,
-  GPUParameterBuffer,
-  getGPUOffsetCurveParameterValues
-} from '${IMPORT_PATH}';
+import {GPUBufferSurface, getGPUOffsetCurveParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'buffer'});
 const parameters = new GPUParameterBuffer(device, {id: 'buffer-parameters', format: 'float32', length: 4});
@@ -193,11 +190,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUOffsetCurve,
-  GPUParameterBuffer,
-  getGPUOffsetCurveParameterValues
-} from '${IMPORT_PATH}';
+import {GPUOffsetCurve, getGPUOffsetCurveParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'offset'});
 const parameters = new GPUParameterBuffer(device, {id: 'offset-parameters', format: 'float32', length: 4});
@@ -281,11 +275,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUOutlineGeometry,
-  GPUParameterBuffer,
-  getGPUOutlineGeometryParameterValues
-} from '${IMPORT_PATH}';
+import {GPUOutlineGeometry, getGPUOutlineGeometryParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'outline'});
 const parameters = new GPUParameterBuffer(device, {id: 'outline-parameters', format: 'float32', length: 4});
@@ -371,12 +362,12 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       {
         name: 'geometry',
         type: 'GPUPackedGeometryPort<GPUPolygonGeometryPort>',
-        description: 'Result polygons with ring offsets and source ids.'
+        description: 'Result polygons with ring offsets; no source ids.'
       },
       {
         name: 'status',
-        type: 'GPUBoundedResultStatusPort',
-        description: 'Count, overflow and required counts.'
+        type: "GPUPolygonOverlayOutput['status']",
+        description: 'count is polygons; requiredRingCount sizes the ring capacity; overflow flags.'
       },
       {
         name: 'boundary',
@@ -598,11 +589,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUCoverageSimplification,
-  GPUParameterBuffer,
-  getGPULineSimplificationParameterValues
-} from '${IMPORT_PATH}';
+import {GPUCoverageSimplification, getGPULineSimplificationParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'simplify-coverage'});
 const parameters = new GPUParameterBuffer(device, {id: 'tolerance', format: 'float32', length: 4});
@@ -700,11 +688,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUCoverageValidity,
-  GPUParameterBuffer,
-  getGPUCoverageValidityParameterValues
-} from '${IMPORT_PATH}';
+import {GPUCoverageValidity, getGPUCoverageValidityParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'coverage-check'});
 const parameters = new GPUParameterBuffer(device, {id: 'gap-width', format: 'float32', length: 4});
@@ -1160,7 +1145,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUGroupGeometry, GPUParameterBuffer} from '${IMPORT_PATH}';
+import {GPUGroupGeometry} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'group-geometry'});
 const parameters = new GPUParameterBuffer(device, {id: 'group-parameters', format: 'float32', length: 4});
@@ -1610,16 +1596,13 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       },
       {
         name: 'status',
-        type: 'GPUCardinalityPort & GPUOverflowStatusPort & {lineCount?}',
-        description: 'Written vertex count and overflow flag.'
+        type: "GPULineGeometryOutput['status']",
+        description: 'count is lines; vertexCount (optional) is vertices; overflow flag.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPULineSegmentize,
-  GPUParameterBuffer,
-  getGPULineSegmentizeParameterValues
-} from '${IMPORT_PATH}';
+import {GPULineSegmentize, getGPULineSegmentizeParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'segmentize'});
 const parameters = new GPUParameterBuffer(device, {id: 'segmentize-parameters', format: 'float32', length: 4});
@@ -1701,11 +1684,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'status', type: 'GPUBoundedResultStatusPort', description: 'Count and overflow.'}
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUGreatCircleArcs,
-  GPUParameterBuffer,
-  getGPUGreatCircleArcsParameterValues
-} from '${IMPORT_PATH}';
+import {GPUGreatCircleArcs, getGPUGreatCircleArcsParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'arcs'});
 const parameters = new GPUParameterBuffer(device, {id: 'arc-parameters', format: 'float32', length: 4});
@@ -1783,16 +1763,13 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       },
       {
         name: 'status',
-        type: 'GPUCardinalityPort & GPUOverflowStatusPort & {lineCount?}',
-        description: 'Written vertex count and overflow flag.'
+        type: "GPULineGeometryOutput['status']",
+        description: 'count is lines; vertexCount (optional) is vertices; overflow flag.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPULineSmooth,
-  GPUParameterBuffer,
-  getGPULineSmoothParameterValues
-} from '${IMPORT_PATH}';
+import {GPULineSmooth, getGPULineSmoothParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'smooth'});
 const parameters = new GPUParameterBuffer(device, {id: 'smooth-parameters', format: 'float32', length: 4});
@@ -1875,16 +1852,13 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       },
       {
         name: 'status',
-        type: 'GPUCardinalityPort & GPUOverflowStatusPort & {lineCount?}',
-        description: 'Written vertex count and overflow flag.'
+        type: "GPULineGeometryOutput['status']",
+        description: 'count is lines; vertexCount (optional) is vertices; overflow flag.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPULineChunk,
-  GPUParameterBuffer,
-  getGPULineChunkParameterValues
-} from '${IMPORT_PATH}';
+import {GPULineChunk, getGPULineChunkParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'chunk'});
 const parameters = new GPUParameterBuffer(device, {id: 'chunk-parameters', format: 'float32', length: 4});
@@ -2140,11 +2114,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPULineSimplification,
-  GPUParameterBuffer,
-  getGPULineSimplificationParameterValues
-} from '${IMPORT_PATH}';
+import {GPULineSimplification, getGPULineSimplificationParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'simplify'});
 const parameters = new GPUParameterBuffer(device, {id: 'tolerance', format: 'float32', length: 4});
@@ -2413,8 +2384,9 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
       },
       {
         name: 'status',
-        type: '{overflow, candidateCount?}',
-        description: 'Whether the nearest-line search was complete.'
+        type: '{candidateOverflow, requiredCandidateCount?}',
+        description:
+          'candidateOverflow is 1 when a capacity was too small; optional required count.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -2518,11 +2490,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPULineLocate,
-  GPUParameterBuffer,
-  getGPULineLocateParameterValues
-} from '${IMPORT_PATH}';
+import {GPULineLocate, getGPULineLocateParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'locate'});
 const parameters = new GPUParameterBuffer(device, {id: 'locate-parameters', format: 'float32', length: 4});
@@ -2601,11 +2570,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUGridGenerator,
-  GPUParameterBuffer,
-  getGPUGridGeneratorParameterValues
-} from '${IMPORT_PATH}';
+import {GPUGridGenerator, getGPUGridGeneratorParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'grid'});
 const parameters = new GPUParameterBuffer(device, {id: 'grid-parameters', format: 'float32', length: 4});
@@ -2699,11 +2665,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUShapeGenerator,
-  GPUParameterBuffer,
-  getGPUShapeGeneratorParameterValues
-} from '${IMPORT_PATH}';
+import {GPUShapeGenerator, getGPUShapeGeneratorParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'shapes'});
 const parameters = new GPUParameterBuffer(device, {id: 'shape-parameters', format: 'float32', length: 2});
@@ -2880,11 +2843,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUMapColoring,
-  GPUParameterBuffer,
-  getGPUMapColoringParameterValues
-} from '${IMPORT_PATH}';
+import {GPUMapColoring, getGPUMapColoringParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'map-coloring'});
 const parameters = new GPUParameterBuffer(device, {id: 'seed', format: 'uint32', length: 1});
@@ -2977,7 +2937,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     id: 'parameter-buffer',
     symbol: 'GPUParameterBuffer',
     kind: 'class',
-    importPath: IMPORT_PATH,
+    importPath: '@luma-contributors/analysis/analysis-core',
     title: 'Parameter buffer',
     summary:
       'A small buffer for per-frame values, so tolerances and distances change without recompiling.',
@@ -3010,11 +2970,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
       {name: 'write(values)', type: 'void', description: 'Updates the buffer between encodings.'}
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPULineSimplification,
-  GPUParameterBuffer,
-  getGPULineSimplificationParameterValues
-} from '${IMPORT_PATH}';
+import {GPULineSimplification, getGPULineSimplificationParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'tolerance-slider'});
 const parameters = new GPUParameterBuffer(device, {id: 'tolerance', format: 'float32', length: 4});

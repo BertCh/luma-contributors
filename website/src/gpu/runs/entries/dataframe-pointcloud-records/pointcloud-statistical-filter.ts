@@ -2,8 +2,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUPointCloudStatisticalFilter after GPUPointCloudNeighborhoods: points whose mean neighbor
-// distance is more than `standardDeviations` above the cloud's mean are rejected (blue); the rest
-// are kept (orange). Isolated strays are rejected first.
+// distance is more than `standardDeviations` above the cloud's mean are rejected (large red
+// dots); the rest are kept (light blue dots). Isolated strays are rejected first. The pointer's
+// height picks the threshold level; the operation reruns at the picked level once it settles.
 
 import {
   GPUPointCloudNeighborhoods,
@@ -11,14 +12,8 @@ import {
 } from '@luma-contributors/analysis/pointcloud-analysis';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {clamp} from '../../interaction';
-import {createPointIndex, type PointIndex} from '../../pick';
-import {
-  createCloudLayout,
-  createTerrainCloud,
-  getProfilePoint,
-  toMapPoint,
-  writeRowPositions
-} from './_lib/helpers';
+import {createLegend, mergeText, type RunLabel} from '../../text';
+import {createCloudLayout, createTerrainCloud, getProfilePoint, toMapPoint} from './_lib/helpers';
 import {parameters} from './pointcloud-statistical-filter.parameters';
 
 const TERRAIN_COUNT = 2400;
@@ -27,6 +22,8 @@ const POINT_COUNT = TERRAIN_COUNT + STRAY_CAPACITY;
 // The rejection thresholds the pointer picks among, in standard deviations above the mean distance.
 const RADIUS = 0.06;
 const LEVELS = [0.75, 1.5, 2.25, 3, 4] as const;
+const REJECTED_COLOR = [1, 0.3, 0.3] as const;
+const KEPT_COLOR = [0.55, 0.68, 0.85] as const;
 
 function createInputs({
   random,
@@ -45,65 +42,23 @@ function createInputs({
     cloud,
     strays,
     width: world.width,
-    layout,
-    preview: {
-      key: '',
-      positions: new Float32Array(0) as Float32Array,
-      meanDistances: new Float32Array(0) as Float32Array,
-      index: null as PointIndex | null
-    }
+    layout
   };
 }
 
-/** Mean distance to the nearest neighbors within the radius: a CPU estimate of what the GPU filter sees. */
-function getPreview(inputs: ReturnType<typeof createInputs>, strayCount: number, capacity: number) {
-  const key = `${strayCount}:${capacity}`;
-  if (inputs.preview.key === key) return inputs.preview;
-  const positions = new Float32Array(POINT_COUNT * 3);
-  positions.set(inputs.cloud.positions, 0);
-  for (let stray = 0; stray < STRAY_CAPACITY; stray++) {
-    const source = stray < strayCount ? inputs.strays : inputs.cloud.positions;
-    positions.set(source.subarray(stray * 3, stray * 3 + 3), (TERRAIN_COUNT + stray) * 3);
-  }
-  const footprint = Float32Array.from(
-    {length: POINT_COUNT * 2},
-    (_, index) => positions[(index >> 1) * 3 + (index & 1)]
-  );
-  const index = createPointIndex(footprint);
-  const meanDistances = new Float32Array(POINT_COUNT);
-  for (let row = 0; row < POINT_COUNT; row++) {
-    const distances: number[] = [];
-    for (const other of index.within(footprint[row * 2], footprint[row * 2 + 1], RADIUS)) {
-      if (other === row) continue;
-      const distance = Math.hypot(
-        positions[other * 3] - positions[row * 3],
-        positions[other * 3 + 1] - positions[row * 3 + 1],
-        positions[other * 3 + 2] - positions[row * 3 + 2]
-      );
-      if (distance <= RADIUS) distances.push(distance);
-    }
-    distances.sort((first, second) => first - second);
-    const kept = distances.slice(0, capacity);
-    meanDistances[row] = kept.length
-      ? kept.reduce((sum, value) => sum + value, 0) / kept.length
-      : Number.NaN;
-  }
-  inputs.preview = {key, positions, meanDistances, index};
-  return inputs.preview;
-}
 type Inputs = ReturnType<typeof createInputs>;
 type Outputs = {
   map: RunBuffer;
   profile: RunBuffer;
   mask: RunBuffer;
-  candidateMap: RunBuffer;
-  candidateProfile: RunBuffer;
+  meanDistances: RunBuffer;
+  counts: RunBuffer;
 };
 
 export default defineOperationRun<Inputs, Outputs>({
   parameters,
   caption:
-    'Kept points (orange) and rejected outliers (blue); the strip below is the side profile, where floating strays stand out above the terrain.',
+    'Kept points (blue) and rejected outliers (red); the strip below is the side profile, where floating strays stand out above the terrain.',
   buildCache: 5,
   createInputs,
   build(builder, inputs, values) {
@@ -120,7 +75,7 @@ export default defineOperationRun<Inputs, Outputs>({
     builder.graph.add(
       new GPUPointCloudNeighborhoods({
         positions: positions.view,
-        radius: 0.06,
+        radius: RADIUS,
         capacity,
         indices: builder.allocate('indices', 'uint32', POINT_COUNT * capacity).view,
         squaredDistances: squaredDistances.view,
@@ -128,14 +83,15 @@ export default defineOperationRun<Inputs, Outputs>({
       })
     );
     const mask = builder.allocate('mask', 'uint32', POINT_COUNT);
+    const meanDistances = builder.allocate('mean-distances', 'float32', POINT_COUNT);
     builder.graph.add(
       new GPUPointCloudStatisticalFilter({
         squaredDistances: squaredDistances.view,
         counts: counts.view,
         capacity,
         standardDeviations: values.standardDeviations,
-        meanDistances: builder.allocate('mean-distances', 'float32', POINT_COUNT).view,
-        mask: mask.view
+        meanDistances: meanDistances.view,
+        validity: mask.view
       })
     );
     return {
@@ -143,8 +99,8 @@ export default defineOperationRun<Inputs, Outputs>({
         map,
         profile,
         mask,
-        candidateMap: builder.allocate('candidate-map', 'float32x2', POINT_COUNT),
-        candidateProfile: builder.allocate('candidate-profile', 'float32x2', POINT_COUNT)
+        meanDistances,
+        counts
       },
       update: current => {
         // Stray points beyond `strays` are moved onto the terrain so they stop being isolated.
@@ -192,72 +148,64 @@ export default defineOperationRun<Inputs, Outputs>({
           to: [index === level ? 0.1 : 0.04, y] as const
         };
       });
-      // Immediate feedback while the graph waits to rebuild: the points the candidate level would
-      // reject (a CPU estimate from mean neighbor distances), in red.
-      const preview = getPreview(inputs, values.strays, values.capacity);
-      let sum = 0;
-      let sumOfSquares = 0;
-      let valid = 0;
-      for (const distance of preview.meanDistances) {
-        if (!Number.isFinite(distance)) continue;
-        sum += distance;
-        sumOfSquares += distance * distance;
-        valid++;
-      }
-      const mean = sum / Math.max(valid, 1);
-      const deviation = Math.sqrt(Math.max(sumOfSquares / Math.max(valid, 1) - mean * mean, 0));
-      const threshold = mean + LEVELS[level] * deviation;
-      const candidates: number[] = [];
-      preview.meanDistances.forEach((distance, row) => {
-        if (!Number.isFinite(distance) || distance > threshold) candidates.push(row);
-      });
-      const mapped = new Float32Array(POINT_COUNT * 2);
-      const profiled = new Float32Array(POINT_COUNT * 2);
-      candidates.forEach((row, index) => {
-        mapped.set(
-          toMapPoint(inputs.layout, preview.positions[row * 3], preview.positions[row * 3 + 1]),
-          index * 2
-        );
-        profiled.set(
-          getProfilePoint(
-            inputs.layout,
-            preview.positions[row * 3],
-            preview.positions[row * 3 + 2]
-          ),
-          index * 2
-        );
-      });
-      const order = candidates.map((_, index) => index);
-      const candidateCount = writeRowPositions(outputs.candidateMap, mapped, order);
-      writeRowPositions(outputs.candidateProfile, profiled, order);
       return {
-        focus: candidateCount,
         settle: {standardDeviations: LEVELS[level]},
         glyphs,
         readout: `standardDeviations ${LEVELS[level]} · ${
-          values.standardDeviations === LEVELS[level]
-            ? `rejected ${rejected}`
-            : `about ${candidateCount} rejected`
+          values.standardDeviations === LEVELS[level] ? `rejected ${rejected}` : 'release to apply'
         } of ${POINT_COUNT}`
       };
     }
   },
-  draw: ({outputs, interaction}) => [
-    {layer: 'dots', positions: outputs.map, values: outputs.mask, radius: 2.8},
-    {layer: 'dots', positions: outputs.profile, values: outputs.mask, radius: 2.4},
-    {
-      layer: 'dots',
-      positions: outputs.candidateMap,
-      count: Math.max(1, typeof interaction.focus === 'number' ? interaction.focus : 0),
-      color: [1, 0.3, 0.3, 0.9],
-      radius: 3.6
-    },
-    {
-      layer: 'dots',
-      positions: outputs.candidateProfile,
-      count: Math.max(1, typeof interaction.focus === 'number' ? interaction.focus : 0),
-      color: [1, 0.3, 0.3, 0.9],
-      radius: 3
-    }
-  ]
+  draw: ({inputs, outputs, theme}) => {
+    const {layout} = inputs;
+    // Rejected points first at full size (kept rows draw in the background color, so they hide
+    // nothing), then every point small: rejected ones stay red, kept ones are grey.
+    const rejectedLook = {
+      ramp: 'categorical',
+      categories: [REJECTED_COLOR, theme.background]
+    } as const;
+    const allLook = {ramp: 'categorical', categories: [REJECTED_COLOR, KEPT_COLOR]} as const;
+    const labels: RunLabel[] = [
+      {
+        text: 'top view',
+        at: [layout.offsetX, 0.995],
+        anchor: 'top-left',
+        offset: [2, 0],
+        role: 'title'
+      },
+      {
+        text: 'side profile (height)',
+        at: [layout.offsetX, layout.profileBottom + layout.profileHeight + 0.004],
+        anchor: 'bottom-left',
+        offset: [2, 0],
+        role: 'title'
+      }
+    ];
+    return [
+      {layer: 'dots', positions: outputs.map, values: outputs.mask, radius: 5, ...rejectedLook},
+      {
+        layer: 'dots',
+        positions: outputs.profile,
+        values: outputs.mask,
+        radius: 4.4,
+        ...rejectedLook
+      },
+      {layer: 'dots', positions: outputs.map, values: outputs.mask, radius: 2, ...allLook},
+      {layer: 'dots', positions: outputs.profile, values: outputs.mask, radius: 1.8, ...allLook},
+      {
+        layer: 'text',
+        ...mergeText(
+          {labels},
+          createLegend({
+            corner: 'top-right',
+            entries: [
+              {label: 'kept', swatch: KEPT_COLOR},
+              {label: 'rejected by the filter', swatch: REJECTED_COLOR}
+            ]
+          })
+        )
+      }
+    ];
+  }
 });

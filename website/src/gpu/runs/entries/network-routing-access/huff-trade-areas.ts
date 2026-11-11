@@ -100,7 +100,7 @@ export default defineOperationRun({
   },
   draw: ({outputs, theme}) => [
     getRoadContext(outputs),
-    {layer: 'dots', positions: outputs.demands, values: outputs.tradeArea, radius: 5},
+    {layer: 'dots', positions: outputs.demands, values: outputs.tradeArea, radius: 8},
     ...getFacilityMarkers(outputs.facilities, theme, {ids: outputs.facilityIds, radius: 9})
   ]
 });

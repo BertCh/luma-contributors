@@ -8,6 +8,8 @@
 import {GPUNetworkKernelDensity} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {addCostMatrix, uploadSearch} from './shared/access';
+import {createLegend} from '../../text';
+import {addMatrixFootprint, addZoneSegments} from './shared/display';
 import {chooseSticky} from '../../pick';
 import {
   createNodeIndex,
@@ -80,6 +82,31 @@ export default defineOperationRun({
         output: {intensity: intensity.view, kernelMass: kernelMass.view, status: status.view}
       })
     );
+    // The dragged event's own kernel: 1 at the event falling to 0 at the bandwidth along the roads,
+    // read on the GPU from the distance column of the last event.
+    const draggedEvent = builder.upload('dragged-event', 'uint32', Uint32Array.of(EVENT_COUNT - 1));
+    const bandwidthBuffer = builder.upload(
+      'bandwidth',
+      'float32',
+      Float32Array.of(values.bandwidth)
+    );
+    const footprint = addMatrixFootprint(builder, {
+      id: 'event',
+      costs: distances,
+      nodeCount: network.nodeCount,
+      columnCount: EVENT_COUNT,
+      mode: 'column',
+      selector: draggedEvent,
+      limit: bandwidthBuffer,
+      floor: 0
+    });
+    const roads = uploadRoads(builder, network);
+    const reach = addZoneSegments(builder, {
+      id: 'event',
+      nodes: roads.nodes,
+      edges: roads.edges,
+      values: footprint
+    });
     const events = builder.upload(
       'events',
       'float32x2',
@@ -87,8 +114,9 @@ export default defineOperationRun({
     );
     return {
       outputs: {
-        ...uploadRoads(builder, network),
+        ...roads,
         intensity,
+        reach,
         events
       },
       update: current => {
@@ -127,14 +155,26 @@ export default defineOperationRun({
       ];
       return {
         rerun: changed,
-        glyphs: [{shape: 'ring', at, radius: values.bandwidth, dashed: true}],
+        glyphs: [{shape: 'crosshair', at, size: 12}],
         readout: `event at node ${node} · bandwidth ${values.bandwidth.toFixed(2)} · peak ${peak.toFixed(1)}`
       };
     }
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, theme}) => [
     getRoadContext(outputs),
-    getRoadValues(outputs, outputs.intensity, {radius: 2.4, range: [0, 12]}),
-    {layer: 'dots', positions: outputs.events, radius: 5, color: [1, 1, 1, 1]}
+    // The footprint of the dragged event: a halo along the roads within the bandwidth of it.
+    {layer: 'lines', segments: outputs.reach, radius: 6, color: [...theme.ink, 0.35]},
+    getRoadValues(outputs, outputs.intensity, {radius: 3, range: [0, 9]}),
+    {layer: 'dots', positions: outputs.events, radius: 4.5, color: [...theme.ink, 1]},
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        entries: [
+          {label: 'roads within the bandwidth of the dragged event', swatch: [...theme.ink]},
+          {label: 'density on the roads (output)', swatch: [...theme.ramp[4]]}
+        ]
+      })
+    }
   ]
 });

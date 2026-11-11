@@ -26,6 +26,10 @@ const POINT_COUNT = 9000;
 const CELL_SIZE = 0.03;
 // The initial thresholds the pointer's height picks among (applied once it rests).
 const THRESHOLDS = [0.005, 0.02, 0.08, 0.2, 0.6] as const;
+// Fixed props: on this tile `slope` and `maximumThreshold` change no classification, so they have no
+// slider. The maximum is at least the largest initialThreshold the slider and gesture reach (0.8).
+const SLOPE = 0.1;
+const MAXIMUM_THRESHOLD = 0.8;
 const RADII = [1, 2, 4, 8] as const;
 
 function createInputs({
@@ -51,7 +55,7 @@ type Outputs = Record<'map' | 'profile' | 'heights' | 'groundMask', RunBuffer>;
 export default defineOperationRun<Inputs, Outputs>({
   parameters,
   caption:
-    'Points colored by height (left of the curtain) and by the ground mask the morphological filter wrote (right: ground orange, removed blue); the squares are its window sizes. In this lidar tile ground and trees are far apart in height, so only initialThreshold above about 0.2 moves the classification; slope, maximumThreshold and the window count change few points.',
+    'Points colored by height (left of the curtain) and by the ground mask the morphological filter wrote (right: ground orange, removed blue); the squares are its window sizes. In this lidar tile ground and trees are far apart in height, so only initialThreshold above about 0.2 moves the classification; the window count changes few points. slope (0.1) and maximumThreshold (0.8) are fixed.',
 
   buildCache: 5,
   createInputs,
@@ -84,9 +88,8 @@ export default defineOperationRun<Inputs, Outputs>({
         coverage: coverage.view,
         radii: [1, 2, 4, 8].slice(0, values.radiusCount),
         initialThreshold: values.initialThreshold,
-        slope: values.slope,
-        // The operation asserts that the maximum is at least the initial threshold.
-        maximumThreshold: Math.max(values.maximumThreshold, values.initialThreshold),
+        slope: SLOPE,
+        maximumThreshold: MAXIMUM_THRESHOLD,
         groundMask: groundMask.view,
         outputClassifications: builder.allocate('output-classes', 'uint32', POINT_COUNT).view,
         status: builder.allocate('status', 'uint32', POINT_COUNT).view
@@ -101,7 +104,7 @@ export default defineOperationRun<Inputs, Outputs>({
       }
     };
   },
-  rebuildOn: ['radiusCount', 'initialThreshold', 'slope', 'maximumThreshold'],
+  rebuildOn: ['radiusCount', 'initialThreshold'],
   // The pointer is a curtain between the input (height) and the output (ground mask); its height
   // picks initialThreshold among five values, and the squares around it are the window radii.
   interaction: {

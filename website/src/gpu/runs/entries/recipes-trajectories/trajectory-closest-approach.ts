@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUTrajectoryClosestApproach between raw tracks. Each bar is one pair of tracks, as tall as the
-// time they spent within `distance` of each other (solved exactly between fixes).
+// GPUTrajectoryClosestApproach between raw tracks. A link joins the two tracks of a pair at the
+// instant of their closest approach, which falls between fixes (no resampling); each bar is one pair
+// of tracks, as tall as the time they spent within `distance` of each other (solved exactly).
 
 import {GPUTrajectoryClosestApproach} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import type {RunGlyph} from '../../interaction';
 import {getChartWorldX} from '../../pick';
+import {createLegend, mergeText} from '../../text';
 import {createFleet, raiseFleet} from './lib/fleet';
+import {addClosestApproachLinks} from './lib/pair-links';
 import {
   findBusiestFix,
   findNearestTrack,
@@ -25,7 +28,7 @@ export default defineOperationRun({
   caption: 'Exact time spent within the distance, per pair of tracks.',
   createInputs: ({world}) => {
     const fleet = raiseFleet(
-      createFleet(world, {trackCount: 14, minimumFixes: 24, maximumFixes: 34}),
+      createFleet(world, {trackCount: 14, skipTracks: 4, minimumFixes: 24, maximumFixes: 34}),
       0.42
     );
     return {...fleet, busiestFix: findBusiestFix(fleet, 0.12)};
@@ -40,11 +43,14 @@ export default defineOperationRun({
     const closestTimes = builder.allocate('closest-times', 'float32', PAIR_CAPACITY);
     const entryOverflow = builder.allocate('entry-overflow', 'uint32', 1);
     const hitOverflow = builder.allocate('hit-overflow', 'uint32', 1);
+    const positions = builder.upload('positions', 'float32x2', fleet.positions);
+    const timestamps = builder.upload('timestamps', 'float32', fleet.timestamps);
+    const trackOffsets = builder.upload('offsets', 'uint32', fleet.trackOffsets);
     builder.graph.add(
       new GPUTrajectoryClosestApproach({
-        positions: builder.upload('positions', 'float32x2', fleet.positions).view,
-        timestamps: builder.upload('timestamps', 'float32', fleet.timestamps).view,
-        trackOffsets: builder.upload('offsets', 'uint32', fleet.trackOffsets).view,
+        positions: positions.view,
+        timestamps: timestamps.view,
+        trackOffsets: trackOffsets.view,
         distance: distance.view,
         cellSize: 0.16,
         timeCellSize: 60,
@@ -62,8 +68,20 @@ export default defineOperationRun({
         }
       })
     );
+    const pairLinks = addClosestApproachLinks(builder, {
+      ids,
+      partners,
+      closestTimes,
+      count,
+      positions,
+      timestamps,
+      trackOffsets,
+      pairCapacity: PAIR_CAPACITY
+    });
     return {
       outputs: {
+        links: pairLinks.links,
+        linkEnds: pairLinks.ends,
         ids,
         count,
         partners,
@@ -107,15 +125,39 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
+  draw: ({inputs, outputs, theme, world}) => [
     {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},
     {layer: 'dots', context: true, positions: outputs.nodes, radius: 3},
+    {layer: 'lines', segments: outputs.links, radius: 2.6, color: [...theme.categories[1], 1]},
+    {layer: 'dots', positions: outputs.linkEnds, radius: 6, color: [...theme.categories[1], 1]},
     {
       layer: 'chart',
       kind: 'bars',
       values: outputs.durations,
       ramp: 'sequential',
       rectangle: [...CHART_RECTANGLE]
+    },
+    {
+      layer: 'text',
+      ...mergeText(
+        {
+          labels: [
+            {
+              text: 'bars: time each pair spent within the distance, one bar per pair',
+              at: [0.06 * world.width, 0.385],
+              anchor: 'bottom-left',
+              role: 'title'
+            }
+          ]
+        },
+        createLegend({
+          corner: 'top-left',
+          entries: [
+            {label: 'raw fix', swatch: [...theme.muted]},
+            {label: 'closest approach of a pair (between fixes)', swatch: 1}
+          ]
+        })
+      )
     }
   ]
 });

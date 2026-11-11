@@ -31,9 +31,9 @@ export default defineOperationRun({
     holes: createSmoothField(random, 3, 4),
     query: [world.width / 2, world.height / 2] as [number, number],
     points: {
-      count: 300,
+      count: 600,
       positions: Float32Array.from(
-        {length: 600},
+        {length: 1200},
         (_, index) => random() * (index % 2 === 0 ? world.width : world.height)
       )
     }
@@ -43,7 +43,7 @@ export default defineOperationRun({
     const raster = normalizeElevation(sampleElevation(columns, rows).elevation);
     const holes = sampleField({field: inputs.holes}, columns, rows);
     raster.forEach((_, index) => {
-      if (holes[index] > 0.68) raster[index] = Number.NaN;
+      if (holes[index] > 0.6) raster[index] = Number.NaN;
     });
     const rasterBuffer = builder.upload('raster', 'float32', raster);
     const positions = builder.upload('points', 'float32x2', inputs.points.positions);
@@ -121,7 +121,7 @@ export default defineOperationRun({
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.sampled,
-      radius: 3,
+      radius: 4.5,
       range: [0, 1]
     },
     {

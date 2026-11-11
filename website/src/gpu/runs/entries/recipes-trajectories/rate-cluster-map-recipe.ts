@@ -8,9 +8,9 @@
 import {
   addRateClusterMapRecipe,
   GPU_PERMUTATION_PARAMETER_LENGTH,
-  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
-  GPUParameterBuffer
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {defineOperationRun} from '../../define-run';
 import {createBuiltUpZones} from './lib/built-up-zones';
 import {getPolygonPort, getQuadFill, uploadQuadZones} from './lib/quads';

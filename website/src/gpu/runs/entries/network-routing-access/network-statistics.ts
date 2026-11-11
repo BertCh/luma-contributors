@@ -13,6 +13,7 @@ import {
 import {defineOperationRun} from '../../define-run';
 import {createPointIndex, getChartPosition, getChartWorldX, type PointIndex} from '../../pick';
 import type {RunGlyph} from '../../interaction';
+import {createBarValueLabels, createChartAxes, getChartRectangle, mergeText} from '../../text';
 import {addSlice} from './shared/display';
 import {createRoadNetwork, createRoads, getRoadContext, uploadRoadTopology} from './shared/roads';
 import {parameters} from './network-statistics.parameters';
@@ -27,6 +28,12 @@ function getBin(degree: number, isLogarithmic: boolean): number {
   if (isLogarithmic)
     return degree === 0 ? 0 : Math.min(1 + Math.floor(Math.log2(degree)), BIN_COUNT - 1);
   return Math.min(degree, BIN_COUNT - 1);
+}
+
+/** The lowest degree of a bin, which is how its bar is named: `0`, `1`, `2`, `4`, `8` when binned by log2. */
+function getBinName(bin: number, isLogarithmic: boolean): string {
+  const lowest = isLogarithmic ? (bin === 0 ? 0 : 2 ** (bin - 1)) : bin;
+  return bin === BIN_COUNT - 1 ? `${lowest}+` : String(lowest);
 }
 
 type View = {bins: Uint8Array; counts: number[]; index: PointIndex};
@@ -121,8 +128,29 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs, theme}) => {
-    const maximum = Math.max(1, ...(inputs.view?.counts ?? [1]));
+  draw: ({inputs, outputs, theme, values, world}) => {
+    const counts = inputs.view?.counts ?? [];
+    const maximum = Math.max(1, ...(counts.length > 0 ? counts : [1]));
+    const rectangle = getChartRectangle(world, RECTANGLE);
+    // Degree classes under the bars, the node count of each class above them (no y axis: the counts say it).
+    const isLogarithmic = values.degreeBinning === 1;
+    const axes = createChartAxes({
+      rectangle,
+      x: {
+        categories: Array.from({length: BIN_COUNT}, (_, bin) => getBinName(bin, isLogarithmic)),
+        title: isLogarithmic ? 'node degree (log2 classes)' : 'node degree'
+      }
+    });
+    const text = mergeText(
+      axes,
+      createBarValueLabels({
+        rectangle,
+        values: counts,
+        range: [0, maximum],
+        // Empty classes stay unlabelled.
+        indices: counts.flatMap((count, bin) => (count > 0 ? [bin] : []))
+      })
+    );
     return [
       getRoadContext(outputs),
       {
@@ -148,7 +176,8 @@ export default defineOperationRun({
         color: [...theme.ink, 1],
         range: [0, maximum],
         rectangle: RECTANGLE
-      }
+      },
+      {layer: 'text', ...text}
     ];
   }
 });

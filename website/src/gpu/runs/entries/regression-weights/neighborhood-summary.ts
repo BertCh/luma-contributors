@@ -8,6 +8,7 @@ import {GPUNeighborhoodSummary} from '@luma-contributors/analysis/gpu-spatial-an
 import {defineOperationRun} from '../../define-run';
 import {createKnnWeights, createUniformPoints} from '../../inputs';
 import type {RunGlyph} from '../../interaction';
+import {mergeText} from '../../text';
 import {chooseSticky, createPointIndex} from '../../pick';
 import {parameters} from './neighborhood-summary.parameters';
 import {
@@ -105,10 +106,17 @@ export default defineOperationRun({
       const glyphs: RunGlyph[] = [
         {shape: 'ring', at: from, radius: 0.02},
         {shape: 'ring', at: shifted, radius: 0.02},
-        ...getRowPositions(inputs.positions, neighbors).flatMap(to => [
-          {shape: 'line' as const, from, to},
-          {shape: 'dot' as const, at: to}
-        ])
+        // The same neighbors on both maps: the values they hold (left) are what the statistic of
+        // the point (right) summarizes.
+        ...getRowPositions(inputs.positions, neighbors).flatMap(to => {
+          const shiftedTo = [to[0] + half, to[1]] as const;
+          return [
+            {shape: 'line' as const, from, to},
+            {shape: 'dot' as const, at: to},
+            {shape: 'line' as const, from: shifted, to: shiftedTo, dashed: true},
+            {shape: 'dot' as const, at: shiftedTo}
+          ];
+        })
       ];
       return {
         focus: row,
@@ -117,7 +125,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs, values}) => [
+  draw: ({inputs, outputs, values}) => [
     {
       layer: 'dots',
       positions: outputs.positions,
@@ -133,6 +141,27 @@ export default defineOperationRun({
       ramp: 'sequential',
       range: STATISTIC_RANGES[values.statistic](values.k),
       radius: 4.5
+    },
+    {
+      layer: 'text',
+      ...mergeText({
+        labels: [
+          {
+            text: 'input value',
+            at: [inputs.world.width / 4, inputs.world.height],
+            offset: [0, -12],
+            role: 'title',
+            priority: 5
+          },
+          {
+            text: `${STATISTICS[values.statistic]} of ${values.k} nearest`,
+            at: [(inputs.world.width * 3) / 4, inputs.world.height],
+            offset: [0, -12],
+            role: 'title',
+            priority: 5
+          }
+        ]
+      })
     }
   ]
 });

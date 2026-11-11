@@ -855,7 +855,7 @@ graph.add(new GPUHuffTradeAreas({
     importPath: '@luma-contributors/analysis/gpu-spatial-analysis',
     title: 'Location allocation',
     summary:
-      'Deterministic p-median, p-center and coverage facility selection over a caller-owned cost matrix.',
+      'Deterministic p-median, maximum-coverage and set-covering facility selection over a caller-owned cost matrix.',
     explanation:
       'Chooses where to put facilities so demand is served well. It starts from a greedy pick and improves it with swaps, all on the GPU. Choose the objective with `operation`.',
     dataTypes: {input: ['table'], output: ['table']},
@@ -866,7 +866,7 @@ graph.add(new GPUHuffTradeAreas({
         name: 'operation',
         type: 'GPULocationAllocationOperation',
         required: true,
-        description: 'Objective: p-median, p-center, coverage and so on.'
+        description: 'Objective: p-median, maximum coverage or set covering.'
       },
       {
         name: 'costs',
@@ -2772,8 +2772,7 @@ graph.add(new GPUNetworkSubgraphFilter({
       {
         name: 'fixedPointScale',
         type: 'number | undefined',
-        default: '65536',
-        description: 'Fixed-point scale for weight sums.'
+        description: 'Optional fixed sum unit (power of two); left out, it follows the data.'
       },
       {
         name: 'output',

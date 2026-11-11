@@ -5,9 +5,9 @@ import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUKernelDensityParameterValues,
-  GPUKernelDensity,
-  GPUParameterBuffer
+  GPUKernelDensity
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 
 // example:hide-start

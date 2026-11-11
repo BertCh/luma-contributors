@@ -10,6 +10,7 @@ import {
   GPUCanonicalGeometryEquality,
   GPUNormalizeGeometry
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createLegend} from '../../text';
 import {defineOperationRun} from '../../define-run';
 import {createPointIndex} from '../../pick';
 import {createGeometryTree} from './shared/geometry-tree';
@@ -196,6 +197,16 @@ export default defineOperationRun({
     },
     {layer: 'lines', segments: outputs.rings, radius: 1.2},
     {layer: 'lines', segments: outputs.links, radius: 1.6},
-    {layer: 'dots', positions: outputs.ghosts, radius: 3.5, color: [1, 0.55, 0.25, 1]}
+    {layer: 'dots', positions: outputs.ghosts, radius: 3.5, color: [1, 0.55, 0.25, 1]},
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'bottom-left',
+        entries: [
+          {label: 'equal within tolerance', swatch: [0.45, 0.55, 0.72]},
+          {label: 'not equal', swatch: [1, 0.55, 0.25]}
+        ]
+      })
+    }
   ]
 });

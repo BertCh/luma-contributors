@@ -79,7 +79,7 @@ export default defineOperationRun({
           adjacency: adjacency.view,
           weights: weights.view,
           mapping: mapping.view,
-          status: status.view
+          status: {iterationLimitReached: status.view}
         }
       })
     );

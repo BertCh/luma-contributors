@@ -8,6 +8,7 @@
 import {GPUNearestFeatureJoin} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import type {RunGlyph} from '../../interaction';
+import {createPointIndex} from '../../pick';
 import {addPointPairSegments} from './support/kernels';
 import {getRainStations} from '../../../data/point-observations';
 import {parameters} from './nearest-feature-join.parameters';
@@ -23,6 +24,8 @@ export default defineOperationRun({
     return {
       queries: positions.slice(0, QUERY_COUNT * 2),
       stations: positions.slice(QUERY_COUNT * 2),
+      stationIndex: createPointIndex(positions.slice(QUERY_COUNT * 2)),
+      world,
       // The last query row is the pointer.
       pointer: [world.width / 2, 0.5] as [number, number]
     };
@@ -71,37 +74,77 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['k'],
-  // The pointer is one more query row: its links are drawn bold, and the radius ring shows what
-  // the search could reach.
+  // The pointer is one more query row and its distance to the nearest station is the search radius:
+  // every query links to the stations within that reach, so the links grow as the pointer moves
+  // away from the stations. The ring is that radius.
   interaction: {
-    kind: 'place',
-    hint: 'move a query',
-    rest: [0.5, 0.5],
+    kind: 'reach',
+    hint: 'move away from a station',
+    rest: ({inputs, toUnit}) => {
+      // The grid point whose nearest station is closest to the default radius away.
+      const target = parameters[1].default;
+      let best: [number, number] = [inputs.world.width / 2, 0.5];
+      let bestError = Infinity;
+      for (let column = 0; column < 80; column++) {
+        for (let row = 0; row < 40; row++) {
+          const x = ((column + 0.5) / 80) * inputs.world.width;
+          const y = (row + 0.5) / 40;
+          const hit = inputs.stationIndex.nearest(x, y);
+          const error = Math.abs(inputs.stationIndex.distanceTo(hit, x, y) - target);
+          if (hit >= 0 && error < bestError) {
+            bestError = error;
+            best = [x, y];
+          }
+        }
+      }
+      return toUnit(best);
+    },
     resolve(pointer, {inputs, outputs, values, peek}) {
       inputs.pointer = [pointer.x, pointer.y];
+      const station = inputs.stationIndex.nearest(pointer.x, pointer.y);
+      const radius =
+        station >= 0
+          ? Math.min(
+              Math.max(
+                // Rounded up to the slider step, so the nearest station is always inside the ring.
+                Number(
+                  (
+                    Math.ceil(
+                      inputs.stationIndex.distanceTo(station, pointer.x, pointer.y) * 100 - 1e-6
+                    ) / 100
+                  ).toFixed(2)
+                ),
+                0.05
+              ),
+              0.6
+            )
+          : values.radius;
       const glyphs: RunGlyph[] = [
         {shape: 'crosshair', at: inputs.pointer},
-        {shape: 'ring', at: inputs.pointer, radius: values.radius, dashed: true}
+        {shape: 'ring', at: inputs.pointer, radius, dashed: true}
       ];
       const links = peek(outputs.links);
       const distances = peek(outputs.neighborDistances);
       const counts = peek(outputs.neighborCounts);
       const first = QUERY_COUNT * values.k;
-      let nearest = '…';
+      let linked = '…';
       // After a rebuild with another k the read-back still has the old size until the next run.
       if (links && distances && counts && distances.length === (QUERY_COUNT + 1) * values.k) {
+        let queriesLinked = 0;
+        for (let row = 0; row < QUERY_COUNT; row++) if (counts[row] > 0) queriesLinked++;
+        linked = `${queriesLinked} of ${QUERY_COUNT} queries linked`;
         const found = counts[QUERY_COUNT];
         for (let slot = 0; slot < Math.min(found, values.k); slot++) {
           const row = (first + slot) * 4;
           const to = [links[row + 2], links[row + 3]] as const;
           glyphs.push({shape: 'line', from: inputs.pointer, to}, {shape: 'dot', at: to});
         }
-        nearest = found > 0 ? `nearest ${distances[first].toFixed(2)}` : 'no station in range';
       }
       return {
         rerun: true,
+        values: {radius},
         glyphs,
-        readout: `k ${values.k} · ${nearest} (radius ${values.radius.toFixed(2)})`
+        readout: `radius ${radius.toFixed(2)} · k ${values.k} · ${linked}`
       };
     }
   },

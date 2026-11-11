@@ -12,8 +12,10 @@ import {
 import {defineOperationRun} from '../../define-run';
 import {createDistanceBandWeights, createUniformPoints} from '../../inputs';
 import type {RunGlyph} from '../../interaction';
+import {getChartRectangle} from '../../text';
 import {chooseSticky, createPointIndex} from '../../pick';
 import {parameters} from './spatial-weights-summary.parameters';
+import {createBarNames} from './shared/labels';
 import {
   addLinkSegments,
   addLogCounts,
@@ -23,6 +25,10 @@ import {
 } from './shared/weights';
 
 /** Independent noise on every slot, so w_ij and w_ji differ. */
+const COUNT_RECTANGLE = [0.64, 0.14, 0.96, 0.86] as const;
+/** The six counts the operation writes, in the order of GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts. */
+const COUNT_NAMES = ['slots', 'asymmetric', 'isolates', 'min degree', 'max degree', 'empty rows'];
+
 function getSlotWeight(slot: number, noise: number): number {
   const hash = Math.sin(slot * 12.9898) * 43758.5453;
   return 1 + (hash - Math.floor(hash) - 0.5) * noise;
@@ -70,6 +76,7 @@ export default defineOperationRun({
     return {
       outputs: {
         positions,
+        counts,
         loggedCounts: addLogCounts(builder, 'summary', counts),
         cardinality,
         links: addLinkSegments(builder, 'band', band, positions)
@@ -84,6 +91,11 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['symmetryTolerance'],
+  // The counts, read back so each bar can carry its number.
+  async afterRun({outputs}) {
+    const bytes = await outputs.counts.buffer.readAsync();
+    return new Uint32Array(bytes.slice().buffer);
+  },
   // The pointer picks a point: its band links, solid where the reverse weight differs by more than symmetryTolerance.
   interaction: {
     kind: 'probe',
@@ -116,7 +128,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, extra, world}) => [
     {layer: 'lines', context: true, segments: outputs.links},
     {
       layer: 'dots',
@@ -130,7 +142,15 @@ export default defineOperationRun({
       kind: 'bars',
       values: outputs.loggedCounts,
       color: [0.55, 0.65, 0.95, 0.9],
-      rectangle: [0.64, 0.14, 0.96, 0.86]
+      rectangle: COUNT_RECTANGLE
+    },
+    // Each bar is named, with its count, up the bar: the bars are log(1 + count).
+    {
+      layer: 'text',
+      ...createBarNames(
+        getChartRectangle(world, COUNT_RECTANGLE),
+        COUNT_NAMES.map((name, index) => (extra ? `${name} ${extra[index]}` : name))
+      )
     }
   ]
 });

@@ -8,6 +8,7 @@
 import {addSegregationCounterfactualRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {clamp} from '../../interaction';
+import {createChartAxes, createLegend, getChartRectangle, mergeText} from '../../text';
 import {getPopulationScenarios} from './lib/populations';
 import {createCensusTracts} from './lib/census-tracts';
 import {getQuadFill, uploadQuadZones} from './lib/quads';
@@ -15,6 +16,7 @@ import {addReadout} from './lib/readout';
 import {parameters} from './segregation-counterfactual-recipe.parameters';
 
 const SCENARIOS = ['baseline', 'composition-only', 'spatial-only', 'final'];
+const BAR_NAMES = ['baseline', 'composition', 'spatial', 'final'];
 const BAR_RECTANGLE = [0.06, 0.06, 0.5, 0.42] as const;
 const BAR_RANGE = 0.5;
 
@@ -109,25 +111,67 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
-    getQuadFill(outputs.mesh, inputs.zones, outputs.share, {
-      ramp: 'sequential',
-      range: [0, 1],
-      alpha: 0.55
-    }),
-    {
-      layer: 'lines',
-      context: true,
-      segments: outputs.mesh.outline,
-      count: inputs.zones.outlineCount
-    },
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.indices,
-      ramp: 'sequential',
-      range: [0, 0.5],
-      rectangle: BAR_RECTANGLE
-    }
-  ]
+  async afterRun({outputs}) {
+    const bytes = await outputs.indices.buffer.readAsync();
+    return new Float32Array(bytes.slice().buffer);
+  },
+  draw: ({inputs, outputs, world, extra}) => {
+    const rectangle = getChartRectangle(world, BAR_RECTANGLE);
+    const axes = createChartAxes({
+      rectangle,
+      x: {categories: BAR_NAMES},
+      y: {range: [0, BAR_RANGE], ticks: [0, 0.25, 0.5], title: 'dissimilarity D'}
+    });
+    return [
+      getQuadFill(outputs.mesh, inputs.zones, outputs.share, {
+        ramp: 'sequential',
+        range: [0, 1],
+        alpha: 0.55
+      }),
+      {
+        layer: 'lines',
+        context: true,
+        segments: outputs.mesh.outline,
+        count: inputs.zones.outlineCount
+      },
+      {layer: 'text', ...axes.grid},
+      {
+        layer: 'chart',
+        kind: 'bars',
+        values: outputs.indices,
+        ramp: 'sequential',
+        range: [0, 0.5],
+        rectangle: BAR_RECTANGLE
+      },
+      {
+        layer: 'text',
+        ...mergeText(
+          axes,
+          // The value sits at the foot of each bar, clear of the dashed baseline rule.
+          {
+            labels: Array.from(extra ?? [], (value, bar) => ({
+              text: value.toFixed(2),
+              at: [
+                rectangle[0] + ((bar + 0.5) / BAR_NAMES.length) * (rectangle[2] - rectangle[0]),
+                rectangle[1]
+              ] as const,
+              anchor: 'bottom' as const,
+              offset: [0, 5] as const,
+              role: 'value' as const,
+              priority: 5
+            }))
+          },
+          createLegend({
+            corner: 'bottom-right',
+            entries: [
+              {
+                label: `map: focal share, ${SCENARIOS[inputs.view.scenario]}`,
+                swatch: [0.8, 0.45, 0.3]
+              }
+            ]
+          })
+        )
+      }
+    ];
+  }
 });

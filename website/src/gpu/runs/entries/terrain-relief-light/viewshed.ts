@@ -10,6 +10,7 @@ import {
   GPUTerrainViewshed
 } from '@luma-contributors/analysis/gpu-terrain';
 import {defineOperationRun} from '../../define-run';
+import {createLegend} from '../../text';
 import {clamp} from '../../interaction';
 import {
   createTerrainInput,
@@ -92,6 +93,16 @@ export default defineOperationRun({
       categories: VISIBILITY_COLORS,
       alpha: 0.7
     }),
-    {layer: 'dots', positions: outputs.observerDot, radius: 7, color: [1, 1, 1, 1]}
+    {layer: 'dots', positions: outputs.observerDot, radius: 7, color: [1, 1, 1, 1]},
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'bottom-left',
+        entries: [
+          {label: 'visible', swatch: [0.2, 0.85, 0.4]},
+          {label: 'hidden by terrain', swatch: [0.27, 0.1, 0.4]}
+        ]
+      })
+    }
   ]
 });

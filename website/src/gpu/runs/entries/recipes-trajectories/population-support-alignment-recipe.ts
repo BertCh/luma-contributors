@@ -7,6 +7,7 @@
 
 import {addPopulationSupportAlignmentRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {createLegend} from '../../text';
 import {createShuffledOrder} from './lib/tracts';
 import {createCensusTracts, getCensusPopulation, getCensusTractCode} from './lib/census-tracts';
 import {getQuadFill, uploadQuadZones} from './lib/quads';
@@ -91,6 +92,13 @@ export default defineOperationRun({
       context: true,
       segments: outputs.mesh.outline,
       count: inputs.zones.outlineCount
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-right',
+        entries: VALIDITY.map((label, index) => ({label, swatch: VALIDITY_COLORS[index]}))
+      })
     }
   ]
 });

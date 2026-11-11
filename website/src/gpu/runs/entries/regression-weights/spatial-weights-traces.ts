@@ -10,6 +10,7 @@ import {GPUSpatialWeightsTraces} from '@luma-contributors/analysis/gpu-spatial-a
 import {defineOperationRun} from '../../define-run';
 import {createTracts, uploadSpatialWeights, type CsrWeights} from '../../inputs';
 import {getChartWorldX} from '../../pick';
+import {getChartRectangle} from '../../text';
 import {parameters} from './spatial-weights-traces.parameters';
 
 const MAP_SHARE = 0.44;
@@ -55,7 +56,7 @@ function getMiddleTract(centers: Float32Array, world: {width: number; height: nu
 export default defineOperationRun({
   parameters,
   caption:
-    'Power traces of W (top right), power sums (bottom right) and the tracts a q-step walk reaches (left).',
+    'Power traces of W/s (top right), power sums (bottom right) and the tracts a q-step walk reaches (left).',
   createInputs: ({random, world}) => {
     const tracts = createTracts(random, {width: world.width * MAP_SHARE, height: world.height}, 10);
     return {tracts, middle: getMiddleTract(tracts.centers, world), world};
@@ -130,43 +131,76 @@ export default defineOperationRun({
             to: [ruleX, TRACE_RECTANGLE[3] * world.height]
           }
         ],
-        readout: `q ${power} · tr(W^q) ${traces ? traces[power - 1].toFixed(2) : '-'} · sum ${sums ? sums[power - 1].toFixed(0) : '-'}`
+        readout: `q ${power} · trace ${traces ? traces[power - 1].toPrecision(2) : '-'} · sum ${sums ? sums[power - 1].toPrecision(2) : '-'}`
       };
     }
   },
-  draw: ({inputs, outputs}) => [
-    {
-      layer: 'polygons',
-      positions: outputs.vertices,
-      indices: outputs.indices,
-      owners: outputs.owners,
-      values: outputs.reached,
-      triangleCount: inputs.tracts.triangleCount,
-      ramp: 'sequential',
-      range: [0, 1.4]
-    },
-    {layer: 'lines', context: true, segments: outputs.outline, count: inputs.tracts.outlineCount},
-    {
-      layer: 'chart',
-      kind: 'line',
-      context: true,
-      values: outputs.exactTraces,
-      rectangle: TRACE_RECTANGLE,
-      radius: 1.4
-    },
-    {
-      layer: 'chart',
-      kind: 'line',
-      values: outputs.powerTraces,
-      rectangle: TRACE_RECTANGLE,
-      radius: 2.2
-    },
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.powerSums,
-      color: [0.55, 0.65, 0.95, 0.9],
-      rectangle: SUM_RECTANGLE
-    }
-  ]
+  draw: ({inputs, outputs, world}) => {
+    const traceRectangle = getChartRectangle(world, TRACE_RECTANGLE);
+    const sumRectangle = getChartRectangle(world, SUM_RECTANGLE);
+    const titles = {
+      labels: [
+        {
+          text: 'traces of W/s, powers 1 to maximumPower',
+          at: [traceRectangle[0], traceRectangle[3]] as const,
+          anchor: 'bottom-left' as const,
+          offset: [0, 3] as const,
+          role: 'label' as const,
+          priority: 4
+        },
+        {
+          text: 'power sums of W/s',
+          at: [sumRectangle[0], sumRectangle[3]] as const,
+          anchor: 'bottom-left' as const,
+          offset: [0, 3] as const,
+          role: 'label' as const,
+          priority: 4
+        },
+        {
+          text: 'tracts a q-step walk reaches',
+          at: [inputs.world.width * MAP_SHARE * 0.5, inputs.world.height] as const,
+          anchor: 'center' as const,
+          offset: [0, -14] as const,
+          role: 'label' as const,
+          priority: 4
+        }
+      ]
+    };
+    return [
+      {
+        layer: 'polygons',
+        positions: outputs.vertices,
+        indices: outputs.indices,
+        owners: outputs.owners,
+        values: outputs.reached,
+        triangleCount: inputs.tracts.triangleCount,
+        ramp: 'sequential',
+        range: [0, 1.4]
+      },
+      {layer: 'lines', context: true, segments: outputs.outline, count: inputs.tracts.outlineCount},
+      {
+        layer: 'chart',
+        kind: 'line',
+        context: true,
+        values: outputs.exactTraces,
+        rectangle: TRACE_RECTANGLE,
+        radius: 1.4
+      },
+      {
+        layer: 'chart',
+        kind: 'line',
+        values: outputs.powerTraces,
+        rectangle: TRACE_RECTANGLE,
+        radius: 2.2
+      },
+      {
+        layer: 'chart',
+        kind: 'bars',
+        values: outputs.powerSums,
+        color: [0.55, 0.65, 0.95, 0.9],
+        rectangle: SUM_RECTANGLE
+      },
+      {layer: 'text', ...titles}
+    ];
+  }
 });

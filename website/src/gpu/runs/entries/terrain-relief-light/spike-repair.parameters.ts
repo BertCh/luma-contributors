@@ -3,9 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Bound to GPUTerrainSpikeRepair({jump, tolerance}); the spike count changes the input tile.
+// The only slider changes the input tile; GPUTerrainSpikeRepair's jump (200 m) and tolerance (40 m) are fixed.
 export const parameters: GpuSceneParameter[] = [
-  {id: 'jump', label: 'jump', min: 50, max: 300, step: 10, default: 200, unit: ' m'},
-  {id: 'tolerance', label: 'tolerance', min: 5, max: 100, step: 5, default: 40, unit: ' m'},
   {id: 'spikeCount', label: 'Data: spikes', min: 0, max: 12, step: 1, default: 8}
 ];

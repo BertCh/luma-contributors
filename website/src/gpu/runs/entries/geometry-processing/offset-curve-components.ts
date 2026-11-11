@@ -22,7 +22,7 @@ const JOIN_STYLES = ['round', 'mitre', 'bevel'] as const;
 const QUAD_SEGMENTS = 8;
 const OUTPUT_VERTICES = 1024;
 /** distance is a constructor prop: the pointer settles on one of these prebuilt values. */
-const DISTANCES = [0.01, 0.025, 0.04, 0.06, 0.08];
+const DISTANCES = [0.03, 0.06, 0.09, 0.12, 0.15];
 /** The offset distance is this fraction of the pointer's distance from the river. */
 const DISTANCE_SCALE = 0.5;
 const COMPONENT_CAPACITY = 128;
@@ -39,7 +39,7 @@ export default defineOperationRun({
       vertexCount,
       restPoint: findPointAtDistance(
         (x, y) => findNearestOnPolyline(positions, x, y)?.distance ?? null,
-        0.04 / DISTANCE_SCALE,
+        0.09 / DISTANCE_SCALE,
         world
       )
     };

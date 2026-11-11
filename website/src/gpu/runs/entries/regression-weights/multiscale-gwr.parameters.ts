@@ -4,17 +4,24 @@
 import type {GpuSceneParameter} from '../../../types';
 
 // One bandwidth per coefficient, as GPUMultiscaleGeographicallyWeightedRegression's `parameters`
-// buffer holds them. The first slope truly varies, the second is constant.
+// buffer holds them. The intercept rises south to north, the first slope drifts west to east and the second slope is constant.
 export const parameters: GpuSceneParameter[] = [
-  {id: 'interceptBandwidth', label: 'intercept bandwidth', min: 0.4, max: 3, step: 0.1, default: 3},
+  {
+    id: 'interceptBandwidth',
+    label: 'intercept bandwidth',
+    min: 0.08,
+    max: 1,
+    step: 0.02,
+    default: 0.2
+  },
   {
     id: 'firstBandwidth',
     cardScrub: true,
     label: 'x1 bandwidth',
-    min: 0.2,
-    max: 3,
-    step: 0.1,
-    default: 0.5
+    min: 0.08,
+    max: 1,
+    step: 0.02,
+    default: 0.18
   },
-  {id: 'secondBandwidth', label: 'x2 bandwidth', min: 0.25, max: 3, step: 0.1, default: 3}
+  {id: 'secondBandwidth', label: 'x2 bandwidth', min: 0.08, max: 1, step: 0.02, default: 1}
 ];

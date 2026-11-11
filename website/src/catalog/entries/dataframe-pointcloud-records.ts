@@ -70,7 +70,7 @@ export const entries: CatalogEntry[] = [
         description: 'Most frequent category codes and their counts.'
       }
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUColumnProfile} from '@luma-contributors/analysis/dataframe-analysis';
 
 // fare, vendorCodes, mask, statistics, counts, histograms: views on graph
@@ -146,7 +146,7 @@ graph.add(new GPUColumnProfile({
         description: 'Lower and upper value of the filter range.'
       }
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUColumnQuantiles, getGPUColumnQuantilesParameterLength, getGPUColumnQuantilesParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // values, quantiles, validCount, outputMask: views on graph
@@ -231,7 +231,7 @@ parameters.write(getGPUColumnQuantilesParameterValues({
       },
       {name: 'classCounts', type: "GraphDataView<'uint32'>", description: 'Rows per class.'}
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUClassBreaks, getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // values, breaks, classCount, classCounts: views on graph
@@ -315,7 +315,7 @@ parameters.write(getGPUClassBreaksParameterValues({method: 'natural-breaks', cla
       {name: 'classIndices', type: "GraphDataView<'uint32'>", description: 'Class index per row.'},
       {name: 'classCounts', type: "GraphDataView<'uint32'>", description: 'Rows per class.'}
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUColorScale, getGPUColorScaleParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // values, breaks, classCount, palette, colors: views on graph
@@ -399,7 +399,7 @@ scale.write(getGPUColorScaleParameterValues({scale: 'threshold', domainCount: 8,
         description: 'Optional validity per source row.'
       }
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUScalarScale, getGPUScalarScaleParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // values, domain, range, widths: views on graph
@@ -487,7 +487,7 @@ scale.write(getGPUScalarScaleParameterValues({scale: 'linear', domainCount: 2}))
       {name: 'colors', type: "GraphDataView<'uint32'>", description: 'Packed rgba8 color per row.'},
       {name: 'classCounts', type: "GraphDataView<'uint32'>", description: 'Rows per class cell.'}
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUBivariateClassification, getGPUBivariateClassificationParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // valuesX, valuesY, breaksX, breaksY, palette, colors: views on graph
@@ -624,7 +624,7 @@ device.submit();`,
         description: 'Principal component loadings.'
       }
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUCompositeScore, GPU_COMPOSITE_SCORE_PARAMETER_LENGTH, getGPUCompositeScoreParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // indicators (rows * 4 float32), score: views on graph
@@ -700,7 +700,7 @@ parameters.write(getGPUCompositeScoreParameterValues({
         description: 'Lorenz curve knots per zone.'
       }
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUInequality, GPU_INEQUALITY_PARAMETER_LENGTH, getGPUInequalityParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // incomes, zoneIds, gini, lorenzKnots: views on graph
@@ -768,7 +768,7 @@ parameters.write(getGPUInequalityParameterValues({epsilon: 1}));`,
         description: 'Group count and overflow flag.'
       }
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUGroupStatistics} from '@luma-contributors/analysis/dataframe-analysis';
 
 // keys, fare, groupKeys, groupCounts, counts, means, medians, status: views on graph
@@ -913,7 +913,7 @@ graph.add(new GPUKeyJoin({
         description: 'Rows per hour and weekday cell.'
       }
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUCalendarBuckets, getGPUCalendarBucketsParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // timestamps (uint32x2 Int64 words from getInt64TimeWords), hour, weekday: views on graph
@@ -995,7 +995,7 @@ parameters.write(getGPUCalendarBucketsParameterValues(-300, 0));`,
       {name: 'outputMask', type: 'GPUUint32Rows', description: 'Optional per-row accept mask.'},
       {name: 'fadeWeights', type: 'Float32Rows', description: 'Optional fade weight per row.'}
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} from '@luma-contributors/analysis/dataframe-analysis';
 
 // timestamps, ids, status: views on graph
@@ -1100,7 +1100,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         description: 'Occupied slot ids (cell * bucketCount + bucket) and count.'
       }
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUTemporalReduction, getGPUTemporalReductionParameterValues, GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH} from '@luma-contributors/analysis/dataframe-analysis';
 
 // cellIds, timestamps, values, counts, minimums, maximums, first, last, occupiedSlots: views on graph
@@ -1174,7 +1174,7 @@ buckets.write(getGPUTemporalReductionParameterValues(originTime, 3600));`,
         description: 'Annulus pair-correlation per radius.'
       }
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPURipley, GPU_RIPLEY_PARAMETER_LENGTH, getGPURipleyParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // positions (float32x2), k, lMinusR: views on graph
@@ -1365,7 +1365,7 @@ graph.add(new GPURipleyEnvelope({
       {name: 'j', type: "GraphDataView<'float32'>", description: 'J function per radius.'},
       {name: 'radii', type: "GraphDataView<'float32'>", description: 'Radius of each row.'}
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPURipleyDistanceFunctions, GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH, getGPURipleyDistanceFunctionsParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // positions, g, f, j: views on graph
@@ -1449,7 +1449,7 @@ parameters.write(getGPURipleyDistanceFunctionsParameterValues({
       },
       {name: 'quadratCounts', type: "GraphDataView<'uint32'>", description: 'Points per quadrat.'}
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUPointPatternIndices, GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH, getGPUPointPatternIndicesParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // positions, clarkEvans, quadratCounts: views on graph
@@ -1618,7 +1618,7 @@ graph.add(new GPUMarkedPointStatistics({
         description: 'Mean pair distance per lag bin.'
       }
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUVariogram, GPU_VARIOGRAM_PARAMETER_LENGTH, getGPUVariogramParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // positions (float32x2), values, semivariances, pairCounts, meanDistances: views on graph
@@ -1839,6 +1839,7 @@ graph.add(new GPUCrossVariogram({
       {name: 'lagCount', type: 'number', required: true, description: 'Spatial lag bins.'},
       {name: 'temporalLagCount', type: 'number', required: true, description: 'Temporal lag bins.'}
     ],
+    moreRequired: ['gridSize'],
     outputs: [
       {
         name: 'semivariances',
@@ -1931,7 +1932,7 @@ graph.add(new GPUSpaceTimeVariogram({
       {name: 'pValues', type: "GraphDataView<'float32'>", description: 'p-value per band.'},
       {name: 'pairCounts', type: "GraphDataView<'uint32'>", description: 'Pairs per band.'}
     ],
-    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+    example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUSpatialCorrelogram, GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH, getGPUSpatialCorrelogramParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 
 // positions, values, moransI, zScores: views on graph
@@ -2205,7 +2206,7 @@ graph.add(new GPUPointCloudFeatures({
         description: 'Mean retained neighbor distance; -1 means none.'
       },
       {
-        name: 'mask',
+        name: 'validity',
         type: "GraphDataView<'uint32'>",
         required: true,
         description: 'Original-row inlier flags.'
@@ -2213,7 +2214,7 @@ graph.add(new GPUPointCloudFeatures({
     ],
     outputs: [
       {
-        name: 'mask',
+        name: 'validity',
         type: "GraphDataView<'uint32'>",
         description: 'One inlier flag per original row.'
       },
@@ -2225,13 +2226,13 @@ graph.add(new GPUPointCloudFeatures({
     ],
     example: `import {GPUPointCloudNeighborhoods, GPUPointCloudStatisticalFilter} from '@luma-contributors/analysis/pointcloud-analysis';
 
-// positions, indices, squaredDistances, counts, meanDistances, mask: views on graph
+// positions, indices, squaredDistances, counts, meanDistances, validity: views on graph
 graph.add(new GPUPointCloudNeighborhoods({
   positions, radius: 2, capacity: 16, indices, squaredDistances, counts
 }));
 graph.add(new GPUPointCloudStatisticalFilter({
   squaredDistances, counts, capacity: 16,
-  standardDeviations: 2, meanDistances, mask
+  standardDeviations: 2, meanDistances, validity
 }));`,
     preview: {
       kind: 'point-cloud',
@@ -2938,7 +2939,7 @@ const local = makePointCloudLocalPositions(absolute, origin);
         description: 'float32x3 shifts: longitude, latitude, height.'
       },
       {
-        name: 'validity',
+        name: 'mask',
         type: "GraphDataView<'uint32'>",
         required: true,
         description: 'Zero marks nodata.'
@@ -2960,7 +2961,7 @@ const local = makePointCloudLocalPositions(absolute, origin);
       {
         name: 'tolerance',
         type: 'number',
-        default: '1e-5',
+        default: '5e-9',
         description: 'Inverse residual tolerance in degrees.'
       }
     ],
@@ -2979,9 +2980,9 @@ const local = makePointCloudLocalPositions(absolute, origin);
     ],
     example: `import {GPUDatumGridTransform} from '@luma-contributors/analysis/geospatial-analysis';
 
-// positions, samples, validity, shiftedPositions, statusWords: views on graph
+// positions, samples, mask, shiftedPositions, statusWords: views on graph
 graph.add(new GPUDatumGridTransform({
-  positions, samples, validity,
+  positions, samples, mask,
   grids: [{width: 65, height: 31, sampleOffset: 0, origin: [-96, 35.5], spacing: [0.25, 0.25]}],
   operation: 'horizontal', direction: 'forward',
   output: {positions: shiftedPositions, status: statusWords}

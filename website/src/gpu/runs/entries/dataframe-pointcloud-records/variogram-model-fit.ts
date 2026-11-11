@@ -14,6 +14,7 @@ import {
 import {defineOperationRun} from '../../define-run';
 import {addFittedCurve} from './_lib/fitted-curve';
 import {
+  createPairProbe,
   DISTANCE_PLOT,
   getAxisFraction,
   getAxisPointer,
@@ -26,6 +27,7 @@ import {parameters} from './variogram-model-fit.parameters';
 const POINT_COUNT = 700;
 const LAG_COUNT = 20;
 const CURVE_COUNT = 48;
+const PAIR_LIMIT = 40;
 const PLOT = DISTANCE_PLOT;
 const RANGE = [0, 2.2] as const;
 const REST_FRACTION = 0.3;
@@ -35,10 +37,10 @@ export default defineOperationRun({
   parameters,
   caption:
     'Three fitted models over the empirical semivariance of log flash energy; the thin rules mark the spherical fit’s nugget, sill and range.',
-  createInputs: ({random, world}) => ({
-    ...createFieldSample(random, world.width * 0.5, POINT_COUNT),
-    world
-  }),
+  createInputs: ({random, world}) => {
+    const sample = createFieldSample(random, world.width * 0.5, POINT_COUNT);
+    return {...sample, world, pairs: createPairProbe(sample.positions, PAIR_LIMIT)};
+  },
   build(builder, sample, values) {
     const positions = builder.upload('positions', 'float32x2', sample.positions);
     const observed = builder.allocate('values', 'float32', POINT_COUNT);
@@ -82,9 +84,12 @@ export default defineOperationRun({
     const curveDistances = builder.allocate('curve-distances', 'float32', CURVE_COUNT);
     // Nugget, sill and range of the spherical fit, drawn as rules by the pointer interaction.
     const marks = builder.allocate('marks', 'float32x4', 3);
+    const pairs = builder.allocate('pairs', 'float32x4', PAIR_LIMIT);
     return {
       outputs: {
         fitted,
+        pairs,
+        pairCounts,
         marks,
         positions,
         observed,
@@ -154,6 +159,12 @@ export default defineOperationRun({
           )
         );
       }
+      // The point pairs the hovered semivariance bin is made of, drawn on the map.
+      const binWidth = values.maximumDistance / LAG_COUNT;
+      const bin = getBinIndex(fraction, LAG_COUNT);
+      const found = inputs.pairs.find(bin * binWidth, (bin + 1) * binWidth);
+      outputs.pairs.write(found.segments);
+      const pairCount = peek(outputs.pairCounts)?.[bin];
       const text = (value: number | undefined) => (value === undefined ? '…' : value.toFixed(1));
       return {
         spotlight: null,
@@ -170,7 +181,7 @@ export default defineOperationRun({
                 ]
           )
         ],
-        readout: `h ${distance.toFixed(2)} · data ${text(empirical)} · sph ${text(models[0])} exp ${text(models[1])} gau ${text(models[2])}`
+        readout: `h ${distance.toFixed(2)} · ${pairCount ?? '…'} pairs (sample of ${found.shown}) · data ${text(empirical)} · sph ${text(models[0])} exp ${text(models[1])} gau ${text(models[2])}`
       };
     }
   },
@@ -183,6 +194,7 @@ export default defineOperationRun({
       range: [1, 7],
       radius: 2.8
     },
+    {layer: 'lines', segments: outputs.pairs, count: PAIR_LIMIT, color: [1, 0.6, 0.2, 0.55]},
     {layer: 'lines', context: true, segments: outputs.marks, count: 3, color: [0.3, 0.75, 1, 0.55]},
     {
       layer: 'chart',

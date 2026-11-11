@@ -1,25 +1,25 @@
 {
-  "lumaVersion": "10.0.0-alpha.10",
+  "lumaVersion": "10.0.0-alpha.12",
   "entryPoints": 11,
-  "sourceFileCount": 1147,
+  "sourceFileCount": 1440,
   "contributorClassCount": 474,
-  "importStatementCount": 1183,
+  "importStatementCount": 1316,
   "imports": [
     {
       "specifier": "@luma.gl/graph/gpu-core",
-      "count": 920
+      "count": 1056
     },
     {
       "specifier": "@luma.gl/graph/gpu-raster",
-      "count": 120
+      "count": 138
     },
     {
       "specifier": "@luma.gl/core",
-      "count": 94
+      "count": 73
     },
     {
       "specifier": "@luma.gl/shaders",
-      "count": 16
+      "count": 17
     },
     {
       "specifier": "@luma.gl/graph/geospatial",
@@ -31,7 +31,7 @@
     },
     {
       "specifier": "@luma.gl/graph/gpu-project",
-      "count": 5
+      "count": 6
     },
     {
       "specifier": "@luma.gl/graph/gpu-vector-search",
@@ -39,10 +39,6 @@
     },
     {
       "specifier": "@luma.gl/graph",
-      "count": 2
-    },
-    {
-      "specifier": "@luma.gl/graph/gpu-graph-algorithms",
       "count": 2
     },
     {
@@ -59,8 +55,8 @@
     }
   ],
   "workarounds": {
-    "dropped": 11,
-    "workaround": 15,
+    "dropped": 10,
+    "workaround": 25,
     "accepted regression": 5,
     "obsolete": 1,
     "unmeasured": 1

@@ -5,7 +5,7 @@ import type {GpuSceneParameter} from '../../../types';
 
 // distance and the join style are constructor props (the raw offset is built with the same ones).
 export const parameters: GpuSceneParameter[] = [
-  {id: 'distance', label: 'distance', min: 0.01, max: 0.08, step: 0.005, default: 0.04},
+  {id: 'distance', label: 'distance', min: 0.03, max: 0.15, step: 0.005, default: 0.09},
   {
     id: 'joinStyle',
     label: 'joinStyle',

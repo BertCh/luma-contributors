@@ -11,10 +11,10 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 1,
     step: 1,
-    default: 0,
+    default: 1,
     options: ['NAD27 → NAD83', 'NAD83 → NAD27']
   },
-  {id: 'maximumIterations', label: 'Inverse iteration limit', min: 1, max: 12, step: 1, default: 8},
+  {id: 'maximumIterations', label: 'Inverse iteration limit', min: 1, max: 4, step: 1, default: 3},
   {
     id: 'magnification',
     label: 'Vector magnification',

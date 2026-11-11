@@ -13,6 +13,7 @@ import {
 } from '@luma-contributors/analysis/dataframe-analysis';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {bindAxes} from '../../interaction';
+import {createChartAxes, getChartRectangle, type RunLabel} from '../../text';
 import {sampleFlashes} from '../../../data/lightning';
 import {addIntegerToFloat} from './_lib/convert';
 import {parameters} from './color-scale.parameters';
@@ -189,40 +190,73 @@ export default defineOperationRun<Inputs, Outputs>({
       };
     }
   }),
-  draw: ({outputs}) => [
-    {
-      layer: 'dots',
-      context: true,
-      positions: outputs.positions,
-      values: outputs.column,
-      range: [0, 6],
-      radius: 3
-    },
-    {
-      layer: 'dots',
-      positions: outputs.positions,
-      values: outputs.classIndices,
-      ramp: 'categorical',
-      categories: PALETTE,
-      radius: 3
-    },
-    {
-      layer: 'polygons',
-      positions: outputs.swatches,
-      indices: outputs.swatchIndices,
-      owners: outputs.swatchOwners,
-      values: outputs.swatchClasses,
-      triangleCount: MAXIMUM_CLASS_COUNT * 2,
-      ramp: 'categorical',
-      categories: PALETTE
-    },
-    {
-      layer: 'chart',
-      kind: 'bars',
-      color: [0.2, 0.55, 0.9, 1],
-      values: outputs.classSizes,
-      range: [0, ROW_COUNT / 2],
-      rectangle: COUNT_RECTANGLE
-    }
-  ]
+  draw: ({outputs, values, world}) => {
+    // The palette strip is the legend: each swatch is numbered, and the bars below use the same
+    // numbers, so a bar reads as the rows the scale gave that color.
+    const [left, bottom, right, top] = SWATCH_RECTANGLE;
+    const swatchWidth = ((right - left) * world.width) / MAXIMUM_CLASS_COUNT;
+    const swatchLabels: RunLabel[] = Array.from({length: values.paletteCount}, (_, swatch) => ({
+      text: String(swatch + 1),
+      at: [left * world.width + (swatch + 0.45) * swatchWidth, bottom * world.height],
+      anchor: 'top',
+      offset: [0, -2],
+      role: 'tick',
+      group: 'swatches'
+    }));
+    swatchLabels.push({
+      text: 'palette class',
+      at: [left * world.width, top * world.height],
+      anchor: 'bottom-left',
+      offset: [0, 3],
+      role: 'title'
+    });
+    const countAxes = createChartAxes({
+      rectangle: getChartRectangle(world, COUNT_RECTANGLE),
+      x: {
+        categories: Array.from({length: MAXIMUM_CLASS_COUNT}, (_, index) =>
+          index < values.paletteCount ? String(index + 1) : ''
+        )
+      },
+      y: {range: [0, ROW_COUNT / 2], ticks: 2, title: 'rows'}
+    });
+    return [
+      {layer: 'text', ...countAxes.grid},
+      {
+        layer: 'dots',
+        context: true,
+        positions: outputs.positions,
+        values: outputs.column,
+        range: [0, 6],
+        radius: 3
+      },
+      {
+        layer: 'dots',
+        positions: outputs.positions,
+        values: outputs.classIndices,
+        ramp: 'categorical',
+        categories: PALETTE,
+        radius: 3
+      },
+      {
+        layer: 'polygons',
+        positions: outputs.swatches,
+        indices: outputs.swatchIndices,
+        owners: outputs.swatchOwners,
+        values: outputs.swatchClasses,
+        triangleCount: MAXIMUM_CLASS_COUNT * 2,
+        ramp: 'categorical',
+        categories: PALETTE
+      },
+      {
+        layer: 'chart',
+        kind: 'bars',
+        color: [0.2, 0.55, 0.9, 1],
+        values: outputs.classSizes,
+        range: [0, ROW_COUNT / 2],
+        rectangle: COUNT_RECTANGLE
+      },
+      {layer: 'text', ...countAxes},
+      {layer: 'text', labels: swatchLabels}
+    ];
+  }
 });

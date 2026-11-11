@@ -91,7 +91,7 @@ export default defineOperationRun({
       range: [0, 1],
       ramp: 'sequential',
       fade: true,
-      radius: 3
+      radius: 5
     },
     {layer: 'lines', context: true, segments: outputs.outline, color: [1, 1, 1, 1]}
   ]

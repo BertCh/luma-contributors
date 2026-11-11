@@ -7,8 +7,9 @@
 // so GPURasterSampling reads the wide feature raster at the right column to pull out the feature
 // the slider selects as a plain per-cell raster. Levels, radius and offset are construction props;
 // roughness rewrites the scene: the added noise grows from nothing at the left edge to full at the
-// right. The pointer is the window: its (2 * radius + 1) cells square is outlined and the cell's
-// features are read out; the left strip shows the input.
+// right. The pointer is a curtain and the window: left of it the input scene in grey, right of it
+// the chosen feature of every cell; the (2 * radius + 1) cells square under the pointer is outlined
+// and that cell's features are read out.
 
 import {
   getGPURasterSamplingParameterValues,
@@ -19,8 +20,9 @@ import {
 import {defineOperationRun} from '../../define-run';
 import {sampleReflectance} from '../../../data/reflectance';
 import {formatNumber} from '../../interaction';
+import type {RunLabel} from '../../text';
 import {parameters} from './glcm-texture.parameters';
-import {getCellAt, getCellBox} from './support/gestures';
+import {getCellAt, getCellBox, getCurtainX, getSwipeResult} from './support/gestures';
 
 const FEATURE_COUNT = 7;
 const FEATURES = [
@@ -40,7 +42,6 @@ const OFFSETS = [
 ] as const;
 const COLUMNS = 48;
 const ROWS = 27;
-const STRIP = 0.16;
 
 export default defineOperationRun({
   parameters,
@@ -129,40 +130,66 @@ export default defineOperationRun({
     return {range: [low - span * 0.4, high] as const};
   },
   interaction: {
-    kind: 'window',
-    hint: 'move the texture window',
-    rest: [0.5, 0.5],
+    kind: 'swipe',
+    hint: 'swipe input and texture',
+    rest: [0.4, 0.5],
     resolve: (pointer, {outputs, values, world, peek}) => {
       const grid = {columns: COLUMNS, rows: ROWS};
       const {column, row, index} = getCellAt(grid, world, pointer);
       const features = peek(outputs.features);
       const at = (feature: number) =>
         features ? formatNumber(features[index * FEATURE_COUNT + feature]) : '-';
-      return {
-        glyphs: [getCellBox(grid, world, column, row, values.radius)],
-        readout: `contrast ${at(0)} | homogeneity ${at(2)} | entropy ${at(6)}`
-      };
+      return getSwipeResult(
+        pointer,
+        `contrast ${at(0)} | homogeneity ${at(2)} | entropy ${at(6)}`,
+        [getCellBox(grid, world, column, row, values.radius)]
+      );
     }
   },
-  draw: ({outputs, values, extra, world}) => [
-    {
-      layer: 'raster',
-      values: outputs.scene,
-      columns: COLUMNS,
-      rows: ROWS,
-      ramp: 'sequential',
-      range: [0, 1],
-      clip: {side: 'left', x: world.width * STRIP}
-    },
-    {
-      layer: 'raster',
-      values: outputs.gathered[Math.round(values.feature)],
-      columns: COLUMNS,
-      rows: ROWS,
-      ramp: Math.round(values.feature) === 5 ? 'diverging' : 'sequential',
-      range: Math.round(values.feature) === 5 ? 'auto' : (extra?.range ?? 'auto'),
-      smoothing: false,
-      clip: {side: 'right', x: world.width * STRIP}
-    }
-  ]
+  draw: ({outputs, values, extra, world, interaction}) => {
+    const curtain = getCurtainX(interaction, world);
+    const feature = Math.round(values.feature);
+    const labels: RunLabel[] = [
+      {
+        text: 'input: near-infrared + noise',
+        at: [curtain - 0.01, 0.97],
+        anchor: 'top-right',
+        role: 'title'
+      },
+      {
+        text: `${FEATURES[feature]} in a window of ${2 * values.radius + 1} x ${2 * values.radius + 1} cells`,
+        at: [curtain + 0.01, 0.97],
+        anchor: 'top-left',
+        role: 'title'
+      },
+      {
+        text: 'added noise grows from left to right',
+        at: [0.02, 0.02],
+        anchor: 'bottom-left',
+        role: 'label'
+      }
+    ];
+    return [
+      {
+        layer: 'raster',
+        values: outputs.scene,
+        columns: COLUMNS,
+        rows: ROWS,
+        ramp: 'grey',
+        range: [0, 1],
+        clip: {side: 'left', x: curtain}
+      },
+      {
+        layer: 'raster',
+        values: outputs.gathered[feature],
+        columns: COLUMNS,
+        rows: ROWS,
+        ramp: feature === 5 ? 'diverging' : 'sequential',
+        range: feature === 5 ? 'auto' : (extra?.range ?? 'auto'),
+        smoothing: false,
+        clip: {side: 'right', x: curtain}
+      },
+      {layer: 'text', labels}
+    ];
+  }
 });

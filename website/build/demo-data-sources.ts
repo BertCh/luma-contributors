@@ -219,6 +219,8 @@ export const SCENARIOS: Record<string, string> = {
     'The noise control adds simulated measurement error to observed station totals.',
   'seasonal-break-detection':
     'A monthly seasonal cycle is modeled from observed pre- and post-fire vegetation levels.',
+  'glcm-texture':
+    'Random noise is added to the observed near-infrared band, growing from left to right.',
   'raster-registration': 'The comparison image is shifted by a known offset.',
   'pointcloud-change': 'The displacement in the comparison cloud is simulated.',
   'pointcloud-local-positions':
@@ -252,6 +254,12 @@ export const SCENARIOS: Record<string, string> = {
   'zonal-distribution-recipe': 'Constructed reporting zones group the sampled events.',
   'pointcloud-icp': 'An imposed rotation and translation displace the comparison cloud.',
   'pointcloud-statistical-filter': 'Outliers are added to the observed returns.',
+  'terrain-dem-coregistration':
+    'The second epoch is the measured elevation plus a constant bias and a simulated elevation change on unstable ground.',
+  'adjacency-matrix':
+    'Observed commuting flows are made symmetric. Five of every six flows between bands are dropped.',
+  'adjacency-matrix-order':
+    'Observed commuting flows are made symmetric. Five of every six flows between bands are dropped.',
   'track-quality': 'The quality scenario introduces errors into observed AIS tracks.',
   'trajectory-kalman': 'Simulated position noise is added to the observed AIS fixes.',
   'regional-raster-change-recipe':

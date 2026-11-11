@@ -25,6 +25,8 @@ import {
   uploadRegressionMap
 } from './shared/regression';
 
+const OLS_NAMES = ['int', 'x1', 'x2'] as const;
+
 export default defineOperationRun({
   parameters,
   caption: 'Residual map and fitted coefficients (bars) against the true ones (dots).',
@@ -66,7 +68,7 @@ export default defineOperationRun({
       outputs: {
         mesh: uploadRegressionMap(builder, inputs),
         residuals,
-        panel: createCoefficientPanel(builder, coefficients, 1, TRUE_COEFFICIENTS)
+        panel: createCoefficientPanel(builder, coefficients, 1, TRUE_COEFFICIENTS, OLS_NAMES)
       },
       update: current => {
         response.write(createResponse(inputs, {noise: current.noise, lagRho: current.rho}));
@@ -88,8 +90,8 @@ export default defineOperationRun({
       };
     }
   }),
-  draw: ({inputs, outputs}) => [
+  draw: ({inputs, outputs, world, theme}) => [
     ...drawResidualMap(inputs, outputs.mesh, outputs.residuals),
-    ...drawCoefficientPanel(outputs.panel)
+    ...drawCoefficientPanel(outputs.panel, {world, ink: theme.ink})
   ]
 });

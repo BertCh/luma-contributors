@@ -16,5 +16,5 @@ export const parameters: GpuSceneParameter[] = [
     options: ['false', 'true']
   },
   {id: 'sides', label: 'sides', min: 3, max: 8, step: 1, default: 6},
-  {id: 'size', label: 'search radius', min: 15, max: 120, step: 1, default: 60, unit: 'km'}
+  {id: 'size', label: 'search radius', min: 15, max: 120, step: 1, default: 80, unit: 'km'}
 ];

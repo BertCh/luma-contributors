@@ -15,7 +15,32 @@ import type {RunGlyph} from '../../interaction';
 import {addKernelPass, getViewBuffer} from './shared/kernel';
 import {addPackedSegments, HIGHLIGHT_COLOR} from './shared/lines';
 import {createCityLayout, findBuildingAt} from './shared/urban';
+import {createLegend} from '../../text';
 import {parameters} from './building-adjacency-recipe.parameters';
+
+// A pointer that is not over a footprint takes the building whose center is nearest (within this
+// distance, world units), so a hand between buildings still picks one.
+const SNAP_DISTANCE = Infinity;
+
+/** The building under (x, y), else the building whose center is nearest within SNAP_DISTANCE. */
+function findBuildingNear(
+  layout: ReturnType<typeof createCityLayout>,
+  x: number,
+  y: number
+): number {
+  const inside = findBuildingAt(layout, x, y);
+  if (inside >= 0) return inside;
+  let nearest = -1;
+  let nearestDistance = SNAP_DISTANCE;
+  layout.centers.forEach(([centerX, centerY], building) => {
+    const distance = Math.hypot(centerX - x, centerY - y);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearest = building;
+    }
+  });
+  return nearest;
+}
 
 export default defineOperationRun({
   parameters,
@@ -74,8 +99,8 @@ export default defineOperationRun({
     const requiredCount = builder.allocate('run-required', 'uint32', 1);
     const sharedOutput = {
       runs: {
-        leftLineIds: leftLineIds.view,
-        rightLineIds: rightLineIds.view,
+        leftSourceIds: leftLineIds.view,
+        rightSourceIds: rightLineIds.view,
         forward: forward.view,
         offsets: offsets.view,
         positions: runPositions.view
@@ -153,10 +178,10 @@ export default defineOperationRun({
   // recipe): its shared walls disappear and its terrace splits in two.
   interaction: {
     kind: 'probe',
-    hint: 'hover a building',
+    hint: 'hover near a building',
     rest: ({inputs, toUnit}) => toUnit([inputs.world.width / 2, inputs.layout.streetY]),
     resolve(pointer, {inputs, outputs, peek}) {
-      const building = findBuildingAt(inputs.layout, pointer.x, pointer.y);
+      const building = findBuildingNear(inputs.layout, pointer.x, pointer.y);
       const changed = building !== inputs.hovered.building;
       inputs.hovered.building = building;
       if (building < 0) return {rerun: changed, readout: 'no building hovered'};
@@ -177,7 +202,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, theme}) => [
     {
       layer: 'segments',
       nodes: outputs.positions,
@@ -185,6 +210,19 @@ export default defineOperationRun({
       values: outputs.nodeComponents,
       radius: 3
     },
-    {layer: 'lines', segments: outputs.shared.segments, color: HIGHLIGHT_COLOR, radius: 5}
+    {layer: 'lines', segments: outputs.shared.segments, color: HIGHLIGHT_COLOR, radius: 5},
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'bottom-left',
+        entries: [
+          {label: 'building, color = terrace', swatch: theme.categories[0]},
+          {
+            label: 'shared wall',
+            swatch: [HIGHLIGHT_COLOR[0], HIGHLIGHT_COLOR[1], HIGHLIGHT_COLOR[2]]
+          }
+        ]
+      })
+    }
   ]
 });

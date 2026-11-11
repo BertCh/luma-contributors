@@ -6,9 +6,9 @@ import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   getGPUKernelDensityParameterValues,
   GPU_KERNEL_DENSITY_PARAMETER_LENGTH,
-  GPUKernelDensity,
-  GPUParameterBuffer
+  GPUKernelDensity
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 // example:hide-start
 import type {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';

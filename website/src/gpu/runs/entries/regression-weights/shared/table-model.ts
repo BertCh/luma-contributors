@@ -17,6 +17,8 @@ import type {RunInteraction} from '../../../interaction';
 import {
   type CoefficientPanel,
   createCoefficientPanel,
+  ERROR_COEFFICIENT_NAMES,
+  LAG_COEFFICIENT_NAMES,
   createRegressionInputs,
   createResponse,
   drawCoefficientPanel,
@@ -99,7 +101,13 @@ export function defineTableModelRun<Extra extends Record<string, RunBuffer> = {}
         residuals
       });
       const truth = [...TRUE_COEFFICIENTS, 0];
-      const panel = createCoefficientPanel(builder, table, 4, truth);
+      const panel = createCoefficientPanel(
+        builder,
+        table,
+        4,
+        truth,
+        spec.process === 'lag' ? LAG_COEFFICIENT_NAMES : ERROR_COEFFICIENT_NAMES
+      );
       return {
         outputs: {
           mesh: uploadRegressionMap(builder, inputs),
@@ -119,11 +127,11 @@ export function defineTableModelRun<Extra extends Record<string, RunBuffer> = {}
         }
       };
     },
-    draw: ({inputs, outputs, interaction}) => [
+    draw: ({inputs, outputs, interaction, world, theme}) => [
       ...(spec.drawMap
         ? spec.drawMap({inputs, outputs, interaction})
         : drawResidualMap(inputs, outputs.mesh, outputs.residuals)),
-      ...drawCoefficientPanel(outputs.panel)
+      ...drawCoefficientPanel(outputs.panel, {world, ink: theme.ink})
     ]
   });
 }

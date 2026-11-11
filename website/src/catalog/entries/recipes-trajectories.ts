@@ -1609,6 +1609,8 @@ ${COMPILE_AND_ENCODE}
 // graph: GPUCommandGraph; ancillary is a calibrated raster band, e.g. built-up density
 const redistribution = addDasymetricRedistributionRecipe(graph, {
   grid,
+  // tractRasterization: {tupleCapacity, parameters}; parameters is packed with
+  // getGPURasterFractionalCoverageParameterValues(grid)
   source: {kind: 'polygons', zones: tractPolygons, ...tractRasterization},
   sourceTotals: tractPopulation,
   targetZones: districtPerCell,
@@ -2680,6 +2682,140 @@ ${COMPILE_AND_ENCODE}
       'sparse-resistance-connectivity-recipe'
     ],
     lensScenario: 'gpu-spatial-analysis.resistance-connectivity-recipe',
+    reference: ECOLOGY_REFERENCE,
+    maturity: 'partial'
+  },
+  {
+    id: 'raster-resistance-connectivity-recipe',
+    symbol: 'addRasterResistanceConnectivityRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Raster resistance connectivity',
+    summary:
+      'Circuit-theory current and effective resistance across a resistance raster, from a source cell to a ground cell.',
+    explanation:
+      "Turns a resistance raster into a circuit: every cell with data is a node and every neighbouring pair an edge, with conductance from the cells' mean resistance per ground length. No-data cells leave the circuit. Unit current flows from `source` to `sink`; the current map shows the corridors it uses.",
+    dataTypes: {input: ['raster'], output: ['raster', 'table']},
+    useCases: ['route', 'model'],
+    domains: ['ecology'],
+    params: [
+      {
+        name: 'grid',
+        type: 'GPURasterMetadata',
+        required: true,
+        description: 'Raster grid: width, height and affine.'
+      },
+      {
+        name: 'resistance',
+        type: 'GPURasterBand',
+        required: true,
+        description: 'Resistance per cell; no-data cells are removed.'
+      },
+      {
+        name: 'parameters',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Grid georeference values, 8 float32.'
+      },
+      {
+        name: 'source',
+        type: 'number',
+        required: true,
+        description: 'Cell index (row * width + column) that injects unit current.'
+      },
+      {
+        name: 'sink',
+        type: 'number',
+        required: true,
+        description: 'Grounded cell index that extracts it.'
+      },
+      {
+        name: 'neighborhood',
+        type: '4 | 8 | undefined',
+        default: '8',
+        description: 'Rook or queen neighbours. Compile-time.'
+      },
+      {
+        name: 'cellSizeMode',
+        type: 'GPURasterCellSizeMode | undefined',
+        default: "'uniform'",
+        description: 'Ground model for edge lengths. Compile-time.'
+      },
+      {
+        name: 'maximumIterations',
+        type: 'number | undefined',
+        default: '1024',
+        description: 'Conjugate gradient iterations, 1 to 4096. Compile-time.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'outputs.potentials',
+        type: 'GraphDataView<"float32">',
+        description: 'Voltage per cell in the sink component; NaN elsewhere.'
+      },
+      {
+        name: 'outputs.vertexCurrents',
+        type: 'GraphDataView<"float32">',
+        description: 'Current through each cell (the current map).'
+      },
+      {
+        name: 'estimatedCommandNodeCount',
+        type: 'number',
+        description: 'Upper bound of the command nodes added.'
+      },
+      {
+        name: 'outputs.diagnostics',
+        type: 'GraphDataView<"float32x4">',
+        description: '[effective resistance, true residual, energy, norm].'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32x4">',
+        description: '[converged, iterations, reachable, invalidEdges].'
+      },
+      {
+        name: 'provenance',
+        type: 'Record<string, GraphDataView>',
+        description: 'Stage ports that show how the result was built.'
+      },
+      {
+        name: 'contributors',
+        type: 'readonly GPUCommandNodeProducer<never>[]',
+        description: 'Graph nodes the recipe added, in execution order.'
+      },
+      {
+        name: 'intermediates',
+        type: 'Record<string, unknown>',
+        description: 'Named stage ports; graph-owned, not for readback.'
+      }
+    ],
+    example: `import {
+  addRasterResistanceConnectivityRecipe,
+  getRasterResistanceConnectivityParameterValues
+} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; resistance: GPURasterBand over a float32 buffer
+// parameters.write(getRasterResistanceConnectivityParameterValues(grid))
+const connectivity = addRasterResistanceConnectivityRecipe(graph, {
+  grid, resistance, parameters,
+  neighborhood: 8,
+  source: 3 * grid.width + 2,
+  sink: 20 * grid.width + 60,
+  output: {potentials, vertexCurrents, diagnostics, solverStatus}
+});
+${COMPILE_AND_ENCODE}
+// connectivity.outputs.vertexCurrents: where the current flows; diagnostics[0] is the effective resistance`,
+    preview: {
+      kind: 'raster',
+      caption: 'Current funnels through the one gap in a barrier.',
+      seed: 9241
+    },
+    related: [
+      'resistance-connectivity-recipe',
+      'sparse-resistance-connectivity-recipe',
+      'landscape-metrics-recipe'
+    ],
     reference: ECOLOGY_REFERENCE,
     maturity: 'partial'
   },

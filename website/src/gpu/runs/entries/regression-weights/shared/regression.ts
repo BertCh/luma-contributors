@@ -8,6 +8,7 @@
 import type {GPUSpatialWeights} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {RunBuffer, RunBuilder, RunLayer} from '../../../define-run';
 import {createTracts, type CsrWeights, type TractsInput} from '../../../inputs';
+import {createChartAxes, getChartRectangle, type RunText} from '../../../text';
 import {addTableColumn, uploadWeightsBuffers, type WeightsBuffers} from './weights';
 
 /** The coefficients the response is generated with: intercept, then one per predictor. */
@@ -165,7 +166,7 @@ export function uploadRegressionMap(builder: RunBuilder, inputs: RegressionInput
       : Float32Array.from(values, (value, index) =>
           index % stride === 0 ? value + offsetX : value
         );
-  const suffix = offsetX === 0 ? '' : '-shifted';
+  const suffix = offsetX === 0 ? '' : `-shifted-${offsetX.toFixed(3)}`;
   return {
     vertices: builder.upload(`tract-vertices${suffix}`, 'float32x2', shift(tracts.vertices, 2)),
     indices: builder.upload(`tract-indices${suffix}`, 'uint32', tracts.triangleIndices),
@@ -211,7 +212,13 @@ export type CoefficientPanel = {
   positions: RunBuffer<'float32'>;
   /** Zeros for the zero line of the chart. */
   zeros: RunBuffer<'float32'>;
+  /** One short name per coefficient, written under its bar. Without names the chart has no text. */
+  names?: readonly string[];
 };
+
+/** Names of the table models' coefficients: intercept, the two predictors, then the spatial term. */
+export const LAG_COEFFICIENT_NAMES = ['int', 'x1', 'x2', 'ρ'] as const;
+export const ERROR_COEFFICIENT_NAMES = ['int', 'x1', 'x2', 'λ'] as const;
 
 /**
  * Uploads the true coefficients and marker positions of the chart panel, and extracts the estimate
@@ -221,9 +228,11 @@ export function createCoefficientPanel(
   builder: RunBuilder,
   table: RunBuffer<'float32'>,
   columnCount: number,
-  truth: readonly number[]
+  truth: readonly number[],
+  names?: readonly string[]
 ): CoefficientPanel {
   return {
+    names,
     estimates: addTableColumn(builder, 'coefficients', table, columnCount, 0, truth.length),
     standardErrors:
       columnCount > 1
@@ -293,10 +302,34 @@ export function drawZeroLine(zeros: RunBuffer, rectangle: ChartRectangle): RunLa
   };
 }
 
-/** Coefficient bars (estimates) with the true values as dots, and standard errors below them. */
+/**
+ * Axes of the coefficient chart: the estimate on y (ticks inside the plot, the zero line among them)
+ * and one name per coefficient under the bars.
+ */
+export function createCoefficientText(
+  world: {width: number; height: number},
+  rectangle: ChartRectangle,
+  names: readonly string[]
+): RunText & {grid: RunText} {
+  return createChartAxes({
+    rectangle: getChartRectangle(world, rectangle),
+    x: {categories: names},
+    y: {range: COEFFICIENT_RANGE, ticks: [-2, 0, 2]}
+  });
+}
+
+/**
+ * Coefficient bars (estimates) with the true values as dots, and standard errors below them. Pass
+ * `world` to label the chart when the panel has `names`.
+ */
 export function drawCoefficientPanel(
   panel: CoefficientPanel,
-  options: {rectangle?: ChartRectangle} = {}
+  options: {
+    rectangle?: ChartRectangle;
+    world?: {width: number; height: number};
+    /** Color of the truth dots: the theme's ink, so they show on both backgrounds. */
+    ink?: readonly [number, number, number];
+  } = {}
 ): RunLayer[] {
   const left = MAP_SHARE + 0.08;
   const rectangle =
@@ -304,7 +337,12 @@ export function drawCoefficientPanel(
     (panel.standardErrors
       ? ([left, 0.42, 0.97, 0.9] as const)
       : ([left, 0.14, 0.97, 0.86] as const));
+  const text =
+    options.world && panel.names
+      ? createCoefficientText(options.world, rectangle, panel.names)
+      : undefined;
   const layers: RunLayer[] = [
+    ...(text ? [{layer: 'text' as const, ...text.grid}] : []),
     ...drawSignedBars(panel.estimates, rectangle, COEFFICIENT_RANGE[1]),
     drawZeroLine(panel.zeros, rectangle),
     {
@@ -314,11 +352,12 @@ export function drawCoefficientPanel(
       xValues: panel.positions,
       xRange: [0, 1],
       range: COEFFICIENT_RANGE,
-      color: [1, 1, 1, 0.95],
+      color: [...(options.ink ?? [1, 1, 1]), 0.95] as const,
       radius: 5,
       rectangle
     }
   ];
+  if (text) layers.push({layer: 'text', ...text});
   if (panel.standardErrors) {
     layers.push({
       layer: 'chart',

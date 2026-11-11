@@ -4,7 +4,7 @@
 import type {GpuSceneParameter} from '../../../types';
 
 export const parameters: GpuSceneParameter[] = [
-  {id: 'maximumFlips', label: 'maximumFlips', min: 1, max: 40, step: 1, default: 3},
+  {id: 'maximumFlips', label: 'maximumFlips', min: 1, max: 60, step: 1, default: 3},
   {id: 'irregularity', label: 'Data: irregularity', min: 0, max: 0.8, step: 0.02, default: 0.45},
   {
     id: 'hasHoles',

@@ -168,6 +168,23 @@ export default defineOperationRun({
       const statuses = peek(outputs.snapStatus);
       const heights = peek(outputs.heights);
       const carriedIndex = inputs.peaks.length;
+      // Every survey point the operation moved shows its move, not only the carried one.
+      const supplied = peek(outputs.candidatesDrawn);
+      if (snapped && statuses && supplied) {
+        inputs.peaks.forEach((_, index) => {
+          const from = [supplied[index * 2], supplied[index * 2 + 1]] as const;
+          // The ground each survey point may search: `radius` around it.
+          glyphs.push({shape: 'ring', at: from, radius: values.radius * worldPerMeter});
+          if (statuses[index] !== 1) return;
+          const to = getCellWorldPosition(
+            inputs,
+            world,
+            snapped[index * 2],
+            snapped[index * 2 + 1]
+          );
+          glyphs.push({shape: 'arrow', from, to});
+        });
+      }
       let readout = `radius ${values.radius} m · maximumMove ${values.maximumMove} m`;
       if (snapped && statuses && heights) {
         // The arrow runs from the survey point to the cell it snapped to.

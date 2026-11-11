@@ -1,21 +1,6 @@
 {
  "rules": [
   {
-   "id": "bare-assert",
-   "files": 32,
-   "findings": 118
-  },
-  {
-   "id": "internal-export",
-   "files": 5,
-   "findings": 13
-  },
-  {
-   "id": "missing-producer-declaration",
-   "files": 1,
-   "findings": 1
-  },
-  {
    "id": "multiple-classes",
    "files": 9,
    "findings": 21
@@ -29,14 +14,9 @@
    "id": "single-invocation-data-loop",
    "files": 34,
    "findings": 46
-  },
-  {
-   "id": "unregistered-contributor",
-   "files": 2,
-   "findings": 2
   }
  ],
- "totalFindings": 222,
+ "totalFindings": 88,
  "ports": [
   {
    "name": "candidateOverflow",
@@ -60,7 +40,7 @@
   },
   {
    "name": "invalidCount",
-   "doc": "Number of input rows rejected by validation.",
+   "doc": "Number of input rows rejected by validation or, for `GPURasterFillNoData`, the number of cells of the result that are still invalid after the fill.",
    "group": "GPUInvalidStatusPort"
   },
   {
@@ -82,6 +62,26 @@
    "name": "approximation",
    "doc": "One when the result uses an intentional approximation rather than exact semantics.",
    "group": "GPUApproximationStatusPort"
+  },
+  {
+   "name": "vertexCount",
+   "doc": "Number of vertices written, clamped to the vertex capacity.",
+   "group": "GPUVertexCountStatusPort"
+  },
+  {
+   "name": "requiredVertexCount",
+   "doc": "Unclamped number of vertices the result needs.",
+   "group": "GPUVertexCountStatusPort"
+  },
+  {
+   "name": "ringCount",
+   "doc": "Number of rings written, clamped to the ring capacity.",
+   "group": "GPURingCountStatusPort"
+  },
+  {
+   "name": "requiredRingCount",
+   "doc": "Unclamped number of rings the result needs.",
+   "group": "GPURingCountStatusPort"
   },
   {
    "name": "count",

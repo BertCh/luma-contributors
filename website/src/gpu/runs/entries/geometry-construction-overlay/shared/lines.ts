@@ -140,7 +140,7 @@ export function allocateLineOutput(
     output: {
       positions: positions.view,
       lineOffsets: lineOffsets.view,
-      status: {count: count.view, overflow: overflow.view, lineCount: lineCount.view},
+      status: {count: lineCount.view, overflow: overflow.view, vertexCount: count.view},
       sourceLineIndices: sourceLineIndices.view
     }
   };

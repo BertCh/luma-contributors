@@ -9,11 +9,12 @@
 import {createGreatLakeRings} from '../../../data/hydrography';
 import {
   getGPULineSimplificationParameterValues,
-  GPULineSimplification,
-  GPUParameterBuffer
+  GPULineSimplification
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {defineOperationRun} from '../../define-run';
-import {findParameter, snapToParameter} from '../../interaction';
+import {findParameter} from '../../interaction';
+import {getLogarithmicReach, getLogarithmicReachDistance} from './shared/reach';
 import {
   addSelectedSegments,
   createPackedSegments,
@@ -22,7 +23,16 @@ import {
   findRestBesideLines,
   OUTPUT_COLOR
 } from './shared/lines';
+import {createBadge} from './shared/badge';
 import {parameters} from './parameter-buffer.parameters';
+
+// Distance from the shore, in world units, at which the tolerance reaches its maximum. The tolerance
+// grows logarithmically with the distance, so a hand near the shore picks a fine tolerance and one
+// far from it a coarse one. The span is inside the lake's reach, so the whole range of the
+// parameter is reachable from within the picture.
+const REACH_SPAN = 0.12;
+
+const toleranceParameter = findParameter(parameters, 'tolerance');
 
 export default defineOperationRun({
   parameters,
@@ -30,9 +40,12 @@ export default defineOperationRun({
   createInputs: ({world}) => {
     const [shore] = createGreatLakeRings(world, 'Lake Superior');
     const positions = Float32Array.from([...shore, shore[0]].flat());
-    return {positions, lineOffsets: Uint32Array.of(0, positions.length / 2), world};
+    // Calls of `build` and of the parameter buffer's `write` made by this scene, for the badge.
+    const counters = {builds: 0, writes: 0};
+    return {positions, lineOffsets: Uint32Array.of(0, positions.length / 2), world, counters};
   },
   build(builder, line) {
+    line.counters.builds++;
     const vertexCount = line.positions.length / 2;
     const positions = builder.upload('positions', 'float32x2', line.positions);
     const lineOffsets = builder.upload('line-offsets', 'uint32', line.lineOffsets);
@@ -70,11 +83,20 @@ export default defineOperationRun({
       createPackedSegments(line.positions, line.lineOffsets, false)
     );
     return {
-      outputs: {original, simplified, positions, keptMask, keptCount: count},
-      update: current =>
+      outputs: {
+        original,
+        simplified,
+        positions,
+        keptMask,
+        keptCount: count,
+        counters: line.counters
+      },
+      update: current => {
+        line.counters.writes++;
         parameterBuffer.write(
           getGPULineSimplificationParameterValues({tolerance: current.tolerance})
-        )
+        );
+      }
     };
   },
   // The distance from the pointer to the shoreline is the tolerance, written into the parameter
@@ -86,16 +108,16 @@ export default defineOperationRun({
       toUnit(
         findRestBesideLines(
           inputs,
-          findParameter(parameters, 'tolerance').default,
+          getLogarithmicReachDistance(toleranceParameter, toleranceParameter.default, REACH_SPAN),
           (x, y) => findNearestLine(inputs, x, y)?.distance ?? 0,
           inputs.world,
-          1e-3
+          1e-4
         )
       ),
     resolve(pointer, {inputs, outputs, peek}) {
       const hit = findNearestLine(inputs, pointer.x, pointer.y);
       if (!hit) return {};
-      const tolerance = snapToParameter(findParameter(parameters, 'tolerance'), hit.distance);
+      const tolerance = getLogarithmicReach(toleranceParameter, hit.distance, REACH_SPAN);
       const keptCount = peek(outputs.keptCount)?.[0];
       return {
         values: {tolerance},
@@ -108,7 +130,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, values}) => [
     {layer: 'lines', context: true, segments: outputs.original, radius: 4},
     {layer: 'lines', segments: outputs.simplified, color: OUTPUT_COLOR, radius: 2.4},
     {
@@ -118,6 +140,16 @@ export default defineOperationRun({
       ramp: 'sequential',
       range: [0.5, 1],
       radius: 4.5
+    },
+    {
+      layer: 'text',
+      ...createBadge({
+        lines: [
+          `tolerance ${values.tolerance.toFixed(3)}`,
+          `this graph: built ${outputs.counters.builds}\u00d7`,
+          `parameter buffer written ${outputs.counters.writes}\u00d7`
+        ]
+      })
     }
   ]
 });

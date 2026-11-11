@@ -2,48 +2,48 @@
   "featured": [
     {
       "id": "gpu-spatial-analysis.kernel-density",
-      "recordBytes": 79090,
-      "viewModelBytes": 31376
+      "recordBytes": 93884,
+      "viewModelBytes": 42161
     },
     {
       "id": "gpu-spatial-analysis.local-moran",
-      "recordBytes": 268208,
-      "viewModelBytes": 37679
+      "recordBytes": 344607,
+      "viewModelBytes": 38395
     },
     {
       "id": "gpu-network.network-service-areas",
-      "recordBytes": 93152,
-      "viewModelBytes": 34014
+      "recordBytes": 124600,
+      "viewModelBytes": 34396
     }
   ],
   "median": {
-    "id": "gpu-spatial-analysis.cell-compaction",
-    "kernels": 20
+    "id": "gpu-raster.particle-advection",
+    "kernels": 24
   },
   "bins": [
     {
       "label": "1",
-      "count": 42
-    },
-    {
-      "label": "2-4",
-      "count": 78
-    },
-    {
-      "label": "5-9",
       "count": 41
     },
     {
+      "label": "2-4",
+      "count": 70
+    },
+    {
+      "label": "5-9",
+      "count": 38
+    },
+    {
       "label": "10-19",
-      "count": 44
+      "count": 43
     },
     {
       "label": "20-49",
-      "count": 72
+      "count": 81
     },
     {
       "label": "50-99",
-      "count": 43
+      "count": 46
     },
     {
       "label": "100-299",
@@ -51,7 +51,7 @@
     },
     {
       "label": "300+",
-      "count": 28
+      "count": 31
     }
   ]
 }

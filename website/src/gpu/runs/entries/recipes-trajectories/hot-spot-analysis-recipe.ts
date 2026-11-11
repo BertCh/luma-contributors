@@ -5,11 +5,12 @@
 
 import {
   addHotSpotAnalysisRecipe,
-  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
-  GPUParameterBuffer
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {earthquakeEvents, getEventDots, getEventPosition} from './lib/earthquakes';
 import {defineOperationRun} from '../../define-run';
+import {createLegend} from '../../text';
 import {getRasterCell, getRasterCellCenter} from '../../pick';
 import {parameters} from './hot-spot-analysis-recipe.parameters';
 
@@ -92,7 +93,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
+  draw: ({outputs, theme}) => [
     {
       layer: 'raster',
       values: outputs.zScores,
@@ -102,6 +103,16 @@ export default defineOperationRun({
       range: [-4, 4],
       alpha: 0.85
     },
-    {layer: 'dots', context: true, positions: outputs.dots, radius: 2.2}
+    {layer: 'dots', context: true, positions: outputs.dots, radius: 3, color: [...theme.ink, 0.75]},
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-right',
+        entries: [
+          {label: 'cell hot by Gi* (ramp tops out at +4)', swatch: [...theme.diverging[5]]},
+          {label: 'earthquake epicentre', swatch: [...theme.ink]}
+        ]
+      })
+    }
   ]
 });

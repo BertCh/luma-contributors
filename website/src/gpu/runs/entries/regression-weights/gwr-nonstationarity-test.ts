@@ -18,6 +18,7 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {bindAxes} from '../../interaction';
+import {createChartAxes, getChartRectangle} from '../../text';
 import {parameters} from './gwr-nonstationarity-test.parameters';
 import {
   createRegressionInputs,
@@ -31,6 +32,9 @@ import {addTableColumn} from './shared/weights';
 
 const LADDER_CAPACITY = 4;
 const MAXIMUM_PERMUTATIONS = 32;
+const COEFFICIENT_NAMES = ['int', 'x1', 'x2'];
+const OBSERVED_RECTANGLE = [MAP_SHARE + 0.08, 0.42, 0.97, 0.9] as const;
+const PSEUDO_P_RECTANGLE = [MAP_SHARE + 0.08, 0.08, 0.97, 0.34] as const;
 
 export default defineOperationRun({
   parameters,
@@ -158,43 +162,60 @@ export default defineOperationRun({
       };
     }
   }),
-  draw: ({inputs, outputs}) => [
-    ...drawTractMap(inputs, outputs.mesh, outputs.slope, {ramp: 'sequential', range: [0, 3.2]}),
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.observed,
-      color: [0.55, 0.65, 0.95, 0.9],
-      range: [0, 1],
-      rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9]
-    },
-    {
-      layer: 'chart',
-      kind: 'scatter',
-      values: outputs.simulated,
-      xValues: outputs.markerPositions,
-      xRange: [0, 1],
-      range: [0, 1],
-      color: [1, 1, 1, 0.95],
-      radius: 5,
-      rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9]
-    },
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.pseudoP,
-      range: [0, 1],
-      color: [0.55, 0.65, 0.95, 0.9],
-      rectangle: [MAP_SHARE + 0.08, 0.08, 0.97, 0.34]
-    },
-    {
-      layer: 'chart',
-      kind: 'line',
-      values: outputs.significance,
-      range: [0, 1],
-      color: [1, 0.55, 0.3, 0.9],
-      radius: 1,
-      rectangle: [MAP_SHARE + 0.08, 0.08, 0.97, 0.34]
-    }
-  ]
+  draw: ({inputs, outputs, world, theme}) => {
+    const observedAxes = createChartAxes({
+      rectangle: getChartRectangle(world, OBSERVED_RECTANGLE),
+      x: {categories: COEFFICIENT_NAMES},
+      y: {range: [0, 1], ticks: [0.5, 1], title: 'spatial SD (dot: shuffled)'}
+    });
+    const pseudoPAxes = createChartAxes({
+      rectangle: getChartRectangle(world, PSEUDO_P_RECTANGLE),
+      x: {categories: COEFFICIENT_NAMES},
+      y: {range: [0, 1], ticks: [1], title: 'pseudo p'},
+      references: [{value: 0.05, label: '0.05'}]
+    });
+    return [
+      {layer: 'text', ...observedAxes.grid},
+      {layer: 'text', ...pseudoPAxes.grid},
+      ...drawTractMap(inputs, outputs.mesh, outputs.slope, {ramp: 'sequential', range: [0, 3.2]}),
+      {
+        layer: 'chart',
+        kind: 'bars',
+        values: outputs.observed,
+        color: [0.55, 0.65, 0.95, 0.9],
+        range: [0, 1],
+        rectangle: OBSERVED_RECTANGLE
+      },
+      {
+        layer: 'chart',
+        kind: 'scatter',
+        values: outputs.simulated,
+        xValues: outputs.markerPositions,
+        xRange: [0, 1],
+        range: [0, 1],
+        color: [...theme.ink, 0.95],
+        radius: 5,
+        rectangle: OBSERVED_RECTANGLE
+      },
+      {
+        layer: 'chart',
+        kind: 'bars',
+        values: outputs.pseudoP,
+        range: [0, 1],
+        color: [0.55, 0.65, 0.95, 0.9],
+        rectangle: PSEUDO_P_RECTANGLE
+      },
+      {
+        layer: 'chart',
+        kind: 'line',
+        values: outputs.significance,
+        range: [0, 1],
+        color: [1, 0.55, 0.3, 0.9],
+        radius: 1,
+        rectangle: PSEUDO_P_RECTANGLE
+      },
+      {layer: 'text', ...observedAxes},
+      {layer: 'text', ...pseudoPAxes}
+    ];
+  }
 });

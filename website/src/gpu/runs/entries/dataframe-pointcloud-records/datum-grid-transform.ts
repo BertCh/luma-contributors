@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUDatumGridTransform} from '@luma-contributors/analysis/geospatial-analysis';
+import {
+  GPUDatumGridTransform,
+  GPU_DATUM_GRID_TRANSFORM_STATUS
+} from '@luma-contributors/analysis/geospatial-analysis';
 import grid from '../../../data/midwest-nadcon.json';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {addKernelPass} from '../regression-weights/shared/kernel';
@@ -20,6 +23,8 @@ type Outputs = {
   tips: RunBuffer;
   meters: RunBuffer;
   boundaries: RunBuffer;
+  origins: RunBuffer;
+  exhausted: RunBuffer;
   pointerVector: RunBuffer;
 };
 
@@ -27,7 +32,7 @@ export default defineOperationRun<Inputs, Outputs>({
   parameters,
   geographicWindow: [west, south, east, north],
   caption:
-    'Midwest NADCON shifts. Lines join test locations to magnified shifts, colored by ground displacement; one location follows the pointer. The iteration limit only matters for the inverse direction.',
+    'Midwest NADCON shifts. Lines join test locations to magnified shifts, colored by ground displacement; one location follows the pointer. Inverse direction: where the iteration limit stops it before the tolerance is met, the location is marked and has no vector.',
   createInputs: () => {
     const samples = new Float32Array(grid.width * grid.height * 3);
     for (let node = 0; node < grid.width * grid.height; node++) {
@@ -42,13 +47,14 @@ export default defineOperationRun<Inputs, Outputs>({
     // The low output retains the angular correction, even for sub-f32 displacements.
     const shift = builder.allocate('angular-shift', 'float32x3', POINT_COUNT);
     const magnification = builder.allocate('vector-magnification', 'float32', 1);
+    const status = builder.allocate('status', 'uint32', POINT_COUNT);
     builder.graph.add(
       new GPUDatumGridTransform({
         positions: positions.view,
         positionsLow: builder.upload('input-low', 'float32x3', new Float32Array(POINT_COUNT * 3))
           .view,
         samples: builder.upload('nadcon-degrees', 'float32x3', inputs.samples).view,
-        validity: builder.upload(
+        mask: builder.upload(
           'validity',
           'uint32',
           new Uint32Array(grid.width * grid.height).fill(1)
@@ -65,17 +71,19 @@ export default defineOperationRun<Inputs, Outputs>({
         operation: 'horizontal',
         direction: values.direction === 0 ? 'forward' : 'inverse',
         maximumIterations: values.maximumIterations,
-        tolerance: 1e-8,
+        tolerance: 3e-9,
         output: {
           positions: builder.allocate('transformed-high', 'float32x3', POINT_COUNT).view,
           positionsLow: shift.view,
-          status: builder.allocate('status', 'uint32', POINT_COUNT).view
+          status: status.view
         }
       })
     );
     const vectors = builder.allocate('display-vectors', 'float32x4', POINT_COUNT);
     const tips = builder.allocate('display-tips', 'float32x2', POINT_COUNT);
     const meters = builder.allocate('displacement-meters', 'float32', POINT_COUNT);
+    const origins = builder.allocate('display-origins', 'float32x2', POINT_COUNT);
+    const exhausted = builder.allocate('inverse-exhausted', 'float32', POINT_COUNT);
     addKernelPass(builder, {
       id: 'magnify-datum-vectors',
       invocationCount: POINT_COUNT,
@@ -101,12 +109,28 @@ export default defineOperationRun<Inputs, Outputs>({
   tips[tipsOffset + index * 2u + 1u] = tip.y;
   meters[metersOffset + index] = 111320.0 * length(delta * vec2f(cos(radians(origin.y)), 1.0));`
     });
+    addKernelPass(builder, {
+      id: 'mark-exhausted-inverse',
+      invocationCount: POINT_COUNT,
+      bindings: [
+        {name: 'positions', buffer: positions, access: 'read'},
+        {name: 'status', buffer: status, access: 'read'},
+        {name: 'origins', buffer: origins, access: 'read_write'},
+        {name: 'exhausted', buffer: exhausted, access: 'read_write'}
+      ],
+      body: `let source = positionsOffset + index * 3u;
+  origins[originsOffset + index * 2u] = positions[source];
+  origins[originsOffset + index * 2u + 1u] = positions[source + 1u];
+  exhausted[exhaustedOffset + index] = select(0.0, 1.0, (status[statusOffset + index] & ${GPU_DATUM_GRID_TRANSFORM_STATUS.inverseExhausted}u) != 0u);`
+    });
     return {
       outputs: {
         pointerVector: builder.allocate('pointer-vector', 'float32x4', 1),
         vectors,
         tips,
         meters,
+        origins,
+        exhausted,
         boundaries: builder.upload(
           'state-boundaries',
           'float32x4',
@@ -183,6 +207,16 @@ export default defineOperationRun<Inputs, Outputs>({
       color: [1, 0.75, 0.2, 1],
       radius: 3.4
     },
-    {layer: 'dots', positions: outputs.tips, values: outputs.meters, radius: 6, range: [0, 30]}
+    {layer: 'dots', positions: outputs.tips, values: outputs.meters, radius: 6, range: [0, 30]},
+    // Locations where the inverse iteration stopped before reaching its tolerance: no shift is written.
+    {
+      layer: 'dots',
+      positions: outputs.origins,
+      values: outputs.exhausted,
+      range: [0, 1],
+      fade: true,
+      radius: 9,
+      ramp: 'diverging'
+    }
   ]
 });

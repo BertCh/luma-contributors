@@ -14,6 +14,7 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun, type RunLayer} from '../../define-run';
 import {createTracts, uploadSpatialWeights} from '../../inputs';
+import {createChartAxes, getChartRectangle, mergeText} from '../../text';
 import {findParameter, getFractionOf, getParameterAt} from '../../interaction';
 import {whenShown} from './shared/point-field';
 import {parameters} from './multiple-testing-adjustment.parameters';
@@ -27,7 +28,9 @@ const METHODS = [
 ] as const;
 const METHOD_PARAMETER = findParameter(parameters, 'method');
 const ALPHA_PARAMETER = findParameter(parameters, 'alpha');
-const PERMUTATION_COUNT = 199;
+// 999 shuffles give p-values down to 0.001: with 199 (smallest p 0.005) no strong cluster of
+// tracts survives a correction over 120 tests, and every method would read 0 significant.
+const PERMUTATION_COUNT = 999;
 const PLOT = [0.1, 0.1, 0.9, 0.92] as const;
 
 export default defineOperationRun({
@@ -145,7 +148,17 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs, values, interaction, theme}): readonly RunLayer[] => {
+  draw: ({outputs, values, interaction, theme, world}): readonly RunLayer[] => {
+    const rectangle = getChartRectangle(world, PLOT);
+    const axes = createChartAxes({
+      rectangle,
+      x: {range: [0, 1], ticks: [0, 0.5, 1], title: 'raw p'},
+      y: {range: [0, 1], ticks: [0, 0.5, 1], title: 'adjusted p', grid: false}
+    });
+    // The permutation p-value cannot fall under 1/(shuffles + 1); Bonferroni multiplies by the tests.
+    const floor = 1 / (PERMUTATION_COUNT + 1);
+    const isCapped = values.method === 1 || values.method === 2;
+    const smallestAdjusted = Math.min(1, floor * outputs.pValues.length);
     const shownCount = typeof interaction.focus === 'number' ? interaction.focus : 0;
     return [
       {layer: 'lines', context: true, segments: outputs.diagonal, radius: 1},
@@ -165,8 +178,47 @@ export default defineOperationRun({
         positions: outputs.significant,
         count: shownCount,
         color: [...theme.categories[1], 1],
-        radius: 5
-      })
+        radius: 9
+      }),
+      {
+        layer: 'text',
+        ...mergeText(axes, {
+          labels: [
+            {
+              text: `alpha ${values.alpha.toFixed(2)}`,
+              at: [
+                rectangle[0] + 0.5 * (rectangle[2] - rectangle[0]),
+                rectangle[1] + values.alpha * (rectangle[3] - rectangle[1])
+              ],
+              anchor: 'bottom',
+              offset: [0, 2],
+              role: 'label',
+              priority: 4
+            },
+            {
+              text: 'significant after adjustment',
+              at: [rectangle[2], rectangle[1]],
+              anchor: 'bottom-right',
+              offset: [0, 22],
+              role: 'label',
+              priority: 5,
+              swatch: 1
+            },
+            ...(isCapped
+              ? [
+                  {
+                    text: `smallest possible adjusted p: ${smallestAdjusted.toFixed(2)} (${PERMUTATION_COUNT} shuffles)`,
+                    at: [rectangle[2], rectangle[1]] as const,
+                    anchor: 'bottom-right' as const,
+                    offset: [0, 38] as const,
+                    role: 'label' as const,
+                    priority: 5
+                  }
+                ]
+              : [])
+          ]
+        })
+      }
     ];
   }
 });

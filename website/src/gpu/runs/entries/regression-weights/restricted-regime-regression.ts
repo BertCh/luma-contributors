@@ -8,6 +8,7 @@
 
 import {GPURestrictedRegimeRegression} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {createLegend, mergeText} from '../../text';
 import {parameters} from './restricted-regime-regression.parameters';
 import {
   createRegressionInputs,
@@ -112,28 +113,62 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
-    ...drawTractMap(inputs, outputs.mesh, outputs.fitted, {ramp: 'sequential', range: [-2, 4]}),
-    // The two regimes the model assumes, tinted over the fitted values; the tint follows the break.
-    {
-      layer: 'polygons',
-      positions: outputs.mesh.vertices,
-      indices: outputs.mesh.indices,
-      owners: outputs.mesh.owners,
-      values: outputs.regimes,
-      triangleCount: inputs.tracts.triangleCount,
-      ramp: 'categorical',
-      alpha: 0.4
-    },
-    ...drawSignedBars(outputs.coefficients, COEFFICIENT_RECTANGLE, 3),
-    drawZeroLine(outputs.zeros, COEFFICIENT_RECTANGLE),
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.chowStatistic,
-      color: [0.95, 0.6, 0.3, 0.95],
-      range: [0, 60],
-      rectangle: [MAP_SHARE + 0.08, 0.08, 0.97, 0.34]
-    }
-  ]
+  draw: ({inputs, outputs, world}) => {
+    const titles = mergeText({
+      labels: [
+        {
+          text: 'coefficients (a shared one is one bar)',
+          at: [(MAP_SHARE + 0.08) * world.width, 0.9 * world.height],
+          anchor: 'bottom-left',
+          offset: [0, 3],
+          role: 'label',
+          priority: 4
+        },
+        {
+          text: 'Chow F',
+          at: [(MAP_SHARE + 0.08) * world.width, 0.34 * world.height],
+          anchor: 'bottom-left',
+          offset: [0, 3],
+          role: 'label',
+          priority: 4
+        }
+      ]
+    });
+    return [
+      ...drawTractMap(inputs, outputs.mesh, outputs.fitted, {ramp: 'sequential', range: [-2, 4]}),
+      // The two regimes the model assumes, tinted over the fitted values; the tint follows the break.
+      {
+        layer: 'polygons',
+        positions: outputs.mesh.vertices,
+        indices: outputs.mesh.indices,
+        owners: outputs.mesh.owners,
+        values: outputs.regimes,
+        triangleCount: inputs.tracts.triangleCount,
+        ramp: 'categorical',
+        alpha: 0.4
+      },
+      ...drawSignedBars(outputs.coefficients, COEFFICIENT_RECTANGLE, 3),
+      drawZeroLine(outputs.zeros, COEFFICIENT_RECTANGLE),
+      {
+        layer: 'chart',
+        kind: 'bars',
+        values: outputs.chowStatistic,
+        color: [0.95, 0.6, 0.3, 0.95],
+        range: [0, 60],
+        rectangle: [MAP_SHARE + 0.08, 0.08, 0.97, 0.34]
+      },
+      {layer: 'text', ...titles},
+      {
+        layer: 'text',
+        ...createLegend({
+          corner: 'top-left',
+          title: 'regime tint',
+          entries: [
+            {label: 'west', swatch: 0},
+            {label: 'east', swatch: 1}
+          ]
+        })
+      }
+    ];
+  }
 });

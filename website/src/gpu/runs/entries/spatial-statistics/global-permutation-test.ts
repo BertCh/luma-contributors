@@ -14,7 +14,7 @@ import {
 import {defineOperationRun} from '../../define-run';
 import {findParameter, getFractionOf, getParameterAt} from '../../interaction';
 import {uploadSpatialWeights} from '../../inputs';
-import {drawReferenceHistogram} from './shared/permutation-chart';
+import {createReferenceHistogramText, drawReferenceHistogram} from './shared/permutation-chart';
 import {createNeighborGraph, createPointField, mixNoise} from './shared/point-field';
 import {parameters} from './global-permutation-test.parameters';
 
@@ -23,12 +23,14 @@ const STATISTIC_LABELS = ['Moran I', 'Geary C', 'Getis-Ord G'] as const;
 const MAXIMUM_PERMUTATIONS = 999;
 const HISTOGRAM_BINS = 28;
 const COUNT_PARAMETER = findParameter(parameters, 'permutationCount');
-const CHART = [0.1, 0.04, 0.9, 0.22] as const;
+// The reference histogram is the picture's second half: it gets the lower 45% of the frame.
+const CHART_BAND = 0.45;
+const CHART = [0.08, 0.04, 0.92, 0.41] as const;
 
 export default defineOperationRun({
   parameters,
   caption: 'Observed statistic against shuffles of the values: more shuffles settle the p-value.',
-  createInputs: ({random, world}) => createPointField(random, world, 500),
+  createInputs: ({random, world}) => createPointField(random, world, 500, CHART_BAND),
   build(builder, points, values) {
     const graph = createNeighborGraph(points.positions, 6);
     const valueBuffer = builder.allocate('values', 'float32', points.count);
@@ -84,15 +86,16 @@ export default defineOperationRun({
       const permutationCount = getParameterAt(COUNT_PARAMETER, pointer.unitX);
       const summary = peek(outputs.summary);
       const observed = summary?.[GPU_GLOBAL_PERMUTATION_SUMMARY.observed] ?? NaN;
+      const pseudoP = summary?.[GPU_GLOBAL_PERMUTATION_SUMMARY.pseudoPValue];
       const {glyphs} = drawReferenceHistogram({
         histogram: outputs.bins,
         samples: peek(outputs.reference),
         sampleCount: permutationCount,
         observed,
         rectangle: CHART,
-        world
+        world,
+        pseudoP
       });
-      const pseudoP = summary?.[GPU_GLOBAL_PERMUTATION_SUMMARY.pseudoPValue];
       return {
         values: {permutationCount},
         glyphs,
@@ -102,7 +105,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs, theme}) => [
+  draw: ({outputs, theme, values, world}) => [
     {
       layer: 'dots',
       positions: outputs.positions,
@@ -117,6 +120,16 @@ export default defineOperationRun({
       range: [0, 1],
       rectangle: CHART,
       color: [...theme.categories[0], 0.9]
+    },
+    {
+      layer: 'text',
+      ...createReferenceHistogramText({
+        histogram: outputs.bins,
+        rectangle: CHART,
+        world,
+        statistic: STATISTIC_LABELS[values.statistic],
+        decimals: 3
+      })
     }
   ]
 });

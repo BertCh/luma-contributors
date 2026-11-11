@@ -7,6 +7,7 @@
 import {GPUAdjacencyMatrix, GPUAdjacencyMatrixOrder} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {getRasterCell, getRasterCellCenter} from '../../pick';
+import {createMatrixNote, createBandText} from './shared/band-text';
 import {createBandedGraph, uploadAdjacency} from './shared/graphs';
 import {parameters} from './adjacency-matrix.parameters';
 
@@ -14,7 +15,8 @@ const RESOLUTIONS = [32, 64, 128];
 
 export default defineOperationRun({
   parameters,
-  caption: 'Chicago home-to-work links by tract, grouped into north-to-south bands.',
+  caption:
+    'Chicago commuting links between tracts (either direction, most links between bands left out), grouped into north-to-south bands.',
   createInputs: () => ({}),
   build(builder, _inputs, values) {
     const graph = createBandedGraph(Math.round(values.communities));
@@ -41,14 +43,14 @@ export default defineOperationRun({
         output: {counts: counts.view, maximumCount: maximumCount.view}
       })
     );
-    return {outputs: {counts, nodeCount: graph.nodeCount}};
+    return {outputs: {counts, nodeCount: graph.nodeCount, graph}};
   },
   rebuildOn: ['order', 'resolution', 'communities'],
   // Probe: the cell under the pointer is a block of tract pairs; its row and column bands are outlined.
   interaction: {
     kind: 'probe',
     hint: 'hover a cell',
-    rest: [0.5, 0.5],
+    rest: [0.66, 0.34],
     resolve(pointer, {outputs, values, world, peek}) {
       const resolution = RESOLUTIONS[values.resolution];
       const bounds = [0, 0, world.width, 1] as const;
@@ -91,7 +93,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs, values}) => [
+  draw: ({outputs, values, world}) => [
     {
       layer: 'raster',
       values: outputs.counts,
@@ -99,6 +101,12 @@ export default defineOperationRun({
       rows: RESOLUTIONS[values.resolution],
       ramp: 'sequential',
       range: [0, 3]
+    },
+    {
+      layer: 'text',
+      ...(values.order === 1
+        ? createBandText(outputs.graph, world, Math.round(values.communities))
+        : createMatrixNote())
     }
   ]
 });

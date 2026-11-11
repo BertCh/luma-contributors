@@ -108,6 +108,43 @@ export default defineOperationRun({
     // The hovered depression, its parent and the chart of its curves: written by the pointer.
     const highlight = builder.allocate('highlight', 'uint32', terrain.cellCount);
     const curve = builder.allocate('curve', 'float32', stageCount * 2);
+    // Until the pointer picks one, the chart shows the depression that holds the first sub-pit, one
+    // level up, on the same scale (the largest area and volume of any depression at any stage).
+    const [restColumn, restRow] = terrain.subPitCenters[0];
+    const restCell = Math.floor(restRow) * terrain.columns + Math.floor(restColumn);
+    builder.graph.add({
+      getCommandNodes: graph => [
+        createWGSLKernelNode(graph, {
+          id: 'default-curve',
+          operation: 'default-curve',
+          bindings: [
+            {name: 'owners', view: cellNodes.view, type: 'u32', access: 'read'},
+            {name: 'nodes', view: nodes.view, type: 'u32', access: 'read'},
+            {name: 'curves', view: curves.view, type: 'f32', access: 'read'},
+            {name: 'chart', view: curve.view, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: stageCount * 2,
+          body: `let kind = index / ${stageCount}u;
+  let stage = index % ${stageCount}u;
+  var node = owners[ownersOffset + ${restCell}u];
+  if (node < ${nodeCapacity}u) {
+    let parent = nodes[nodesOffset + node * 4u];
+    if (parent < ${nodeCapacity}u) { node = parent; }
+  }
+  var maximum = 1.0e-9;
+  for (var entry = 0u; entry < ${nodeCapacity * stageCount}u; entry++) {
+    let value = curves[curvesOffset + entry * 2u + kind];
+    if (value == value && value < 1.0e20) { maximum = max(maximum, value); }
+  }
+  var own = 0.0;
+  if (node < ${nodeCapacity}u) {
+    let value = curves[curvesOffset + (node * ${stageCount}u + stage) * 2u + kind];
+    if (value == value && value < 1.0e20) { own = value; }
+  }
+  chart[chartOffset + index] = own / maximum;`
+        })
+      ]
+    });
     return {
       outputs: {elevation, nodes, levels, cellNodes, curves, fillDepth, highlight, curve}
     };
@@ -132,7 +169,8 @@ export default defineOperationRun({
       const isRest = Math.hypot(pointer.unitX - restX, pointer.unitY - restY) < 0.003;
       const focused = !isRest && cellNodes[cell.index] < nodeCapacity ? cellNodes[cell.index] : -1;
       // The chart keeps the depression under the pointer even at rest, so it always shows curves.
-      const charted = cellNodes[cell.index] < nodeCapacity ? cellNodes[cell.index] : -1;
+      let charted = cellNodes[cell.index] < nodeCapacity ? cellNodes[cell.index] : -1;
+      if (isRest && charted >= 0 && nodes[charted * 4] < nodeCapacity) charted = nodes[charted * 4];
       const focusKey = focused * 100000 + charted * 100 + stageCount;
       if (inputs.focus.node !== focusKey || inputs.focus.source !== cellNodes) {
         inputs.focus = {node: focusKey, source: cellNodes};

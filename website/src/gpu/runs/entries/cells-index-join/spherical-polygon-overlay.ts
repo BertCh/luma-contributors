@@ -90,13 +90,12 @@ export default defineOperationRun({
             positions: positions.view,
             ringOffsets: ringOffsets.view,
             polygonOffsets: polygonOffsets.view,
-            featureOffsets: featureOffsets.view,
-            sourceIds: builder.allocate('source-ids', 'uint32', OUTPUT_OFFSETS - 1).view
+            featureOffsets: featureOffsets.view
           },
           complement: status[3].view,
           status: {
             count: count.view,
-            requiredCount: status[0].view,
+            requiredRingCount: status[0].view,
             overflow: status[1].view,
             candidateOverflow: status[2].view
           },

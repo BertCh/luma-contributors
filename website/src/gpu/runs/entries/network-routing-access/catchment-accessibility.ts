@@ -16,6 +16,8 @@ import {
   moveFacility,
   uploadSearch
 } from './shared/access';
+import {createLegend} from '../../text';
+import {addMatrixFootprint, addZoneSegments} from './shared/display';
 import {getRoadContext, uploadRoads} from './shared/roads';
 import {parameters} from './catchment-accessibility.parameters';
 
@@ -62,9 +64,31 @@ export default defineOperationRun({
         output: {accessibility: accessibility.view, ratios: ratios.view}
       })
     );
+    // The dragged facility's catchment: the roads within costLimit of it, from its row of the same
+    // cost matrix, read on the GPU.
+    const activeFacility = builder.allocate('active-facility', 'uint32', 1);
+    const reachLimit = builder.allocate('reach-limit', 'float32', 1);
+    const footprint = addMatrixFootprint(builder, {
+      id: 'catchment',
+      costs: matrix,
+      nodeCount: network.nodeCount,
+      columnCount: network.nodeCount,
+      mode: 'row',
+      selector: activeFacility,
+      limit: reachLimit,
+      floor: 1
+    });
+    const roads = uploadRoads(builder, network);
+    const reach = addZoneSegments(builder, {
+      id: 'catchment',
+      nodes: roads.nodes,
+      edges: roads.edges,
+      values: footprint
+    });
     return {
       outputs: {
-        ...uploadRoads(builder, network),
+        ...roads,
+        reach,
         accessibility,
         demands: builder.upload('demands', 'float32x2', scene.demandPositions),
         facilities
@@ -73,6 +97,8 @@ export default defineOperationRun({
         facilityNodes.write(scene.facilityNodes);
         facilities.write(scene.facilityPositions);
         search.costLimit.write(Float32Array.of(2));
+        activeFacility.write(Uint32Array.of(Math.max(scene.drag.active, 0)));
+        reachLimit.write(Float32Array.of(current.costLimit));
         parameterBuffer.write(
           getGPUNetworkCostWeightsParameterValues({
             costLimit: current.costLimit,
@@ -96,23 +122,35 @@ export default defineOperationRun({
       ];
       return {
         rerun: move.changed,
-        glyphs: [
-          {shape: 'ring', at, radius: values.costLimit, dashed: true},
-          {shape: 'crosshair', at, size: 14}
-        ],
+        glyphs: [{shape: 'crosshair', at, size: 14}],
         readout: `facility ${move.facility + 1} · costLimit ${values.costLimit.toFixed(2)}`
       };
     }
   },
   draw: ({outputs, theme}) => [
     getRoadContext(outputs),
+    // The roads inside the dragged facility's catchment (within costLimit of it).
+    {layer: 'lines', segments: outputs.reach, radius: 4, color: [...theme.categories[3], 0.7]},
     {
       layer: 'dots',
       positions: outputs.demands,
       values: outputs.accessibility,
       range: [0, 0.05],
-      radius: 6
+      radius: 7
     },
-    ...getFacilityMarkers(outputs.facilities, theme, {radius: 8})
+    ...getFacilityMarkers(outputs.facilities, theme, {radius: 8}),
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        entries: [
+          {
+            label: 'roads within costLimit of the dragged facility',
+            swatch: [...theme.categories[3]]
+          },
+          {label: 'demand, by accessibility (output)', swatch: [...theme.ramp[4]]}
+        ]
+      })
+    }
   ]
 });

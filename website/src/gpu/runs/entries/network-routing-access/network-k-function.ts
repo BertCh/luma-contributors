@@ -10,6 +10,7 @@ import {
   getGPUNetworkKFunctionParameterValues
 } from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
+import {createLegend} from '../../text';
 import {uploadNetworkTopology} from '../../inputs';
 import {createInsetMap, createRoads, getRoadContext} from './shared/roads';
 import {addSlice} from './shared/display';
@@ -197,6 +198,17 @@ export default defineOperationRun({
         range,
         color: [1, 0.78, 0.25, 1],
         radius: 3
+      },
+      {
+        layer: 'text',
+        ...createLegend({
+          corner: 'top-left',
+          entries: [
+            {label: 'observed K(r)', swatch: [1, 0.78, 0.25]},
+            {label: 'random-event envelope', swatch: [0.5, 0.7, 1]},
+            {label: 'events', swatch: [1, 0.78, 0.25]}
+          ]
+        })
       }
     ];
   }

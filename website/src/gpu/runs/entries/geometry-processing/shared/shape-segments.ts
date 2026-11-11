@@ -505,7 +505,9 @@ export function addRingArrows(
   id: string,
   positions: RunBuffer<'float32x2'>,
   ringOffsets: RunBuffer<'uint32'>,
-  ringCount: number
+  ringCount: number,
+  /** Multiplies the arrow's size. Default 1. */
+  scale = 1
 ): RunBuffer<'float32x4'> {
   const segments = builder.allocate(`${id}-arrows`, 'float32x4', ringCount * 3);
   addKernel(builder, {
@@ -522,10 +524,10 @@ export function addRingArrows(
   let direction = normalize(end - start + vec2<f32>(1e-9, 0.0));
   let normal = vec2<f32>(-direction.y, direction.x);
   let middle = (start + end) * 0.5;
-  let tip = middle + direction * 0.024;
-  let tail = middle - direction * 0.024;
-  let wingA = tip - direction * 0.022 + normal * 0.013;
-  let wingB = tip - direction * 0.022 - normal * 0.013;
+  let tip = middle + direction * ${(0.024 * scale).toFixed(4)};
+  let tail = middle - direction * ${(0.024 * scale).toFixed(4)};
+  let wingA = tip - direction * ${(0.022 * scale).toFixed(4)} + normal * ${(0.013 * scale).toFixed(4)};
+  let wingB = tip - direction * ${(0.022 * scale).toFixed(4)} - normal * ${(0.013 * scale).toFixed(4)};
   let base = segmentsOffset + index * 12u;
   segments[base] = tail.x; segments[base + 1u] = tail.y; segments[base + 2u] = tip.x; segments[base + 3u] = tip.y;
   segments[base + 4u] = tip.x; segments[base + 5u] = tip.y; segments[base + 6u] = wingA.x; segments[base + 7u] = wingA.y;

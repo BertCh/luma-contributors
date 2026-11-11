@@ -143,13 +143,13 @@ export default defineOperationRun({
     getRoadContext(outputs),
     values.measure === 0
       ? // Demand beyond `threshold` of its nearest open site is uncovered and draws muted.
-        {layer: 'dots', positions: outputs.demands, values: outputs.coveredFacilities, radius: 5}
+        {layer: 'dots', positions: outputs.demands, values: outputs.coveredFacilities, radius: 8}
       : {
           layer: 'dots',
           positions: outputs.demands,
           values: outputs.accessibility,
           range: [0, 6],
-          radius: 5
+          radius: 8
         },
     ...getFacilityMarkers(outputs.facilities, theme, {ids: outputs.facilityIds, radius: 11})
   ]

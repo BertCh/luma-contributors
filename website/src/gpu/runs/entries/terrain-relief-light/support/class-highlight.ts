@@ -35,10 +35,11 @@ export function writeClassMask(
   mask.write(values);
 }
 
-/** The layer that dims the cells the mask marks. */
+/** The layer that dims the cells the mask marks, by default with a translucent grey. */
 export function drawClassDimmer(
   terrain: {columns: number; rows: number},
-  mask: RunBuffer
+  mask: RunBuffer,
+  dimColor: readonly [number, number, number, number] = [0.45, 0.47, 0.52, 0.6]
 ): RasterRunLayer {
   return {
     layer: 'raster',
@@ -46,9 +47,6 @@ export function drawClassDimmer(
     columns: terrain.columns,
     rows: terrain.rows,
     ramp: 'categorical',
-    categories: [
-      [0, 0, 0, 0],
-      [0.45, 0.47, 0.52, 0.6]
-    ]
+    categories: [[0, 0, 0, 0], dimColor]
   };
 }

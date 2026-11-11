@@ -10,6 +10,7 @@ import {GPUPairGather} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createUniformPoints} from '../../inputs';
 import type {RunGlyph} from '../../interaction';
+import {createLegend} from '../../text';
 import {chooseSticky, createPointIndex} from '../../pick';
 import {addKernelPass} from './shared/kernel';
 import {stretchPoints} from './shared/weights';
@@ -168,21 +169,42 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, theme}) => [
     {
       layer: 'dots',
       context: true,
       positions: outputs.targetPositions,
-      values: outputs.targetValues,
-      radius: 3
+      color: [0.35, 0.85, 0.5, 1],
+      radius: 4.5
     },
-    {layer: 'lines', segments: outputs.segments, color: [1, 0.55, 0.2, 0.7], radius: 1},
+    {layer: 'lines', segments: outputs.segments, color: [1, 0.55, 0.2, 0.95], radius: 1.6},
     {
       layer: 'dots',
       positions: outputs.queryDots,
       values: outputs.gathered,
-      radius: 6,
+      radius: 7,
       range: [0, 1]
+    },
+    {
+      layer: 'dots',
+      context: true,
+      positions: outputs.queryPositions,
+      color: [0.35, 0.6, 1, 1],
+      radius: 4
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        entries: [
+          {label: 'left rows (queries)', swatch: [0.35, 0.6, 1]},
+          {label: 'right rows (targets)', swatch: [0.35, 0.85, 0.5]},
+          {label: 'joined pair', swatch: [1, 0.55, 0.2]},
+          {label: 'big disc: gathered value, high', swatch: [...theme.ramp[5]]},
+          {label: 'big disc: gathered value, low', swatch: [...theme.ramp[1]]},
+          {label: 'grey disc: no match', swatch: [...theme.muted]}
+        ]
+      })
     }
   ]
 });

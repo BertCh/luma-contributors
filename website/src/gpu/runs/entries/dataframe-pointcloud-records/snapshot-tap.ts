@@ -23,12 +23,19 @@ import {
   RELAXATION_SLOT_NAMES,
   ShapeBatch
 } from '../../record-demo';
+import type {RunLabel} from '../../text';
 import {getBoxGlyph, type Box} from './_lib/record-probe';
 import {parameters} from './snapshot-tap.parameters';
 
 const COORDINATE_COUNT = 10;
 // The tap's iteration is picked among these (applied once the pointer rests: it changes the graph).
 const MAXIMUM_PICK = 5;
+const MAP_AREA = {y0: 0.03, y1: 0.43};
+const MAP_TITLES = [
+  'state',
+  'residual (change in the last step)',
+  'deviation (drift from the start)'
+];
 
 type Latest = {boxes: ReturnType<typeof createDiagram>['layout']['boxes']};
 
@@ -100,7 +107,7 @@ export default defineOperationRun({
     const bySlot = groupCapturesBySlot(captures);
     const slotNames = RELAXATION_SLOT_NAMES.slice(0, values.views);
     const maps = RELAXATION_SLOT_NAMES.map(() => new ShapeBatch());
-    const mapArea = {x0: 0.05 * world.width, x1: 0.95 * world.width, y0: 0.03, y1: 0.43};
+    const mapArea = {x0: 0.05 * world.width, x1: 0.95 * world.width, ...MAP_AREA};
     let maximumResidual = 1e-6;
     for (const frame of bySlot.get('residual') ?? []) {
       for (const value of Array.from(frame.values))
@@ -137,7 +144,9 @@ export default defineOperationRun({
       tickCount: ticks.segmentCount,
       marker: marker.uploadShapes(upload, 'coordinate-marker'),
       maps: maps.map((batch, index) => batch.uploadShapes(upload, `map-${index}`)),
-      maximumResidual
+      maximumResidual,
+      tappedIteration: Math.min(values.afterNode, values.iterations),
+      viewCount: values.views
     };
   },
   // The pointer picks the iteration the tap follows: the column of nodes under it is outlined, and
@@ -171,49 +180,76 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({extra, theme}) => [
-    {
-      layer: 'lines',
-      context: true,
-      segments: extra.diagram.edges,
-      count: extra.diagram.edgeCount,
-      radius: 1
-    },
-    {
-      layer: 'polygons',
-      positions: extra.diagram.shapes.positions,
-      indices: extra.diagram.shapes.indices,
-      owners: extra.diagram.shapes.owners,
-      values: extra.diagram.shapes.categories,
-      triangleCount: extra.diagram.shapes.triangleCount,
-      categories: [theme.muted, theme.categories[2]]
-    },
-    {
-      layer: 'lines',
-      segments: extra.highlight,
-      count: extra.highlightCount,
-      radius: 2.2,
-      color: [...theme.categories[2], 1]
-    },
-    {layer: 'lines', context: true, segments: extra.ticks, count: extra.tickCount, radius: 1.4},
-    {
-      layer: 'polygons',
-      positions: extra.marker.positions,
-      indices: extra.marker.indices,
-      owners: extra.marker.owners,
-      values: extra.marker.categories,
-      triangleCount: extra.marker.triangleCount,
-      categories: [theme.muted, theme.categories[1]]
-    },
-    ...extra.maps.map((map, index): import('../../define-run').RunLayer => ({
-      layer: 'polygons',
-      positions: map.positions,
-      indices: map.indices,
-      owners: map.owners,
-      values: map.values,
-      triangleCount: map.triangleCount,
-      range: index === 0 ? [0, 1] : index === 1 ? [0, extra.maximumResidual] : [-0.4, 0.4],
-      ramp: index === 2 ? 'diverging' : 'sequential'
-    }))
-  ]
+  draw: ({extra, theme, world}) => {
+    const mapArea = {x0: 0.05 * world.width, x1: 0.95 * world.width, ...MAP_AREA};
+    const labels: RunLabel[] = [
+      {
+        text: `recorded graph: the tap (red copy node) follows iteration ${extra.tappedIteration}`,
+        at: [0.05 * world.width, 0.995],
+        anchor: 'top-left',
+        role: 'title'
+      },
+      {
+        text: 'frame iteration coordinate (bar = this frame)',
+        at: [0.05 * world.width, 0.45],
+        anchor: 'top-left',
+        role: 'tick'
+      },
+      ...MAP_TITLES.slice(0, extra.viewCount).map((text, column) => {
+        const cell = getGridCell(mapArea, extra.viewCount, 1, column, 0, 0.02);
+        return {
+          text: `copied: ${text}`,
+          at: [cell.x0, cell.y1] as const,
+          anchor: 'top-left' as const,
+          role: 'label' as const
+        };
+      })
+    ];
+    return [
+      {
+        layer: 'lines',
+        context: true,
+        segments: extra.diagram.edges,
+        count: extra.diagram.edgeCount,
+        radius: 1
+      },
+      {
+        layer: 'polygons',
+        positions: extra.diagram.shapes.positions,
+        indices: extra.diagram.shapes.indices,
+        owners: extra.diagram.shapes.owners,
+        values: extra.diagram.shapes.categories,
+        triangleCount: extra.diagram.shapes.triangleCount,
+        categories: [theme.muted, theme.categories[2]]
+      },
+      {
+        layer: 'lines',
+        segments: extra.highlight,
+        count: extra.highlightCount,
+        radius: 2.2,
+        color: [...theme.categories[2], 1]
+      },
+      {layer: 'lines', context: true, segments: extra.ticks, count: extra.tickCount, radius: 1.4},
+      {
+        layer: 'polygons',
+        positions: extra.marker.positions,
+        indices: extra.marker.indices,
+        owners: extra.marker.owners,
+        values: extra.marker.categories,
+        triangleCount: extra.marker.triangleCount,
+        categories: [theme.muted, theme.categories[1]]
+      },
+      ...extra.maps.map((map, index): import('../../define-run').RunLayer => ({
+        layer: 'polygons',
+        positions: map.positions,
+        indices: map.indices,
+        owners: map.owners,
+        values: map.values,
+        triangleCount: map.triangleCount,
+        range: index === 0 ? [0, 1] : index === 1 ? [0, extra.maximumResidual] : [-0.4, 0.4],
+        ramp: index === 2 ? 'diverging' : 'sequential'
+      })),
+      {layer: 'text', labels}
+    ];
+  }
 });

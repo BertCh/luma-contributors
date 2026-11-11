@@ -7,7 +7,6 @@
 import type {CatalogEntry, OutputDoc, ParamDoc} from '../schema';
 
 const IMPORT_PATH = '@luma-contributors/analysis/raster-analysis';
-const SPATIAL_IMPORT_PATH = '@luma-contributors/analysis/gpu-spatial-analysis';
 
 type ParameterBufferOptions = {
   format: 'float32' | 'uint32';
@@ -40,7 +39,9 @@ function makeExample(options: ExampleOptions): string {
   const {parameters} = options;
   const lines = [
     `import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';`,
-    ...(parameters ? [`import {GPUParameterBuffer} from '${SPATIAL_IMPORT_PATH}';`] : []),
+    ...(parameters
+      ? [`import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';`]
+      : []),
     `import {${[...options.symbols].sort().join(', ')}} from '${IMPORT_PATH}';`,
     '',
     `const graph = new GPUCommandGraph(device, {id: 'demo'});`,
@@ -579,7 +580,11 @@ export const entries: CatalogEntry[] = [
     ],
     outputs: [
       makeOutput('values', FLOAT, 'Selected value per cell.'),
-      makeOutput('outputMask', UINT, 'Validity flag per cell (optional).')
+      makeOutput(
+        'conditionResult',
+        UINT,
+        'Condition result per cell: 1 true, 0 false or no data (optional).'
+      )
     ],
     example: makeExample({
       symbols: ['getGPURasterConditionalParameterValues', 'GPURasterConditional'],
@@ -621,7 +626,7 @@ export const entries: CatalogEntry[] = [
       makeParam('values', FLOAT, 'Raster or column to classify.', {required: true}),
       makeParam('breaks', FLOAT, 'Ascending break values.', {required: true}),
       makeParam('classValues', FLOAT, 'Value written for each class.'),
-      makeParam('validity', UINT, 'Per-cell validity flags.'),
+      makeParam('mask', UINT, 'Optional input row filter; zero marks no-data.'),
       makeParam('noDataValue', 'number', 'Input value treated as nodata.'),
       makeParam('rowCount', 'number', 'Rows to classify; defaults to values.length.'),
       makeParam('parameters', FLOAT, 'Packed break count and interval closure.', {required: true}),
@@ -685,7 +690,7 @@ export const entries: CatalogEntry[] = [
     ],
     outputs: [
       makeOutput('score', FLOAT, 'Weighted suitability per cell.'),
-      makeOutput('outputValidity', UINT, 'Validity flag per cell (optional).'),
+      makeOutput('validity', UINT, 'Validity flag per cell (optional).'),
       makeOutput('scoreRange', FLOAT, 'Minimum and maximum score (optional).')
     ],
     example: makeExample({
@@ -918,6 +923,14 @@ export const entries: CatalogEntry[] = [
         'Polygon fields: positions and three offset views.',
         {required: true}
       ),
+      makeParam(
+        'parameters',
+        'GraphDataView<"float32">',
+        'Georeference from getGPURasterFractionalCoverageParameterValues.',
+        {
+          required: true
+        }
+      ),
       makeParam('output', '{zoneIds}', 'zoneIds, cellIds, fractions, status, zoneValidity.', {
         required: true
       })
@@ -940,6 +953,7 @@ export const entries: CatalogEntry[] = [
       props: [
         'grid,',
         'zones,',
+        'parameters, // packed with getGPURasterFractionalCoverageParameterValues(grid)',
         'output: {',
         `  zoneIds: view('zone-ids', 'uint32', capacity),`,
         `  cellIds: view('cell-ids', 'uint32', capacity),`,
@@ -1182,7 +1196,7 @@ export const entries: CatalogEntry[] = [
       makeParam('positions', 'GraphDataView<"float32x2">', 'Sample positions in world units.', {
         required: true
       }),
-      makeParam('validity', UINT, 'Per-cell validity flags.'),
+      makeParam('mask', UINT, 'Optional input row filter; zero marks no-data.'),
       makeParam('noDataValue', 'number', 'Raster value treated as nodata.'),
       makeParam('pointCount', UINT, 'One-row count of points to sample.'),
       makeParam('parameters', FLOAT, 'Packed method, nodata policy and origin.', {required: true}),
@@ -1240,7 +1254,7 @@ export const entries: CatalogEntry[] = [
         required: true
       }),
       makeParam('sampleCapacity', 'number', 'Maximum samples written.'),
-      makeParam('validity', UINT, 'Per-cell validity flags.'),
+      makeParam('mask', UINT, 'Optional input row filter; zero marks no-data.'),
       makeParam('parameters', FLOAT, 'Packed spacing, method and origin.', {required: true}),
       makeParam('output', 'GPURasterProfileOutput', 'Samples and overflow status.', {
         required: true
@@ -1294,7 +1308,7 @@ export const entries: CatalogEntry[] = [
     params: [
       makeParam('values', FLOAT, 'Raster to stretch.', {required: true}),
       makeParam('grid', 'GPURasterMetadata', 'Grid of the raster.', {required: true}),
-      makeParam('validity', UINT, 'Per-cell validity flags.'),
+      makeParam('mask', UINT, 'Optional input row filter; zero marks no-data.'),
       makeParam('regionMask', UINT, 'Limit statistics to masked cells.'),
       makeParam('palette', UINT, 'Packed colors for the colormap lookup.'),
       makeParam('binCount', 'number', 'Histogram bins.'),
@@ -1620,7 +1634,11 @@ export const entries: CatalogEntry[] = [
       makeOutput('values', FLOAT, 'Raster with gaps filled where possible.'),
       makeOutput('validity', UINT, '1 where a value exists after filling.'),
       makeOutput('filled', UINT, '1 where a gap was filled.'),
-      makeOutput('unresolvedCount', UINT, 'Gaps no donor reached.')
+      makeOutput(
+        'status',
+        'GPUInvalidStatusPort',
+        'Named status: invalidCount, the cells still invalid after the fill.'
+      )
     ],
     example: makeExample({
       symbols: ['GPURasterFillNoData', 'makeGPURasterBand', 'makeGPURasterMetadata'],
@@ -1633,7 +1651,7 @@ export const entries: CatalogEntry[] = [
         `method: 'inverse-distance',`,
         'output: {',
         `  values: view('filled', 'float32', n), validity: view('valid', 'uint32', n),`,
-        `  filled: view('was-filled', 'uint32', n), unresolvedCount: view('unresolved', 'uint32', 1)`,
+        `  filled: view('was-filled', 'uint32', n), status: {invalidCount: view('unresolved', 'uint32', 1)}`,
         '}'
       ]
     }),
@@ -1661,7 +1679,7 @@ export const entries: CatalogEntry[] = [
     params: [
       makeParam('grid', 'GPURasterMetadata', 'Grid of the label raster.', {required: true}),
       makeParam('labels', UINT, 'Patch label per pixel; 0 is background.', {required: true}),
-      makeParam('validity', UINT, 'Per-pixel validity flags.'),
+      makeParam('mask', UINT, 'Per-pixel validity flags.'),
       makeParam('status', 'GPURasterPatchLabelsStatus', 'Status from the labeling step.'),
       makeParam('countRasterBorder', 'boolean', 'Count faces on the raster edge as perimeter.'),
       makeParam('output', 'GPURasterPatchMetricsOutput', 'Requested per-patch columns.', {
@@ -1712,7 +1730,7 @@ export const entries: CatalogEntry[] = [
       makeParam('parameters', UINT, 'Packed minimum patch size.', {required: true}),
       makeParam('mode', 'GPURasterSieveMode', 'Remove or merge small patches.'),
       makeParam('connectivity', 'GPURasterSieveConnectivity', 'Patch connectivity, 4 or 8.'),
-      makeParam('validity', UINT, 'Per-pixel validity flags.'),
+      makeParam('mask', UINT, 'Per-pixel validity flags.'),
       makeParam('output', 'GPURasterSieveOutput', 'Sieved labels and optional counts.', {
         required: true
       })
@@ -1856,7 +1874,11 @@ export const entries: CatalogEntry[] = [
       makeOutput('adjacency', UINT, 'Region pairs that touch.'),
       makeOutput('weights', FLOAT, 'Mean difference per adjacent pair.'),
       makeOutput('mapping', UINT, 'Final merged region for each region.'),
-      makeOutput('status', UINT, 'Merge status word.')
+      makeOutput(
+        'status',
+        '{iterationLimitReached}',
+        'iterationLimitReached: 1 when a further round would change the mapping.'
+      )
     ],
     example: makeExample({
       symbols: ['GPURasterRegionGraph', 'makeGPURasterMetadata'],
@@ -2007,7 +2029,12 @@ export const entries: CatalogEntry[] = [
       makeParam('elevation', 'GPURasterBufferBand', 'Elevation band.', {required: true}),
       makeParam('friction', 'GPURasterBufferBand', 'Surface friction band.', {required: true}),
       makeParam('sources', UINT, 'Source cell indices.', {required: true}),
-      makeParam('frictionWeight', 'number', 'Weight of friction against slope energy.'),
+      makeParam(
+        'parameters',
+        'GraphDataView<"float32">',
+        'Friction weight, GRASS terms and georeference, packed by a helper.',
+        {required: true}
+      ),
       makeParam(
         'model',
         '{kind: "tobler"} | {kind: "grass", coefficients, downhillSlopeThreshold}',
@@ -2035,6 +2062,7 @@ export const entries: CatalogEntry[] = [
         `elevation: band('dem'),`,
         `friction: band('land-cover-friction'),`,
         'sources,',
+        'parameters, // getGPURasterWalkingCostParameterValues({frictionWeight: 1}, grid)',
         `model: {kind: 'tobler'},`,
         'maximumIterations: 256,',
         `output: {costs: view('costs', 'float32', n), validity: view('valid', 'uint32', n), status: {converged: view('converged', 'uint32', 1)}}`
@@ -2178,7 +2206,7 @@ export const entries: CatalogEntry[] = [
       }),
       makeParam('destination', 'GPURasterRectilinearGrid', 'Destination grid.', {required: true}),
       makeParam('values', FLOAT, 'Source values.', {required: true}),
-      makeParam('validity', UINT, 'Per-cell validity flags.'),
+      makeParam('mask', UINT, 'Per-cell validity flags.'),
       makeParam(
         'normalization',
         '"extensive" | "destination-area" | "covered-area"',
@@ -2291,7 +2319,7 @@ export const entries: CatalogEntry[] = [
         '"unconstrained" | "nonnegative" | "simplex"',
         'Abundance constraint.'
       ),
-      makeParam('validity', UINT, 'Per-pixel validity flags.'),
+      makeParam('mask', UINT, 'Per-pixel validity flags.'),
       makeParam('output', '{abundances}', 'abundances, residual, status, iterationCounts.', {
         required: true
       })
@@ -2406,7 +2434,7 @@ export const entries: CatalogEntry[] = [
       makeParam('cellCount', 'number', 'Number of cells.', {required: true}),
       makeParam('sliceCount', 'number', 'Observations per cell.', {required: true}),
       makeParam('values', FLOAT, 'Series per cell, cell-major.', {required: true}),
-      makeParam('validity', UINT, 'Per-observation validity flags.'),
+      makeParam('mask', UINT, 'Per-observation validity flags.'),
       makeParam('period', 'number', 'Seasonal period in slices.', {required: true}),
       makeParam('minimumSegmentLength', 'number', 'Fewest observations on each side.', {
         required: true
@@ -2456,7 +2484,7 @@ export const entries: CatalogEntry[] = [
       makeParam('cellCount', 'number', 'Number of cells.', {required: true}),
       makeParam('sliceCount', 'number', 'Observations per cell.', {required: true}),
       makeParam('values', FLOAT, 'Series per cell, cell-major.', {required: true}),
-      makeParam('validity', UINT, 'Per-observation validity flags.'),
+      makeParam('mask', UINT, 'Per-observation validity flags.'),
       makeParam(
         'operation',
         '"mean" | "median" | "minimum" | "maximum" | "savitzky-golay"',
@@ -2481,7 +2509,7 @@ export const entries: CatalogEntry[] = [
         'cellCount,',
         'sliceCount,',
         `values: view('scenes', 'float32', cellCount * sliceCount),`,
-        `validity: view('clear', 'uint32', cellCount * sliceCount),`,
+        `mask: view('clear', 'uint32', cellCount * sliceCount),`,
         `operation: 'median',`,
         'output: {',
         `  values: view('composite', 'float32', cellCount), counts: view('counts', 'uint32', cellCount),`,

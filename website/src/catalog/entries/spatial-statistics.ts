@@ -145,12 +145,8 @@ export const entries: CatalogEntry[] = [
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPULocalMoran,
-  GPUParameterBuffer,
-  getGPUSpatialAutocorrelationParameterValues,
-  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPULocalMoran, getGPUSpatialAutocorrelationParameterValues, GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'lisa'});
 const parameters = new GPUParameterBuffer(device, {
@@ -665,12 +661,8 @@ graph.add(new GPUMultivariateLocalGeary({
         description: 'Binned reference distribution.'
       }
     ],
-    example: `import {
-  GPUGlobalPermutationTest,
-  GPU_PERMUTATION_PARAMETER_LENGTH,
-  GPUParameterBuffer,
-  getGPUPermutationParameterValues
-} from '${IMPORT_PATH}';
+    example: `import {GPUGlobalPermutationTest, GPU_PERMUTATION_PARAMETER_LENGTH, getGPUPermutationParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const permutation = new GPUParameterBuffer(device, {
   id: 'permutation', format: 'uint32', length: GPU_PERMUTATION_PARAMETER_LENGTH,
@@ -1300,11 +1292,8 @@ graph.add(new GPUSpatialEmpiricalBayesRates({
         description: 'Significant cold slices per cell.'
       }
     ],
-    example: `import {
-  GPUEmergingHotSpots,
-  GPUParameterBuffer,
-  getGPUEmergingHotSpotsParameterValues
-} from '${IMPORT_PATH}';
+    example: `import {GPUEmergingHotSpots, getGPUEmergingHotSpotsParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 // cube: width x height x 12 months of counts, as a graph view
 const values = getGPUEmergingHotSpotsParameterValues({radius: 1, temporalWindow: 1, confidenceLevel: 0.95});
@@ -1390,12 +1379,8 @@ graph.add(new GPUEmergingHotSpots({
         description: 'Optional permutations actually used.'
       }
     ],
-    example: `import {
-  GPUKnoxTest,
-  GPU_SPACE_TIME_PARAMETER_LENGTH,
-  GPUParameterBuffer,
-  getGPUSpaceTimeParameterValues
-} from '${IMPORT_PATH}';
+    example: `import {GPUKnoxTest, GPU_SPACE_TIME_PARAMETER_LENGTH, getGPUSpaceTimeParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const parameters = new GPUParameterBuffer(device, {
   id: 'knox', format: 'uint32', length: GPU_SPACE_TIME_PARAMETER_LENGTH,
@@ -1568,11 +1553,8 @@ graph.add(new GPUMantelTest({
       },
       {name: 'summary', type: 'GraphDataView<"uint32">', description: 'Cluster count and status.'}
     ],
-    example: `import {
-  GPUParameterBuffer,
-  GPUSpatialScanStatistic,
-  getGPUSpatialScanStatisticParameterValues
-} from '${IMPORT_PATH}';
+    example: `import {GPUSpatialScanStatistic, getGPUSpatialScanStatisticParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const values = getGPUSpatialScanStatisticParameterValues({seed: 7, permutationCount: 999});
 const parameters = new GPUParameterBuffer(device, {
@@ -1641,11 +1623,8 @@ graph.add(new GPUSpatialScanStatistic({
       {name: 'coreFlags', type: 'GraphDataView<"uint32">', description: '1 for core points.'},
       {name: 'clusterCount', type: 'GraphDataView<"uint32">', description: 'Number of clusters k.'}
     ],
-    example: `import {
-  GPUParameterBuffer,
-  GPUSpatialClustering,
-  getGPUSpatialClusteringParameterValues
-} from '${IMPORT_PATH}';
+    example: `import {GPUSpatialClustering, getGPUSpatialClusteringParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 // The demo above: bounds spanning 1 unit, epsilon 2.6% of it, 6 points
 const values = getGPUSpatialClusteringParameterValues({bounds, epsilon: 0.026, minimumPoints: 6});
@@ -1835,7 +1814,7 @@ graph.add(new GPUOPTICS({
   },
   {
     id: 'k-means-clustering',
-    symbol: 'GPUKMeans',
+    symbol: 'GPUSpatialKMeans',
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'K-means',
@@ -1859,11 +1838,11 @@ graph.add(new GPUOPTICS({
         name: 'parameters',
         type: 'GraphDataView<"uint32">',
         required: true,
-        description: 'Seed and tolerance from getGPUKMeansParameterValues.'
+        description: 'Seed and tolerance from getGPUSpatialKMeansParameterValues.'
       },
       {
         name: 'initialization',
-        type: 'GPUKMeansInitialization | undefined',
+        type: 'GPUSpatialKMeansInitialization | undefined',
         default: "'kmeans++'",
         description: "'kmeans++' or 'first-valid'."
       },
@@ -1881,7 +1860,7 @@ graph.add(new GPUOPTICS({
       },
       {
         name: 'output',
-        type: 'GPUKMeansOutput',
+        type: 'GPUSpatialKMeansOutput',
         required: true,
         description: 'Labels, centers and optional diagnostics.'
       }
@@ -1899,18 +1878,14 @@ graph.add(new GPUOPTICS({
         description: 'Total within-cluster squared distance.'
       }
     ],
-    example: `import {
-  GPUKMeans,
-  GPU_KMEANS_PARAMETER_LENGTH,
-  GPUParameterBuffer,
-  getGPUKMeansParameterValues
-} from '${IMPORT_PATH}';
+    example: `import {GPUSpatialKMeans, GPU_SPATIAL_KMEANS_PARAMETER_LENGTH, getGPUSpatialKMeansParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const parameters = new GPUParameterBuffer(device, {
-  id: 'kmeans', format: 'uint32', length: GPU_KMEANS_PARAMETER_LENGTH,
-  values: getGPUKMeansParameterValues({seed: 5})
+  id: 'kmeans', format: 'uint32', length: GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
+  values: getGPUSpatialKMeansParameterValues({seed: 5})
 });
-graph.add(new GPUKMeans({
+graph.add(new GPUSpatialKMeans({
   positions, k: 8, maximumIterations: 50, restartCount: 4,
   parameters: parameters.importToGraph(graph),
   output: {labels, centers, inertia}
@@ -1921,7 +1896,7 @@ graph.add(new GPUKMeans({
       seed: 524
     },
     related: ['dbscan-clustering', 'hdbscan-clustering'],
-    lensScenario: 'gpu-spatial-analysis.k-means',
+    lensScenario: 'gpu-spatial-analysis.spatial-k-means',
     reference: REFERENCE,
     maturity: 'stable'
   },
@@ -1982,11 +1957,8 @@ graph.add(new GPUKMeans({
         description: 'Number of flagged rows.'
       }
     ],
-    example: `import {
-  GPULocalOutlierFactor,
-  GPUParameterBuffer,
-  getGPULocalOutlierFactorParameterValues
-} from '${IMPORT_PATH}';
+    example: `import {GPULocalOutlierFactor, getGPULocalOutlierFactorParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const values = getGPULocalOutlierFactorParameterValues({threshold: 1.5});
 const parameters = new GPUParameterBuffer(device, {
@@ -2080,11 +2052,8 @@ graph.add(new GPULocalOutlierFactor({
         description: 'count is the number of valid topIds.'
       }
     ],
-    example: `import {
-  GPUParameterBuffer,
-  GPUSimilarLocations,
-  getGPUSimilarLocationsParameterValues
-} from '${IMPORT_PATH}';
+    example: `import {GPUSimilarLocations, getGPUSimilarLocationsParameterValues} from '${IMPORT_PATH}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const values = getGPUSimilarLocationsParameterValues({resultCount: 10}, 4);
 const parameters = new GPUParameterBuffer(device, {

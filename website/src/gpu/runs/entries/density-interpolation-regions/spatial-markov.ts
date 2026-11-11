@@ -12,11 +12,13 @@ import {
 import {defineOperationRun} from '../../define-run';
 import type {RunGlyph} from '../../interaction';
 import {uploadSpatialWeights} from '../../inputs';
+import {mergeText} from '../../text';
 import {parameters} from './spatial-markov.parameters';
 import {
   createBreaks,
   createDynamics,
   createMatrixGrid,
+  getMatrixGridRectangles,
   getPeriodOwners,
   PERIOD_COUNT,
   uploadMatrixMesh
@@ -128,32 +130,59 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs, values}) => [
-    {
-      layer: 'polygons',
-      positions: outputs.vertices,
-      indices: outputs.indices,
-      owners: outputs.owners,
-      values: outputs.lagClasses,
-      triangleCount: inputs.tracts.triangleCount,
-      ramp: 'sequential',
-      range: [0, values.maximumLagClassCount - 1]
-    },
-    {
-      layer: 'polygons',
-      positions: outputs.matrixMesh.vertices,
-      indices: outputs.matrixMesh.indices,
-      owners: outputs.matrixMesh.owners,
-      values: outputs.probabilities,
-      triangleCount: outputs.matrixMesh.triangleCount,
-      range: [0, 1]
-    },
-    {
-      layer: 'lines',
-      context: true,
-      segments: outputs.matrixOutline,
-      count: outputs.matrixOutlineCount,
-      alpha: 0.4
-    }
-  ]
+  draw: ({inputs, outputs, values, world}) => {
+    const count = values.maximumLagClassCount;
+    const titles = getMatrixGridRectangles(count, GRID(world.width), GRID_COLUMNS).map(
+      (rectangle, index) => ({
+        text: index === 0 ? 'low lag' : index === count - 1 ? 'high lag' : `lag ${index + 1}`,
+        at: [rectangle[0], rectangle[3]] as const,
+        anchor: 'bottom-left' as const,
+        offset: [0, 2] as const,
+        role: 'label' as const
+      })
+    );
+    return [
+      {
+        layer: 'polygons',
+        positions: outputs.vertices,
+        indices: outputs.indices,
+        owners: outputs.owners,
+        values: outputs.lagClasses,
+        triangleCount: inputs.tracts.triangleCount,
+        ramp: 'sequential',
+        range: [0, values.maximumLagClassCount - 1]
+      },
+      {
+        layer: 'polygons',
+        positions: outputs.matrixMesh.vertices,
+        indices: outputs.matrixMesh.indices,
+        owners: outputs.matrixMesh.owners,
+        values: outputs.probabilities,
+        triangleCount: outputs.matrixMesh.triangleCount,
+        range: [0, 1]
+      },
+      {
+        layer: 'lines',
+        context: true,
+        segments: outputs.matrixOutline,
+        count: outputs.matrixOutlineCount,
+        alpha: 0.4
+      },
+      {
+        layer: 'text',
+        ...mergeText({
+          labels: [
+            ...titles,
+            {
+              text: 'each matrix: class now (down), class next (across)',
+              at: [GRID(world.width)[0], GRID(world.width)[1]],
+              anchor: 'top-left',
+              offset: [0, -3],
+              role: 'tick'
+            }
+          ]
+        })
+      }
+    ];
+  }
 });

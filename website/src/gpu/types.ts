@@ -15,6 +15,11 @@ export type GpuSceneContext = {
   /** Size in device pixels. */
   width: number;
   height: number;
+  /**
+   * CSS width the picture is shown at, which sizes its text. Default: `width` over the device
+   * pixel ratio. Posters, captured large and shown on cards, pass the card width.
+   */
+  displayWidth?: number;
   theme: GpuTheme;
   /** True when the user prefers reduced motion: render one still frame. */
   reducedMotion: boolean;

@@ -94,6 +94,6 @@ export default defineOperationRun({
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.original},
     {layer: 'dots', context: true, positions: outputs.originalPoints, radius: 5},
-    {layer: 'lines', segments: outputs.segments, color: OUTPUT_COLOR, radius: 1.8}
+    {layer: 'lines', segments: outputs.segments, color: OUTPUT_COLOR, radius: 3.2}
   ]
 });

@@ -124,7 +124,7 @@ export default defineOperationRun({
   },
   draw: ({outputs, theme}) => [
     getSlotValues(outputs.slots, outputs.edgeMask, {
-      radius: 1.8,
+      radius: 3,
       ...getMaskLook(theme, {danger: true})
     }),
     {

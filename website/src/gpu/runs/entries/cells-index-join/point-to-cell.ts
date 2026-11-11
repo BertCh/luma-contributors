@@ -6,6 +6,7 @@
 // pointer is one more point in the same operation, so the cell under the cursor is keyed live.
 
 import {GPUPointToCell} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {RunGlyph} from '../../interaction';
 import {defineOperationRun} from '../../define-run';
 import {getHonshuEvents, HONSHU_WINDOW} from '../../../data/point-observations';
 import {
@@ -70,10 +71,21 @@ export default defineOperationRun({
         outputs.pointerCell.stride,
         outputs.pointerCell.vertexCount
       );
-      const shared = keys && dataKeys ? findKeyRows(dataKeys, inputs.count, keys).length : 0;
+      const sharedRows = keys && dataKeys ? findKeyRows(dataKeys, inputs.count, keys) : [];
+      const shared = sharedRows.length;
+      // The points the operation put in the same cell as the pointer's own row.
+      const sharedGlyphs: RunGlyph[] = sharedRows.slice(0, 60).map(row => ({
+        shape: 'ring',
+        at: [inputs.positions[row * 2], inputs.positions[row * 2 + 1]],
+        radius: 0.2
+      }));
       return {
         rerun: true,
-        glyphs: [{shape: 'crosshair', at: inputs.pointer, size: 7}, ...(outline ? [outline] : [])],
+        glyphs: [
+          {shape: 'crosshair', at: inputs.pointer, size: 7},
+          ...(outline ? [outline] : []),
+          ...sharedGlyphs
+        ],
         readout: `key ${formatCellKey(keys)} · res ${getCellResolution(values.family === 0 ? 'h3' : 'quadbin', values.resolution)} · ${shared} points`
       };
     }

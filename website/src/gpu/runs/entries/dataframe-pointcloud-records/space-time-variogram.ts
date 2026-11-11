@@ -5,7 +5,11 @@
 // (spatial lag, temporal lag) bin: columns are time lags, rows are distance bins from near (top)
 // to far. It grows along both axes when the field varies in space and in time.
 
-import {GPUSpaceTimeVariogram} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUSpaceTimeVariogramParameterValues,
+  GPU_SPACE_TIME_VARIOGRAM_PARAMETER_LENGTH,
+  GPUSpaceTimeVariogram
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {bindAxes} from '../../interaction';
 import {getRasterCell} from '../../pick';
@@ -16,6 +20,15 @@ import {parameters} from './space-time-variogram.parameters';
 const POINT_COUNT = 900;
 const LAG_COUNT = 16;
 const TEMPORAL_LAG_COUNT = 8;
+// Class 0 of each axis is the exact zero lag, so the output is (L + 1) x (T + 1) bins.
+const ROWS = LAG_COUNT + 1;
+const COLUMNS = TEMPORAL_LAG_COUNT + 1;
+// Tick segments, from the loops below: one per second time lag (lags 0, 2, ...) and one per fourth
+// distance bin (bins 4, 8, ...).
+const TIME_TICK_STEP = 2;
+const DISTANCE_TICK_STEP = 4;
+const TICK_SEGMENT_COUNT =
+  Math.ceil(COLUMNS / TIME_TICK_STEP) + Math.floor((ROWS - 1) / DISTANCE_TICK_STEP);
 
 const INSET = [0.03, 0.04, 0.24, 0.3] as const;
 
@@ -31,18 +44,18 @@ function createInputs({world}: {world: {width: number; height: number}}) {
 export default defineOperationRun<Inputs, Outputs>({
   parameters,
   caption:
-    'Semivariance per distance (rows, near at top) and time lag (columns), on a range of twice the field variance; the inset is the flash map.',
+    'Semivariance per distance (rows, near at top) and time lag (columns), on a range of twice the field variance (the first row and column are the exact zero lags); the inset is the flash map.',
   createInputs,
   build(builder, inputs) {
     const positions = builder.upload('positions', 'float32x2', inputs.positions);
     const values = builder.upload('values', 'float32', inputs.field);
     const times = builder.upload('times', 'float32', inputs.hours);
-    const parameterBuffer = builder.allocate('parameters', 'float32', 2);
-    const semivariances = builder.allocate(
-      'semivariances',
+    const parameterBuffer = builder.allocate(
+      'parameters',
       'float32',
-      LAG_COUNT * TEMPORAL_LAG_COUNT
+      GPU_SPACE_TIME_VARIOGRAM_PARAMETER_LENGTH
     );
+    const semivariances = builder.allocate('semivariances', 'float32', ROWS * COLUMNS);
     builder.graph.add(
       new GPUSpaceTimeVariogram({
         positions: positions.view,
@@ -54,20 +67,19 @@ export default defineOperationRun<Inputs, Outputs>({
         temporalLagCount: TEMPORAL_LAG_COUNT,
         output: {
           semivariances: semivariances.view,
-          pairCounts: builder.allocate('pair-counts', 'uint32', LAG_COUNT * TEMPORAL_LAG_COUNT)
-            .view,
-          status: builder.allocate('status', 'uint32', LAG_COUNT * TEMPORAL_LAG_COUNT).view
+          pairCounts: builder.allocate('pair-counts', 'uint32', ROWS * COLUMNS).view,
+          status: builder.allocate('status', 'uint32', ROWS * COLUMNS).view
         }
       })
     );
     // Tick marks: every second time lag along the top, every fourth distance bin on the left.
     const ticks: number[] = [];
-    for (let lag = 0; lag < TEMPORAL_LAG_COUNT; lag += 2) {
-      const x = (lag / TEMPORAL_LAG_COUNT) * inputs.world.width;
+    for (let lag = 0; lag < COLUMNS; lag += TIME_TICK_STEP) {
+      const x = (lag / COLUMNS) * inputs.world.width;
       ticks.push(x, 1, x, 0.96);
     }
-    for (let bin = 4; bin < LAG_COUNT; bin += 4) {
-      ticks.push(0, 1 - bin / LAG_COUNT, 0.015, 1 - bin / LAG_COUNT);
+    for (let bin = DISTANCE_TICK_STEP; bin < ROWS; bin += DISTANCE_TICK_STEP) {
+      ticks.push(0, 1 - bin / ROWS, 0.015, 1 - bin / ROWS);
     }
     const inset = builder.upload(
       'inset',
@@ -87,7 +99,14 @@ export default defineOperationRun<Inputs, Outputs>({
         ticks: builder.upload('ticks', 'float32x4', Float32Array.from(ticks))
       },
       update: current => {
-        parameterBuffer.write(Float32Array.of(current.maximumDistance, current.maximumTimeLag));
+        parameterBuffer.write(
+          getGPUSpaceTimeVariogramParameterValues({
+            // The flashes live in the drawing world, [0, width] x [0, 1].
+            bounds: [0, 0, inputs.world.width, 1],
+            maximumDistance: current.maximumDistance,
+            maximumTimeLag: current.maximumTimeLag
+          })
+        );
       }
     };
   },
@@ -100,21 +119,21 @@ export default defineOperationRun<Inputs, Outputs>({
     y: 'maximumDistance',
     decorate: (values, pointer, {inputs, outputs, peek}) => {
       const cell = getRasterCell(
-        TEMPORAL_LAG_COUNT,
-        LAG_COUNT,
+        COLUMNS,
+        ROWS,
         [0, 0, inputs.world.width, 1],
         pointer.x,
         pointer.y
       );
       const gamma = peek(outputs.semivariances)?.[cell.index];
-      const left = (cell.column / TEMPORAL_LAG_COUNT) * inputs.world.width;
-      const right = ((cell.column + 1) / TEMPORAL_LAG_COUNT) * inputs.world.width;
+      const left = (cell.column / COLUMNS) * inputs.world.width;
+      const right = ((cell.column + 1) / COLUMNS) * inputs.world.width;
       return {
         glyphs: [
           {
             shape: 'box',
-            minimum: [left, 1 - (cell.row + 1) / LAG_COUNT],
-            maximum: [right, 1 - cell.row / LAG_COUNT]
+            minimum: [left, 1 - (cell.row + 1) / ROWS],
+            maximum: [right, 1 - cell.row / ROWS]
           }
         ],
         readout: `distance ≤ ${values.maximumDistance.toFixed(2)} · lag ≤ ${values.maximumTimeLag} h · γ ${
@@ -127,13 +146,19 @@ export default defineOperationRun<Inputs, Outputs>({
     {
       layer: 'raster',
       values: outputs.semivariances,
-      columns: TEMPORAL_LAG_COUNT,
-      rows: LAG_COUNT,
+      columns: COLUMNS,
+      rows: ROWS,
       range: [0, 2 * inputs.variance],
       bands: 10,
       smoothing: true
     },
-    {layer: 'lines', context: true, segments: outputs.ticks, count: 7, color: [1, 1, 1, 0.8]},
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.ticks,
+      count: TICK_SEGMENT_COUNT,
+      color: [1, 1, 1, 0.8]
+    },
     {layer: 'dots', context: true, positions: outputs.inset, color: [1, 1, 1, 0.7], radius: 1.6}
   ]
 });

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPULineLoopRemoval erases the self-loops of a meandering curve. The muted path is the tangled
+// GPULineLoopRemoval erases the self-loops of a meandering curve. The red path is the tangled
 // input; the bright path is what remains, with the vertex count the operation wrote.
 
 import {GPULineLoopRemoval} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {createRiverLine} from '../../../data/hydrography';
 import {defineOperationRun} from '../../define-run';
 import {findParameter} from '../../interaction';
+import {createLegend} from '../../text';
 import {createIdentityIds} from './shared/polygon-set';
 import {parameters} from './line-loop-removal.parameters';
 
@@ -135,14 +136,28 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs}) => [
+  // The input path is drawn in red under the cleaned path, so what shows red is what the operation
+  // removed; the tangle slider and the drag make more of it.
+  draw: ({outputs, theme}) => [
     {
       layer: 'paths',
       context: true,
       nodes: outputs.positions,
       ids: outputs.ids,
-      count: VERTEX_COUNT
+      count: VERTEX_COUNT,
+      radius: 2,
+      color: [...theme.categories[2], 0.9]
     },
-    {layer: 'paths', nodes: outputs.cleaned, ids: outputs.ids, count: outputs.status, radius: 2.6}
+    {layer: 'paths', nodes: outputs.cleaned, ids: outputs.ids, count: outputs.status, radius: 2.6},
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'bottom-left',
+        entries: [
+          {label: 'kept by the operation', swatch: [...theme.ink]},
+          {label: 'loop removed', swatch: 2}
+        ]
+      })
+    }
   ]
 });

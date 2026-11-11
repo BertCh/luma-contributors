@@ -13,7 +13,7 @@ import {addPairSegments} from './shared/display';
 import {createRoads, findReachPoint, getRoadContext, uploadRoads} from './shared/roads';
 import {parameters} from './network-snapping.parameters';
 
-const POINT_COUNT = 150;
+const POINT_COUNT = 70;
 const MAXIMUM_SNAP = findParameter(parameters, 'maximumSnapDistance');
 
 export default defineOperationRun({
@@ -115,22 +115,23 @@ export default defineOperationRun({
   },
   draw: ({outputs, theme}) => [
     getRoadContext(outputs),
-    {layer: 'lines', segments: outputs.connectors, radius: 1, color: [...theme.ink, 0.45]},
-    // Raw points: hollow-looking orange context, then snapped positions in an ink ring on the roads.
+    // The snap links: raw point to its snapped position, bold, so the move is the first thing seen.
+    {layer: 'lines', segments: outputs.connectors, radius: 2.2, color: [...theme.ink, 0.9]},
+    // Raw points: orange; snapped positions in an ink ring on the roads, colored by snap distance.
     {
       layer: 'dots',
       context: true,
       positions: outputs.points,
-      radius: 3.5,
-      color: [...theme.categories[1], 0.8]
+      radius: 5,
+      color: [...theme.categories[1], 0.95]
     },
-    {layer: 'dots', positions: outputs.snappedPositions, radius: 7, color: [...theme.ink, 1]},
+    {layer: 'dots', positions: outputs.snappedPositions, radius: 8, color: [...theme.ink, 1]},
     {
       layer: 'dots',
       positions: outputs.snappedPositions,
       values: outputs.snapDistances,
-      range: [-0.015, 0.04],
-      radius: 5
+      range: [-0.02, 0.1],
+      radius: 6
     }
   ]
 });

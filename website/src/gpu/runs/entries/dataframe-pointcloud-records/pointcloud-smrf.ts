@@ -12,6 +12,8 @@ import {addFloatCopy} from './_lib/convert';
 import {createCloudGrid, createTerrainCloud} from './_lib/helpers';
 import {parameters} from './pointcloud-smrf.parameters';
 
+// Fixed prop: on this tile the window changes no classification, so it has no slider.
+const SMOOTHING_WINDOW = 0.3;
 const POINT_COUNT = 9000;
 const CELL_SIZE = 0.03;
 // The thresholds the pointer's height picks among (applied once it rests).
@@ -44,7 +46,7 @@ type Outputs = Record<'footprint' | 'groundMask' | 'surface', RunBuffer>;
 export default defineOperationRun<Inputs, Outputs>({
   parameters,
   caption:
-    'Inpainted ground surface (left of the curtain, hillshaded) and the points classified as ground (orange) or removed (blue) (right). The tile has little intermediate relief, so window barely changes the result.',
+    'Inpainted ground surface (left of the curtain, hillshaded) and the points classified as ground (orange) or removed (blue) (right). The tile has little intermediate relief, so the window (fixed at 0.3) barely changes the result.',
   buildCache: 5,
   createInputs,
   build(builder, inputs, values) {
@@ -59,7 +61,7 @@ export default defineOperationRun<Inputs, Outputs>({
           .view,
         grid,
         slope: values.slope,
-        window: values.window,
+        window: SMOOTHING_WINDOW,
         threshold: values.threshold,
         cut: values.cut,
         groundSurface: groundSurface.view,
@@ -72,13 +74,11 @@ export default defineOperationRun<Inputs, Outputs>({
       outputs: {
         footprint: builder.upload('footprint', 'float32x2', inputs.cloud.footprint),
         groundMask,
-        surface: addFloatCopy(builder, 'surface-grid', groundSurface, cellCount, {
-          flipColumns: grid.width
-        })
+        surface: addFloatCopy(builder, 'surface-grid', groundSurface, cellCount)
       }
     };
   },
-  rebuildOn: ['slope', 'window', 'threshold', 'cut'],
+  rebuildOn: ['slope', 'threshold', 'cut'],
   // The pointer is a curtain between the ground surface and the classified points; its height
   // picks the threshold among five values (applied once it rests).
   interaction: {

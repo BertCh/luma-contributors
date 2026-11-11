@@ -176,8 +176,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPUKernelDensity, GPUParameterBuffer, GPU_KERNEL_DENSITY_PARAMETER_LENGTH,
-  getGPUKernelDensityParameterValues} from '${ANALYSIS}';
+import {GPUKernelDensity, GPU_KERNEL_DENSITY_PARAMETER_LENGTH, getGPUKernelDensityParameterValues} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {makeGPURasterMetadata} from '${RASTER}';
 
 const graph = new GPUCommandGraph(device, {id: 'kde'});
@@ -251,8 +251,8 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPULineDensity, GPUParameterBuffer, GPU_LINE_DENSITY_PARAMETER_LENGTH,
-  getGPULineDensityParameterValues} from '${ANALYSIS}';
+import {GPULineDensity, GPU_LINE_DENSITY_PARAMETER_LENGTH, getGPULineDensityParameterValues} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'roads'});
 const parameters = new GPUParameterBuffer(device, {
@@ -386,8 +386,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'status', type: '{failedCount?}', description: 'Dots that exhausted attempts.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPUDotDensity, GPUParameterBuffer, GPU_DOT_DENSITY_PARAMETER_LENGTH,
-  getGPUDotDensityParameterValues} from '${ANALYSIS}';
+import {GPUDotDensity, GPU_DOT_DENSITY_PARAMETER_LENGTH, getGPUDotDensityParameterValues} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'dots'});
 const parameters = new GPUParameterBuffer(device, {
@@ -460,8 +460,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'status', type: '{failedCount?}', description: 'Points that exhausted attempts.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPURandomPointsInPolygon, GPUParameterBuffer, GPU_DOT_DENSITY_PARAMETER_LENGTH,
-  getGPUDotDensityParameterValues} from '${ANALYSIS}';
+import {GPURandomPointsInPolygon, GPU_DOT_DENSITY_PARAMETER_LENGTH, getGPUDotDensityParameterValues} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'random-points'});
 const parameters = new GPUParameterBuffer(device, {
@@ -521,8 +521,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'fractions', type: F32, description: 'Optional 0..1 position along the line.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPURandomPointsOnLine, GPUParameterBuffer, GPU_DOT_DENSITY_PARAMETER_LENGTH,
-  getGPUDotDensityParameterValues} from '${ANALYSIS}';
+import {GPURandomPointsOnLine, GPU_DOT_DENSITY_PARAMETER_LENGTH, getGPUDotDensityParameterValues} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'points-on-roads'});
 const parameters = new GPUParameterBuffer(device, {
@@ -590,8 +590,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPUInverseDistanceWeighting, GPUParameterBuffer, GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH,
-  getGPUInverseDistanceWeightingParameterValues} from '${ANALYSIS}';
+import {GPUInverseDistanceWeighting, GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH, getGPUInverseDistanceWeightingParameterValues} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {makeGPURasterMetadata} from '${RASTER}';
 
 const graph = new GPUCommandGraph(device, {id: 'idw'});
@@ -668,8 +668,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPUKriging, GPUParameterBuffer, GPU_KRIGING_PARAMETER_LENGTH,
-  getGPUKrigingParameterValues} from '${ANALYSIS}';
+import {GPUKriging, GPU_KRIGING_PARAMETER_LENGTH, getGPUKrigingParameterValues} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {makeGPURasterMetadata} from '${RASTER}';
 
 const graph = new GPUCommandGraph(device, {id: 'kriging'});
@@ -1015,8 +1015,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'counts', type: U32, description: 'Valid cells in each window.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPUFocalStatistics, GPUParameterBuffer, GPU_FOCAL_STATISTICS_PARAMETER_LENGTH,
-  getGPUFocalStatisticsParameterValues} from '${ANALYSIS}';
+import {GPUFocalStatistics, GPU_FOCAL_STATISTICS_PARAMETER_LENGTH, getGPUFocalStatisticsParameterValues} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'focal'});
 const parameters = new GPUParameterBuffer(device, {
@@ -1535,8 +1535,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'ellipseVertices', type: F32X2, description: 'Outline vertices for drawing.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPUGeographicDistribution, GPUParameterBuffer, GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
-  getGPUGeographicDistributionParameterValues} from '${ANALYSIS}';
+import {GPUGeographicDistribution, GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH, getGPUGeographicDistributionParameterValues} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'distribution'});
 const parameters = new GPUParameterBuffer(device, {
@@ -2118,7 +2118,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'selectedRows', type: 'GPUCompactOutput', description: 'Optional compacted ids.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPURegionStatistics, GPUParameterBuffer} from '${ANALYSIS}';
+import {GPURegionStatistics} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'brush'});
 const bounds = new GPUParameterBuffer(device, {id: 'bounds', format: 'float32', length: 4});
@@ -2241,7 +2242,8 @@ readback.destroy();`,
       {name: 'status', type: 'GPUOverflowStatusPort', description: 'Capacity and lon/lat flags.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPURegionMask, GPUParameterBuffer} from '${ANALYSIS}';
+import {GPURegionMask} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'mask'});
 const bounds = new GPUParameterBuffer(device, {id: 'bounds', format: 'float32', length: 4});
@@ -2490,8 +2492,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'cutGains', type: F32, description: 'Variance reduction of each cut.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPUSkaterRegions, GPUParameterBuffer,
-  getGPUSkaterRegionsParameterValues} from '${ANALYSIS}';
+import {GPUSkaterRegions, getGPUSkaterRegionsParameterValues} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'skater'});
 const settings = {regionCount: 8, minimumRegionSize: 5};
@@ -2562,8 +2564,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'status', type: U32, description: 'Iterations and convergence.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPUWardRegions, GPUParameterBuffer, getGPUWardRegionsParameterValues,
-  GPU_WARD_REGIONS_PARAMETER_LENGTH} from '${ANALYSIS}';
+import {GPUWardRegions, getGPUWardRegionsParameterValues, GPU_WARD_REGIONS_PARAMETER_LENGTH} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'ward'});
 const parameters = new GPUParameterBuffer(device, {
@@ -2632,8 +2634,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'status', type: U32, description: 'Iterations and convergence.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPUAZPRegions, GPUParameterBuffer, getGPUAZPRegionsParameterValues,
-  GPU_AZP_REGIONS_PARAMETER_LENGTH} from '${ANALYSIS}';
+import {GPUAZPRegions, getGPUAZPRegionsParameterValues, GPU_AZP_REGIONS_PARAMETER_LENGTH} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'azp'});
 const parameters = new GPUParameterBuffer(device, {
@@ -2697,8 +2699,8 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'status', type: U32, description: 'Region count and feasibility.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPUMaxPRegions, GPUParameterBuffer, getGPUMaxPRegionsParameterValues,
-  GPU_MAX_P_REGIONS_PARAMETER_LENGTH} from '${ANALYSIS}';
+import {GPUMaxPRegions, getGPUMaxPRegionsParameterValues, GPU_MAX_P_REGIONS_PARAMETER_LENGTH} from '${ANALYSIS}';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 const graph = new GPUCommandGraph(device, {id: 'max-p'});
 const parameters = new GPUParameterBuffer(device, {

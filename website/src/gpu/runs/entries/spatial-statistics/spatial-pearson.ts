@@ -3,15 +3,19 @@
 
 // GPUSpatialPearson between a variable and a second variable that follows it plus noise. The
 // pointer is a curtain: the first variable on its left, the second on its right (one color scale).
-// The bar is the statistic the GPU wrote (one float32); the line through it is zero.
+// The bar is the statistic the GPU wrote (one float32); the line through it is zero. The small
+// scatter plots the two input variables against each other, point for point.
 
 import {GPUSpatialPearson} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {createChartAxes, getChartRectangle, mergeText} from '../../text';
 import {uploadSpatialWeights} from '../../inputs';
+import {drawSignedBars} from '../regression-weights/shared/regression';
 import {createBandGraph, createPointField, mixNoise} from './shared/point-field';
 import {parameters} from './spatial-pearson.parameters';
 
-const CHART = [0.35, 0.04, 0.65, 0.22] as const;
+const CHART = [0.62, 0.04, 0.95, 0.24] as const;
+const SCATTER = [0.08, 0.04, 0.4, 0.3] as const;
 
 export default defineOperationRun({
   parameters,
@@ -58,30 +62,60 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs, interaction, world}) => [
-    {
-      layer: 'dots',
-      positions: outputs.positions,
-      values: outputs.first,
-      radius: 4.5,
-      range: [0, 1],
-      clip: {side: 'left', x: interaction.curtain ?? world.width / 2}
-    },
-    {
-      layer: 'dots',
-      positions: outputs.positions,
-      values: outputs.second,
-      radius: 4.5,
-      range: [0, 1],
-      clip: {side: 'right', x: interaction.curtain ?? world.width / 2}
-    },
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.statistic,
-      ramp: 'diverging',
-      range: [-1, 1],
-      rectangle: CHART
-    }
-  ]
+  draw: ({outputs, interaction, world}) => {
+    const scatterRectangle = getChartRectangle(world, SCATTER);
+    const axes = createChartAxes({
+      rectangle: getChartRectangle(world, CHART),
+      y: {range: [-1, 1], ticks: [-1, 0, 1], title: 'spatial Pearson r'}
+    });
+    const scatterAxes = createChartAxes({
+      rectangle: scatterRectangle,
+      x: {range: [0, 1], ticks: [0, 1], title: 'x'},
+      y: {range: [0, 1], ticks: [1], title: 'y', grid: false}
+    });
+    return [
+      {
+        layer: 'dots',
+        positions: outputs.positions,
+        values: outputs.first,
+        radius: 5.5,
+        range: [0, 1],
+        clip: {side: 'left', x: interaction.curtain ?? world.width / 2}
+      },
+      {
+        layer: 'dots',
+        positions: outputs.positions,
+        values: outputs.second,
+        radius: 5.5,
+        range: [0, 1],
+        clip: {side: 'right', x: interaction.curtain ?? world.width / 2}
+      },
+      {
+        layer: 'chart',
+        kind: 'scatter',
+        context: true,
+        values: outputs.second,
+        xValues: outputs.first,
+        xRange: [0, 1],
+        range: [0, 1],
+        rectangle: SCATTER,
+        radius: 3
+      },
+      ...drawSignedBars(outputs.statistic, CHART, 1),
+      {
+        layer: 'text',
+        ...mergeText(axes, scatterAxes, {
+          labels: [
+            {
+              text: 'inputs: y against x',
+              at: [SCATTER[0] * world.width, SCATTER[3] * world.height],
+              anchor: 'bottom-left',
+              offset: [0, 14],
+              role: 'label'
+            }
+          ]
+        })
+      }
+    ];
+  }
 });

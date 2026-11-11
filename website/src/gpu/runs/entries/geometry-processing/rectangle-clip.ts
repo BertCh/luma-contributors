@@ -46,7 +46,8 @@ export default defineOperationRun({
           positions: clipped.view,
           lineOffsets: clippedOffsets.view,
           status: {
-            count: pieceCount.view,
+            count: builder.allocate('line-count', 'uint32', 1).view,
+            vertexCount: pieceCount.view,
             overflow: builder.allocate('overflow', 'uint32', 1).view
           }
         }

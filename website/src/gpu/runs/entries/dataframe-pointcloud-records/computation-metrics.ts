@@ -16,17 +16,23 @@ import {
   GPUSnapshotArena
 } from '@luma-contributors/analysis/computation-record';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
 import {buildRelaxation, createRecordTracts, ShapeBatch} from '../../record-demo';
+import {createChartAxes, getChartRectangle, mergeText, type RunLabel} from '../../text';
 import {getBoxGlyph, type Box} from './_lib/record-probe';
 import {parameters} from './computation-metrics.parameters';
 
 const ENCODE_COUNT = 400;
+const PASS_RECTANGLE = [0.7, 0.08, 0.97, 0.84] as const;
 
 /** What the last run drew, for the pointer: one row per node, with its bar's extent. */
 type Latest = {
   area: Box;
   rowHeight: number;
   rows: {id: string; pass: number | undefined; milliseconds: number; x1: number}[];
+  /** Pass numbers in bar order and each pass's total milliseconds, for the right chart. */
+  passes: [number, number][];
+  passMaximum: number;
 };
 
 export default defineOperationRun({
@@ -97,7 +103,7 @@ export default defineOperationRun({
     const rows = stats.nodes.map(({id}) => ({id, node: metrics.nodes[id]}));
     const spans = rows.map(({node}) => ({begin: 0, end: node.cpuEncodeMs, pass: node.passIndex}));
     const total = Math.max(...spans.map(span => span.end), 1e-6);
-    const area = {x0: 0.05 * width, x1: 0.64 * width, y0: 0.06, y1: 0.95};
+    const area = {x0: 0.05 * width, x1: 0.64 * width, y0: 0.08, y1: 0.89};
     const rowHeight = (area.y1 - area.y0) / Math.max(rows.length, 1);
     const bars = new ShapeBatch();
     const passTotals = new Map<number, number>();
@@ -112,7 +118,11 @@ export default defineOperationRun({
         passTotals.set(span.pass, (passTotals.get(span.pass) ?? 0) + span.end - span.begin);
       }
     });
+    const passes = [...passTotals.entries()].sort((first, second) => first[0] - second[0]);
+    const passBars = Float32Array.from(passes.length ? passes.map(([, time]) => time) : [0]);
     inputs.latest = {
+      passes,
+      passMaximum: Math.max(...passBars, 1e-6),
       area,
       rowHeight,
       rows: rows.map(({id, node}, row) => ({
@@ -125,8 +135,6 @@ export default defineOperationRun({
         )
       }))
     };
-    const passes = [...passTotals.entries()].sort((first, second) => first[0] - second[0]);
-    const passBars = Float32Array.from(passes.length ? passes.map(([, time]) => time) : [0]);
     const passColors = new ShapeBatch();
     passes.forEach(([pass], index) => {
       // A strip of swatches under the chart, in the same pass colors as the timeline.
@@ -142,14 +150,16 @@ export default defineOperationRun({
       );
     });
     return {
+      passes,
+      total,
       bars: bars.uploadShapes(upload, 'timeline'),
       passBars: upload('pass-bars', 'float32', passBars),
       passMaximum: Math.max(...passBars, 1e-6),
       swatches: passColors.uploadShapes(upload, 'pass-swatches')
     };
   },
-  // The pointer is a node: its bar and the bars of the nodes in the same pass are outlined, and
-  // the readout gives its pass and encode time.
+  // The pointer is a node: its bar is outlined and its pass is marked on the right chart (the colour of the
+  // bars already groups the nodes of a pass), and the readout gives its pass and encode time.
   interaction: {
     kind: 'probe',
     hint: 'hover a node',
@@ -172,47 +182,138 @@ export default defineOperationRun({
         y1: latest.area.y1 - index * latest.rowHeight,
         y0: latest.area.y1 - (index + 0.8) * latest.rowHeight
       });
-      const glyphs = latest.rows.flatMap((other, index) =>
-        index !== row && hovered.pass !== undefined && other.pass === hovered.pass
-          ? [getBoxGlyph(barBox(index), true)]
-          : []
-      );
       const members = latest.rows.filter(other => other.pass === hovered.pass).length;
+      // The same pass on the right chart: its slot is outlined and a rule marks its total.
+      const passSlot = latest.passes.findIndex(([pass]) => pass === hovered.pass);
+      const chart = [
+        PASS_RECTANGLE[0] * inputs.world.width,
+        PASS_RECTANGLE[1],
+        PASS_RECTANGLE[2] * inputs.world.width,
+        PASS_RECTANGLE[3]
+      ] as const;
+      const slotWidth = (chart[2] - chart[0]) / Math.max(latest.passes.length, 1);
+      const passGlyphs: RunGlyph[] =
+        passSlot < 0
+          ? []
+          : [
+              {
+                shape: 'box',
+                minimum: [chart[0] + passSlot * slotWidth, chart[1]],
+                maximum: [chart[0] + (passSlot + 1) * slotWidth, chart[3]],
+                dashed: true
+              },
+              {
+                shape: 'line',
+                from: [
+                  chart[0],
+                  chart[1] +
+                    (latest.passes[passSlot][1] / latest.passMaximum) * (chart[3] - chart[1])
+                ],
+                to: [
+                  chart[2],
+                  chart[1] +
+                    (latest.passes[passSlot][1] / latest.passMaximum) * (chart[3] - chart[1])
+                ],
+                dashed: true
+              }
+            ];
       return {
         spotlight: null,
-        glyphs: [getBoxGlyph(barBox(row)), ...glyphs],
+        glyphs: [getBoxGlyph(barBox(row)), ...passGlyphs],
         readout: `${hovered.id} · ${
           hovered.pass === undefined ? 'copy, no pass' : `pass ${hovered.pass} (${members} nodes)`
         } · ${hovered.milliseconds.toFixed(4)} ms`
       };
     }
   },
-  draw: ({extra, theme}) => [
-    {
-      layer: 'polygons',
-      positions: extra.bars.positions,
-      indices: extra.bars.indices,
-      owners: extra.bars.owners,
-      values: extra.bars.categories,
-      triangleCount: extra.bars.triangleCount,
-      categories: [theme.muted, ...theme.categories]
-    },
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: extra.passBars,
-      range: [0, extra.passMaximum],
-      rectangle: [0.7, 0.08, 0.97, 0.9],
-      color: [...theme.categories[3], 0.9]
-    },
-    {
-      layer: 'polygons',
-      positions: extra.swatches.positions,
-      indices: extra.swatches.indices,
-      owners: extra.swatches.owners,
-      values: extra.swatches.categories,
-      triangleCount: extra.swatches.triangleCount,
-      categories: [theme.muted, ...theme.categories]
-    }
-  ]
+  draw: ({extra, theme, world}) => {
+    const rectangle = getChartRectangle(world, PASS_RECTANGLE);
+    const axes = createChartAxes({
+      rectangle,
+      y: {range: [0, extra.passMaximum], ticks: 3}
+    });
+    const axisLabels = axes.labels ?? [];
+    // The value labels go left of the bars (the default writes them inside the plot, on the bars).
+    const topTick = Math.max(
+      ...axisLabels.filter(label => label.group === 'y-ticks').map(label => label.at[1])
+    );
+    const tickLabels = axisLabels
+      .filter(label => label.group === 'y-ticks')
+      .map(label => ({
+        ...label,
+        text: label.at[1] === topTick ? `${label.text} ms` : label.text,
+        anchor: 'right' as const,
+        offset: [-4, 0] as const
+      }));
+    const axisText = {
+      rules: axes.rules,
+      labels: [...axisLabels.filter(label => label.group !== 'y-ticks'), ...tickLabels]
+    };
+    const area = {x0: 0.05 * world.width, x1: 0.64 * world.width};
+    const slot = (0.27 * world.width) / Math.max(extra.passes.length, 1);
+    const labels: RunLabel[] = [
+      {
+        text: 'encode time of each node (scheduled order), colour = pass',
+        at: [area.x0, 0.995],
+        anchor: 'top-left',
+        role: 'title'
+      },
+      {text: '0', at: [area.x0, 0.075], anchor: 'top-left', role: 'tick'},
+      {
+        text: `${extra.total.toFixed(4)} ms`,
+        at: [area.x1, 0.075],
+        anchor: 'top-right',
+        role: 'tick'
+      },
+      {
+        text: 'total time per pass',
+        at: [PASS_RECTANGLE[0] * world.width, 0.995],
+        anchor: 'top-left',
+        role: 'title'
+      },
+      ...extra.passes.map(([pass], index) => ({
+        text: String(pass),
+        at: [0.7 * world.width + (index + 0.5) * slot, 0.045] as const,
+        anchor: 'center' as const,
+        role: 'tick' as const,
+        group: 'pass-numbers'
+      })),
+      {
+        text: 'pass',
+        at: [0.7 * world.width - 0.01, 0.045],
+        anchor: 'right',
+        role: 'tick'
+      }
+    ];
+    return [
+      {layer: 'text', ...axes.grid},
+      {
+        layer: 'polygons',
+        positions: extra.bars.positions,
+        indices: extra.bars.indices,
+        owners: extra.bars.owners,
+        values: extra.bars.categories,
+        triangleCount: extra.bars.triangleCount,
+        categories: [theme.muted, ...theme.categories]
+      },
+      {
+        layer: 'chart',
+        kind: 'bars',
+        values: extra.passBars,
+        range: [0, extra.passMaximum],
+        rectangle: PASS_RECTANGLE,
+        color: [...theme.categories[3], 0.9]
+      },
+      {
+        layer: 'polygons',
+        positions: extra.swatches.positions,
+        indices: extra.swatches.indices,
+        owners: extra.swatches.owners,
+        values: extra.swatches.categories,
+        triangleCount: extra.swatches.triangleCount,
+        categories: [theme.muted, ...theme.categories]
+      },
+      {layer: 'text', ...mergeText({labels}, axisText)}
+    ];
+  }
 });

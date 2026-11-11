@@ -7,6 +7,7 @@
 
 import {GPUTerrainCriticalPoints} from '@luma-contributors/analysis/gpu-terrain';
 import {defineOperationRun} from '../../define-run';
+import {createLegend} from '../../text';
 import {createMaskState, drawClassDimmer, writeClassMask} from './support/class-highlight';
 import {
   addTerrainNoise,
@@ -30,6 +31,8 @@ const CLASS_COLORS = [
   [0, 0, 0, 0],
   [0, 0, 0, 0]
 ] as const;
+const SEARCH_CELLS = 5;
+const SADDLE_PENALTY = 3;
 const CLASS_NAMES = ['regular', 'peak', 'pit', 'saddle', 'boundary', 'no data'];
 
 export default defineOperationRun({
@@ -63,7 +66,12 @@ export default defineOperationRun({
       update: current => elevation.write(addTerrainNoise(terrain, terrain.noise, current.noise))
     };
   },
-  // The pointer is a cell: the nearest peak, pit or saddle within a few cells is picked, its 3x3
+  // The class counts, read back once per run for the legend.
+  async afterRun({outputs}) {
+    const bytes = await outputs.counts.buffer.readAsync();
+    return new Uint32Array(bytes.slice().buffer);
+  },
+  // The pointer is a cell: the nearest peak or pit (or, failing that, saddle) within a few cells is picked, its 3x3
   // neighborhood is boxed, and every cell of that class stays lit.
   interaction: {
     kind: 'probe',
@@ -77,8 +85,8 @@ export default defineOperationRun({
       let picked = -1;
       if (classes) {
         let nearest = Infinity;
-        for (let offsetRow = -4; offsetRow <= 4; offsetRow++) {
-          for (let offsetColumn = -4; offsetColumn <= 4; offsetColumn++) {
+        for (let offsetRow = -SEARCH_CELLS; offsetRow <= SEARCH_CELLS; offsetRow++) {
+          for (let offsetColumn = -SEARCH_CELLS; offsetColumn <= SEARCH_CELLS; offsetColumn++) {
             const candidateColumn = column + offsetColumn;
             const candidateRow = row + offsetRow;
             if (
@@ -90,7 +98,9 @@ export default defineOperationRun({
               continue;
             }
             const code = classes[candidateRow * inputs.columns + candidateColumn];
-            const distance = Math.hypot(offsetColumn, offsetRow);
+            // Saddles are everywhere on noisy ground: a peak or pit within reach wins over them.
+            const distance =
+              Math.hypot(offsetColumn, offsetRow) + (code === 3 ? SADDLE_PENALTY : 0);
             if (code >= 1 && code <= 3 && distance < nearest) {
               nearest = distance;
               picked = candidateRow * inputs.columns + candidateColumn;
@@ -134,17 +144,26 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
+  // The cells outside the picked class fade into the background, so its cells stand alone.
+  draw: ({inputs, outputs, theme, extra}) => [
     drawElevationContext(inputs, outputs.elevation),
     drawGrid(inputs, outputs.classes, {ramp: 'categorical', categories: CLASS_COLORS}),
-    drawClassDimmer(inputs, outputs.highlight),
+    drawClassDimmer(inputs, outputs.highlight, [
+      theme.background[0],
+      theme.background[1],
+      theme.background[2],
+      0.6
+    ]),
     {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.counts,
-      rectangle: [0.62, 0.06, 0.97, 0.3],
-      logarithmic: true,
-      range: 'auto'
+      layer: 'text',
+      ...createLegend({
+        title: extra ? 'cells per class' : undefined,
+        corner: 'bottom-right',
+        entries: [1, 2, 3].map(code => ({
+          label: `${CLASS_NAMES[code]}${extra ? ` ${extra[code]}` : ''}`,
+          swatch: [CLASS_COLORS[code][0], CLASS_COLORS[code][1], CLASS_COLORS[code][2]] as const
+        }))
+      })
     }
   ]
 });

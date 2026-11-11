@@ -8,5 +8,5 @@ import type {GpuSceneParameter} from '../../../types';
 export const parameters: GpuSceneParameter[] = [
   {id: 'how', label: 'how', min: 0, max: 1, step: 1, default: 1, options: ['inner', 'left']},
   {id: 'capacity', label: 'neighbors.capacity', min: 1, max: 4, step: 1, default: 2},
-  {id: 'radius', label: 'Data: match radius', min: 0.03, max: 0.2, step: 0.01, default: 0.1}
+  {id: 'radius', label: 'Data: match radius', min: 0.03, max: 0.24, step: 0.01, default: 0.1}
 ];

@@ -7,7 +7,8 @@
 
 import {GPUProbitRegression} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {findParameter, getFractionOf, getParameterAt} from '../../interaction';
+
+import {mergeText} from '../../text';
 import {parameters} from './probit-regression.parameters';
 import {
   COEFFICIENT_RANGE,
@@ -22,9 +23,15 @@ import {
 } from './shared/regression';
 
 const LATENT_COEFFICIENTS = [-1.2, 2.4, -1.8] as const;
-const ITERATION_STEPS = [1, 2, 3, 5, 8];
+// Fisher scoring has settled after about three steps, so the early steps get most of the width:
+// [start of the band across the canvas, iteration count], the last band being the converged fit.
+const ITERATION_BANDS = [
+  [0, 1],
+  [0.3, 2],
+  [0.55, 3],
+  [0.8, 8]
+] as const;
 const MARGINAL_RECTANGLE = [MAP_SHARE + 0.08, 0.08, 0.97, 0.34] as const;
-const maximumIterations = findParameter(parameters, 'maximumIterations');
 
 export default defineOperationRun({
   parameters,
@@ -53,7 +60,11 @@ export default defineOperationRun({
         }
       })
     );
-    const panel = createCoefficientPanel(builder, coefficients, 1, LATENT_COEFFICIENTS);
+    const panel = createCoefficientPanel(builder, coefficients, 1, LATENT_COEFFICIENTS, [
+      'int',
+      'x1',
+      'x2'
+    ]);
     return {
       outputs: {
         mesh: uploadRegressionMap(builder, inputs),
@@ -79,16 +90,16 @@ export default defineOperationRun({
   },
   rebuildOn: ['maximumIterations'],
   buildCache: 5,
-  // The pointer along x steps through Fisher scoring: the estimates settle on one of five iteration counts and
+  // The pointer along x steps through Fisher scoring: the estimates settle on one of four iteration counts and
   // the bars converge on the dots.
   interaction: {
     kind: 'time',
     hint: 'step the iterations',
-    rest: [getFractionOf(maximumIterations, maximumIterations.default), 0.5],
+    rest: [0.9, 0.5],
     resolve(pointer, {outputs, peek, values}) {
-      const requested = getParameterAt(maximumIterations, pointer.unitX);
-      const iterations = ITERATION_STEPS.reduce((nearest, step) =>
-        Math.abs(step - requested) < Math.abs(nearest - requested) ? step : nearest
+      const iterations = ITERATION_BANDS.reduce(
+        (chosen, [start, count]) => (pointer.unitX >= start ? count : chosen),
+        1
       );
       const estimates = peek(outputs.panel.estimates);
       const x = pointer.x;
@@ -99,19 +110,53 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
-    ...drawTractMap(inputs, outputs.mesh, outputs.fitted, {ramp: 'sequential', range: [0, 1]}),
-    // The observed 0/1 outcomes at the tract centers, on the fitted probability's scale.
-    {
-      layer: 'dots',
-      positions: outputs.mesh.centers,
-      values: outputs.response,
-      ramp: 'sequential',
-      range: [0, 1],
-      radius: 3.2
-    },
-    ...drawCoefficientPanel(outputs.panel, {rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9]}),
-    ...drawSignedBars(outputs.marginalEffects, MARGINAL_RECTANGLE, COEFFICIENT_RANGE[1] / 4),
-    drawZeroLine(outputs.panel.zeros, MARGINAL_RECTANGLE)
-  ]
+  draw: ({inputs, outputs, world, theme}) => {
+    const titles = mergeText({
+      labels: [
+        {
+          text: 'fitted probability of 1',
+          at: [inputs.mapWidth / 2, world.height],
+          offset: [0, -12],
+          role: 'label',
+          priority: 4
+        },
+        {
+          text: 'coefficients (dot: latent truth)',
+          at: [(MAP_SHARE + 0.08) * world.width, 0.9 * world.height],
+          anchor: 'bottom-left',
+          offset: [0, 3],
+          role: 'label',
+          priority: 4
+        },
+        {
+          text: 'marginal effects',
+          at: [(MAP_SHARE + 0.08) * world.width, MARGINAL_RECTANGLE[3] * world.height],
+          anchor: 'bottom-left',
+          offset: [0, 3],
+          role: 'label',
+          priority: 4
+        }
+      ]
+    });
+    return [
+      ...drawTractMap(inputs, outputs.mesh, outputs.fitted, {ramp: 'sequential', range: [0, 1]}),
+      // The observed 0/1 outcomes at the tract centers, on the fitted probability's scale.
+      {
+        layer: 'dots',
+        positions: outputs.mesh.centers,
+        values: outputs.response,
+        ramp: 'sequential',
+        range: [0, 1],
+        radius: 3.2
+      },
+      ...drawCoefficientPanel(outputs.panel, {
+        rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9],
+        world,
+        ink: theme.ink
+      }),
+      ...drawSignedBars(outputs.marginalEffects, MARGINAL_RECTANGLE, COEFFICIENT_RANGE[1] / 4),
+      drawZeroLine(outputs.panel.zeros, MARGINAL_RECTANGLE),
+      {layer: 'text', ...titles}
+    ];
+  }
 });

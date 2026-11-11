@@ -3,11 +3,14 @@
 
 // addDasymetricRedistributionRecipe: source zone totals redistributed to target zones, weighted by
 // an ancillary raster (bright = built-up land). Targets are filled by their redistributed total;
-// the ancillary raster shows through the fill.
+// the ancillary raster shows through the fill. The heavy outlines are the source zones, each with the
+// total that is redistributed.
 
 import {addDasymetricRedistributionRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getGPURasterFractionalCoverageParameterValues} from '@luma-contributors/analysis/raster-analysis';
 import {getBuiltFraction} from './lib/land-cover';
 import {defineOperationRun} from '../../define-run';
+import {createLegend, formatTick, mergeText, type RunLabel} from '../../text';
 import {createBuiltUpZones} from './lib/built-up-zones';
 import {createQuadZones, getQuadFill, uploadQuadZones} from './lib/quads';
 import {createWorldGrid, getCellCenter, rasterizeZones} from './lib/rasterize';
@@ -68,7 +71,12 @@ export default defineOperationRun({
           polygonOffsets: sourceMesh.featureOffsets.view,
           ringOffsets: sourceMesh.ringOffsets.view
         },
-        tupleCapacity: 8192
+        tupleCapacity: 8192,
+        parameters: builder.upload(
+          'coverage-parameters',
+          'float32',
+          getGPURasterFractionalCoverageParameterValues(grid.grid)
+        ).view
       },
       sourceTotals: sourceTotals.view,
       targetZones: builder.upload('target-zones', 'uint32', targetZones).view,
@@ -118,38 +126,60 @@ export default defineOperationRun({
       return {
         rerun: true,
         glyphs: [
-          {shape: 'ring', at: inputs.peak, radius: BUMP_RADIUS},
+          {shape: 'ring', at: inputs.peak, radius: BUMP_RADIUS, dashed: true},
           {shape: 'crosshair', at: inputs.peak, size: 5}
         ],
         readout: `peak (${inputs.peak[0].toFixed(2)}, ${inputs.peak[1].toFixed(2)}) · largest target ${Math.round(largest)}`
       };
     }
   },
-  draw: ({inputs, outputs}) => [
-    {
-      layer: 'raster',
-      context: true,
-      values: outputs.ancillary,
-      columns: inputs.grid.width,
-      rows: inputs.grid.height
-    },
-    getQuadFill(outputs.targetMesh, inputs.target, outputs.targetTotals, {
-      ramp: 'sequential',
-      alpha: 0.7,
-      range: [0, 600]
-    }),
-    {
-      layer: 'lines',
-      context: true,
-      segments: outputs.targetMesh.outline,
-      count: inputs.target.outlineCount
-    },
-    {
-      layer: 'lines',
-      context: true,
-      segments: outputs.sourceMesh.outline,
-      count: inputs.source.outlineCount,
-      radius: 2.5
-    }
-  ]
+  draw: ({inputs, outputs, values, theme}) => {
+    // The total each source zone hands down, from the same sourceContrast the operation reads.
+    const sourceLabels: RunLabel[] = Array.from({length: inputs.source.count}, (_, zone) => ({
+      text: formatTick(Math.round(1000 * (0.3 + values.totals * inputs.source.values[zone]))),
+      at: [inputs.source.centers[zone * 2], inputs.source.centers[zone * 2 + 1]] as const,
+      role: 'value' as const
+    }));
+    return [
+      {
+        layer: 'raster',
+        context: true,
+        values: outputs.ancillary,
+        columns: inputs.grid.width,
+        rows: inputs.grid.height
+      },
+      getQuadFill(outputs.targetMesh, inputs.target, outputs.targetTotals, {
+        ramp: 'sequential',
+        alpha: 0.7,
+        range: [0, 600]
+      }),
+      {
+        layer: 'lines',
+        context: true,
+        segments: outputs.targetMesh.outline,
+        count: inputs.target.outlineCount
+      },
+      {
+        layer: 'lines',
+        segments: outputs.sourceMesh.outline,
+        count: inputs.source.outlineCount,
+        radius: 3,
+        color: [...theme.ink, 0.9]
+      },
+      {
+        layer: 'text',
+        ...mergeText(
+          {labels: sourceLabels},
+          createLegend({
+            corner: 'bottom-right',
+            entries: [
+              {label: 'source zone and its total', swatch: [...theme.ink]},
+              {label: 'target fill: redistributed total', swatch: [...theme.ramp[4]]},
+              {label: 'texture: built-up land (ancillary)', swatch: [...theme.muted]}
+            ]
+          })
+        )
+      }
+    ];
+  }
 });

@@ -132,7 +132,7 @@ export default defineOperationRun({
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.coastline, radius: 0.8, alpha: 0.45},
     {layer: 'dots', positions: outputs.mapOrigins, context: true, radius: 3},
-    {layer: 'lines', segments: outputs.arcs, radius: 1.1, alpha: 0.7},
+    {layer: 'lines', segments: outputs.arcs, radius: 2, alpha: 0.85},
     {layer: 'dots', positions: outputs.midpoints, values: outputs.distances, radius: 6}
   ]
 });

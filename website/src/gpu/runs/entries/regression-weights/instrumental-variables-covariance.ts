@@ -15,6 +15,7 @@ import {
 import {defineOperationRun} from '../../define-run';
 import type {RunGlyph} from '../../interaction';
 import {createKnnWeights} from '../../inputs';
+import {createChartAxes, getChartRectangle} from '../../text';
 import {parameters} from './instrumental-variables-covariance.parameters';
 import {
   createRegressionInputs,
@@ -34,7 +35,8 @@ const METHODS = ['HC0', 'HC1', 'HAC'] as const;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Residuals (left) and the IV covariance matrix, row by row (right).',
+  caption:
+    'Residuals (left); standard errors from the IV covariance (bars) against plain OLS standard errors (dots).',
   createInputs: ({random, world}) => createRegressionInputs(random, world),
   build(builder, inputs, values) {
     const rowCount = inputs.tracts.count;
@@ -155,29 +157,42 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
-    ...drawResidualMap(inputs, outputs.mesh, outputs.residuals),
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.robustStandardErrors,
-      color: [0.55, 0.65, 0.95, 0.9],
-      // Fixed range: the methods differ in scale, which an automatic range would hide.
-      range: [0, STANDARD_ERROR_LIMIT],
-      rectangle: CHART_RECTANGLE
-    },
-    {
-      layer: 'chart',
-      kind: 'scatter',
-      values: outputs.olsStandardErrors,
-      xValues: outputs.slots,
-      xRange: [0, 1],
-      range: [0, STANDARD_ERROR_LIMIT],
-      color: [1, 1, 1, 0.95],
-      radius: 5,
-      rectangle: CHART_RECTANGLE
-    }
-  ]
+  draw: ({inputs, outputs, world}) => {
+    const axes = createChartAxes({
+      rectangle: getChartRectangle(world, CHART_RECTANGLE),
+      x: {categories: ['int', 'x1', 'x2']},
+      y: {
+        range: [0, STANDARD_ERROR_LIMIT],
+        ticks: [0.4, 0.8],
+        title: 'standard error (dot: OLS)'
+      }
+    });
+    return [
+      {layer: 'text', ...axes.grid},
+      ...drawResidualMap(inputs, outputs.mesh, outputs.residuals),
+      {
+        layer: 'chart',
+        kind: 'bars',
+        values: outputs.robustStandardErrors,
+        color: [0.55, 0.65, 0.95, 0.9],
+        // Fixed range: the methods differ in scale, which an automatic range would hide.
+        range: [0, STANDARD_ERROR_LIMIT],
+        rectangle: CHART_RECTANGLE
+      },
+      {
+        layer: 'chart',
+        kind: 'scatter',
+        values: outputs.olsStandardErrors,
+        xValues: outputs.slots,
+        xRange: [0, 1],
+        range: [0, STANDARD_ERROR_LIMIT],
+        color: [1, 1, 1, 0.95],
+        radius: 5,
+        rectangle: CHART_RECTANGLE
+      },
+      {layer: 'text', ...axes}
+    ];
+  }
 });
 
 /** The symmetric neighbors CSR (the kernel must be) with a unit self slot and `weight` on links. */

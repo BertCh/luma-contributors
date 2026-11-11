@@ -8,10 +8,10 @@ export const parameters: GpuSceneParameter[] = [
     id: 'shown',
     label: 'Output shown',
     min: 0,
-    max: 3,
+    max: 1,
     step: 1,
-    default: 2,
-    options: ['water fraction', 'soil fraction', 'vegetation fraction', 'residual']
+    default: 0,
+    options: ['three fractions', 'residual']
   },
   {
     id: 'constraint',

@@ -17,7 +17,7 @@ import {HIGHLIGHT_COLOR, OUTPUT_COLOR} from './shared/lines';
 import {parameters} from './group-geometry.parameters';
 
 const CIRCLE_SEGMENTS = 40;
-// The operation's default 'arcgis' convention scales the ellipse axes by sqrt(2).
+// The operation's default 'root-two' convention scales the ellipse axes by sqrt(2).
 const ELLIPSE_SCALE = Math.SQRT2;
 const SEGMENTS_PER_GROUP = 4 + CIRCLE_SEGMENTS;
 const GROUP_LABELS = 4;

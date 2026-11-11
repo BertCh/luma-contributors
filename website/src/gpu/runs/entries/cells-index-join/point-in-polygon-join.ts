@@ -13,6 +13,12 @@ import {createRandomPoints, createZones, scaleZones, uploadZones} from './suppor
 import {parameters} from './point-in-polygon-join.parameters';
 
 const POINT_COUNT = 900;
+// A lattice of probe points follows the pointer; the first rows of the join are the lattice.
+const LATTICE_COLUMNS = 9;
+const LATTICE_ROWS = 5;
+const LATTICE_COUNT = LATTICE_COLUMNS * LATTICE_ROWS;
+const LATTICE_SPACING = 0.04;
+const CENTER_ROW = (LATTICE_ROWS >> 1) * LATTICE_COLUMNS + (LATTICE_COLUMNS >> 1);
 const ZONE_NAMES = Object.keys(lakes.greatLakes);
 
 export default defineOperationRun({
@@ -21,11 +27,11 @@ export default defineOperationRun({
   createInputs: ({random, world}) => ({
     zones: createZones(world),
     points: createRandomPoints(random, world, POINT_COUNT),
-    // The last point row is the pointer.
+    // The pointer is the center of a lattice of probe points.
     pointer: [world.width / 2, 0.5] as [number, number]
   }),
   build(builder, inputs) {
-    const rowCount = POINT_COUNT + 1;
+    const rowCount = LATTICE_COUNT + POINT_COUNT;
     const points = builder.allocate('points', 'float32x2', rowCount);
     const zones = uploadZones(builder, inputs.zones);
     const pointFeatureIds = builder.allocate('point-feature-ids', 'uint32', rowCount);
@@ -46,12 +52,21 @@ export default defineOperationRun({
     return {
       outputs: {points, pointFeatureIds, featureCounts, zones},
       update: current => {
+        const lattice = new Float32Array(LATTICE_COUNT * 2);
+        for (let row = 0; row < LATTICE_COUNT; row++) {
+          lattice[row * 2] =
+            inputs.pointer[0] +
+            ((row % LATTICE_COLUMNS) - (LATTICE_COLUMNS >> 1)) * LATTICE_SPACING;
+          lattice[row * 2 + 1] =
+            inputs.pointer[1] +
+            (Math.floor(row / LATTICE_COLUMNS) - (LATTICE_ROWS >> 1)) * LATTICE_SPACING;
+        }
         points.write(
           Float32Array.from([
+            ...lattice,
             ...Float32Array.from(inputs.points, (value, index) =>
               index % 2 === 0 ? value + current.shift : value
-            ),
-            ...inputs.pointer
+            )
           ])
         );
         const scaled = scaleZones(inputs.zones, current.size);
@@ -63,19 +78,34 @@ export default defineOperationRun({
   // The pointer is one more point in the join: the zone the operation wrote for it is lit.
   interaction: {
     kind: 'place',
-    hint: 'move a point',
+    hint: 'move the probe lattice',
     rest: ({toUnit, inputs}) => toUnit([inputs.zones.centers[0], inputs.zones.centers[1]]),
     resolve(pointer, {inputs, outputs, values, peek}) {
       inputs.pointer = [pointer.x, pointer.y];
       const glyphs: RunGlyph[] = [
-        {shape: 'crosshair', at: inputs.pointer, size: 8},
-        {shape: 'dot', at: inputs.pointer}
+        {
+          shape: 'box',
+          minimum: [
+            pointer.x - (LATTICE_COLUMNS >> 1) * LATTICE_SPACING - 0.02,
+            pointer.y - (LATTICE_ROWS >> 1) * LATTICE_SPACING - 0.02
+          ],
+          maximum: [
+            pointer.x + (LATTICE_COLUMNS >> 1) * LATTICE_SPACING + 0.02,
+            pointer.y + (LATTICE_ROWS >> 1) * LATTICE_SPACING + 0.02
+          ],
+          dashed: true
+        },
+        {shape: 'crosshair', at: inputs.pointer, size: 8}
       ];
       const zoneIds = peek(outputs.pointFeatureIds);
       const featureCounts = peek(outputs.featureCounts);
       let readout = 'zone …';
       if (zoneIds && featureCounts) {
-        const zone = zoneIds[POINT_COUNT];
+        const zone = zoneIds[CENTER_ROW];
+        let joined = 0;
+        for (let row = 0; row < LATTICE_COUNT; row++) {
+          if (zoneIds[row] < featureCounts.length) joined++;
+        }
         if (zone >= featureCounts.length) {
           // Not joined: a dashed link to the nearest zone edge shows how far outside it is.
           const hit = findNearestSegment(
@@ -91,9 +121,9 @@ export default defineOperationRun({
               {shape: 'line', from: [pointer.x, pointer.y], to: hit.point, dashed: true},
               {shape: 'ring', at: hit.point, radius: 0.012}
             );
-            readout = `joins no zone · ${hit.distance.toFixed(2)} from ${ZONE_NAMES[ring]}`;
+            readout = `${joined} of ${LATTICE_COUNT} probes in a zone · ${hit.distance.toFixed(2)} from ${ZONE_NAMES[ring]}`;
           } else {
-            readout = 'joins no zone';
+            readout = `${joined} of ${LATTICE_COUNT} probes in a zone`;
           }
         } else {
           const scaled = scaleZones(inputs.zones, values.size);
@@ -105,8 +135,7 @@ export default defineOperationRun({
             ),
             closed: true
           });
-          // The count includes the pointer's own row.
-          readout = `in zone ${zone} (${ZONE_NAMES[zone]}) · ${featureCounts[zone] - 1} points`;
+          readout = `${joined} of ${LATTICE_COUNT} probes in a zone · centre in ${ZONE_NAMES[zone]}`;
         }
       }
       return {rerun: true, glyphs, readout};
@@ -115,6 +144,14 @@ export default defineOperationRun({
   draw: ({outputs}) => [
     {layer: 'dots', context: true, positions: outputs.points, radius: 3},
     {layer: 'dots', positions: outputs.points, values: outputs.pointFeatureIds, radius: 3.5},
+    // The probe lattice, joined by the same operation, drawn larger.
+    {
+      layer: 'dots',
+      positions: outputs.points,
+      values: outputs.pointFeatureIds,
+      count: LATTICE_COUNT,
+      radius: 6.5
+    },
     {
       layer: 'lines',
       context: true,

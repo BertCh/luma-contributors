@@ -11,6 +11,7 @@ import {
   GPUTransitionMatrix
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {createChartAxes, getChartRectangle, mergeText} from '../../text';
 import {parameters} from './transition-diagnostics.parameters';
 import {addFloatSlice, addSlice} from './support/gather';
 
@@ -139,44 +140,119 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs, extra}) => [
-    {
-      layer: 'polygons',
-      positions: outputs.matrixMesh.vertices,
-      indices: outputs.matrixMesh.indices,
-      owners: outputs.matrixMesh.owners,
-      values: outputs.counts,
-      triangleCount: outputs.matrixMesh.triangleCount,
-      ramp: 'sequential',
-      range: [0, 80]
-    },
-    {
-      layer: 'lines',
-      context: true,
-      segments: outputs.matrixOutline,
-      count: outputs.matrixOutlineCount,
-      alpha: 0.4
-    },
-    {
-      layer: 'lines',
-      segments: extra.struck,
-      count: extra.struckCount,
-      radius: 7,
-      color: [1, 0.9, 0.35, 0.55]
-    },
-    ...(
-      [
-        [outputs.pooled, 0.67, 0.9, 'pooled'],
-        [outputs.west, 0.38, 0.61, 'west'],
-        [outputs.east, 0.09, 0.32, 'east']
-      ] as const
-    ).map(([values, bottom, top]) => ({
-      layer: 'chart' as const,
-      kind: 'bars' as const,
-      values,
-      range: [0, 0.5] as const,
-      rectangle: [0.58, bottom, 0.97, top] as const,
-      ramp: 'sequential' as const
-    }))
-  ]
+  draw: ({inputs, outputs, extra, values, world, theme}) => {
+    const matrixRectangles = getMatrixGridRectangles(2, MATRICES(inputs.world.width));
+    const classNames = Array.from({length: values.classCount}, (_, index) => `${index + 1}`);
+    const barPanels = [
+      ['pooled', 0.67, 0.9],
+      ['west', 0.38, 0.61],
+      ['east', 0.09, 0.32]
+    ] as const;
+    const barLabels = barPanels.flatMap(([name, bottom, top]) => {
+      const rectangle = getChartRectangle(world, [0.58, bottom, 0.97, top]);
+      return [
+        {
+          text: `steady state: ${name}`,
+          at: [rectangle[0], rectangle[3]] as const,
+          anchor: 'bottom-left' as const,
+          offset: [0, 2] as const,
+          role: 'label' as const
+        }
+      ];
+    });
+    const eastAxes = createChartAxes({
+      rectangle: getChartRectangle(world, [0.58, 0.09, 0.97, 0.32]),
+      x: {categories: classNames, title: 'class'}
+    });
+    return [
+      {
+        layer: 'polygons',
+        positions: outputs.matrixMesh.vertices,
+        indices: outputs.matrixMesh.indices,
+        owners: outputs.matrixMesh.owners,
+        values: outputs.counts,
+        triangleCount: outputs.matrixMesh.triangleCount,
+        ramp: 'sequential',
+        range: [0, 80]
+      },
+      {
+        layer: 'lines',
+        context: true,
+        segments: outputs.matrixOutline,
+        count: outputs.matrixOutlineCount,
+        alpha: 0.4
+      },
+      {
+        layer: 'lines',
+        segments: extra.struck,
+        count: extra.struckCount,
+        radius: 7,
+        color: [...theme.categories[1], 0.55]
+      },
+      ...(
+        [
+          [outputs.pooled, 0.67, 0.9, 'pooled'],
+          [outputs.west, 0.38, 0.61, 'west'],
+          [outputs.east, 0.09, 0.32, 'east']
+        ] as const
+      ).map(([values, bottom, top]) => ({
+        layer: 'chart' as const,
+        kind: 'bars' as const,
+        values,
+        range: [0, 0.5] as const,
+        rectangle: [0.58, bottom, 0.97, top] as const,
+        ramp: 'sequential' as const
+      })),
+      {
+        layer: 'text',
+        ...mergeText(eastAxes, {
+          labels: [
+            ...barLabels,
+            {
+              text: 'west counts',
+              at: [matrixRectangles[0][0], matrixRectangles[0][3]] as const,
+              anchor: 'bottom-left' as const,
+              offset: [0, 2] as const,
+              role: 'label' as const
+            },
+            {
+              text: 'east counts',
+              at: [matrixRectangles[1][0], matrixRectangles[1][3]] as const,
+              anchor: 'bottom-left' as const,
+              offset: [0, 2] as const,
+              role: 'label' as const
+            },
+            {
+              text: 'row: class now, column: class next',
+              at: [matrixRectangles[0][0], matrixRectangles[0][1]] as const,
+              anchor: 'top-left' as const,
+              offset: [0, -3] as const,
+              role: 'tick' as const
+            },
+            {
+              text: `sparse row (under ${values.minimumTransitions} moves)`,
+              at: [0.03 * world.width, 0.23],
+              anchor: 'left' as const,
+              swatch: [...theme.categories[1]] as const,
+              role: 'label' as const
+            },
+            ...THRESHOLDS.map((threshold, stop) => ({
+              text: `${threshold}`,
+              at: [(0.03 + ((stop + 0.5) / THRESHOLDS.length) * 0.49) * world.width, 0.04] as const,
+              anchor: 'bottom' as const,
+              offset: [0, 10] as const,
+              role: 'tick' as const
+            })),
+            {
+              text: 'minimumTransitions',
+              at: [0.03 * world.width, 0.04],
+              anchor: 'bottom-left' as const,
+              offset: [0, 22] as const,
+              role: 'tick' as const
+            }
+          ]
+        })
+      }
+    ];
+  }
 });

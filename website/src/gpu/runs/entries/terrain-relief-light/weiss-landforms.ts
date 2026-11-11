@@ -10,6 +10,7 @@ import {
   GPUTerrainWeissLandforms
 } from '@luma-contributors/analysis/gpu-terrain';
 import {defineOperationRun} from '../../define-run';
+import {createLegend} from '../../text';
 import {createMaskState, drawClassDimmer, writeClassMask} from './support/class-highlight';
 import {
   createTerrainInput,
@@ -28,6 +29,19 @@ const LANDFORM_NAMES = [
   'canyon',
   'midslope drainage',
   'upland drainage',
+  'u-shaped valley',
+  'plain',
+  'open slope',
+  'upper slope',
+  'local ridge',
+  'midslope ridge',
+  'mountain top'
+];
+// Short names for the legend, classes 1 to 10.
+const LEGEND_NAMES = [
+  'canyon',
+  'midslope drain.',
+  'upland drain.',
   'u-shaped valley',
   'plain',
   'open slope',
@@ -127,6 +141,16 @@ export default defineOperationRun({
       categories: LANDFORM_COLORS,
       alpha: 0.9
     }),
-    drawClassDimmer(inputs, outputs.highlight)
+    drawClassDimmer(inputs, outputs.highlight),
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'bottom-left',
+        entries: LANDFORM_COLORS.slice(1).map((color, index) => ({
+          label: LEGEND_NAMES[index],
+          swatch: [color[0], color[1], color[2]] as const
+        }))
+      })
+    }
   ]
 });

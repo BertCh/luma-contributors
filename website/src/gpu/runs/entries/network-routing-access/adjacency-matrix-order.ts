@@ -6,6 +6,7 @@
 
 import {GPUAdjacencyMatrix, GPUAdjacencyMatrixOrder} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
+import {createBandText, createMatrixNote} from './shared/band-text';
 import {createBandedGraph, uploadAdjacency} from './shared/graphs';
 import {parameters} from './adjacency-matrix-order.parameters';
 
@@ -54,7 +55,7 @@ export default defineOperationRun({
       })
     );
     return {
-      outputs: {orderedCounts, inputCounts, resolution: values.resolution},
+      outputs: {orderedCounts, inputCounts, resolution: values.resolution, graph},
       update: () => undefined
     };
   },
@@ -70,7 +71,7 @@ export default defineOperationRun({
       readout: `input order | grouped order (${Math.round(values.communities)} bands)`
     })
   },
-  draw: ({outputs, interaction, world}) => {
+  draw: ({outputs, interaction, values, world}) => {
     const curtain = interaction.curtain ?? world.width / 2;
     return [
       {
@@ -90,6 +91,13 @@ export default defineOperationRun({
         ramp: 'sequential',
         range: [0, 3],
         clip: {side: 'right', x: curtain}
+      },
+      // Input order has no blocks to name; the grouped half outlines and numbers its bands.
+      {layer: 'text', clip: {side: 'left', x: curtain}, ...createMatrixNote()},
+      {
+        layer: 'text',
+        clip: {side: 'right', x: curtain},
+        ...createBandText(outputs.graph, world, Math.round(values.communities))
       }
     ];
   }

@@ -2,13 +2,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUPointCloudVoxelMerge of two tiles' voxel reductions (GPUPointCloudVoxelDownsample on the same
-// grid). The tiles own disjoint rows of one cloud; the merged voxel table is drawn as dots at the
-// merged centroids, brighter where more points fell in the voxel.
+// grid). The tiles own disjoint rows of one cloud (points coloured by tile, the seam a line); the
+// merged voxel table is drawn as dots at the merged centroids, brighter where more points fell in
+// the voxel, over the voxel grid. A voxel that both tiles reduced is outlined: those are the cells
+// the merge combined.
 
 import {GPUPointCloudVoxelMerge} from '@luma-contributors/analysis/pointcloud-analysis';
 import {GPUPointCloudVoxelDownsample} from '@luma.gl/graph/gpu-pointcloud';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {findParameter, snapToParameter} from '../../interaction';
+import {createLegend, mergeText, type RunLabel} from '../../text';
 import {addFloatCopy} from './_lib/convert';
 import {createTerrainCloud} from './_lib/helpers';
 import {parameters} from './pointcloud-voxel-merge.parameters';
@@ -40,12 +43,15 @@ type Outputs = {
   firstCounts: RunBuffer;
   secondCounts: RunBuffer;
   shared: RunBuffer;
+  sharedBoxes: RunBuffer;
+  gridLines: RunBuffer;
+  seam: RunBuffer;
 };
 
 export default defineOperationRun<Inputs, Outputs>({
   parameters,
   caption:
-    'Merged voxel centroids from two tiles split at the seam (left tile blue, right tile orange); the white rings are voxels both tiles contributed to.',
+    'Merged voxel centroids from two tiles split at the seam (left tile blue, right tile orange); outlined boxes mark voxels both tiles contributed to, and the larger dots are the merged voxel centroids.',
   createInputs,
   build(builder, cloud, values) {
     const voxelSize = values.voxelSize;
@@ -105,6 +111,15 @@ export default defineOperationRun<Inputs, Outputs>({
       })
     );
     const tileOf = builder.allocate('tile-of', 'uint32', POINT_COUNT);
+    // The voxel grid over the footprint, as line segments.
+    const lines: number[] = [];
+    for (let column = 0; column <= gridSize[0]; column++) {
+      lines.push(column * voxelSize, 0, column * voxelSize, gridSize[1] * voxelSize);
+    }
+    for (let row = 0; row <= gridSize[1]; row++) {
+      lines.push(0, row * voxelSize, gridSize[0] * voxelSize, row * voxelSize);
+    }
+    const seam = builder.allocate('seam', 'float32x4', 1);
     return {
       outputs: {
         footprint: builder.upload('footprint', 'float32x2', cloud.footprint),
@@ -115,13 +130,17 @@ export default defineOperationRun<Inputs, Outputs>({
         counts: addFloatCopy(builder, 'merged-counts-float', mergedCounts, voxelCount),
         firstCounts: tileCounts[0],
         secondCounts: tileCounts[1],
-        shared: builder.allocate('shared', 'float32x2', SHARED_LIMIT)
+        shared: builder.allocate('shared', 'float32x2', SHARED_LIMIT),
+        sharedBoxes: builder.allocate('shared-boxes', 'float32x4', SHARED_LIMIT * 4),
+        gridLines: builder.upload('grid-lines', 'float32x4', Float32Array.from(lines)),
+        seam
       },
       update: current => {
         const owners = Uint32Array.from({length: POINT_COUNT}, (_, row) =>
           Number(cloud.positions[row * 3] >= current.tileBoundary)
         );
         tileOf.write(owners);
+        seam.write(Float32Array.of(current.tileBoundary, 0, current.tileBoundary, 1));
         for (const tileIndex of [0, 1]) {
           tilePositions[tileIndex].write(
             Float32Array.from({length: POINT_COUNT * 3}, (_, index) => {
@@ -150,6 +169,8 @@ export default defineOperationRun<Inputs, Outputs>({
       const secondCounts = peek(outputs.secondCounts);
       const centers = peek(outputs.centers);
       const rings = new Float32Array(SHARED_LIMIT * 2).fill(OUTSIDE);
+      const boxes = new Float32Array(SHARED_LIMIT * 16).fill(OUTSIDE);
+      const size = values.voxelSize;
       let shared = 0;
       for (
         let voxel = 0;
@@ -158,10 +179,35 @@ export default defineOperationRun<Inputs, Outputs>({
       ) {
         if (firstCounts[voxel] > 0 && secondCounts[voxel] > 0 && shared < SHARED_LIMIT) {
           rings.set([centers[voxel * 2], centers[voxel * 2 + 1]], shared * 2);
+          // The outline of the voxel's cell in the footprint, as four segments.
+          const left = Math.floor(centers[voxel * 2] / size) * size;
+          const bottom = Math.floor(centers[voxel * 2 + 1] / size) * size;
+          boxes.set(
+            [
+              left,
+              bottom,
+              left + size,
+              bottom,
+              left + size,
+              bottom,
+              left + size,
+              bottom + size,
+              left + size,
+              bottom + size,
+              left,
+              bottom + size,
+              left,
+              bottom + size,
+              left,
+              bottom
+            ],
+            shared * 16
+          );
           shared++;
         }
       }
       outputs.shared.write(rings);
+      outputs.sharedBoxes.write(boxes);
       return {
         values: {tileBoundary: boundary},
         focus: shared,
@@ -172,30 +218,62 @@ export default defineOperationRun<Inputs, Outputs>({
       };
     }
   },
-  draw: ({outputs, interaction}) => [
-    {
-      layer: 'dots',
-      positions: outputs.footprint,
-      values: outputs.tileOf,
-      ramp: 'categorical',
-      categories: TILE_COLORS,
-      alpha: 0.5,
-      radius: 1.8
-    },
-    {
-      layer: 'dots',
-      positions: outputs.centers,
-      values: outputs.counts,
-      range: [0, 6],
-      fade: true,
-      radius: 4
-    },
-    {
-      layer: 'dots',
-      positions: outputs.shared,
-      count: typeof interaction.focus === 'number' ? Math.max(1, interaction.focus) : 1,
-      color: [1, 1, 1, 0.9],
-      radius: 6
-    }
-  ]
+  draw: ({outputs, interaction, values, theme}) => {
+    const sharedCount = typeof interaction.focus === 'number' ? interaction.focus : 0;
+    const labels: RunLabel[] = [
+      {
+        text: 'seam',
+        at: [values.tileBoundary, 0.97],
+        anchor: 'top-left',
+        offset: [4, 0],
+        role: 'title'
+      }
+    ];
+    return [
+      {layer: 'lines', context: true, segments: outputs.gridLines, radius: 0.8},
+      {
+        layer: 'dots',
+        positions: outputs.footprint,
+        values: outputs.tileOf,
+        ramp: 'categorical',
+        categories: TILE_COLORS,
+        alpha: 0.9,
+        radius: 1.8
+      },
+      {
+        layer: 'dots',
+        positions: outputs.centers,
+        values: outputs.counts,
+        range: [0, 6],
+        fade: true,
+        radius: 3
+      },
+      {layer: 'lines', segments: outputs.seam, color: [...theme.ink, 0.9], radius: 1.4},
+      {
+        layer: 'lines',
+        segments: outputs.sharedBoxes,
+        count: sharedCount * 4,
+        color: [...theme.ink, 1],
+        radius: 1.4
+      },
+      {
+        layer: 'text',
+        ...mergeText(
+          {labels},
+          createLegend({
+            corner: 'bottom-left',
+            entries: [
+              {label: 'points of tile 1 (left of the seam)', swatch: TILE_COLORS[0]},
+              {label: 'points of tile 2 (right of the seam)', swatch: TILE_COLORS[1]},
+              {
+                label: 'merged voxel centroid (output; more points, stronger)',
+                swatch: [...theme.ramp[4]]
+              },
+              {label: `voxels both tiles reduced: ${sharedCount} (outlined)`, swatch: theme.ink}
+            ]
+          })
+        )
+      }
+    ];
+  }
 });

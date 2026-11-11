@@ -75,14 +75,14 @@ export const entries: CatalogEntry[] = [
       {
         name: 'rowDirection',
         type: 'GPURasterRowDirection | undefined',
-        default: "'south'",
-        description: 'Direction in which the row index increases.'
+        default: 'from grid.affine[4]',
+        description: 'Row direction; read from the grid affine when left out.'
       },
       {
         name: 'borderMode',
-        type: 'GPURasterBorderMode | undefined',
-        default: "'clamp'",
-        description: 'Sobel treatment at the tile border.'
+        type: "'one-sided' | GPURasterBorderMode | undefined",
+        default: "'one-sided'",
+        description: "Tile border: 'one-sided' by default, or a padding mode."
       }
     ],
     outputs: [
@@ -164,7 +164,8 @@ parameters.write(getGPUTerrainDerivativesParameterValues(
       cellSizeModeParameter,
       {
         name: 'borderMode',
-        type: "'clamp' | 'nodata' | undefined",
+        type: "'one-sided' | 'clamp' | 'nodata' | undefined",
+        default: "'one-sided'",
         description: 'Border treatment of the stencil.'
       }
     ],
@@ -1505,8 +1506,8 @@ parameters.write(getGPUTerrainHorizonParameterValues({zFactor: 1}, grid));`,
       {
         name: 'rowDirection',
         type: 'GPURasterRowDirection | undefined',
-        default: "'south'",
-        description: 'Direction in which the row index increases.'
+        default: 'from grid.affine[4]',
+        description: 'Row direction from the grid affine; a contradicting value throws.'
       },
       {
         name: 'output',

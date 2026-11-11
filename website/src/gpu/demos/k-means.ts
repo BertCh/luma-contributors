@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Demo: GPUKMeans. Graphs with 1 to 12 Lloyd iterations replay the algorithm step by step: centers
+// Demo: GPUSpatialKMeans. Graphs with 1 to 12 Lloyd iterations replay the algorithm step by step: centers
 // walk to the middle of their clusters, then a new seed restarts it. Moving either slider stops the
 // replay and shows that iteration count and seed.
 
 import {
-  GPUKMeans,
-  getGPUKMeansParameterValues,
-  GPU_KMEANS_PARAMETER_LENGTH
+  GPUSpatialKMeans,
+  getGPUSpatialKMeansParameterValues,
+  GPU_SPATIAL_KMEANS_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {getEarthquakes} from '../data/point-observations';
 import {createPointIndex} from '../runs/pick';
@@ -54,7 +54,7 @@ const scene: GpuScene = async context => {
   );
 
   const positionBuffer = createStorageBuffer(device, positions);
-  const parameterBuffer = createEmptyStorageBuffer(device, GPU_KMEANS_PARAMETER_LENGTH);
+  const parameterBuffer = createEmptyStorageBuffer(device, GPU_SPATIAL_KMEANS_PARAMETER_LENGTH);
   const labels = createEmptyStorageBuffer(device, pointCount);
   const centers = createEmptyStorageBuffer(device, CLUSTER_COUNT * 2);
   const centerValues = createEmptyStorageBuffer(device, CLUSTER_COUNT);
@@ -62,7 +62,7 @@ const scene: GpuScene = async context => {
   const createRunner = (maximumIterations: number) =>
     GraphRunner.create(device, `demo-k-means-${maximumIterations}`, graph => {
       graph.add(
-        new GPUKMeans({
+        new GPUSpatialKMeans({
           id: `demo-k-means-${maximumIterations}`,
           positions: importBufferView(graph, 'positions', positionBuffer, 'float32x2', pointCount),
           k: CLUSTER_COUNT,
@@ -72,7 +72,7 @@ const scene: GpuScene = async context => {
             'parameters',
             parameterBuffer,
             'uint32',
-            GPU_KMEANS_PARAMETER_LENGTH
+            GPU_SPATIAL_KMEANS_PARAMETER_LENGTH
           ),
           output: {
             labels: importBufferView(graph, 'labels', labels, 'uint32', pointCount),
@@ -134,7 +134,7 @@ const scene: GpuScene = async context => {
     if (key !== lastKey) {
       if (runner) {
         lastKey = key;
-        parameterBuffer.write(getGPUKMeansParameterValues({seed}));
+        parameterBuffer.write(getGPUSpatialKMeansParameterValues({seed}));
         runner.run();
         void readClusters();
       } else if (!pending.has(iterations)) {
@@ -163,7 +163,7 @@ const scene: GpuScene = async context => {
   let lastTime = 0;
   const scheduler = new DrawScheduler(() => draw(lastTime));
 
-  // The seeding is internal to GPUKMeans (a seed parameter, no initial-centers input), so the
+  // The seeding is internal to GPUSpatialKMeans (a seed parameter, no initial-centers input), so the
   // pointer probes the nearest epicenter instead of carrying a center.
   const lit = new Float32Array(pointCount * 2);
   const driver = createPointerDriver({

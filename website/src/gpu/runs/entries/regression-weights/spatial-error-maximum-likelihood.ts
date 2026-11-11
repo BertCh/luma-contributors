@@ -11,6 +11,7 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GPUSpatialErrorMaximumLikelihood} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {drawTractMap, RESIDUAL_RANGE} from './shared/regression';
+import {mergeText} from '../../text';
 import {parameters} from './spatial-error-maximum-likelihood.parameters';
 import {defineTableModelRun} from './shared/table-model';
 import type {RunBuffer} from '../../define-run';
@@ -90,6 +91,30 @@ export default defineTableModelRun<{olsResiduals: RunBuffer<'float32'>}>({
       drawTractMap(inputs, outputs.mesh, residuals, {ramp: 'diverging', range: RESIDUAL_RANGE}).map(
         layer => (layer.layer === 'polygons' ? {...layer, clip: {side, x: curtain}} : layer)
       );
-    return [...clipped(outputs.olsResiduals, 'left'), ...clipped(outputs.residuals, 'right')];
+    let north = -Infinity;
+    let west = Infinity;
+    let east = -Infinity;
+    for (let tract = 0; tract < inputs.tracts.count; tract++) {
+      north = Math.max(north, inputs.tracts.centers[tract * 2 + 1]);
+      west = Math.min(west, inputs.tracts.centers[tract * 2]);
+      east = Math.max(east, inputs.tracts.centers[tract * 2]);
+    }
+    const middleOf = (from: number, to: number) => (Math.max(from, west) + Math.min(to, east)) / 2;
+    const titles = mergeText({
+      labels: [
+        {text: 'OLS residuals', at: [middleOf(0, curtain), north] as const},
+        {text: 'filtered residuals', at: [middleOf(curtain, inputs.mapWidth), north] as const}
+      ].map(label => ({
+        ...label,
+        offset: [0, 22] as const,
+        role: 'label' as const,
+        priority: 4
+      }))
+    });
+    return [
+      ...clipped(outputs.olsResiduals, 'left'),
+      ...clipped(outputs.residuals, 'right'),
+      {layer: 'text' as const, ...titles}
+    ];
   }
 });

@@ -115,7 +115,8 @@ export default defineOperationRun({
         parameterBuffer.write(
           getGPUGeographicDistributionParameterValues({
             standardDeviations: values.standardDeviations,
-            ellipseConvention: values.ellipseConvention === 0 ? 'arcgis' : 'standard'
+            // Option 0 is the operation's default convention, which scales the axes by sqrt(2).
+            ellipseConvention: values.ellipseConvention === 0 ? undefined : 'standard'
           })
         );
       }
@@ -149,7 +150,7 @@ export default defineOperationRun({
           },
           {shape: 'dot', at: center}
         ],
-        readout: `group ${anchor} · standardDeviations ${standardDeviations.toFixed(1)} · ${values.ellipseConvention === 0 ? 'arcgis' : 'standard'}`
+        readout: `group ${anchor} · standardDeviations ${standardDeviations.toFixed(1)} · ${values.ellipseConvention === 0 ? 'root-two' : 'standard'}`
       };
     }
   },

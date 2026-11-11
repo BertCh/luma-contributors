@@ -1,0 +1,729 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// Catalog group: flow models and map-matched volumes, network time geography, and the cell-by-period
+// cube operations (period index, value cube, packed cell-period keys, layout transpose, relative
+// times). Every example assumes `graph` is a GPUCommandGraph and the named views were created on it.
+
+import type {CatalogEntry} from '../schema';
+
+export const entries: CatalogEntry[] = [
+  {
+    id: 'radiation-flow-model',
+    symbol: 'GPURadiationFlowModel',
+    kind: 'class',
+    importPath: '@luma-contributors/analysis/gpu-network',
+    title: 'Radiation flow model',
+    summary: 'Predicts zone-to-zone flows from populations and distances with no fitted parameter.',
+    explanation:
+      'Use it as a baseline for commuting or migration flows between zones. A trip leaving zone `i` is absorbed by `j` with a probability that depends on the population nearer to `i` than `j`. The output is the expected flow matrix, not a random draw.',
+    dataTypes: {input: ['points', 'table'], output: ['network', 'table']},
+    useCases: ['simulate', 'model'],
+    domains: ['urban', 'transport'],
+    params: [
+      {
+        name: 'positions',
+        type: "GraphDataView<'float32x2'>",
+        required: true,
+        description: 'Zone centroids, one row per zone.'
+      },
+      {
+        name: 'populations',
+        type: "GraphDataView<'float32'>",
+        required: true,
+        description: 'Population or opportunities of each zone.'
+      },
+      {
+        name: 'outflows',
+        type: "GraphDataView<'float32'>",
+        required: true,
+        description: 'Trips leaving each zone.'
+      },
+      {
+        name: 'normalization',
+        type: "'none' | 'finite-size'",
+        default: "'none'",
+        description: 'Finite-size divides by 1 - m_i / M so rows sum to the outflow.'
+      },
+      {
+        name: 'spatialContext',
+        type: 'GPUSpatialContext',
+        description: 'Planar, or longitude and latitude great-circle.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'flows',
+        type: "GraphDataView<'float32'>",
+        description: 'Expected flow from zone i to zone j at row i * zoneCount + j.'
+      }
+    ],
+    example: `import {GPUFlowAggregation, GPURadiationFlowModel} from '@luma-contributors/analysis/gpu-network';
+
+// zoneCenters, zonePopulations, zoneOutWeights, expectedFlows: views on graph
+graph.add(new GPURadiationFlowModel({
+  positions: zoneCenters,
+  populations: zonePopulations,
+  outflows: zoneOutWeights, // zoneOutWeights of GPUFlowAggregation
+  normalization: 'finite-size',
+  output: {flows: expectedFlows} // zoneCount * zoneCount rows
+}));`,
+    preview: {
+      kind: 'flows',
+      seed: 4410,
+      caption: 'Expected flows out of one zone, from populations alone.'
+    },
+    related: ['kernel-flow-smoothing', 'flow-aggregation'],
+    reference: 'api/gpu-network/flow-models-mob10',
+    maturity: 'partial'
+  },
+  {
+    id: 'kernel-flow-smoothing',
+    symbol: 'GPUKernelFlowSmoothing',
+    kind: 'class',
+    importPath: '@luma-contributors/analysis/gpu-network',
+    title: 'Kernel flow smoothing',
+    summary:
+      'Smooths origin-destination flows by borrowing from neighboring origins and destinations.',
+    explanation:
+      'Use it to see the regional pattern under noisy zone-to-zone flows. Each flow is re-estimated as a Gaussian-weighted mean of flows between nearby origins and nearby destinations. Reads the pairs that `GPUFlowAggregation` writes.',
+    dataTypes: {input: ['network', 'table'], output: ['network', 'table']},
+    useCases: ['summarize', 'interpolate'],
+    domains: ['urban', 'transport'],
+    params: [
+      {
+        name: 'positions',
+        type: "GraphDataView<'float32x2'>",
+        required: true,
+        description: 'Zone centroids, one row per zone.'
+      },
+      {
+        name: 'locationWeights',
+        type: "GraphDataView<'float32'>",
+        required: true,
+        description: 'Weight of each zone in the neighborhood size.'
+      },
+      {
+        name: 'flows',
+        type: 'GPUKernelFlowSmoothingFlows',
+        required: true,
+        description: 'A zone matrix, or the OD pairs of GPUFlowAggregation.'
+      },
+      {
+        name: 'parameters',
+        type: "GraphDataView<'float32'>",
+        required: true,
+        description: 'Per frame: neighborhoodSize and bandwidthRatio.'
+      },
+      {
+        name: 'spatialContext',
+        type: 'GPUSpatialContext',
+        description: 'Planar, or longitude and latitude great-circle.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'smoothed',
+        type: "GraphDataView<'float32'>",
+        description: 'Smoothed flows, zoneCount * zoneCount rows.'
+      },
+      {
+        name: 'radii',
+        type: "GraphDataView<'float32'> | undefined",
+        description: 'Neighborhood radius of each zone.'
+      }
+    ],
+    example: `import {
+  GPUKernelFlowSmoothing,
+  getGPUKernelFlowSmoothingParameterValues
+} from '@luma-contributors/analysis/gpu-network';
+
+// zoneCenters, ones, parametersView, aggregation outputs, smoothed: views on graph
+parametersView.write(getGPUKernelFlowSmoothingParameterValues({neighborhoodSize: 5}));
+graph.add(new GPUKernelFlowSmoothing({
+  positions: zoneCenters,
+  locationWeights: ones,
+  flows: {kind: 'pairs', originZoneIds, destinationZoneIds, weights, validPairCount},
+  parameters: parametersView,
+  output: {smoothed}
+}));`,
+    preview: {kind: 'flows', seed: 4411, caption: 'Zone inflows before and after smoothing.'},
+    related: ['radiation-flow-model', 'flow-aggregation'],
+    reference: 'api/gpu-network/flow-models-mob10',
+    maturity: 'partial'
+  },
+  {
+    id: 'map-matched-edge-volumes',
+    symbol: 'GPUMapMatchedEdgeVolumes',
+    kind: 'class',
+    importPath: '@luma-contributors/analysis/gpu-network',
+    title: 'Map-matched edge volumes',
+    summary: 'Counts how many matched tracks traversed each network edge, and the busiest turns.',
+    explanation:
+      'Use it after `GPUMapMatching` to turn vehicle tracks into traffic volumes. Every edge in a track route counts once, including edges between fixes, with integer atomics. Optional turning movements come from edge-to-edge pairs.',
+    dataTypes: {input: ['trajectories', 'network'], output: ['network', 'table']},
+    useCases: ['summarize', 'measure'],
+    domains: ['transport', 'urban'],
+    params: [
+      {
+        name: 'traversedEdges',
+        type: 'GPUMapMatchedEdgeVolumesTraversedEdges',
+        required: true,
+        description: 'The edges and counts of GPUMapMatching.'
+      },
+      {name: 'trackCount', type: 'number', required: true, description: 'Tracks of the matching.'},
+      {
+        name: 'traversedEdgeCapacity',
+        type: 'number',
+        required: true,
+        description: 'Edge rows reserved per track.'
+      },
+      {
+        name: 'edgeCount',
+        type: 'number',
+        required: true,
+        description: 'Directed edges (CSR rows), twice the roads of a two-way network.'
+      },
+      {
+        name: 'transitionPairCapacity',
+        type: 'number',
+        description: 'Turn hash slots, a power of two; required with output.transitions.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'edgeVolumes',
+        type: "GraphDataView<'uint32'>",
+        description: 'Traversals per edge.'
+      },
+      {
+        name: 'transitions',
+        type: 'GPUFlowAggregationOutput | undefined',
+        description: 'Busiest edge-to-edge movements.'
+      },
+      {
+        name: 'truncated',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: '1 when a track route overflowed its capacity.'
+      }
+    ],
+    example: `import {GPUMapMatching, GPUMapMatchedEdgeVolumes} from '@luma-contributors/analysis/gpu-network';
+
+// matching ran with traversedEdgeCapacity: 64 and wrote routeEdges, routeCounts
+graph.add(new GPUMapMatchedEdgeVolumes({
+  traversedEdges: {edges: routeEdges, counts: routeCounts},
+  trackCount: 200,
+  traversedEdgeCapacity: 64,
+  edgeCount: network.slotCount, // directed CSR rows, not undirected roads
+  output: {edgeVolumes} // one row per directed edge
+}));`,
+    preview: {kind: 'network', seed: 4412, caption: 'Street traffic volumes from matched tracks.'},
+    related: ['map-matching', 'flow-aggregation'],
+    reference: 'api/gpu-network/map-matched-edge-volumes-mob05',
+    maturity: 'partial'
+  },
+  {
+    id: 'network-potential-path-area',
+    symbol: 'GPUNetworkPotentialPathArea',
+    kind: 'class',
+    importPath: '@luma-contributors/analysis/gpu-network',
+    title: 'Network potential path area',
+    summary: 'Finds the streets a traveller could use going from A to B within a time budget.',
+    explanation:
+      'Use it for space-time prisms: where could someone have been between two observations. An edge is inside when the cost from A to its start, plus its weight, plus the cost from its end to B fits the budget. The two cost trees come from reachability runs.',
+    dataTypes: {input: ['network'], output: ['network']},
+    useCases: ['measure', 'route'],
+    domains: ['transport', 'urban'],
+    params: [
+      {
+        name: 'topology',
+        type: 'GPUNetworkTopology',
+        required: true,
+        description: 'Directed network with travel-cost weights.'
+      },
+      {
+        name: 'forwardCosts',
+        type: "GraphDataView<'float32'>",
+        required: true,
+        description: 'Cost from A to every node.'
+      },
+      {
+        name: 'reverseCosts',
+        type: "GraphDataView<'float32'>",
+        required: true,
+        description: 'Cost from every node to B.'
+      },
+      {
+        name: 'budget',
+        type: "GraphDataView<'float32'>",
+        required: true,
+        description: 'One row: the time budget.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'edgeInPrism',
+        type: "GraphDataView<'uint32'>",
+        description: '1 for edges some trip within the budget can use.'
+      },
+      {
+        name: 'edgeSlack',
+        type: "GraphDataView<'float32'>",
+        description: 'Time to spare through each edge.'
+      },
+      {
+        name: 'nodeInPrism',
+        type: "GraphDataView<'uint32'>",
+        description: '1 for nodes inside the prism.'
+      },
+      {
+        name: 'summary',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Node and edge counts in the prism.'
+      }
+    ],
+    example: `import {GPUNetworkPotentialPathArea, GPUNetworkReachability} from '@luma-contributors/analysis/gpu-network';
+
+// topology, reversedTopology (the same edges reversed), startA, startB, forward, reverse: views on graph.
+// On a two-way network with equal costs each way, reversedTopology can be topology.
+graph.add(new GPUNetworkReachability({topology, startNodes: startA, output: {costs: forward}}));
+graph.add(new GPUNetworkReachability({topology: reversedTopology, startNodes: startB, output: {costs: reverse}})); // costs to B
+graph.add(new GPUNetworkPotentialPathArea({
+  topology,
+  forwardCosts: forward,
+  reverseCosts: reverse,
+  budget,
+  output: {edgeInPrism, edgeSlack, nodeInPrism}
+}));`,
+    preview: {
+      kind: 'isochrones',
+      seed: 4413,
+      caption: 'Streets reachable on a trip from A to B within budget.'
+    },
+    related: ['network-isochrones', 'network-time-routing', 'network-travel-time-percentiles'],
+    reference: 'api/gpu-network/network-time-geography-mob09',
+    maturity: 'partial'
+  },
+  {
+    id: 'network-travel-time-percentiles',
+    symbol: 'GPUNetworkTravelTimePercentiles',
+    kind: 'class',
+    importPath: '@luma-contributors/analysis/gpu-network',
+    title: 'Network travel-time percentiles',
+    summary: 'Percentiles of travel time from an origin over a window of departure times.',
+    explanation:
+      'Use it to show how reliable a trip is when congestion changes with the clock. It runs one earliest-arrival routing per departure and takes nearest-rank percentiles per vertex. Reference tier: at most 60 departures, 256 states and 4,096 transitions.',
+    dataTypes: {input: ['network'], output: ['network', 'table']},
+    useCases: ['measure', 'summarize'],
+    domains: ['transport', 'urban'],
+    params: [
+      {
+        name: 'stateVertices',
+        type: "GraphDataView<'uint32'>",
+        required: true,
+        description: 'Physical vertex of each routing state.'
+      },
+      {
+        name: 'transitions',
+        type: "GraphDataView<'uint32x2'>",
+        required: true,
+        description: 'Directed transitions between states.'
+      },
+      {
+        name: 'costs',
+        type: "GraphDataView<'float32x2'>",
+        required: true,
+        description: 'Base duration and slope per transition.'
+      },
+      {name: 'vertexCount', type: 'number', required: true, description: 'Physical vertices.'},
+      {
+        name: 'departureCount',
+        type: 'number',
+        required: true,
+        description: 'Departures in the window, 1 to 60.'
+      },
+      {
+        name: 'percentiles',
+        type: 'readonly number[]',
+        required: true,
+        description: 'Ascending percentiles in (0, 100], at most 16.'
+      },
+      {
+        name: 'window',
+        type: "GraphDataView<'float32'>",
+        required: true,
+        description: 'Per frame: first departure and step.'
+      }
+    ],
+    moreRequired: ['initialState'],
+    outputs: [
+      {
+        name: 'travelTimes',
+        type: "GraphDataView<'float32'>",
+        description: 'Travel time per vertex and percentile, vertex-major.'
+      },
+      {
+        name: 'reachedCounts',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Departures that reach each vertex.'
+      },
+      {
+        name: 'status',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Valid and converged flags per departure.'
+      }
+    ],
+    example: `import {GPUNetworkTravelTimePercentiles} from '@luma-contributors/analysis/gpu-network';
+
+// stateVertices, transitions, costs, initialState, window, travelTimes: views on graph
+graph.add(new GPUNetworkTravelTimePercentiles({
+  stateVertices,
+  transitions,
+  costModel: 'affine-duration',
+  costs, // [base duration, slope] per transition
+  vertexCount,
+  initialState, // the origin's state
+  departureCount: 12,
+  percentiles: [5, 50, 95],
+  window, // [first departure, step]
+  output: {travelTimes} // vertexCount * 3 rows, vertex-major
+}));`,
+    preview: {
+      kind: 'isochrones',
+      seed: 4414,
+      caption: 'Travel time to each street as a percentile over departures.'
+    },
+    related: ['network-time-routing', 'network-potential-path-area'],
+    reference: 'api/gpu-network/network-time-geography-mob09',
+    maturity: 'partial'
+  },
+  {
+    id: 'period-index',
+    symbol: 'GPUPeriodIndex',
+    kind: 'class',
+    importPath: '@luma-contributors/analysis/dataframe-analysis',
+    title: 'Period index',
+    summary: 'Gives every row the calendar or fixed-width period its time falls in.',
+    explanation:
+      'Use it to turn timestamps into the period axis of a cube. Fixed periods divide exact Int64 words by a width; calendar periods count whole steps from calendar columns. Times outside the periods are skipped and counted, never clamped.',
+    dataTypes: {input: ['table', 'time-series'], output: ['table']},
+    useCases: ['index', 'transform'],
+    domains: ['data-engineering', 'spatial-statistics'],
+    params: [
+      {
+        name: 'temporalContext',
+        type: 'GPUTemporalContext',
+        required: true,
+        description: 'Unit and epoch of the Int64 row times.'
+      },
+      {
+        name: 'periods',
+        type: 'GPUPeriodIndexCalendarPeriods | GPUPeriodIndexFixedPeriods',
+        required: true,
+        description: 'Calendar steps or a fixed width, with origin and count.'
+      },
+      {
+        name: 'timestamps',
+        type: "GraphDataView<'uint32x2'>",
+        description: 'Int64 words per row, for fixed periods.'
+      },
+      {
+        name: 'columns',
+        type: 'GPUPeriodIndexCalendarColumns',
+        description: 'Calendar columns, for calendar periods.'
+      },
+      {name: 'mask', type: "GraphDataView<'uint32'>", description: 'Zero rows get no period.'}
+    ],
+    outputs: [
+      {
+        name: 'periods',
+        type: "GraphDataView<'uint32'>",
+        description: 'Period per row, or a sentinel when out of range or masked.'
+      },
+      {
+        name: 'status',
+        type: 'GPUInvalidStatusPort | undefined',
+        description: 'invalidCount: valid times outside the periods.'
+      }
+    ],
+    example: `import {GPUPeriodIndex} from '@luma-contributors/analysis/dataframe-analysis';
+
+// timestamps (uint32x2 Int64 words), periods, invalidCount: views on graph
+graph.add(new GPUPeriodIndex({
+  temporalContext: {unit: 'millisecond', epoch: 'unix', encoding: 'int64-words', axis: {kind: 'irregular'}},
+  periods: {kind: 'fixed', width: 3_600_000n, origin: 1_716_292_800_000n, count: 18},
+  timestamps,
+  output: {periods, status: {invalidCount}}
+}));`,
+    preview: {
+      kind: 'time-series',
+      seed: 4415,
+      caption: 'Events colored by the period they fall in.'
+    },
+    related: ['value-cube', 'calendar-buckets', 'time-window-filter'],
+    reference: 'api/gpu-dataframe-analysis',
+    maturity: 'stable'
+  },
+  {
+    id: 'value-cube',
+    symbol: 'GPUValueCube',
+    kind: 'class',
+    importPath: '@luma-contributors/analysis/dataframe-analysis',
+    title: 'Value cube',
+    summary: 'Bins a value column into a dense cell-by-period cube of counts, sums and means.',
+    explanation:
+      'Use it to turn timestamped, valued events into the cube that space-time operators read. Sums are exact and independent of thread order. Empty bins are NaN in `means`, so the cube feeds `GPUEmergingHotSpots` directly.',
+    dataTypes: {input: ['table', 'points'], output: ['table', 'time-series']},
+    useCases: ['summarize', 'index'],
+    domains: ['spatial-statistics', 'data-engineering'],
+    params: [
+      {name: 'cellCount', type: 'number', required: true, description: 'Number of cells.'},
+      {name: 'periodCount', type: 'number', required: true, description: 'Number of periods.'},
+      {
+        name: 'cells',
+        type: "GraphDataView<'uint32'>",
+        required: true,
+        description: 'Cell index per row.'
+      },
+      {
+        name: 'periods',
+        type: "GraphDataView<'uint32'>",
+        required: true,
+        description: 'Period per row, from GPUPeriodIndex.'
+      },
+      {
+        name: 'values',
+        type: "GraphDataView<'float32'>",
+        required: true,
+        description: 'Value per row.'
+      },
+      {name: 'mask', type: "GraphDataView<'uint32'>", description: 'Zero rows are skipped.'}
+    ],
+    outputs: [
+      {
+        name: 'counts',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Rows per (cell, period).'
+      },
+      {
+        name: 'sums',
+        type: "GraphDataView<'float32'> | undefined",
+        description: 'Exact sum per (cell, period).'
+      },
+      {
+        name: 'means',
+        type: "GraphDataView<'float32'> | undefined",
+        description: 'Mean per (cell, period), NaN when empty.'
+      },
+      {
+        name: 'status',
+        type: 'GPUInvalidStatusPort | undefined',
+        description: 'invalidCount: rows that could not be binned.'
+      }
+    ],
+    example: `import {GPUValueCube} from '@luma-contributors/analysis/dataframe-analysis';
+
+// cells, periods (from GPUPeriodIndex), energy, filterMask, means, counts: views on graph
+graph.add(new GPUValueCube({
+  cellCount: 24,
+  periodCount: 18,
+  cells,
+  periods,
+  values: energy,
+  mask: filterMask, // for example outputMask of GPUTimeWindowFilter
+  output: {counts, means} // cellCount * periodCount rows, cell-major
+}));`,
+    preview: {kind: 'cells', seed: 4416, caption: 'Flash energy by cell and hour.'},
+    related: ['period-index', 'cube-layout-transpose', 'cell-period-keys', 'group-statistics'],
+    reference: 'api/gpu-dataframe-analysis',
+    maturity: 'stable'
+  },
+  {
+    id: 'cell-period-keys',
+    symbol: 'GPUCellPeriodKeys',
+    kind: 'class',
+    importPath: '@luma-contributors/analysis/dataframe-analysis',
+    title: 'Cell-period keys',
+    summary: 'Packs a 64-bit DGGS cell key and a period into one group key for a sparse cube.',
+    explanation:
+      'Use it for cubes over H3, S2 or Quadbin cells too many for a dense array. The period replaces the low key bits that are free at the cell resolution, so `GPUGroupStatistics` can group by (cell, period). Cells finer than the limit are rejected and counted, never truncated.',
+    dataTypes: {input: ['cells', 'table'], output: ['table', 'cells']},
+    useCases: ['index', 'transform'],
+    domains: ['spatial-statistics', 'data-engineering'],
+    params: [
+      {
+        name: 'cells',
+        type: "GraphDataView<'uint32x2'>",
+        required: true,
+        description: '64-bit cell key per row.'
+      },
+      {
+        name: 'periods',
+        type: "GraphDataView<'uint32'>",
+        required: true,
+        description: 'Period per row, from GPUPeriodIndex.'
+      },
+      {name: 'periodCount', type: 'number', required: true, description: 'Number of periods.'},
+      {
+        name: 'fill',
+        type: "'ones' | 'zeros'",
+        required: true,
+        description: 'Free low bits of a cell key: ones for H3 and Quadbin.'
+      },
+      {name: 'mask', type: "GraphDataView<'uint32'>", description: 'Zero rows are not packed.'}
+    ],
+    outputs: [
+      {
+        name: 'keys',
+        type: "GraphDataView<'uint32x2'>",
+        description: 'Packed key per row; all ones when not packed.'
+      },
+      {
+        name: 'status',
+        type: 'GPUInvalidStatusPort | undefined',
+        description: 'invalidCount: rows that could not be packed.'
+      }
+    ],
+    example: `import {GPUCellPeriodKeys, GPUGroupStatistics} from '@luma-contributors/analysis/dataframe-analysis';
+
+// cells (from GPUPointToCell), periods, groupKeys, groupCounts, status views: on graph
+graph.add(new GPUCellPeriodKeys({
+  cells,
+  periods,
+  periodCount: 18, // 5 key bits
+  fill: 'ones', // H3
+  output: {keys}
+}));
+graph.add(new GPUGroupStatistics({
+  keys,
+  columns: [],
+  output: {keys: groupKeys, counts: groupCounts, status}
+}));`,
+    preview: {kind: 'cells', seed: 4417, caption: 'A sparse cell-by-period table of flash counts.'},
+    related: ['value-cube', 'period-index', 'group-statistics', 'point-to-cell'],
+    reference: 'api/gpu-dataframe-analysis',
+    maturity: 'stable'
+  },
+  {
+    id: 'cube-layout-transpose',
+    symbol: 'GPUCubeLayoutTranspose',
+    kind: 'class',
+    importPath: '@luma-contributors/analysis/dataframe-analysis',
+    title: 'Cube layout transpose',
+    summary:
+      'Moves a cell-by-period cube between cell-major and period-major layouts, bit for bit.',
+    explanation:
+      'Use it to hand one cube to operators that expect different layouts: cell-major for hot spots, period-major for Markov chains and panels. Works on `uint32` or `float32`. Transposing twice returns the original.',
+    dataTypes: {input: ['table'], output: ['table']},
+    useCases: ['transform'],
+    domains: ['spatial-statistics', 'data-engineering'],
+    params: [
+      {
+        name: 'values',
+        type: "GraphDataView<'uint32'> | GraphDataView<'float32'>",
+        required: true,
+        description: 'Packed cube in the from layout.'
+      },
+      {
+        name: 'from',
+        type: "'cell-major' | 'period-major'",
+        required: true,
+        description: 'Layout of values; the output holds the other.'
+      },
+      {name: 'cellCount', type: 'number', required: true, description: 'Number of cells.'},
+      {name: 'periodCount', type: 'number', required: true, description: 'Number of periods.'},
+      {
+        name: 'output',
+        type: "GraphDataView<'uint32'> | GraphDataView<'float32'>",
+        required: true,
+        description: 'Cube of the same format and length.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'output',
+        type: "GraphDataView<'uint32'> | GraphDataView<'float32'>",
+        description: 'The cube in the other layout.'
+      }
+    ],
+    example: `import {GPUCubeLayoutTranspose} from '@luma-contributors/analysis/dataframe-analysis';
+
+// responseMeans (cell-major, from GPUValueCube), responsePeriodMajor: views on graph
+graph.add(new GPUCubeLayoutTranspose({
+  values: responseMeans, // cell * periodCount + period
+  from: 'cell-major',
+  cellCount: 36,
+  periodCount: 12,
+  output: responsePeriodMajor // period * cellCount + cell
+}));`,
+    preview: {kind: 'cells', seed: 4418, caption: 'The same cube stored by cell and by period.'},
+    related: ['value-cube', 'period-index'],
+    reference: 'api/gpu-dataframe-analysis',
+    maturity: 'stable'
+  },
+  {
+    id: 'time-words-relative',
+    symbol: 'GPUTimeWordsRelative',
+    kind: 'class',
+    importPath: '@luma-contributors/analysis/dataframe-analysis',
+    title: 'Relative times from words',
+    summary: 'Turns Int64 time words into float32 ticks after an origin, with no CPU subtraction.',
+    explanation:
+      'Use it to feed operators that read float32 relative times, such as Knox and Mantel tests, from an Int64 timestamp column. The difference is taken exactly on the words and rounded once, so it is exact within 2^24 ticks of the origin.',
+    dataTypes: {input: ['table', 'time-series'], output: ['table', 'time-series']},
+    useCases: ['transform'],
+    domains: ['spatial-statistics', 'data-engineering'],
+    params: [
+      {
+        name: 'timestamps',
+        type: "GraphDataView<'uint32x2'>",
+        required: true,
+        description: 'Int64 words, low and high, per row.'
+      },
+      {
+        name: 'temporalContext',
+        type: 'GPUTemporalContext',
+        required: true,
+        description: 'Unit and epoch of the words.'
+      },
+      {
+        name: 'origin',
+        type: 'bigint',
+        required: true,
+        description: 'Instant the output counts from, in ticks after the Unix epoch.'
+      },
+      {
+        name: 'output',
+        type: "GraphDataView<'float32'>",
+        required: true,
+        description: 'One float32 row per timestamp.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'output',
+        type: "GraphDataView<'float32'>",
+        description: 'Ticks after origin, one float32 row per time.'
+      }
+    ],
+    example: `import {GPUTimeWordsRelative} from '@luma-contributors/analysis/dataframe-analysis';
+
+// timestamps (uint32x2 Int64 words), relativeTimes: views on graph
+const operation = new GPUTimeWordsRelative({
+  timestamps,
+  temporalContext: {unit: 'millisecond', epoch: 'unix', encoding: 'int64-words', axis: {kind: 'irregular'}},
+  origin: 1_716_292_800_000n,
+  output: relativeTimes
+});
+graph.add(operation);
+// operation.outputTemporalContext: float32-relative from origin, for GPUKnoxTest`,
+    preview: {
+      kind: 'time-series',
+      seed: 4419,
+      caption: 'Float32 error of relative times against exact Int64.'
+    },
+    related: ['period-index', 'time-window-filter'],
+    reference: 'api/gpu-dataframe-analysis',
+    maturity: 'stable'
+  }
+];

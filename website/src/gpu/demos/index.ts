@@ -83,7 +83,7 @@ export const DEMOS: readonly DemoDescriptor[] = [
     title: 'K-means',
     caption:
       'Five centers converge on 820 earthquake epicenters around Japan. Hover one to see its cluster and its distance to the center.',
-    symbols: ['GPUKMeans'],
+    symbols: ['GPUSpatialKMeans'],
     entryIds: ['k-means-clustering'],
     interactive: true,
     parameters: K_MEANS_PARAMETERS,

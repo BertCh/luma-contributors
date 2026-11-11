@@ -39,7 +39,7 @@ export const parameters: GpuSceneParameter[] = [
     min: 4,
     max: 80,
     step: 1,
-    default: 40,
+    default: 65,
     unit: 'km'
   }
 ];

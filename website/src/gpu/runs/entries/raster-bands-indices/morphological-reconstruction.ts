@@ -4,7 +4,8 @@
 // GPURasterReconstruction: the marker is the mask lowered (dilation) or raised (erosion) by an
 // offset, and the operation grows it back under the mask. Dilation with an offset cuts every
 // peak lower than the offset flat (h-maxima); erosion fills shallow pits. The result is
-// published only once the growth has converged, so too few `maximumIterations` leave it blank.
+// published even if the growth stops at `maximumIterations` (`converged = 0`), so too few
+// iterations leave it partly grown.
 // Method and iterations are compile-time.
 
 import {GPURasterReconstruction} from '@luma-contributors/analysis/raster-analysis';

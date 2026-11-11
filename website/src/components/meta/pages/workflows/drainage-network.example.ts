@@ -4,10 +4,8 @@
 // example:hide-start
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {
-  addDrainageNetworkRecipe,
-  GPUParameterBuffer
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {addDrainageNetworkRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {getGPUTerrainFlowParameterValues} from '@luma-contributors/analysis/gpu-terrain';
 import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
 

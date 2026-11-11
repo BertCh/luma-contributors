@@ -11,6 +11,11 @@
 // add*Recipe / add*ToGraph / create* / make*, or any class or function listed as an operator in the
 // spatial-analysis ontology. Analysis-core internals (kernels, contracts, graph support,
 // ring assembly), low-level helpers, WGSL builders, types and constants are skipped.
+//
+// Operation forms are skipped too: `GPU<Name>Operation` in a `gpu-<name>-operation.ts` file, its
+// CPU twin in `cpu-<name>-operation.ts`, and `analysis-core/operations` (contributor contract,
+// section 14). Each is another way to run a contributor that already has its own entry, as a
+// luma.gl GPUGraph operation, not a further operation.
 
 import {existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
@@ -48,6 +53,7 @@ type InventorySymbol = {
 
 const FUNCTION_NAME_PATTERN = /^(add\w+Recipe|add\w+ToGraph|create[A-Z]\w*|make[A-Z]\w*)$/;
 const LOW_LEVEL_PATTERN = /(Wgsl|WGSL|Shader|Kernel|Descriptor|Annotation|Ref$|Validator|Hash)/;
+const OPERATION_FORM_FILE_PATTERN = /\/analysis-core\/operations\/|\/(gpu|cpu)-[a-z0-9-]+-operation\.ts$/;
 const MAX_TYPE_LENGTH = 60;
 const MAX_JSDOC_LENGTH = 70;
 const MAX_LENS_SCENARIOS = 3;
@@ -269,7 +275,9 @@ function main(): void {
       // GPUPointCloudICP, GPUPointCloudSurfaces and GPUPointCloudNeighborhoods share) are building
       // blocks of other operations, not operations a reader would call, so they are not catalog symbols.
       const isMarkedInternal = ts.getJSDocTags(declaration).some(tag => tag.tagName.text === 'internal');
-      if (!included || (isCoreInternal && !isOperator) || isMarkedInternal) continue;
+      // GPUGraph operation forms and CPU twins of contributors that have their own entry.
+      const isOperationForm = OPERATION_FORM_FILE_PATTERN.test(declarationFile);
+      if (!included || (isCoreInternal && !isOperator) || isMarkedInternal || isOperationForm) continue;
 
       const signature = isClass
         ? checker.getTypeOfSymbolAtLocation(target, declaration).getConstructSignatures()[0]

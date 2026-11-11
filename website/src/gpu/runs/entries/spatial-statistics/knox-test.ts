@@ -15,7 +15,7 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {uploadSpatialWeights} from '../../inputs';
-import {drawReferenceHistogram} from './shared/permutation-chart';
+import {createReferenceHistogramText, drawReferenceHistogram} from './shared/permutation-chart';
 import {
   createBandGraph,
   createSpaceTimeEvents,
@@ -82,6 +82,7 @@ export default defineOperationRun({
       const summary = peek(outputs.summary);
       const statistics = peek(outputs.statistics);
       const observed = summary?.[GPU_SPACE_TIME_SUMMARY.observed] ?? NaN;
+      const pseudoP = summary?.[GPU_SPACE_TIME_SUMMARY.pseudoPGreater];
       const {glyphs: chartGlyphs} = drawReferenceHistogram({
         histogram: outputs.bins,
         samples: statistics,
@@ -89,9 +90,9 @@ export default defineOperationRun({
         sampleCount: values.permutationCount,
         observed,
         rectangle: CHART,
-        world
+        world,
+        pseudoP
       });
-      const pseudoP = summary?.[GPU_SPACE_TIME_SUMMARY.pseudoPGreater];
       const summaryText = `Knox ${Number.isFinite(observed) ? observed : '…'} · p ${
         pseudoP === undefined ? '…' : pseudoP.toFixed(2)
       }`;
@@ -111,7 +112,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs, theme}) => [
+  draw: ({outputs, theme, world}) => [
     {
       layer: 'dots',
       positions: outputs.positions,
@@ -126,6 +127,16 @@ export default defineOperationRun({
       range: [0, 1],
       rectangle: CHART,
       color: [...theme.categories[0], 0.9]
+    },
+    {
+      layer: 'text',
+      ...createReferenceHistogramText({
+        histogram: outputs.bins,
+        rectangle: CHART,
+        world,
+        statistic: 'Knox count',
+        decimals: 0
+      })
     }
   ]
 });

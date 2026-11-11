@@ -3,12 +3,16 @@
 
 // GPURasterWalkingCost: travel time on foot across rugged terrain from one source cell. Slope
 // slows the walker (Tobler's hiking function or GRASS-style coefficients) and a friction raster
-// (a river band here) slows them further. The cost surface is published once the relaxation has
-// converged; too few `maximumIterations` leave it blank. Model, friction weight and iterations are
-// construction props; the source cell is rewritten per frame and placed by the pointer.
+// (a river band here) slows them further. The cost surface publishes what the relaxation has
+// reached; too few `maximumIterations` stop at the limit with `converged = 0`, so far cells stay unreached. The model kind and
+// iterations are construction props; the friction weight and the GRASS coefficients are packed into
+// the per-frame `parameters` buffer, and the source cell is rewritten per frame and placed by the pointer.
 
 import {
   GPURasterWalkingCost,
+  getGPURasterWalkingCostParameterValues,
+  GPU_RASTER_WALKING_COST_PARAMETER_LENGTH,
+  type GPURasterWalkingCostModel,
   makeGPURasterBand,
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
@@ -21,9 +25,15 @@ import {getCellAt, getCellBox, getCellCenter} from './support/gestures';
 
 const SOURCE_X = findParameter(parameters, 'sourceX');
 
+function getModel(modelIndex: number): GPURasterWalkingCostModel {
+  return modelIndex === 1
+    ? {kind: 'grass', coefficients: [0.8, 1.2, 0.5, 2], downhillSlopeThreshold: -0.1}
+    : {kind: 'tobler'};
+}
+
 export default defineOperationRun({
   parameters,
-  rebuildOn: ['model', 'frictionWeight', 'maximumIterations'],
+  rebuildOn: ['model', 'maximumIterations'],
   caption: 'Terrain, friction and a source in; the walking time to every cell out.',
   createInputs: ({world}) => {
     const rows = 44;
@@ -55,17 +65,19 @@ export default defineOperationRun({
     const costs = builder.allocate('costs', 'float32', cellCount);
     const validity = builder.allocate('validity', 'uint32', cellCount);
     const converged = builder.allocate('converged', 'uint32', 1);
+    const parameterBuffer = builder.allocate(
+      'parameters',
+      'float32',
+      GPU_RASTER_WALKING_COST_PARAMETER_LENGTH
+    );
     builder.graph.add(
       new GPURasterWalkingCost({
         grid,
         elevation: makeGPURasterBand(elevation.view, grid, {id: 'elevation'}),
         friction: makeGPURasterBand(friction.view, grid, {id: 'friction'}),
         sources: sources.view,
-        frictionWeight: values.frictionWeight,
-        model:
-          values.model === 1
-            ? {kind: 'grass', coefficients: [0.8, 1.2, 0.5, 2], downhillSlopeThreshold: -0.1}
-            : {kind: 'tobler'},
+        parameters: parameterBuffer.view,
+        model: getModel(values.model),
         maximumIterations: values.maximumIterations,
         output: {costs: costs.view, validity: validity.view, status: {converged: converged.view}}
       })
@@ -74,6 +86,12 @@ export default defineOperationRun({
     return {
       outputs: {terrain, costs},
       update: current => {
+        parameterBuffer.write(
+          getGPURasterWalkingCostParameterValues(
+            {frictionWeight: current.frictionWeight, model: getModel(current.model)},
+            grid
+          )
+        );
         const data = new Uint32Array(cellCount);
         const column = Math.round(current.sourceX * (inputs.columns - 1));
         data[inputs.sourceRow * inputs.columns + column] = 1;

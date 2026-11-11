@@ -225,7 +225,6 @@ export function allocateOverlayOutput(
   capacity: {vertices: number; rings: number; boundary: number}
 ): OverlayResult {
   const polygons = allocatePolygonOutput(builder, prefix, capacity.vertices, capacity.rings);
-  const sourceIds = builder.allocate(`${prefix}-source-ids`, 'uint32', capacity.rings);
   const scalar = (name: string) => builder.allocate(`${prefix}-${name}`, 'uint32', 1);
   const count = scalar('count');
   const overflow = scalar('overflow');
@@ -239,12 +238,11 @@ export function allocateOverlayOutput(
         positions: polygons.positions.view,
         featureOffsets: polygons.featureOffsets.view,
         polygonOffsets: polygons.polygonOffsets.view,
-        ringOffsets: polygons.ringOffsets.view,
-        sourceIds: sourceIds.view
+        ringOffsets: polygons.ringOffsets.view
       },
       status: {
         count: count.view,
-        requiredCount: scalar('required-count').view,
+        requiredRingCount: scalar('required-count').view,
         overflow: overflow.view,
         candidateOverflow: scalar('candidate-overflow').view
       },

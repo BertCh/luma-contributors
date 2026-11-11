@@ -143,7 +143,7 @@ export default defineOperationRun({
         layer: 'lines' as const,
         segments,
         count: inputs.network.nodeCount - 1,
-        radius: 3.2 - routeIndex * 0.6,
+        radius: 4.6 - routeIndex * 0.9,
         color: ROUTE_COLORS[routeIndex]
       }))
       .reverse(),

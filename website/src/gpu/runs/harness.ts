@@ -11,6 +11,7 @@ import {createGpuDevice} from '../device';
 import type {GpuSceneInstance} from '../types';
 import type {RunDebug} from './define-run';
 import {getRunParameters, getRunScene, listRunIds} from './registry';
+import {CARD_DISPLAY_WIDTH} from './text/display';
 
 type HarnessState = {
   status: 'loading' | 'ready' | 'error';
@@ -138,6 +139,8 @@ async function mount(): Promise<void> {
     canvas,
     width: canvas.width,
     height: canvas.height,
+    // Posters are shown on catalog cards: size their text for the card, as the live card does.
+    displayWidth: poster ? CARD_DISPLAY_WIDTH : undefined,
     theme,
     reducedMotion: poster,
     seed: Number(query.get('seed') ?? 1),

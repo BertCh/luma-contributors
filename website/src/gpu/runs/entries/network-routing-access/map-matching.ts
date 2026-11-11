@@ -10,13 +10,16 @@ import {
 } from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {uploadNetworkTopology} from '../../inputs';
-import {addPairSegments} from './shared/display';
+import {createLegend} from '../../text';
+import {addConsecutiveSegments, addPairSegments} from './shared/display';
 import {createRoads, getRoadContext, uploadRoads} from './shared/roads';
 import {parameters} from './map-matching.parameters';
 
-const TRACK_COUNT = 6;
+const TRACK_COUNT = 3;
 const STEP_COUNT = 24;
 const POINT_COUNT = TRACK_COUNT * STEP_COUNT;
+/** Fixes on each side of the dragged one that follow it. */
+const PULL_SPREAD = 3;
 
 export default defineOperationRun({
   parameters,
@@ -101,14 +104,30 @@ export default defineOperationRun({
         snapDistances,
         snappedPositions,
         polylines,
-        connectors: addPairSegments(builder, {id: 'match', from: positions, to: snappedPositions})
+        connectors: addPairSegments(builder, {id: 'match', from: positions, to: snappedPositions}),
+        // The matched positions of each track joined in order by straight chords (not road edges).
+        route: addConsecutiveSegments(builder, {
+          id: 'route',
+          positions: snappedPositions,
+          trackLength: STEP_COUNT
+        })
       },
       update: values => {
         for (let index = 0; index < fixes.length; index++)
           fixes[index] = truth[index] + noise[index] * values.noise;
         if (inputs.drag.index >= 0) {
-          fixes[inputs.drag.index * 2] = inputs.drag.x;
-          fixes[inputs.drag.index * 2 + 1] = inputs.drag.y;
+          // The dragged fix follows the pointer and pulls the fixes of the same track around it
+          // along, with a linear falloff, so a stretch of the track is re-matched.
+          const track = Math.floor(inputs.drag.index / STEP_COUNT);
+          const pullX = inputs.drag.x - fixes[inputs.drag.index * 2];
+          const pullY = inputs.drag.y - fixes[inputs.drag.index * 2 + 1];
+          for (let offset = -PULL_SPREAD; offset <= PULL_SPREAD; offset++) {
+            const fix = inputs.drag.index + offset;
+            if (Math.floor(fix / STEP_COUNT) !== track || fix < 0 || fix >= POINT_COUNT) continue;
+            const weight = 1 - Math.abs(offset) / (PULL_SPREAD + 1);
+            fixes[fix * 2] += pullX * weight;
+            fixes[fix * 2 + 1] += pullY * weight;
+          }
         }
         positions.write(fixes);
         let segment = 0;
@@ -131,7 +150,7 @@ export default defineOperationRun({
       }
     };
   },
-  // Drag: the GPS fix nearest the pointer follows it; the matcher re-snaps it within searchRadius.
+  // Drag: the GPS fix nearest the pointer follows it (its neighbors on the track follow in part); the matcher re-snaps it within searchRadius.
   interaction: {
     kind: 'drag',
     hint: 'drag a GPS fix',
@@ -174,23 +193,42 @@ export default defineOperationRun({
   },
   draw: ({outputs, theme}) => [
     getRoadContext(outputs),
-    {layer: 'lines', segments: outputs.connectors, radius: 1, color: [...theme.ink, 0.5]},
-    // Raw GPS: a muted track, drawn thicker so the zigzag off the roads is visible.
+    // Raw GPS track: the noisy fixes joined in order, blue.
     {
       layer: 'lines',
       context: true,
       segments: outputs.polylines,
-      radius: 1.6,
-      color: [...theme.categories[1], 0.75]
+      radius: 1.4,
+      color: [...theme.categories[0], 0.8]
     },
-    // Matched positions: an ink ring under a ramp-colored dot, on top of the roads.
-    {layer: 'dots', positions: outputs.snappedPositions, radius: 8, color: [...theme.ink, 1]},
+    {
+      layer: 'dots',
+      context: true,
+      positions: outputs.positions,
+      radius: 3.5,
+      color: [...theme.categories[0], 0.95]
+    },
+    // Each fix to the road position it was matched to.
+    {layer: 'lines', segments: outputs.connectors, radius: 1.2, color: [...theme.ink, 0.7]},
+    // Matched positions joined in order by straight chords: a reading aid, not the road path.
+    {layer: 'lines', segments: outputs.route, radius: 1.2, color: [...theme.categories[1], 0.7]},
+    {layer: 'dots', positions: outputs.snappedPositions, radius: 6, color: [...theme.ink, 1]},
     {
       layer: 'dots',
       positions: outputs.snappedPositions,
       values: outputs.snapDistances,
-      range: [-0.012, 0.03],
-      radius: 6
+      range: [-0.012, 0.05],
+      radius: 4.5
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        entries: [
+          {label: 'GPS fixes (noisy)', swatch: 0},
+          {label: 'matched positions, joined in order', swatch: 1}
+        ]
+      })
     }
   ]
 });

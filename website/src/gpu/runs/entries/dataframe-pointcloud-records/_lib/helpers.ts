@@ -166,6 +166,7 @@ export function getJitteredPositions(cloud: TerrainCloud, noise: number): Float3
 export function createCloudGrid(width: number, cellSize: number) {
   return {
     origin: [0, 0] as [number, number],
+    rowDirection: 'south' as const,
     cellSize,
     width: Math.ceil(width / cellSize),
     height: Math.ceil(1 / cellSize)

@@ -10,6 +10,7 @@ import {
 } from '@luma-contributors/analysis/pointcloud-analysis';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {chooseSticky} from '../../pick';
+import {createLegend, mergeText, type RunLabel} from '../../text';
 import {
   createCloudGrid,
   createCloudLayout,
@@ -48,7 +49,9 @@ function createInputs({
 type Inputs = ReturnType<typeof createInputs>;
 type Outputs = Record<'map' | 'profile' | 'heights', RunBuffer>;
 
-export default defineOperationRun<Inputs, Outputs>({
+type Extra = {maximumHeight: number};
+
+export default defineOperationRun<Inputs, Outputs, Extra>({
   parameters,
   caption: 'Height above ground per point; the strip below is the side profile (x against height).',
   createInputs,
@@ -97,6 +100,16 @@ export default defineOperationRun<Inputs, Outputs>({
       update: current => positions.write(getJitteredPositions(inputs.cloud, current.noise))
     };
   },
+  // The tallest height the GPU wrote sets the ramp, so the structures use all of it.
+  async afterRun({outputs, inputs}) {
+    const bytes = await outputs.heights.buffer.readAsync();
+    const heights = new Float32Array(
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    );
+    let maximum = 0;
+    for (const height of heights) if (Number.isFinite(height) && height > maximum) maximum = height;
+    return {maximumHeight: Math.max(maximum, 0.01) / inputs.cloud.scale};
+  },
   rebuildOn: ['interpolation', 'cellSize'],
   // The pointer is a point: the terrain cell under it is outlined and a tick on the profile joins
   // the point to the ground height the GPU subtracted.
@@ -115,7 +128,15 @@ export default defineOperationRun<Inputs, Outputs>({
     resolve(pointer, {inputs, outputs, values, peek}) {
       const {cloud, layout, probe} = inputs;
       const [x, y] = fromMapPoint(layout, pointer.x, Math.max(pointer.y, layout.offsetY));
-      const row = chooseSticky(probe.index, x, y, inputs.focus.row);
+      // The probe takes the tallest return within a tenth of the frame of the pointer, so it lands on a tree
+      // or a roof when there is one under it (the nearest point is nearly always ground).
+      const nearby = probe.index.within(x, y, cloud.width * 0.1);
+      let row = chooseSticky(probe.index, x, y, inputs.focus.row);
+      for (const candidate of nearby) {
+        if (row < 0 || cloud.positions[candidate * 3 + 2] > cloud.positions[row * 3 + 2]) {
+          row = candidate;
+        }
+      }
       inputs.focus.row = row;
       if (row < 0) return {};
       const height = peek(outputs.heights)?.[row];
@@ -151,24 +172,51 @@ export default defineOperationRun<Inputs, Outputs>({
       };
     }
   },
-  draw: ({outputs}) => [
-    {layer: 'dots', context: true, positions: outputs.map, radius: 2.4},
-    {layer: 'dots', context: true, positions: outputs.profile, radius: 2},
-    {
-      layer: 'dots',
-      positions: outputs.map,
-      values: outputs.heights,
-      range: [0, 0.2],
-      fade: true,
-      radius: 2.8
-    },
-    {
-      layer: 'dots',
-      positions: outputs.profile,
-      values: outputs.heights,
-      range: [0, 0.2],
-      fade: true,
-      radius: 2.2
-    }
-  ]
+  draw: ({inputs, outputs, extra, theme}) => {
+    const isDark = theme.background[0] < 0.5;
+    const maximum = extra ? extra.maximumHeight * inputs.cloud.scale : 0.2;
+    const {layout} = inputs;
+    const look = {values: outputs.heights, range: [0, maximum], fade: true} as const;
+    const labels: RunLabel[] = [
+      {
+        text: 'top view',
+        at: [layout.offsetX, 0.995],
+        anchor: 'top-left',
+        offset: [2, 0],
+        role: 'title'
+      },
+      {
+        text: 'side profile',
+        at: [layout.offsetX, layout.profileBottom + layout.profileHeight + 0.004],
+        anchor: 'bottom-left',
+        offset: [2, 0],
+        role: 'title'
+      }
+    ];
+    return [
+      {layer: 'dots', context: true, positions: outputs.map, radius: 2.4},
+      {layer: 'dots', context: true, positions: outputs.profile, radius: 2},
+      {layer: 'dots', positions: outputs.map, ...look, radius: 2.8},
+      {layer: 'dots', positions: outputs.profile, ...look, radius: 2.2},
+      {
+        layer: 'text',
+        ...mergeText(
+          {labels},
+          createLegend({
+            corner: 'top-right',
+            title: 'height above ground',
+            entries: [
+              {label: 'ground (0 m)', swatch: [0.45, 0.48, 0.58]},
+              {
+                label: extra
+                  ? `top of the ramp: ${Math.round(extra.maximumHeight)} m`
+                  : 'top of the ramp: higher',
+                swatch: isDark ? ([1, 0.93, 0.55] as const) : ([0.35, 0.05, 0.35] as const)
+              }
+            ]
+          })
+        )
+      }
+    ];
+  }
 });

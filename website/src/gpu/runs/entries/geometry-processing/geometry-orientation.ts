@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUGeometryOrientation forces polygon winding. Half the input rings wind each way; the edges
-// of the output are colored by the `reversedRings` flag the operation wrote for their ring.
+// GPUGeometryOrientation forces polygon winding. Half the input rings wind each way; a large arrow
+// on every ring shows its winding, and rings are colored by the `reversedRings` flag the operation
+// wrote (orange: wound against the request and reversed). To the left of the curtain the arrows
+// disagree; to the right they all point the requested way.
 
 import {
   getGPUGeometryOrientationParameterValues,
@@ -11,13 +13,16 @@ import {
 import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
 import {clamp} from '../../interaction';
+import {createLegend} from '../../text';
 import {createPolygonSet, createRingOfVertex, uploadPolygonSet} from './shared/polygon-set';
 import {addKernel, addRingArrows} from './shared/shape-segments';
 import {parameters} from './geometry-orientation.parameters';
 
+const ARROW_SCALE = 1;
+
 export default defineOperationRun({
   parameters,
-  caption: 'Rings the operation had to reverse are highlighted.',
+  caption: 'Rings the operation had to reverse are orange; rings it kept are blue.',
   createInputs: ({seed, world}) => ({
     set: createPolygonSet(makeRandom(seed), world, {mixedWinding: true, hasHoles: true})
   }),
@@ -66,14 +71,16 @@ export default defineOperationRun({
           'input',
           polygons.positions,
           polygons.ringOffsets,
-          ringCount
+          ringCount,
+          ARROW_SCALE
         ),
         orientedArrows: addRingArrows(
           builder,
           'oriented',
           oriented,
           polygons.ringOffsets,
-          ringCount
+          ringCount,
+          ARROW_SCALE
         )
       },
       update: values =>
@@ -112,10 +119,19 @@ export default defineOperationRun({
         radius: 1.4,
         clip: {side: 'left', x: curtain}
       },
+      // The input rings, colored by whether the operation had to reverse them.
+      {
+        layer: 'segments',
+        nodes: outputs.positions,
+        edges: outputs.edges,
+        values: outputs.reversedVertices,
+        radius: 2.4,
+        clip: {side: 'left', x: curtain}
+      },
       {
         layer: 'lines',
-        context: true,
         segments: outputs.inputArrows,
+        radius: 2.2,
         clip: {side: 'left', x: curtain}
       },
       {
@@ -123,18 +139,25 @@ export default defineOperationRun({
         nodes: outputs.oriented,
         edges: outputs.edges,
         values: outputs.reversedVertices,
-        categories: [
-          [0.45, 0.55, 0.72],
-          [1, 0.55, 0.25]
-        ],
         radius: 2.4,
         clip: {side: 'right', x: curtain}
       },
       {
         layer: 'lines',
         segments: outputs.orientedArrows,
-        radius: 1.6,
+        radius: 2.2,
         clip: {side: 'right', x: curtain}
+      },
+      {
+        layer: 'text',
+        ...createLegend({
+          corner: 'bottom-left',
+          inset: 2,
+          entries: [
+            {label: 'reversed', swatch: 1},
+            {label: 'kept', swatch: 0}
+          ]
+        })
       }
     ];
   }

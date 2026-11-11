@@ -46,6 +46,9 @@ import {
 } from './interaction';
 import {ChartLayer, EdgeLayer, MeshLayer} from './layers';
 import {getGlyphMetrics, getPixelOfWorld, PointerOverlay} from './pointer-overlay';
+import type {TextRunLayer} from './text';
+import {loadFontPixels} from './text/font';
+import {TextLayer} from './text/text-layer';
 
 // ---------------------------------------------------------------------------------------------
 // Buffers
@@ -301,7 +304,8 @@ export type RunLayer =
   | PathsRunLayer
   | TrianglesRunLayer
   | PolygonsRunLayer
-  | ChartRunLayer;
+  | ChartRunLayer
+  | TextRunLayer;
 
 // ---------------------------------------------------------------------------------------------
 // Spec
@@ -1041,6 +1045,15 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
             owned: []
           };
         }
+        case 'text':
+          // Draws again once the lazily loaded atlas arrives (only when it was not preloaded).
+          return {
+            layer: new TextLayer(device, () => {
+              framesToDraw = 3;
+              scheduler.request();
+            }),
+            owned: []
+          };
       }
     };
 
@@ -1113,6 +1126,14 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
             look: {...look, radius: layer.radius ?? (layer.kind === 'scatter' ? 3 : 1.6)}
           };
         }
+        case 'text':
+          // Laid out in TextLayer.update, which reruns the layout only when the text or view changes.
+          (layerObject as TextLayer).setText(layer, {
+            displayWidth: context.displayWidth,
+            context: layer.context,
+            alpha: layer.alpha
+          });
+          return {layer: layerObject, look: {}};
       }
     };
 
@@ -1356,6 +1377,9 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         await refreshExtra();
       }
     }
+    // A picture with text waits for the font atlas (a lazy chunk) so its first frame, and the
+    // poster, already show the labels. Runs without text never load it.
+    if (getLayerList().some(layer => layer.layer === 'text')) await loadFontPixels();
     render();
     await refreshRanges();
 
@@ -1509,5 +1533,7 @@ function collectBuffers(layer: RunLayer): unknown[] {
       return [layer.positions, layer.indices, layer.owners, layer.values, layer.triangleCount];
     case 'chart':
       return [layer.kind, layer.values, layer.xValues];
+    case 'text':
+      return [];
   }
 }

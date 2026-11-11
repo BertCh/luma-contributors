@@ -5,6 +5,7 @@
 // GPUPolygonRasterization, then a downstream operation consumes the zones or the polygons.
 
 import {
+  getGPURasterFractionalCoverageParameterValues,
   getGPUPolygonRasterizationParameterValues,
   GPUPolygonRasterization,
   GPURasterFractionalCoverage
@@ -216,6 +217,11 @@ export function addFractionalCoverage(builder: RunBuilder, inputs: ZoneInputs, g
         polygonOffsets: polygonOffsets.view,
         ringOffsets: ringOffsets.view
       },
+      parameters: builder.upload(
+        'coverage-parameters',
+        'float32',
+        getGPURasterFractionalCoverageParameterValues(worldGrid.grid)
+      ).view,
       output
     })
   );

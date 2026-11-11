@@ -10,6 +10,7 @@ import {
   GPUPointHorizonProfile
 } from '@luma-contributors/analysis/gpu-terrain';
 import {defineOperationRun} from '../../define-run';
+import type {RunLabel} from '../../text';
 import {getObserverRest, getObserverUnderPointer} from './support/pointer';
 import {
   createTerrainInput,
@@ -118,7 +119,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs, inputs}) => [
+  draw: ({outputs, inputs, world}) => [
     drawElevationContext(inputs, outputs.elevation),
     {layer: 'dots', positions: outputs.observerDot, radius: 7, color: [1, 1, 1, 1]},
     {layer: 'lines', segments: outputs.guides, radius: 0.8, color: [0.7, 0.7, 0.7, 0.8]},
@@ -128,6 +129,30 @@ export default defineOperationRun({
       values: outputs.skylineAngle,
       rectangle: CHART_RECTANGLE,
       range: CHART_RANGE
-    }
+    },
+    {layer: 'text', labels: getSkylineLabels(world)}
   ]
 });
+
+/** Compass directions along the azimuth axis. */
+function getSkylineLabels(world: {width: number; height: number}): RunLabel[] {
+  const [left, bottom, right, top] = CHART_RECTANGLE;
+  const compass = ['N', 'E', 'S', 'W', 'N'];
+  const labels: RunLabel[] = compass.map((name, index) => ({
+    text: name,
+    at: [(left + (index / 4) * (right - left)) * world.width, bottom * world.height],
+    anchor: index === 0 ? 'bottom-left' : index === 4 ? 'bottom-right' : 'bottom',
+    offset: [index === 0 ? 3 : index === 4 ? -3 : 0, 3],
+    role: 'label',
+    priority: 2
+  }));
+  labels.push({
+    text: 'skyline angle · grey line = 0°',
+    at: [right * world.width, top * world.height],
+    anchor: 'bottom-right',
+    offset: [-4, 4],
+    role: 'title',
+    priority: 3
+  });
+  return labels;
+}

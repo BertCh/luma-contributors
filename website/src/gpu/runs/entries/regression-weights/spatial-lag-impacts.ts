@@ -13,6 +13,7 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {type CsrWeights} from '../../inputs';
+import {createChartAxes, getChartRectangle, mergeText} from '../../text';
 import {parameters} from './spatial-lag-impacts.parameters';
 import {
   createRegressionInputs,
@@ -52,6 +53,8 @@ function getShockResponse(
 
 const IMPACT_LIMIT = 5;
 const SHOCK_LIMIT = 1.2;
+
+const IMPACT_NAMES = ['direct impact', 'indirect impact', 'total impact'] as const;
 
 const IMPACT_COLORS = [
   [0.4, 0.65, 1, 0.95],
@@ -156,17 +159,52 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
-    ...drawTractMap(inputs, outputs.mesh, outputs.impactMap, {
-      ramp: 'sequential',
-      range: [0, SHOCK_LIMIT]
-    }),
-    ...outputs.components.flatMap((values, index) => {
+  draw: ({inputs, outputs, world}) => {
+    const panels = outputs.components.map((_, index) => {
       const rectangle = [MAP_SHARE + 0.08, 0.7 - index * 0.31, 0.97, 0.94 - index * 0.31] as const;
-      return [
-        ...drawSignedBars(values, rectangle, IMPACT_LIMIT, IMPACT_COLORS[index]),
-        drawZeroLine(outputs.zeros, rectangle)
-      ];
-    })
-  ]
+      const axes = createChartAxes({
+        rectangle: getChartRectangle(world, rectangle),
+        x: {categories: ['x1', 'x2']},
+        y: {range: [-IMPACT_LIMIT, IMPACT_LIMIT], ticks: [-4, 0, 4]}
+      });
+      const title = {
+        labels: [
+          {
+            text: IMPACT_NAMES[index],
+            at: [(MAP_SHARE + 0.08) * world.width, (0.94 - index * 0.31) * world.height] as const,
+            anchor: 'bottom-left' as const,
+            offset: [0, 3] as const,
+            swatch: IMPACT_COLORS[index].slice(0, 3) as unknown as readonly [
+              number,
+              number,
+              number
+            ],
+            role: 'label' as const,
+            priority: 4
+          }
+        ]
+      };
+      return {axes, text: mergeText(axes, title)};
+    });
+    return [
+      ...panels.map(panel => ({layer: 'text' as const, ...panel.axes.grid})),
+      ...drawTractMap(inputs, outputs.mesh, outputs.impactMap, {
+        ramp: 'sequential',
+        range: [0, SHOCK_LIMIT]
+      }),
+      ...outputs.components.flatMap((values, index) => {
+        const rectangle = [
+          MAP_SHARE + 0.08,
+          0.7 - index * 0.31,
+          0.97,
+          0.94 - index * 0.31
+        ] as const;
+        return [
+          ...drawSignedBars(values, rectangle, IMPACT_LIMIT, IMPACT_COLORS[index]),
+          drawZeroLine(outputs.zeros, rectangle)
+        ];
+      }),
+      ...panels.map(panel => ({layer: 'text' as const, ...panel.text}))
+    ];
+  }
 });

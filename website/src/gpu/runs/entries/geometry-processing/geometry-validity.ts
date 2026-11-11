@@ -9,6 +9,7 @@
 import {GPUGeometryValidity} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
+import {createLegend} from '../../text';
 import {chooseSticky, createPointIndex} from '../../pick';
 import {
   createFeatureOfVertex,
@@ -20,6 +21,24 @@ import {
 import {findRingCrossings} from './shared/pointer-support';
 import {addFeatureValues, addKernel} from './shared/shape-segments';
 import {parameters} from './geometry-validity.parameters';
+
+/** Colors of the five validity classes, in the order the class kernel numbers them. */
+const CLASS_COLORS = [
+  [0.435, 0.545, 0.722],
+  [1, 0.42, 0.42],
+  [0.96, 0.835, 0.28],
+  [0.31, 0.82, 0.77],
+  [0.78, 0.57, 0.92]
+] as const;
+const CLASS_NAMES = [
+  'valid',
+  'self-intersecting',
+  'hole outside, rings cross',
+  'wrong orientation',
+  'other (repeated vertex)'
+];
+/** Share of the picture height the polygons fill; the band above holds the legend. */
+const POLYGON_HEIGHT = 0.8;
 
 const ORIENTATIONS = ['counter-clockwise-shell', 'clockwise-shell', 'ignore'] as const;
 const DEFECT_KINDS = ['bow-tie', 'hole-outside', 'repeated-vertex'] as const;
@@ -39,12 +58,16 @@ export default defineOperationRun({
   caption:
     'Polygon edges colored by validity class: valid, self-intersecting, hole outside, orientation.',
   createInputs: ({seed, world}) => {
-    const set = createPolygonSet(makeRandom(seed), world, {
-      hasHoles: true,
-      rows: 3,
-      columns: 5,
-      mixedWinding: true
-    });
+    const set = createPolygonSet(
+      makeRandom(seed),
+      {width: world.width, height: world.height * POLYGON_HEIGHT},
+      {
+        hasHoles: true,
+        rows: 3,
+        columns: 5,
+        mixedWinding: true
+      }
+    );
     return {set, index: createPointIndex(set.centers), focus: {feature: -1}};
   },
   build(builder, {set}, values) {
@@ -137,14 +160,16 @@ export default defineOperationRun({
       nodes: outputs.positions,
       edges: outputs.edges,
       values: outputs.vertexMasks,
-      categories: [
-        [0.435, 0.545, 0.722],
-        [1, 0.42, 0.42],
-        [0.96, 0.835, 0.28],
-        [0.31, 0.82, 0.77],
-        [0.78, 0.57, 0.92]
-      ],
+      categories: CLASS_COLORS,
       radius: 2.4
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        panel: false,
+        entries: CLASS_NAMES.map((label, index) => ({label, swatch: CLASS_COLORS[index]}))
+      })
     }
   ]
 });

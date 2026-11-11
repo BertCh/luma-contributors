@@ -9,6 +9,7 @@ import {defineOperationRun} from '../../define-run';
 import {uploadNetworkTopology} from '../../inputs';
 import {createRoads, pickNodes} from './shared/roads';
 import {getRasterCell, getRasterCellCenter} from '../../pick';
+import {createLegend, mergeText} from '../../text';
 import {parameters} from './network-cost-matrix.parameters';
 
 export default defineOperationRun({
@@ -97,13 +98,46 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs, values}) => [
+  draw: ({outputs, values, theme}) => [
     {
       layer: 'raster',
       values: outputs.matrix,
       columns: Math.round(values.targetNodes),
       rows: Math.round(values.startNodes),
       range: [0, 1.6]
+    },
+    {
+      layer: 'text',
+      ...mergeText(
+        // Rows are origins, columns destinations; the ramp runs from 0 to the 1.6 the picture is scaled to.
+        {
+          labels: [
+            {
+              text: 'origin',
+              at: [0, 0],
+              anchor: 'left',
+              angle: 90,
+              offset: [7, 4],
+              role: 'title'
+            },
+            {
+              text: 'destination',
+              at: [0, 1],
+              anchor: 'top-left',
+              offset: [4, -3],
+              role: 'title'
+            }
+          ]
+        },
+        createLegend({
+          corner: 'bottom-right',
+          entries: [
+            {label: 'cost 0', swatch: theme.ramp[0]},
+            {label: 'cost 1.6+', swatch: theme.ramp[theme.ramp.length - 1]},
+            {label: 'beyond costLimit', swatch: theme.muted}
+          ]
+        })
+      )
     }
   ]
 });

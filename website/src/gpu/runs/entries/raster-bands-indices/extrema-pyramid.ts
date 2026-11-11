@@ -14,6 +14,7 @@ import {
 } from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createElevationRaster} from '../../inputs';
+import type {RunLabel} from '../../text';
 import {parameters} from './extrema-pyramid.parameters';
 import {formatNumber} from '../../interaction';
 import {makeGridOfRaster} from './support/bands';
@@ -89,7 +90,7 @@ export default defineOperationRun({
       );
     }
   },
-  draw: ({outputs, interaction, world}) => {
+  draw: ({outputs, interaction, values, world}) => {
     const curtain = getCurtainX(interaction, world);
     const look = {
       layer: 'raster',
@@ -97,9 +98,25 @@ export default defineOperationRun({
       rows: outputs.rows,
       range: [0, 1]
     } as const;
+    const size = 2 ** Math.round(values.firstBlockSize);
+    const labels: RunLabel[] = [
+      {
+        text: `minimum of each ${size} x ${size} block`,
+        at: [curtain - 0.01, 0.97],
+        anchor: 'top-right',
+        role: 'title'
+      },
+      {
+        text: `maximum of each ${size} x ${size} block`,
+        at: [curtain + 0.01, 0.97],
+        anchor: 'top-left',
+        role: 'title'
+      }
+    ];
     return [
       {...look, values: outputs.minimum, clip: {side: 'left', x: curtain}},
-      {...look, values: outputs.maximum, clip: {side: 'right', x: curtain}}
+      {...look, values: outputs.maximum, clip: {side: 'right', x: curtain}},
+      {layer: 'text', labels}
     ];
   }
 });

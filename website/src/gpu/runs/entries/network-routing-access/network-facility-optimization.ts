@@ -160,7 +160,7 @@ export default defineOperationRun({
         [...theme.muted, 1],
         [...theme.categories[4], 1]
       ],
-      radius: 6
+      radius: 8
     },
     ...getFacilityMarkers(outputs.candidates, theme, {ids: outputs.selectedIds, radius: 11})
   ]

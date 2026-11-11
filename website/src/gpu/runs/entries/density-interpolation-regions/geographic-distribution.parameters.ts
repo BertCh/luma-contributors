@@ -13,7 +13,7 @@ export const parameters: GpuSceneParameter[] = [
     max: 1,
     step: 1,
     default: 0,
-    options: ['arcgis', 'standard']
+    options: ['root-two', 'standard']
   },
   {id: 'spread', label: 'Data: spread', min: 0.5, max: 2, step: 0.1, default: 1}
 ];

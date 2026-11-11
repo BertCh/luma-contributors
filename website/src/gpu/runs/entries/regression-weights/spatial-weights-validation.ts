@@ -9,6 +9,7 @@ import {GPUSpatialWeightsValidation} from '@luma-contributors/analysis/gpu-spati
 import {defineOperationRun} from '../../define-run';
 import {createKnnWeights, createUniformPoints} from '../../inputs';
 import type {RunGlyph} from '../../interaction';
+import {createLegend} from '../../text';
 import {parameters} from './spatial-weights-validation.parameters';
 import {addKernelPass} from './shared/kernel';
 import {describeViolation, findNearestFlagged} from './shared/probes';
@@ -107,6 +108,19 @@ export default defineOperationRun({
       positions: outputs.positions,
       values: outputs.kinds,
       radius: 5.5
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        title: 'violation flag',
+        entries: [
+          {label: 'neighbor out of range', swatch: 1},
+          {label: 'duplicate neighbor', swatch: 2},
+          {label: 'self neighbor', swatch: 3},
+          {label: 'negative weight', swatch: 4}
+        ]
+      })
     }
   ]
 });

@@ -12,6 +12,8 @@ import {
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {createChartAxes, getChartRectangle, mergeText} from '../../text';
+import {createBarNames} from './shared/labels';
 import {parameters} from './spatial-regression-diagnostics.parameters';
 import {
   createRegressionInputs,
@@ -146,24 +148,36 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({inputs, outputs}) => [
-    ...drawResidualMap(inputs, outputs.mesh, outputs.residuals),
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.statistics,
-      color: [0.55, 0.65, 0.95, 0.9],
-      range: [0, TEST_LIMIT],
-      rectangle: TEST_RECTANGLE
-    },
-    {
-      layer: 'chart',
-      kind: 'line',
-      values: outputs.critical,
-      range: [0, TEST_LIMIT],
-      color: [1, 0.55, 0.3, 0.9],
-      radius: 1,
-      rectangle: TEST_RECTANGLE
-    }
-  ]
+  draw: ({inputs, outputs, world}) => {
+    // The six tests by name under the bars, the statistic on y, the 5% critical value on the rule.
+    const rectangle = getChartRectangle(world, TEST_RECTANGLE);
+    const axes = createChartAxes({
+      rectangle,
+      y: {range: [0, TEST_LIMIT], ticks: [0, 4, 8, 12]},
+      references: [{value: CRITICAL_VALUE, label: '5% critical'}]
+    });
+    const text = mergeText(axes, createBarNames(rectangle, TEST_NAMES, 'top'));
+    return [
+      ...drawResidualMap(inputs, outputs.mesh, outputs.residuals),
+      {layer: 'text', ...axes.grid},
+      {
+        layer: 'chart',
+        kind: 'bars',
+        values: outputs.statistics,
+        color: [0.55, 0.65, 0.95, 0.9],
+        range: [0, TEST_LIMIT],
+        rectangle: TEST_RECTANGLE
+      },
+      {
+        layer: 'chart',
+        kind: 'line',
+        values: outputs.critical,
+        range: [0, TEST_LIMIT],
+        color: [1, 0.55, 0.3, 0.9],
+        radius: 1,
+        rectangle: TEST_RECTANGLE
+      },
+      {layer: 'text', ...text}
+    ];
+  }
 });

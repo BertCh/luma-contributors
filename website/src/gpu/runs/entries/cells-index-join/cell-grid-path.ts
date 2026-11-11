@@ -92,13 +92,18 @@ export default defineOperationRun({
       const counts = peek(outputs.counts);
       const lengths = counts ? [...counts].filter(length => length > 0) : [];
       const longest = lengths.length > 0 ? Math.max(...lengths) : 0;
+      const cutOff = lengths.filter(length => length > values.maximumPathLength).length;
       return {
         rerun: true,
         glyphs: [
           {shape: 'crosshair', at: inputs.pointer},
           {shape: 'ring', at: inputs.pointer, radius: values.spread, dashed: true}
         ],
-        readout: `paths up to ${longest} cells (max ${values.maximumPathLength})`
+        // counts holds the true path length; a path longer than maximumPathLength is drawn cut off.
+        readout:
+          cutOff > 0
+            ? `longest path ${longest} cells · ${cutOff} of ${lengths.length} drawn cut off at maximumPathLength ${values.maximumPathLength}`
+            : `longest path ${longest} cells · all ${lengths.length} drawn whole (maximumPathLength ${values.maximumPathLength})`
       };
     }
   },

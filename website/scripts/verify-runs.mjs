@@ -199,6 +199,13 @@ async function verifyRun(browser, options, {group, id}, theme) {
         (await page.evaluate(([a, b]) => window.compareImages(a, b), [base.url, inputsOnly.url])).toFixed(4)
       );
       if (result.outputShare < 0.01) result.failures.push('picture equals the inputs-only render: output is not drawn');
+      // Text (labels, legends) is not the operation's output: the run needs a non-text layer that
+      // the inputs-only render hides. layerKinds lists the layers of the latest render.
+      const inputKinds = await page.evaluate(() => [...window.runHarness.state.layerKinds]);
+      const countOutputKinds = kinds => kinds.filter(kind => kind !== 'text').length;
+      if (countOutputKinds(state.layerKinds) - countOutputKinds(inputKinds) < 1) {
+        result.failures.push('no output layer besides text: labels do not count as drawn output');
+      }
       await page.evaluate(() => window.runHarness.setInputsOnly(false));
       await page.evaluate(() => window.runHarness.settle());
     }

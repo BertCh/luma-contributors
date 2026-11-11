@@ -118,7 +118,7 @@ export default defineOperationRun({
         order: addReadout(builder, 'order', recipe.outputs.streamOrder)
       },
       update: current => {
-        elevation.write(Float32Array.from(source, height => height * current.relief));
+        elevation.write(Float32Array.from(source));
         parameterBuffer.write(
           getGPUTerrainFlowParameterValues(
             {streamThreshold: current.streamThreshold, fillEpsilon: 0.02},

@@ -2,11 +2,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUPointCloudNeighborhoods on a lidar-like cloud (top view). Each point is colored by how many
-// neighbors the GPU found within `radius` (counts); the table keeps at most `capacity` of them.
+// neighbors the GPU found within `radius` (counts); the table keeps at most `capacity` of them,
+// the nearest. The pointer picks a point: its neighbors are read from the table the GPU wrote
+// (white dots joined to it by spokes, in the top view and the side profile); `counts` above
+// `capacity` is the part of the support the table could not hold.
 
 import {GPUPointCloudNeighborhoods} from '@luma-contributors/analysis/pointcloud-analysis';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {chooseSticky} from '../../pick';
+import {findParameter} from '../../interaction';
+import {createLegend, mergeText, type RunLabel} from '../../text';
 import {addIntegerToFloat} from './_lib/convert';
 import {
   createCloudLayout,
@@ -25,6 +30,24 @@ import {parameters} from './pointcloud-neighborhoods.parameters';
 
 const POINT_COUNT = 3000;
 const HIGHLIGHT_LIMIT = 160;
+// Cyan stays visible over the ramp in both themes.
+const NEIGHBOR_COLOR = [0.1, 0.78, 1] as const;
+
+/** A point in a dense stretch of the cloud (about the 85th percentile of neighbor counts). */
+function getRestRow(
+  cloud: ReturnType<typeof createTerrainCloud>,
+  probe: ReturnType<typeof createCloudProbe>
+): number {
+  const radius = findParameter(parameters, 'radius').default;
+  const rows = Array.from({length: POINT_COUNT}, (_, row) => row).filter(row => {
+    const x = cloud.footprint[row * 2];
+    const y = cloud.footprint[row * 2 + 1];
+    return x > cloud.width * 0.3 && x < cloud.width * 0.7 && y > 0.3 && y < 0.7;
+  });
+  const counted = rows.map(row => ({row, count: probe.findNeighbors(row, radius).length}));
+  counted.sort((first, second) => first.count - second.count);
+  return counted[Math.floor(counted.length * 0.85)].row;
+}
 
 function createInputs({
   random,
@@ -41,12 +64,13 @@ function createInputs({
     probe: createCloudProbe(cloud),
     mapPositions: createMapPositions(layout, cloud.positions, POINT_COUNT),
     profilePositions: createProfilePositions(layout, cloud.positions, POINT_COUNT),
-    focus: {row: -1}
+    focus: {row: -1},
+    restRow: getRestRow(cloud, createCloudProbe(cloud))
   };
 }
 type Inputs = ReturnType<typeof createInputs>;
 type Outputs = Record<
-  'map' | 'profile' | 'counts' | 'keptMap' | 'keptProfile' | 'truncatedMap' | 'truncatedProfile',
+  'map' | 'profile' | 'counts' | 'indices' | 'keptMap' | 'keptProfile' | 'spokes',
   RunBuffer
 >;
 
@@ -58,12 +82,13 @@ export default defineOperationRun<Inputs, Outputs>({
   build(builder, inputs, values) {
     const positions = builder.allocate('positions', 'float32x3', POINT_COUNT);
     const counts = builder.allocate('counts', 'uint32', POINT_COUNT);
+    const indices = builder.allocate('indices', 'uint32', POINT_COUNT * values.capacity);
     builder.graph.add(
       new GPUPointCloudNeighborhoods({
         positions: positions.view,
         radius: values.radius,
         capacity: values.capacity,
-        indices: builder.allocate('indices', 'uint32', POINT_COUNT * values.capacity).view,
+        indices: indices.view,
         squaredDistances: builder.allocate(
           'squared-distances',
           'float32',
@@ -78,8 +103,8 @@ export default defineOperationRun<Inputs, Outputs>({
         profile: builder.upload('profile', 'float32x2', inputs.profilePositions),
         keptMap: builder.allocate('kept-map', 'float32x2', HIGHLIGHT_LIMIT),
         keptProfile: builder.allocate('kept-profile', 'float32x2', HIGHLIGHT_LIMIT),
-        truncatedMap: builder.allocate('truncated-map', 'float32x2', HIGHLIGHT_LIMIT),
-        truncatedProfile: builder.allocate('truncated-profile', 'float32x2', HIGHLIGHT_LIMIT),
+        spokes: builder.allocate('spokes', 'float32x4', HIGHLIGHT_LIMIT),
+        indices,
         counts: addIntegerToFloat(builder, 'neighbor-counts', counts)
       },
       update: current => positions.write(getJitteredPositions(inputs.cloud, current.noise))
@@ -92,7 +117,7 @@ export default defineOperationRun<Inputs, Outputs>({
     kind: 'probe',
     hint: 'hover a point',
     rest: ({inputs}) => {
-      const row = inputs.probe.restRow;
+      const row = inputs.restRow;
       const [x, y] = toMapPoint(
         inputs.layout,
         inputs.cloud.footprint[row * 2],
@@ -100,19 +125,12 @@ export default defineOperationRun<Inputs, Outputs>({
       );
       return [x / inputs.layout.width, 1 - y];
     },
-    resolve(pointer, {inputs, outputs, values}) {
+    resolve(pointer, {inputs, outputs, values, peek}) {
       const {cloud, layout, probe} = inputs;
       const [x, y] = fromMapPoint(layout, pointer.x, Math.max(pointer.y, layout.offsetY));
       const row = chooseSticky(probe.index, x, y, inputs.focus.row);
       inputs.focus.row = row;
       if (row < 0) return {};
-      const found = probe.findNeighbors(row, values.radius);
-      const kept = found.slice(0, values.capacity);
-      const truncated = found.slice(values.capacity, values.capacity + HIGHLIGHT_LIMIT);
-      writeRowPositions(outputs.keptMap, inputs.mapPositions, kept);
-      writeRowPositions(outputs.keptProfile, inputs.profilePositions, kept);
-      writeRowPositions(outputs.truncatedMap, inputs.mapPositions, truncated);
-      writeRowPositions(outputs.truncatedProfile, inputs.profilePositions, truncated);
       const center = toMapPoint(layout, cloud.footprint[row * 2], cloud.footprint[row * 2 + 1]);
       const profileCenter = getProfilePoint(
         layout,
@@ -121,55 +139,95 @@ export default defineOperationRun<Inputs, Outputs>({
       );
       const halfWidth = values.radius * layout.scale;
       const halfHeight = (values.radius / layout.heightMaximum) * layout.profileHeight;
+      const glyphs = [
+        {shape: 'ring' as const, at: center, radius: halfWidth},
+        {shape: 'dot' as const, at: center},
+        {
+          shape: 'box' as const,
+          minimum: [profileCenter[0] - halfWidth, profileCenter[1] - halfHeight] as const,
+          maximum: [profileCenter[0] + halfWidth, profileCenter[1] + halfHeight] as const
+        }
+      ];
+      // The neighbors are the table the GPU wrote: `capacity` slots per row, the nearest first.
+      const table = peek(outputs.indices);
+      const supports = peek(outputs.counts);
+      if (!table || !supports) return {glyphs, readout: `radius ${values.radius}`};
+      const found = supports[row];
+      const kept = Array.from(
+        {length: Math.min(found, values.capacity)},
+        (_, slot) => table[row * values.capacity + slot]
+      );
+      writeRowPositions(outputs.keptMap, inputs.mapPositions, kept);
+      writeRowPositions(outputs.keptProfile, inputs.profilePositions, kept);
+      const spokes = new Float32Array(HIGHLIGHT_LIMIT * 4).fill(-10);
+      kept.slice(0, HIGHLIGHT_LIMIT).forEach((neighbor, slot) => {
+        spokes.set(
+          [
+            center[0],
+            center[1],
+            inputs.mapPositions[neighbor * 2],
+            inputs.mapPositions[neighbor * 2 + 1]
+          ],
+          slot * 4
+        );
+      });
+      outputs.spokes.write(spokes);
       return {
-        focus: [kept.length, truncated.length],
-        glyphs: [
-          {shape: 'ring', at: center, radius: halfWidth},
-          {
-            shape: 'box',
-            minimum: [profileCenter[0] - halfWidth, profileCenter[1] - halfHeight],
-            maximum: [profileCenter[0] + halfWidth, profileCenter[1] + halfHeight]
-          }
-        ],
-        readout: `radius ${values.radius} · ${found.length} found, ${kept.length} kept (capacity ${values.capacity})`
+        focus: [kept.length, found],
+        glyphs,
+        readout: `radius ${values.radius} · ${found} found, ${kept.length} kept (capacity ${values.capacity})`
       };
     }
   },
-  draw: ({outputs, values, interaction}) => {
-    const focus = Array.isArray(interaction.focus) ? interaction.focus : [1, 1];
+  draw: ({inputs, outputs, values, interaction}) => {
+    const focus = Array.isArray(interaction.focus) ? interaction.focus : [1, 0];
     const kept = Math.max(1, focus[0]);
-    const truncated = Math.max(1, focus[1]);
     const look = {values: outputs.counts, range: [0, values.capacity * 0.6]} as const;
+    const {layout} = inputs;
+    const labels: RunLabel[] = [
+      {
+        text: 'top view',
+        at: [layout.offsetX, 0.995],
+        anchor: 'top-left',
+        offset: [2, 0],
+        role: 'title'
+      },
+      {
+        text: 'side profile (height)',
+        at: [layout.offsetX, layout.profileBottom + layout.profileHeight + 0.004],
+        anchor: 'bottom-left',
+        offset: [2, 0],
+        role: 'title'
+      }
+    ];
     return [
       {layer: 'dots', positions: outputs.map, ...look, radius: 3.2},
       {layer: 'dots', positions: outputs.profile, ...look, radius: 2.4},
-      {
-        layer: 'dots',
-        positions: outputs.truncatedMap,
-        count: truncated,
-        color: [1, 0.3, 0.3, 1],
-        radius: 3.8
-      },
-      {
-        layer: 'dots',
-        positions: outputs.truncatedProfile,
-        count: truncated,
-        color: [1, 0.3, 0.3, 1],
-        radius: 3
-      },
+      {layer: 'lines', segments: outputs.spokes, color: [...NEIGHBOR_COLOR, 0.8], radius: 1.1},
       {
         layer: 'dots',
         positions: outputs.keptMap,
         count: kept,
-        color: [1, 1, 1, 1],
-        radius: 3.8
+        color: [...NEIGHBOR_COLOR, 1],
+        radius: 5
       },
       {
         layer: 'dots',
         positions: outputs.keptProfile,
         count: kept,
-        color: [1, 1, 1, 1],
-        radius: 3
+        color: [...NEIGHBOR_COLOR, 1],
+        radius: 3.4
+      },
+      {
+        layer: 'text',
+        ...mergeText(
+          {labels},
+          createLegend({
+            corner: 'top-right',
+            title: 'neighbors within radius',
+            entries: [{label: 'kept for the hovered point', swatch: NEIGHBOR_COLOR}]
+          })
+        )
       }
     ];
   }

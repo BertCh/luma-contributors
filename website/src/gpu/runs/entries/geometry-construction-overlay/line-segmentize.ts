@@ -17,8 +17,10 @@ import {
   createPackedSegments,
   findNearestVertex,
   findRestAround,
+  HIGHLIGHT_COLOR,
   OUTPUT_COLOR
 } from './shared/lines';
+import {createLegend} from '../../text';
 import {parameters} from './line-segmentize.parameters';
 
 export default defineOperationRun({
@@ -97,10 +99,25 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs}) => [
-    {layer: 'lines', context: true, segments: outputs.original},
-    {layer: 'dots', context: true, positions: outputs.originalPoints, radius: 6},
-    {layer: 'lines', segments: outputs.segments, color: OUTPUT_COLOR},
-    {layer: 'dots', positions: outputs.points, radius: 3.6, color: OUTPUT_COLOR}
+  // Original vertices are large muted discs; every vertex the operation wrote is an orange dot on
+  // top, so a disc with an orange core is an original vertex and a lone orange dot an inserted one.
+  draw: ({outputs, theme}) => [
+    {layer: 'lines', context: true, segments: outputs.original, radius: 3},
+    {layer: 'dots', context: true, positions: outputs.originalPoints, radius: 13},
+    {layer: 'lines', segments: outputs.segments, color: OUTPUT_COLOR, radius: 3},
+    {layer: 'dots', positions: outputs.points, radius: 6.5, color: HIGHLIGHT_COLOR},
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        entries: [
+          {label: 'original vertex', swatch: theme.muted},
+          {
+            label: 'written vertex (lone dot: inserted)',
+            swatch: [HIGHLIGHT_COLOR[0], HIGHLIGHT_COLOR[1], HIGHLIGHT_COLOR[2]]
+          }
+        ]
+      })
+    }
   ]
 });

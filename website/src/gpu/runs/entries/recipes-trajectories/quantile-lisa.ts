@@ -13,6 +13,7 @@ import {clamp} from '../../interaction';
 import {createTracts, uploadSpatialWeights} from '../../inputs';
 import {getTractFill, uploadTractMesh} from './lib/tracts';
 import {findZoneAt, getTractGeometry} from './lib/zone-lookup';
+import {addKernel} from '../geometry-processing/shared/shape-segments';
 import {parameters} from './quantile-lisa.parameters';
 
 const MAXIMUM_PERMUTATIONS = 99;
@@ -20,7 +21,7 @@ const MAXIMUM_PERMUTATIONS = 99;
 export default defineOperationRun({
   parameters,
   caption:
-    'Members of the chosen quantile class (tinted) and where they cluster significantly (dots).',
+    'Members of the chosen quantile class (tinted) and where they cluster significantly (brighter, with dots).',
   createInputs: ({random, world}) => {
     const tracts = createTracts(random, world);
     const draws = Float32Array.from({length: tracts.count}, () => random() - 0.5);
@@ -49,6 +50,13 @@ export default defineOperationRun({
     const pseudoPValues = builder.allocate('pseudo-p-values', 'float32', tracts.count);
     const overflow = builder.allocate('overflow', 'uint32', 1);
     const significant = builder.allocate('significant', 'float32x2', tracts.count);
+    const centers = builder.upload(
+      'significance-centers',
+      'float32x2',
+      Float32Array.from(tracts.centers)
+    );
+    const standing = builder.allocate('standing', 'uint32', tracts.count);
+    const level = builder.allocate('significance-level', 'float32', 1);
     builder.graph.add(
       new GPUQuantileLISA({
         values: valueBuffer.view,
@@ -69,12 +77,32 @@ export default defineOperationRun({
         }
       })
     );
+    // Members of the selected class whose pseudo p-value is at most significanceLevel keep their
+    // center; the rest are parked off screen. Runs on the GPU so the dots follow the slider.
+    addKernel(builder, {
+      id: 'significant-members',
+      invocationCount: tracts.count,
+      bindings: [
+        {name: 'membership', buffer: membership, access: 'read'},
+        {name: 'pValues', buffer: pseudoPValues, access: 'read'},
+        {name: 'centers', buffer: centers, access: 'read'},
+        {name: 'level', buffer: level, access: 'read'},
+        {name: 'marks', buffer: significant, access: 'read_write'},
+        {name: 'standing', buffer: standing, access: 'read_write'}
+      ],
+      body: `let keep = membership[membershipOffset + index] == 1u && pValues[pValuesOffset + index] <= level[levelOffset];
+  standing[standingOffset + index] = select(membership[membershipOffset + index], 2u, keep);
+  let base = marksOffset + index * 2u;
+  marks[base] = select(-10.0, centers[centersOffset + index * 2u], keep);
+  marks[base + 1u] = select(-10.0, centers[centersOffset + index * 2u + 1u], keep);`
+    });
     return {
       outputs: {
         classes,
         membership,
         pseudoPValues,
         significant,
+        standing,
         mesh: uploadTractMesh(builder, tracts)
       },
       update: current => {
@@ -82,6 +110,7 @@ export default defineOperationRun({
         quantileParameters.write(
           Uint32Array.of(quantileCount, Math.min(current.selectedQuantile, quantileCount))
         );
+        level.write(Float32Array.of(current.significanceLevel));
         permutationParameters.write(
           getGPUPermutationParameterValues({
             seed: 7,
@@ -108,8 +137,6 @@ export default defineOperationRun({
     resolve(pointer, {inputs, outputs, values, peek}) {
       const geometry = getTractGeometry(inputs.tracts);
       const tract = findZoneAt(geometry, pointer.x, pointer.y);
-      const membership = peek(outputs.membership);
-      const pseudoPValues = peek(outputs.pseudoPValues);
       // Rank of the tract's input value among all tracts, as a quantile class from 1.
       const input = (row: number) => inputs.tracts.values[row] + inputs.draws[row] * values.noise;
       let below = 0;
@@ -120,17 +147,10 @@ export default defineOperationRun({
         values.numberOfQuantiles
       );
       let significantCount = 0;
-      if (membership && pseudoPValues) {
-        const marks = new Float32Array(inputs.tracts.count * 2).fill(-10);
-        for (let row = 0; row < inputs.tracts.count; row++) {
-          if (membership[row] === 1 && pseudoPValues[row] <= values.significanceLevel) {
-            marks[significantCount * 2] = inputs.tracts.centers[row * 2];
-            marks[significantCount * 2 + 1] = inputs.tracts.centers[row * 2 + 1];
-            significantCount++;
-          }
-        }
-        outputs.significant.write(marks);
-      }
+      const marks = peek(outputs.significant);
+      if (marks)
+        for (let row = 0; row < inputs.tracts.count; row++)
+          if (marks[row * 2] > -5) significantCount++;
       return {
         values: {selectedQuantile},
         glyphs: [
@@ -144,9 +164,9 @@ export default defineOperationRun({
     }
   },
   draw: ({inputs, outputs}) => [
-    getTractFill(outputs.mesh, inputs.tracts, outputs.membership, {
+    getTractFill(outputs.mesh, inputs.tracts, outputs.standing, {
       ramp: 'sequential',
-      range: [0, 1.6],
+      range: [0, 2.4],
       alpha: 0.6
     }),
     {

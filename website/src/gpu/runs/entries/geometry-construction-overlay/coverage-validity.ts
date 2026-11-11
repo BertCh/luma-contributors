@@ -19,21 +19,47 @@ import {
   findRestBesideLines,
   HIGHLIGHT_COLOR
 } from './shared/lines';
-import {getPolygonFields, uploadPolygonSet} from './shared/polygons';
+import {createTriangleListDrawing, getPolygonFields, uploadPolygonSet} from './shared/polygons';
+import {clipEars} from './shared/ear-clip';
+import {createLegend} from '../../text';
 import {parameters} from './coverage-validity.parameters';
+
+/**
+ * The cells as a triangle list for drawing the input, from vertex rows triangulated once on the
+ * undistorted cells (shrinking a cell scales it about its center, which keeps those triangles
+ * valid). A gap between two cells then stays the background color and an overlap is covered twice.
+ */
+function createCellTriangles(
+  positions: Float32Array,
+  triangleRows: readonly number[]
+): Float32Array {
+  const triangles = new Float32Array(triangleRows.length * 2);
+  triangleRows.forEach((row, slot) => {
+    triangles[slot * 2] = positions[row * 2];
+    triangles[slot * 2 + 1] = positions[row * 2 + 1];
+  });
+  return triangles;
+}
 
 export default defineOperationRun({
   parameters,
   caption: 'Coverage edges flagged as invalid (orange): overlaps and gaps narrower than gapWidth.',
   createInputs: ({random, world}) => {
     const coverage = createTractCoverage(random, world, 4);
-    // Only a few cells are defective: a sliver gap, a wide gap and an overlap, scaled by "Data: gap".
+    // Only a few cells are defective: gaps of graded widths and an overlap, scaled by "Data: gap".
     // Every other cell touches its neighbors exactly.
-    const defects = new Map([
-      [Math.floor(coverage.featureCount * 0.2), 1],
-      [Math.floor(coverage.featureCount * 0.5), 4],
-      [Math.floor(coverage.featureCount * 0.8), -0.8]
-    ]);
+    const defects = new Map<number, number>();
+    [
+      [0.05, 0.5],
+      [0.2, 1],
+      [0.35, 2],
+      [0.5, 4],
+      [0.65, 3],
+      [0.8, -0.8],
+      [0.95, 1.5]
+    ].forEach(([share, multiplier]) =>
+      defects.set(Math.floor(coverage.featureCount * share), multiplier)
+    );
     const getSet = (gap: number) => {
       const positions = new Float32Array(coverage.positions);
       for (let feature = 0; feature < coverage.featureCount; feature++) {
@@ -55,7 +81,13 @@ export default defineOperationRun({
       }
       return {...coverage, positions};
     };
-    return {getSet, world};
+    const triangleRows: number[] = [];
+    for (let ring = 0; ring + 1 < coverage.ringOffsets.length; ring++) {
+      triangleRows.push(
+        ...clipEars(coverage.positions, coverage.ringOffsets[ring], coverage.ringOffsets[ring + 1])
+      );
+    }
+    return {getSet, world, triangleRows};
   },
   build(builder, inputs, values) {
     const initial = inputs.getSet(values.gap);
@@ -86,10 +118,18 @@ export default defineOperationRun({
         flags: segmentFlags
       }
     );
+    const fill = builder.upload(
+      'cell-fill',
+      'float32x2',
+      createCellTriangles(initial.positions, inputs.triangleRows)
+    );
+    const fillMesh = createTriangleListDrawing(builder, 'cell-fill', fill.length);
     return {
-      outputs: {...drawing, flagged: drawing.segments},
+      outputs: {...drawing, flagged: drawing.segments, fill, fillMesh},
       update: current => {
-        polygons.positions.write(inputs.getSet(current.gap).positions);
+        const set = inputs.getSet(current.gap);
+        polygons.positions.write(set.positions);
+        fill.write(createCellTriangles(set.positions, inputs.triangleRows));
         parameterBuffer.write(getGPUCoverageValidityParameterValues({gapWidth: current.gapWidth}));
       }
     };
@@ -125,15 +165,39 @@ export default defineOperationRun({
       return {
         values: {gapWidth},
         glyphs: [
-          {shape: 'ring', at: [pointer.x, pointer.y], radius: hit.distance},
+          {shape: 'ring', at: [pointer.x, pointer.y], radius: gapWidth / 2},
           {shape: 'dot', at: hit.point}
         ],
         readout: `gapWidth ${gapWidth.toFixed(3)} · gap ${values.gap.toFixed(3)}`
       };
     }
   },
-  draw: ({outputs}) => [
-    {layer: 'segments', context: true, nodes: outputs.points, edges: outputs.edges, radius: 1.2},
-    {layer: 'lines', segments: outputs.flagged, color: HIGHLIGHT_COLOR, radius: 3.5}
+  draw: ({outputs, theme}) => [
+    {
+      layer: 'polygons',
+      context: true,
+      positions: outputs.fill,
+      indices: outputs.fillMesh.indices,
+      owners: outputs.fillMesh.owners,
+      values: outputs.fillMesh.values,
+      triangleCount: outputs.fillMesh.triangleCount,
+      color: [...theme.ink, 1],
+      alpha: 0.2
+    },
+    {layer: 'segments', context: true, nodes: outputs.points, edges: outputs.edges, radius: 1.5},
+    {layer: 'lines', segments: outputs.flagged, color: HIGHLIGHT_COLOR, radius: 3.5},
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'bottom-left',
+        entries: [
+          {label: 'cell (gaps between cells show the background)', swatch: theme.muted},
+          {
+            label: 'edge flagged by GPUCoverageValidity',
+            swatch: [HIGHLIGHT_COLOR[0], HIGHLIGHT_COLOR[1], HIGHLIGHT_COLOR[2]]
+          }
+        ]
+      })
+    }
   ]
 });

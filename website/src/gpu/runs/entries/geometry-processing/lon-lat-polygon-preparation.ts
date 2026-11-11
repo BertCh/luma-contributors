@@ -14,6 +14,7 @@ import sample from '../../../data/natural-earth-geometry.json';
 import {createCoastlineSegments} from '../../../data/coastline';
 import {defineOperationRun, type RunBuffer, type RunBuilder} from '../../define-run';
 import {clamp} from '../../interaction';
+import {createLegend} from '../../text';
 import {createRingEdges} from './shared/polygon-set';
 import {addKernel, addOutputEdges, addRingCategories} from './shared/shape-segments';
 import {parameters} from './lon-lat-polygon-preparation.parameters';
@@ -174,7 +175,7 @@ export default defineOperationRun({
     }
   },
   rebuildOn: ['antimeridian', 'poleRings'],
-  draw: ({outputs}) => [
+  draw: ({outputs, theme}) => [
     {layer: 'lines', context: true, segments: outputs.coast, alpha: 0.4, radius: 0.8},
     {layer: 'segments', context: true, nodes: outputs.input, edges: outputs.inputEdges},
     {
@@ -183,6 +184,18 @@ export default defineOperationRun({
       edges: outputs.preparedEdges,
       values: outputs.categories,
       radius: 2.4
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'bottom-right',
+        // Clear of the dashed date line that the pointer shows at the map edge.
+        inset: 48,
+        entries: [
+          {label: 'input ring as drawn', swatch: [...theme.muted]},
+          {label: 'prepared ring or piece (colour per piece)', swatch: 3}
+        ]
+      })
     }
   ]
 });

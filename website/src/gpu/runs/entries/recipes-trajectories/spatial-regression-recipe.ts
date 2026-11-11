@@ -8,9 +8,9 @@
 import {
   addSpatialRegressionRecipe,
   getGPUGeographicallyWeightedRegressionParameterValues,
-  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
-  GPUParameterBuffer
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {defineOperationRun} from '../../define-run';
 import {findParameter, snapToParameter} from '../../interaction';
 import {createRegressionInputs, createResponse} from '../regression-weights/shared/regression';

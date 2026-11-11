@@ -10,6 +10,7 @@ import {
   GPUPointHorizonVisibility
 } from '@luma-contributors/analysis/gpu-terrain';
 import {defineOperationRun} from '../../define-run';
+import {createLegend} from '../../text';
 import type {RunGlyph} from '../../interaction';
 import {getObserverRest, getObserverUnderPointer} from './support/pointer';
 import {
@@ -24,6 +25,7 @@ import {
 import {parameters} from './point-horizon-visibility.parameters';
 
 const TARGET_COUNT = 14;
+const MAXIMUM_DISTANCE = 20000;
 
 export default defineOperationRun({
   parameters,
@@ -61,7 +63,7 @@ export default defineOperationRun({
         observers: observers.view,
         targets: targets.view,
         cellSize: terrain.cellSize,
-        maximumDistance: 3600,
+        maximumDistance: MAXIMUM_DISTANCE,
         parameters: parameterBuffer.view,
         output: {visibility: visibility.view, details: details.view}
       })
@@ -88,7 +90,7 @@ export default defineOperationRun({
         );
         observerDot.write(Float32Array.from(observer));
         parameterBuffer.write(
-          getGPUPointHorizonVisibilityParameterValues({maximumDistance: 3600}, grid)
+          getGPUPointHorizonVisibilityParameterValues({maximumDistance: MAXIMUM_DISTANCE}, grid)
         );
       }
     };
@@ -131,6 +133,16 @@ export default defineOperationRun({
       categories: VISIBILITY_COLORS,
       radius: 13
     },
-    {layer: 'dots', positions: outputs.observerDot, radius: 7, color: [1, 1, 1, 1]}
+    {layer: 'dots', positions: outputs.observerDot, radius: 7, color: [1, 1, 1, 1]},
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'bottom-left',
+        entries: [
+          {label: 'visible', swatch: [0.2, 0.85, 0.4]},
+          {label: 'hidden by terrain', swatch: [0.27, 0.1, 0.4]}
+        ]
+      })
+    }
   ]
 });

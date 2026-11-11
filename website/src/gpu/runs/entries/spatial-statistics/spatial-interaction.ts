@@ -5,7 +5,8 @@
 // destinations, choosing the distance-decay coefficient from a ladder of candidates. Left: the 24
 // tracts. Right: each dot is one origin-destination pair, observed flow (x) against the flow the
 // fitted model predicts (y); a good fit hugs the diagonal and the constraint decides which margins
-// are matched exactly. Hovering a tract draws its flows on the map and rings its pairs in the plot.
+// are matched exactly. The map draws every fitted flow as a line whose width follows the fitted
+// value; hovering a tract highlights its flows on the map and marks its pairs in the plot.
 
 import {GPUSpatialInteraction} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun, type RunLayer} from '../../define-run';
@@ -13,6 +14,7 @@ import {COMMUTE_FLOWS, getCommutePositions} from '../../../data/commute-flows';
 import type {RunGlyph} from '../../interaction';
 import {chooseSticky, createPointIndex} from '../../pick';
 import {addLogCounts} from '../regression-weights/shared/weights';
+import {createChartAxes, getChartRectangle, mergeText} from '../../text';
 import {whenShown} from './shared/point-field';
 import {parameters} from './spatial-interaction.parameters';
 
@@ -21,6 +23,12 @@ const COEFFICIENTS = [-3, -2.5, -2, -1.5, -1, -0.5, 0];
 const SIDE = 24;
 const MAP_SHARE = 0.4;
 const PLOT = [0.5, 0.1, 0.94, 0.92] as const;
+// Fitted-flow classes on the map: upper bounds of the plot position, and the line width of each.
+const WIDTH_CLASSES = [
+  {upTo: 0.45, radius: 0.8, alpha: 0.35},
+  {upTo: 0.7, radius: 1.8, alpha: 0.5},
+  {upTo: 1.01, radius: 3.4, alpha: 0.7}
+] as const;
 
 export default defineOperationRun({
   parameters,
@@ -102,6 +110,10 @@ export default defineOperationRun({
         rawPredictions: predictions,
         // Render-only: plot positions of the hovered tract's pairs.
         pairs: builder.allocate('pairs', 'float32x2', flows.length),
+        // Render-only: map segments of every pair, by fitted-flow class.
+        classes: WIDTH_CLASSES.map((_, index) =>
+          builder.allocate(`fitted-lines-${index}`, 'float32x4', flows.length)
+        ),
         tracts: builder.upload('tracts', 'float32x2', inputs.tractPositions),
         diagonal: builder.upload('diagonal', 'float32x4', inputs.diagonal)
       }
@@ -115,15 +127,36 @@ export default defineOperationRun({
       const row = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.focus.row);
       inputs.focus.row = row;
       const predictions = peek(outputs.rawPredictions);
-      if (row < 0 || !predictions) return {focus: 0};
+      if (!predictions) return {focus: [0, 0, 0, 0]};
+      const [axisMinimum, axisMaximum] = inputs.axis;
+      const getPlot = (value: number) =>
+        Math.min(1, Math.max(0, (Math.log1p(value) - axisMinimum) / (axisMaximum - axisMinimum)));
+      // Every fitted flow on the map, in the line width of its class.
+      const classLines = WIDTH_CLASSES.map(() => new Float32Array(inputs.flows.length * 4));
+      const classCounts = WIDTH_CLASSES.map(() => 0);
+      for (let pair = 0; pair < inputs.flows.length; pair++) {
+        const origin = inputs.origin[pair];
+        const destination = inputs.destination[pair];
+        if (origin === destination) continue;
+        const position = getPlot(predictions[pair]);
+        const width = WIDTH_CLASSES.findIndex(entry => position < entry.upTo);
+        classLines[width].set(
+          [
+            inputs.tractPositions[origin * 2],
+            inputs.tractPositions[origin * 2 + 1],
+            inputs.tractPositions[destination * 2],
+            inputs.tractPositions[destination * 2 + 1]
+          ],
+          classCounts[width]++ * 4
+        );
+      }
+      WIDTH_CLASSES.forEach((_, index) => outputs.classes[index].write(classLines[index]));
+      if (row < 0) return {focus: [0, ...classCounts]};
       const glyphs: RunGlyph[] = [];
       const plotted = new Float32Array(inputs.flows.length * 2);
       let pairCount = 0;
       let observedTotal = 0;
       let fittedTotal = 0;
-      const [axisMinimum, axisMaximum] = inputs.axis;
-      const getPlot = (value: number) =>
-        Math.min(1, Math.max(0, (Math.log1p(value) - axisMinimum) / (axisMaximum - axisMinimum)));
       const from = [inputs.tractPositions[row * 2], inputs.tractPositions[row * 2 + 1]] as const;
       for (let pair = 0; pair < inputs.flows.length; pair++) {
         if (inputs.origin[pair] !== row) continue;
@@ -144,16 +177,37 @@ export default defineOperationRun({
       outputs.pairs.write(plotted);
       glyphs.push({shape: 'crosshair', at: from, size: 12});
       return {
-        focus: pairCount,
+        focus: [pairCount, ...classCounts],
         glyphs,
         readout: `tract ${row} · ${pairCount} flows · observed ${Math.round(observedTotal)} · fitted ${Math.round(fittedTotal)} jobs`
       };
     }
   },
-  draw: ({inputs, outputs, interaction, theme}): readonly RunLayer[] => {
-    const shownCount = typeof interaction.focus === 'number' ? interaction.focus : 0;
+  draw: ({inputs, outputs, interaction, theme, world}): readonly RunLayer[] => {
+    const [shownCount, ...classCounts] = Array.isArray(interaction.focus)
+      ? interaction.focus
+      : [0, 0, 0, 0];
+    const rectangle = getChartRectangle(world, PLOT);
+    const axes = createChartAxes({
+      rectangle,
+      x: {range: inputs.axis, ticks: [], title: 'observed flow (log jobs)'},
+      y: {range: inputs.axis, ticks: [], title: 'fitted flow'}
+    });
     return [
-      {layer: 'dots', positions: outputs.tracts, color: [...theme.ink, 0.6], radius: 4},
+      ...WIDTH_CLASSES.flatMap((entry, index) =>
+        classCounts[index] > 0
+          ? [
+              {
+                layer: 'lines' as const,
+                segments: outputs.classes[index],
+                count: classCounts[index],
+                radius: entry.radius,
+                color: [...theme.categories[0], entry.alpha] as const
+              }
+            ]
+          : []
+      ),
+      {layer: 'dots', positions: outputs.tracts, color: [...theme.ink, 0.8], radius: 4},
       {layer: 'lines', context: true, segments: outputs.diagonal, radius: 1},
       {
         layer: 'chart',
@@ -172,7 +226,20 @@ export default defineOperationRun({
         count: shownCount,
         color: [...theme.categories[1], 1],
         radius: 8
-      })
+      }),
+      {
+        layer: 'text',
+        ...mergeText(axes, {
+          labels: [
+            {
+              text: 'fitted flows: wider line, larger flow',
+              at: [0.02 * world.width, 0.96 * world.height],
+              anchor: 'top-left',
+              role: 'label'
+            }
+          ]
+        })
+      }
     ];
   }
 });

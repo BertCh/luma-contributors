@@ -15,6 +15,7 @@ import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {addIntegerToFloat} from './_lib/convert';
 import {bindAxes} from '../../interaction';
 import {getRasterCell} from '../../pick';
+import type {RunLabel} from '../../text';
 import {parameters} from './calendar-buckets.parameters';
 
 import departures from '../../../data/atlantadepartures.json';
@@ -92,14 +93,42 @@ export default defineOperationRun<Inputs, Outputs>({
       };
     }
   }),
-  draw: ({outputs}) => [
-    {layer: 'raster', values: outputs.counts, columns: 24, rows: 7, range: 'auto'},
-    {
-      layer: 'lines',
-      context: true,
-      segments: outputs.tickSegments,
-      count: 10,
-      color: [1, 1, 1, 0.8]
-    }
-  ]
+  draw: ({outputs, values, world}) => {
+    // Hour labels along the top (local hours) and the weekday names down the left, rotated by the
+    // first day of the week like the GPU's rows.
+    const labels: RunLabel[] = [
+      ...[0, 6, 12, 18].map(hour => ({
+        text: String(hour).padStart(2, '0'),
+        at: [((hour + 0.5) / 24) * world.width, 1] as const,
+        anchor: 'top' as const,
+        offset: [0, -3] as const,
+        role: 'label' as const
+      })),
+      {
+        text: 'local hour',
+        at: [world.width - 0.01, 1] as const,
+        anchor: 'top-right' as const,
+        offset: [0, -3] as const,
+        role: 'title' as const
+      },
+      ...WEEKDAYS.map((_, row) => ({
+        text: WEEKDAYS[(row + Math.round(values.firstDayOfWeek)) % 7],
+        at: [0, 1 - (row + 0.5) / 7] as const,
+        anchor: 'left' as const,
+        offset: [5, 0] as const,
+        role: 'label' as const
+      }))
+    ];
+    return [
+      {layer: 'raster', values: outputs.counts, columns: 24, rows: 7, range: 'auto'},
+      {
+        layer: 'lines',
+        context: true,
+        segments: outputs.tickSegments,
+        count: 10,
+        color: [1, 1, 1, 0.8]
+      },
+      {layer: 'text', labels}
+    ];
+  }
 });

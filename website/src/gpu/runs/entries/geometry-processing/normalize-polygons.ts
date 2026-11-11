@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUNormalizePolygons gives every polygon one canonical form. Each ring of the input starts at a
-// different vertex and every other polygon winds the other way; the white dots are the input ring
-// starts, the orange dots the canonical starts the operation wrote.
+// different vertex and every other polygon winds the other way; the large orange dots are the input
+// ring starts, the blue dots the canonical starts the operation wrote.
 
 import {GPUNormalizePolygons} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeRandom} from '../../../demos/kit';
@@ -11,6 +11,7 @@ import {defineOperationRun} from '../../define-run';
 import {createPolygonSet, restartRings, uploadPolygonSet} from './shared/polygon-set';
 import {addKernel, addOutputEdges, addRingArrows} from './shared/shape-segments';
 import {findParameter, snapToParameter} from '../../interaction';
+import {createLegend} from '../../text';
 import {parameters} from './normalize-polygons.parameters';
 
 const STARTS = findParameter(parameters, 'start');
@@ -124,7 +125,22 @@ export default defineOperationRun({
     {layer: 'segments', nodes: outputs.normalized, edges: outputs.edges, radius: 1.8},
     {layer: 'lines', context: true, segments: outputs.inputArrows, radius: 1.4},
     {layer: 'lines', segments: outputs.arrows, radius: 1.4, alpha: 0.8},
-    {layer: 'dots', positions: outputs.inputStarts, radius: 8, color: [...theme.ink, 1]},
-    {layer: 'dots', positions: outputs.normalizedStarts, radius: 4, color: [1, 0.6, 0.2, 1]}
+    {layer: 'dots', positions: outputs.inputStarts, radius: 10, color: [...theme.categories[1], 1]},
+    {
+      layer: 'dots',
+      positions: outputs.normalizedStarts,
+      radius: 6,
+      color: [...theme.categories[0], 1]
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'bottom-left',
+        entries: [
+          {label: 'input ring start', swatch: 1},
+          {label: 'canonical start', swatch: 0}
+        ]
+      })
+    }
   ]
 });

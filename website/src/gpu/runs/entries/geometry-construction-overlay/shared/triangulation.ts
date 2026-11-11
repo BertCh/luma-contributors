@@ -13,14 +13,12 @@ import {defineOperationRun, type RunBuffer, type RunBuilder} from '../../../defi
 import type {GpuSceneParameter} from '../../../../types';
 import {clamp} from '../../../interaction';
 import {addKernelPass} from './kernel';
-import {findNearestVertex, OUTPUT_COLOR} from './lines';
-import {
-  createBlobSet,
-  createRingSegments,
-  getPolygonFields,
-  uploadPolygonSet,
-  type PolygonSet
-} from './polygons';
+import {createPackedSegments, findNearestVertex, HIGHLIGHT_COLOR, OUTPUT_COLOR} from './lines';
+import {createLegend} from '../../../text';
+import {createBlobSet, getPolygonFields, uploadPolygonSet, type PolygonSet} from './polygons';
+
+// The edge-flip limits the constrained triangulation's pointer height picks among.
+const FLIP_LEVELS = [3, 8, 16, 24, 36] as const;
 
 export function createSeededRandom(seed: number): () => number {
   let state = seed;
@@ -64,6 +62,28 @@ fn cornerAngle(at: vec2f, first: vec2f, second: vec2f) -> f32 {
   minimumAngles[minimumAnglesOffset + index] = result;`
   });
   return minimumAngles;
+}
+
+/**
+ * Ring edges of a polygon set as segments, split into outer rings (the first ring of each polygon)
+ * and holes. Both lists are padded to at least one off-screen segment so they can be buffers.
+ */
+function createSplitRingSegments(set: PolygonSet): {shells: Float32Array; holes: Float32Array} {
+  const shells: number[] = [];
+  const holes: number[] = [];
+  for (let polygon = 0; polygon + 1 < set.polygonOffsets.length; polygon++) {
+    for (let ring = set.polygonOffsets[polygon]; ring < set.polygonOffsets[polygon + 1]; ring++) {
+      const segments = createPackedSegments(
+        set.positions,
+        Uint32Array.of(set.ringOffsets[ring], set.ringOffsets[ring + 1]),
+        true
+      );
+      (ring === set.polygonOffsets[polygon] ? shells : holes).push(...segments);
+    }
+  }
+  const pad = (segments: number[]) =>
+    Float32Array.from(segments.length > 0 ? segments : [-9, -9, -9, -9]);
+  return {shells: pad(shells), holes: pad(holes)};
 }
 
 export function createTriangulationRun(options: {
@@ -143,7 +163,9 @@ export function createTriangulationRun(options: {
         'uint32',
         Uint32Array.from({length: triangleCapacity}, (_, index) => index)
       );
-      const outline = builder.allocate('outline', 'float32x4', createRingSegments(set).length / 4);
+      const rings = createSplitRingSegments(set);
+      const outline = builder.allocate('outline', 'float32x4', rings.shells.length / 4);
+      const holeOutline = builder.allocate('hole-outline', 'float32x4', rings.holes.length / 4);
       return {
         outputs: {
           positions: polygons.positions,
@@ -152,69 +174,108 @@ export function createTriangulationRun(options: {
           triangleIds,
           polygonIds,
           outline,
+          holeOutline,
+          converged,
           triangleCapacity
         },
         update: current => {
           const next = inputs.getMovedSet(current.irregularity, values.hasHoles === 1);
           polygons.positions.write(next.positions);
-          outline.write(createRingSegments(next));
+          const nextRings = createSplitRingSegments(next);
+          outline.write(nextRings.shells);
+          holeOutline.write(nextRings.holes);
         }
       };
     },
     rebuildOn: ['hasHoles', 'maximumFlips'],
+    buildCache: options.constrained ? 6 : undefined,
     // The pointer carries the nearest polygon vertex (it leans toward the cursor and lets go at a
     // distance) and the triangulation re-forms around it. Triangles are colored by minimum angle.
-    interaction: {
-      kind: 'drag',
-      hint: 'drag a vertex',
-      rest: ({inputs, values, toUnit}) => {
-        const set = inputs.getSet(values.irregularity, values.hasHoles === 1);
-        return toUnit([set.positions[0], set.positions[1]]);
-      },
-      resolve(pointer, {inputs, values}) {
-        const set = inputs.getSet(values.irregularity, values.hasHoles === 1);
-        const nearest = findNearestVertex(set.positions, pointer.x, pointer.y);
-        if (!nearest) return {};
-        const previous = inputs.dragged.vertex;
-        let vertex = nearest.row;
-        if (previous >= 0 && previous !== vertex) {
-          const previousDistance = Math.hypot(
-            set.positions[previous * 2] - pointer.x,
-            set.positions[previous * 2 + 1] - pointer.y
-          );
-          if (nearest.distance > previousDistance * 0.85) vertex = previous;
-        }
-        const baseX = set.positions[vertex * 2];
-        const baseY = set.positions[vertex * 2 + 1];
-        const deltaX = pointer.x - baseX;
-        const deltaY = pointer.y - baseY;
-        const weight = clamp((0.25 - Math.hypot(deltaX, deltaY)) / 0.15, 0, 1);
-        const offset: [number, number] = [deltaX * weight, deltaY * weight];
-        const changed =
-          vertex !== previous ||
-          offset[0] !== inputs.dragged.offset[0] ||
-          offset[1] !== inputs.dragged.offset[1];
-        inputs.dragged.vertex = vertex;
-        inputs.dragged.offset = offset;
-        return {
-          rerun: changed,
-          glyphs: [
-            {shape: 'ring', at: [baseX + offset[0], baseY + offset[1]], radius: 0.025},
-            {
-              shape: 'line',
-              from: [baseX, baseY],
-              to: [baseX + offset[0], baseY + offset[1]],
-              dashed: true
+    interaction: options.constrained
+      ? {
+          // The pointer's height picks maximumFlips among five limits (applied once it rests): more
+          // flips turn more slivers into well-shaped triangles in every polygon.
+          kind: 'level',
+          hint: 'up: allow more edge flips',
+          rest: [0.5, 0.95 - 0.9 * 0.1],
+          resolve(pointer, {outputs, values, peek}) {
+            const fraction = clamp((0.95 - pointer.unitY) / 0.9, 0, 0.9999);
+            const level = Math.floor(fraction * FLIP_LEVELS.length);
+            const converged = peek(outputs.converged);
+            let convergedCount = 0;
+            for (let row = 0; converged && row < converged.length; row++) {
+              if (converged[row]) convergedCount++;
             }
-          ],
-          readout:
-            values.maximumFlips === undefined
-              ? `vertex ${vertex} carried`
-              : `maximumFlips ${values.maximumFlips} · vertex ${vertex} carried`
-        };
-      }
-    },
-    draw: ({outputs}) => [
+            const glyphs = FLIP_LEVELS.map((_, index) => {
+              const y = 1 - (0.95 - 0.9 * ((index + 0.5) / FLIP_LEVELS.length));
+              return {
+                shape: 'line' as const,
+                from: [0.01, y] as const,
+                to: [index === level ? 0.1 : 0.04, y] as const
+              };
+            });
+            return {
+              settle: {maximumFlips: FLIP_LEVELS[level]},
+              glyphs,
+              readout: `maximumFlips ${FLIP_LEVELS[level]} · ${
+                converged && values.maximumFlips === FLIP_LEVELS[level]
+                  ? `${convergedCount} of ${converged.length} polygons converged`
+                  : 'flipping…'
+              }`
+            };
+          }
+        }
+      : {
+          kind: 'drag',
+          hint: 'drag a vertex',
+          rest: ({inputs, values, toUnit}) => {
+            const set = inputs.getSet(values.irregularity, values.hasHoles === 1);
+            return toUnit([set.positions[0], set.positions[1]]);
+          },
+          resolve(pointer, {inputs, values}) {
+            const set = inputs.getSet(values.irregularity, values.hasHoles === 1);
+            const nearest = findNearestVertex(set.positions, pointer.x, pointer.y);
+            if (!nearest) return {};
+            const previous = inputs.dragged.vertex;
+            let vertex = nearest.row;
+            if (previous >= 0 && previous !== vertex) {
+              const previousDistance = Math.hypot(
+                set.positions[previous * 2] - pointer.x,
+                set.positions[previous * 2 + 1] - pointer.y
+              );
+              if (nearest.distance > previousDistance * 0.85) vertex = previous;
+            }
+            const baseX = set.positions[vertex * 2];
+            const baseY = set.positions[vertex * 2 + 1];
+            const deltaX = pointer.x - baseX;
+            const deltaY = pointer.y - baseY;
+            const weight = clamp((0.25 - Math.hypot(deltaX, deltaY)) / 0.15, 0, 1);
+            const offset: [number, number] = [deltaX * weight, deltaY * weight];
+            const changed =
+              vertex !== previous ||
+              offset[0] !== inputs.dragged.offset[0] ||
+              offset[1] !== inputs.dragged.offset[1];
+            inputs.dragged.vertex = vertex;
+            inputs.dragged.offset = offset;
+            return {
+              rerun: changed,
+              glyphs: [
+                {shape: 'ring', at: [baseX + offset[0], baseY + offset[1]], radius: 0.025},
+                {
+                  shape: 'line',
+                  from: [baseX, baseY],
+                  to: [baseX + offset[0], baseY + offset[1]],
+                  dashed: true
+                }
+              ],
+              readout:
+                values.maximumFlips === undefined
+                  ? `vertex ${vertex} carried`
+                  : `maximumFlips ${values.maximumFlips} · vertex ${vertex} carried`
+            };
+          }
+        },
+    draw: ({outputs, theme}) => [
       {
         layer: 'polygons',
         positions: outputs.positions,
@@ -234,7 +295,28 @@ export function createTriangulationRun(options: {
         color: [1, 1, 1, 0.55],
         radius: 0.7
       },
-      {layer: 'lines', segments: outputs.outline, color: OUTPUT_COLOR, radius: 1.5}
+      {layer: 'lines', segments: outputs.outline, color: OUTPUT_COLOR, radius: 1.8},
+      {layer: 'lines', segments: outputs.holeOutline, color: HIGHLIGHT_COLOR, radius: 1.8},
+      {
+        layer: 'text',
+        ...createLegend({
+          corner: options.constrained ? 'top-right' : 'top-left',
+          entries: [
+            {
+              label: options.constrained ? 'outer ring (constraint)' : 'outer ring',
+              swatch: [OUTPUT_COLOR[0], OUTPUT_COLOR[1], OUTPUT_COLOR[2]]
+            },
+            {
+              label: options.constrained ? 'hole ring (constraint)' : 'hole ring',
+              swatch: [HIGHLIGHT_COLOR[0], HIGHLIGHT_COLOR[1], HIGHLIGHT_COLOR[2]]
+            },
+            {
+              label: 'triangle color: smallest angle',
+              swatch: theme.ramp[Math.floor(theme.ramp.length * 0.6)]
+            }
+          ]
+        })
+      }
     ]
   });
 }

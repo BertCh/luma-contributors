@@ -8,15 +8,17 @@
 import {addTrackQualityRecipe} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {createTrajectories} from '../../inputs';
-import {addUint32Copy} from './shared/display';
+import {createLegend} from '../../text';
+import {addConsecutiveSegments, addUint32Copy} from './shared/display';
 import {parameters} from './track-quality.parameters';
 
-const TRACK_COUNT = 7;
+const TRACK_COUNT = 6;
 const STEP_COUNT = 40;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Track fixes colored by quality flag: speed spikes and time gaps stand out.',
+  caption:
+    'Simulated tracks with injected speed spikes and time gaps; fixes are colored by the quality flag the operation sets.',
   createInputs: ({random, world}) => {
     const tracks = createTrajectories(random, world, TRACK_COUNT, STEP_COUNT);
     const fixCount = tracks.points.length / 2;
@@ -61,8 +63,17 @@ export default defineOperationRun({
         'result = select(select(select(select(0u, 1u, (value & 4u) != 0u), 2u, (value & 8u) != 0u), 3u, (value & 12u) == 12u), 4u, (value & 19u) != 0u);'
     });
     const lines = builder.upload('track-lines', 'float32x4', inputs.segments);
+    // The leg that arrives at a fix flagged for excessive speed (class 1) or for both (class 3),
+    // joined on the GPU from the recipe's flags; legs that follow only a time gap stay muted.
+    const speedLegs = addConsecutiveSegments(builder, {
+      id: 'speed',
+      positions,
+      trackLength: STEP_COUNT + 1,
+      flags,
+      flagValues: [1, 3]
+    });
     return {
-      outputs: {positions, flags, lines},
+      outputs: {positions, flags, lines, speedLegs},
       update: values => {
         let elapsedExtra = 0;
         for (let fix = 0; fix < fixCount; fix++) {
@@ -152,18 +163,38 @@ export default defineOperationRun({
     }
   },
   draw: ({outputs, theme}) => [
-    {layer: 'lines', context: true, segments: outputs.lines, radius: 1},
-    // Clean fixes muted, flagged fixes bright with an ink ring.
+    {layer: 'lines', context: true, segments: outputs.lines, radius: 1, alpha: 0.55},
+    // Legs that arrive at a fix with an impossible speed: bold, in the speed class color.
+    {
+      layer: 'lines',
+      segments: outputs.speedLegs,
+      radius: 2.4,
+      color: [...theme.categories[0], 0.95]
+    },
+    // Clean fixes small and muted, flagged fixes large and bright, colored by class.
     {
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.flags,
       ramp: 'categorical',
       categories: [
-        [...theme.muted, 0.35],
+        [...theme.muted, 0.3],
         ...theme.categories.slice(0, 4).map(color => [...color, 1] as const)
       ],
-      radius: 6
+      radius: 5
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        title: 'fix flag',
+        corner: 'top-left',
+        entries: [
+          {label: 'excessive speed (bold leg)', swatch: 0},
+          {label: 'time gap', swatch: 1},
+          {label: 'both', swatch: 2},
+          {label: 'invalid', swatch: 3}
+        ]
+      })
     }
   ]
 });

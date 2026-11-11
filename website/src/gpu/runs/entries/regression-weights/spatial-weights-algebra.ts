@@ -7,6 +7,7 @@
 import {GPUSpatialWeightsAlgebra} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createDistanceBandWeights, createKnnWeights, createUniformPoints} from '../../inputs';
+import {createLegend} from '../../text';
 import {chooseSticky, createPointIndex} from '../../pick';
 import {parameters} from './spatial-weights-algebra.parameters';
 import {
@@ -86,25 +87,36 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, values}) => [
     {
       layer: 'lines',
       segments: outputs.combinedLinks,
-      color: [1, 0.55, 0.2, 0.8],
+      color: [1, 0.55, 0.2, 0.85],
       radius: 3
     },
     {
       layer: 'lines',
       segments: outputs.leftLinks,
-      color: [0.35, 0.6, 1, 0.4],
+      color: [0.35, 0.6, 1, 0.55],
       radius: 1
     },
     {
       layer: 'lines',
       segments: outputs.rightLinks,
-      color: [0.35, 0.85, 0.5, 0.4],
+      color: [0.35, 0.85, 0.5, 0.65],
       radius: 1
     },
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 3}
+    {layer: 'dots', context: true, positions: outputs.positions, radius: 4},
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        entries: [
+          {label: 'left: k nearest', swatch: [0.35, 0.6, 1]},
+          {label: 'right: distance band', swatch: [0.35, 0.85, 0.5]},
+          {label: `combined: ${OPERATIONS[values.operation]}`, swatch: [1, 0.55, 0.2]}
+        ]
+      })
+    }
   ]
 });

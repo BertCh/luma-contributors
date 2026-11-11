@@ -14,6 +14,8 @@ import {
 } from '../../../define-run';
 import {
   createCoefficientPanel,
+  ERROR_COEFFICIENT_NAMES,
+  LAG_COEFFICIENT_NAMES,
   createRegressionInputs,
   createResponse,
   drawCoefficientPanel,
@@ -153,7 +155,12 @@ export function definePanelRun(spec: PanelSpec) {
         builder,
         coefficients.source,
         coefficients.columnCount,
-        coefficients.truthOf(0)
+        coefficients.truthOf(0),
+        coefficients.truthOf(0).length === 4
+          ? spec.process === 'lag'
+            ? LAG_COEFFICIENT_NAMES
+            : ERROR_COEFFICIENT_NAMES
+          : undefined
       );
       return {
         outputs: {mesh: uploadRegressionMap(builder, inputs), residuals: shown, panel},
@@ -194,9 +201,9 @@ export function definePanelRun(spec: PanelSpec) {
         }
       };
     },
-    draw: ({inputs, outputs}) => [
+    draw: ({inputs, outputs, world, theme}) => [
       ...drawResidualMap(inputs.inputs, outputs.mesh, outputs.residuals),
-      ...drawCoefficientPanel(outputs.panel)
+      ...drawCoefficientPanel(outputs.panel, {world, ink: theme.ink})
     ]
   });
 }

@@ -33,7 +33,7 @@ export default defineOperationRun({
         cellCount,
         sliceCount,
         values: stack.view,
-        validity: validity.view,
+        mask: validity.view,
         operation: OPERATIONS[Math.round(values.operation)],
         output: {
           values: composite.view,

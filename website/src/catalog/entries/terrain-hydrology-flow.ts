@@ -156,8 +156,8 @@ export const entries: CatalogEntry[] = [
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer, GPUTerrainFlow, getGPUTerrainFlowParameterValues}
-  from '@luma-contributors/analysis/gpu-terrain';
+import {GPUTerrainFlow, getGPUTerrainFlowParameterValues} from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {makeGPURasterBand, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 
 const grid = makeGPURasterMetadata({width, height, cellSize: 30});
@@ -414,8 +414,8 @@ device.submit();`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer, GPUTerrainHydrologicIndices, getGPUTerrainHydrologicIndicesParameterValues}
-  from '@luma-contributors/analysis/gpu-terrain';
+import {GPUTerrainHydrologicIndices, getGPUTerrainHydrologicIndicesParameterValues} from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'indices'});
@@ -638,8 +638,8 @@ device.submit();`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer, GPUTerrainFlowField, getGPUTerrainFlowFieldParameterValues}
-  from '@luma-contributors/analysis/gpu-terrain';
+import {GPUTerrainFlowField, getGPUTerrainFlowFieldParameterValues} from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'wind'});
@@ -1352,7 +1352,7 @@ device.submit();`,
       convergedOutput
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUCostDistance, getGPUCostDistanceParameterValues, makeGPURasterMetadata}
   from '@luma-contributors/analysis/raster-analysis';
 
@@ -1514,7 +1514,7 @@ device.submit();`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUDistanceField, getGPUDistanceFieldParameterValues} from '@luma-contributors/analysis/raster-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'distance'});
@@ -1563,7 +1563,7 @@ device.submit();`,
       },
       {...parametersParameter, description: 'Packed levelCount, extent and localOrigin.'},
       {
-        name: 'validity',
+        name: 'mask',
         type: 'GraphDataView<"uint32"> | undefined',
         description: 'Nonzero-is-valid mask over the raster.'
       },
@@ -1602,7 +1602,7 @@ device.submit();`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUIsolines, getGPUIsolinesParameterValues} from '@luma-contributors/analysis/raster-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'isolines'});
@@ -1651,7 +1651,7 @@ device.submit();`,
       },
       {...parametersParameter, description: 'Packed breakCount, extent and band window.'},
       {
-        name: 'validity',
+        name: 'mask',
         type: 'GraphDataView<"uint32"> | undefined',
         description: 'Nonzero-is-valid mask over the raster.'
       },
@@ -1690,7 +1690,7 @@ device.submit();`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUIsobands, getGPUIsobandsParameterValues} from '@luma-contributors/analysis/raster-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'isobands'});
@@ -1776,7 +1776,7 @@ device.submit();`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUIsobandRings, getGPUIsobandsParameterValues} from '@luma-contributors/analysis/raster-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'rings'});
@@ -1882,7 +1882,7 @@ device.submit();`,
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUStreamlines, getGPUStreamlinesParameterValues, getGPUStreamlinesUint32ParameterValues}
   from '@luma-contributors/analysis/raster-analysis';
 

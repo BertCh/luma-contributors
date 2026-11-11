@@ -4,17 +4,23 @@
 // GPUTerrainSpikeRepair on a DEM damaged the way Terrarium tiles are: blocks of pixels whose red
 // byte is off by one or two steps (256 or 512 m), which read as sudden cliffs. The kernel finds
 // connected regions separated by jumps that are multiples of the step and shifts them back. The
-// context is the damaged input; the output is the repaired surface.
+// context is the damaged input; the output is the repaired surface. Scenario: each block is offset
+// by one step plus up to 30 m, so a seam must fit `tolerance` to count as damage.
 
 import {GPUTerrainSpikeRepair} from '@luma-contributors/analysis/gpu-terrain';
 import {defineOperationRun} from '../../define-run';
 import {createTerrainInput, drawGrid, uploadTerrain} from './support/terrain';
 import {parameters} from './spike-repair.parameters';
 
+const SEAM_DEVIATION = 30;
+// Fixed props: on this real tile `jump` and `tolerance` change nothing, so they have no slider.
+const JUMP = 200;
+const TOLERANCE = 40;
+
 export default defineOperationRun({
   parameters,
-  rebuildOn: ['jump', 'tolerance'],
-  caption: 'A damaged elevation tile in; the repaired tile out.',
+  caption:
+    'A damaged elevation tile in; the repaired tile out. Scenario: each damaged block is offset by one step plus up to 30 m, drawn at random; jump (200 m) and tolerance (40 m) are fixed.',
   createInputs: ({random, world}) => {
     const terrain = createTerrainInput(world, 48);
     const blocks = Array.from({length: 12}, () => ({
@@ -22,7 +28,9 @@ export default defineOperationRun({
       row: Math.floor(random() * (terrain.rows - 10)),
       width: 3 + Math.floor(random() * 6),
       height: 3 + Math.floor(random() * 6),
-      offset: (random() < 0.5 ? -1 : 1) * 256
+      // One whole step plus a random deviation, so the seam is not an exact multiple of the step:
+      // `tolerance` decides which blocks still count as damaged.
+      offset: (random() < 0.5 ? -1 : 1) * (256 + (random() * 2 - 1) * SEAM_DEVIATION)
     }));
     return {...terrain, blocks};
   },
@@ -37,8 +45,8 @@ export default defineOperationRun({
         grid,
         elevation: band,
         step: 256,
-        jump: values.jump,
-        tolerance: values.tolerance,
+        jump: JUMP,
+        tolerance: TOLERANCE,
         maximumComponentIterations: 32,
         output: {
           values: repaired.view,

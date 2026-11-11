@@ -11,7 +11,7 @@ import {
   GPUOutlineGeometry
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {findParameter, snapToParameter} from '../../interaction';
+import {findParameter} from '../../interaction';
 import {
   createLineSet,
   createPackedSegments,
@@ -27,9 +27,16 @@ import {
   getPolygonFields,
   uploadPolygonSet
 } from './shared/polygons';
+import {createLegend} from '../../text';
+import {getLogarithmicReach, getLogarithmicReachDistance} from './shared/reach';
 import {parameters} from './outline-geometry.parameters';
 
 const JOIN_SEGMENTS = 12;
+
+// Distance from the nearest input, in world units, at which the outline distance reaches its
+// maximum; the distance grows logarithmically from the minimum at the input.
+const REACH_SPAN = 0.3;
+const distanceParameter = findParameter(parameters, 'distance');
 
 export default defineOperationRun({
   parameters,
@@ -111,17 +118,18 @@ export default defineOperationRun({
   },
   rebuildOn: ['geometryType'],
   // The distance from the pointer to the nearest input element (point, line or ring) is the
-  // outline distance, so the edge of the outline passes under the cursor.
+  // outline distance, mapped logarithmically so the whole range is reachable.
   interaction: {
     kind: 'reach',
-    hint: 'move off the input',
+    hint: 'move off the input: the farther, the wider',
     rest: ({inputs, toUnit}) =>
       toUnit(
         findRestAround(
           [inputs.points[0], inputs.points[1]],
-          findParameter(parameters, 'distance').default,
+          getLogarithmicReachDistance(distanceParameter, distanceParameter.default, REACH_SPAN),
           (x, y) => findNearestVertex(inputs.points, x, y)?.distance ?? 0,
-          inputs.world
+          inputs.world,
+          1e-4
         )
       ),
     resolve(pointer, {inputs, values}) {
@@ -138,7 +146,7 @@ export default defineOperationRun({
               geometryType === 2
             );
       if (!hit) return {};
-      const distance = snapToParameter(findParameter(parameters, 'distance'), hit.distance);
+      const distance = getLogarithmicReach(distanceParameter, hit.distance, REACH_SPAN);
       return {
         values: {distance},
         glyphs: [
@@ -150,7 +158,7 @@ export default defineOperationRun({
       };
     }
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, theme}) => [
     {
       layer: 'polygons',
       positions: outputs.triangles,
@@ -161,7 +169,33 @@ export default defineOperationRun({
       color: OUTPUT_COLOR,
       alpha: 0.5
     },
-    {layer: 'lines', context: true, segments: outputs.input, radius: 2},
-    {layer: 'dots', context: true, positions: outputs.inputPoints, radius: 4}
+    // The input is drawn in the ink color over the outline, so input and output can be told apart.
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.input,
+      radius: 2.5,
+      color: [...theme.ink, 1]
+    },
+    {
+      layer: 'dots',
+      context: true,
+      positions: outputs.inputPoints,
+      radius: 6,
+      color: [...theme.ink, 1]
+    },
+    {
+      layer: 'text',
+      ...createLegend({
+        corner: 'top-left',
+        entries: [
+          {label: 'input', swatch: theme.ink},
+          {
+            label: 'outline, one distance out',
+            swatch: [OUTPUT_COLOR[0], OUTPUT_COLOR[1], OUTPUT_COLOR[2]]
+          }
+        ]
+      })
+    }
   ]
 });

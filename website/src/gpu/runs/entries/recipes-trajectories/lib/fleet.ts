@@ -34,6 +34,8 @@ export type FleetOptions = {
   trackCount?: number;
   minimumFixes?: number;
   maximumFixes?: number;
+  /** Longest pieces to leave out first, so that runs show different parts of the data. */
+  skipTracks?: number;
 };
 
 type Fix = readonly number[];
@@ -67,7 +69,10 @@ export function createFleet(
   world: {width: number; height: number},
   options: FleetOptions = {}
 ): FleetInput {
-  const selected = splitTracksAtGaps().slice(0, options.trackCount ?? 12);
+  const selected = splitTracksAtGaps().slice(
+    options.skipTracks ?? 0,
+    (options.skipTracks ?? 0) + (options.trackCount ?? 12)
+  );
   const minimumFixes = options.minimumFixes ?? 18;
   const maximumFixes = options.maximumFixes ?? 36;
   let west = Infinity;

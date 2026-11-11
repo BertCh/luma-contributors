@@ -47,7 +47,7 @@ export default defineOperationRun({
           values: result.view,
           validity: validity.view,
           filled: filled.view,
-          unresolvedCount: unresolvedCount.view
+          status: {invalidCount: unresolvedCount.view}
         }
       })
     );

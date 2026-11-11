@@ -845,7 +845,11 @@ export const entries: CatalogEntry[] = [
     outputs: [
       makeOutput('positions', 'GraphDataView<"float32x2">', 'Clipped vertices.'),
       makeOutput('lineOffsets', 'GraphDataView<"uint32">', 'Clipped feature offsets.'),
-      makeOutput('status', '{count, overflow}', 'Count and overflow counters.')
+      makeOutput(
+        'status',
+        '{count, overflow, vertexCount?, requiredCount?, requiredVertexCount?}',
+        'count is lines (rings for polygons); vertexCount is vertices; overflow flag.'
+      )
     ],
     example: makeExample(
       'GPURectangleClip',
