@@ -7,7 +7,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -269,12 +269,12 @@ type OutputSlot =
  * `borderMode: 'nodata'`) windows leaving the raster, give NaN and validity 0. Satisfies the
  * `GPURasterHaloStage` contract through `requiredHalo`.
  */
-export class GPUTerrainCurvature implements GPUCommandNodeProducer {
+export class GPUTerrainCurvature implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUTerrainCurvatureProps;
-  /** Receptive field in pixels: 1 (3x3), 2 (florinsky), or the largest ring radius if larger. */
+  /** Source-pixel radius: at least 2 for one-sided borders or Florinsky, including larger rings. */
   readonly requiredHalo: number;
   /** Row direction the kernels use: the prop, or the direction the grid affine states. */
   readonly rowDirection: GPURasterRowDirection;
@@ -344,7 +344,8 @@ export class GPUTerrainCurvature implements GPUCommandNodeProducer {
       [...curvatureViews, output.ringCurvature, output.outputValidity],
       [...getRasterBandViews(props.elevation), props.parameters]
     );
-    const methodHalo = method === 'florinsky' ? 2 : 1;
+    const methodHalo =
+      method === 'florinsky' || (props.borderMode ?? 'one-sided') === 'one-sided' ? 2 : 1;
     this.requiredHalo = output.ringCurvature
       ? Math.max(methodHalo, radii[radii.length - 1])
       : methodHalo;

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {fp64ify} from '@luma.gl/shaders';
+
 /** Number of float32 elements in a time-window parameter buffer. */
 export const GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH = 8;
 
@@ -61,8 +63,8 @@ export function getGPUTimeWindowFilterParameterValues(
   if (startFadeDuration < 0 || endFadeDuration < 0) {
     throw new Error('Time window fade durations must be non-negative');
   }
-  const [startHigh, startLow] = splitTime(settings.start);
-  const [endHigh, endLow] = splitTime(settings.end);
+  const [startHigh, startLow] = fp64ify(settings.start);
+  const [endHigh, endLow] = fp64ify(settings.end);
   target.set([startHigh, startLow, endHigh, endLow, startFadeDuration, endFadeDuration, 0, 0]);
   return target;
 }
@@ -70,20 +72,14 @@ export function getGPUTimeWindowFilterParameterValues(
 /**
  * Splits double-precision timestamps into float32 high and low parts for double-single comparison.
  *
- * `high[i] = Math.fround(values[i])` and `low[i] = Math.fround(values[i] - high[i])`. Values are not
- * validated; a non-finite timestamp is never accepted by the filter.
+ * `fp64ify` gives `high = Math.fround(value)` and `low = value - high`; the float32 arrays round the
+ * low part. Values are not validated; a non-finite timestamp is never accepted by the filter.
  */
 export function splitTimestamps(values: ArrayLike<number>): GPUSplitTimestamps {
   const high = new Float32Array(values.length);
   const low = new Float32Array(values.length);
   for (let index = 0; index < values.length; index++) {
-    [high[index], low[index]] = splitTime(values[index]);
+    [high[index], low[index]] = fp64ify(values[index]);
   }
   return {high, low};
-}
-
-/** Splits one value into float32 high and low parts. */
-function splitTime(value: number): [number, number] {
-  const high = Math.fround(value);
-  return [high, Math.fround(value - high)];
 }

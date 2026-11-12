@@ -3,10 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
-import type {Buffer, TextureView} from '@luma.gl/core';
 import {expect, test} from 'vitest';
 import {
-  createChangedBindingResolver,
+  createPublishNode,
   createWGSLKernelNode,
   getAutomaticWGSLKernelWorkgroupSize
 } from '../../src/analysis-core/kernels/wgsl-kernel-nodes';
@@ -101,38 +100,6 @@ test('createWGSLKernelNode rejects more sampled textures than the device allows'
   device.destroy();
 });
 
-test('createChangedBindingResolver returns records only when a buffer or texture view changes', () => {
-  const device = createNullWebGPUDevice();
-  const graph = new GPUCommandGraph(device, {id: 'changed-binding-resolver'});
-  const values = createTransientView(graph, 'values', 'uint32', 4);
-  const texture = {id: 'texture'} as unknown as NonNullable<
-    Parameters<typeof createChangedBindingResolver>[1]
-  >[string];
-  let buffer = {id: 'a', byteLength: 1024} as unknown as Buffer;
-  let textureView = {id: 'view-a'} as unknown as TextureView;
-  const getBuffer = () => buffer;
-  const getTextureView = () => textureView;
-  const resolve = createChangedBindingResolver({values}, {sampled: texture});
-
-  const initial = resolve(getBuffer, getTextureView);
-  expect(Object.keys(initial!)).toEqual(['values', 'sampled']);
-  expect(initial!['sampled']).toBe(textureView);
-  expect(resolve(getBuffer, getTextureView), 'unchanged resources yield null').toBeNull();
-
-  textureView = {id: 'view-b'} as unknown as TextureView;
-  const afterTexture = resolve(getBuffer, getTextureView);
-  expect(afterTexture!['sampled'], 'a new texture view yields a new record').toBe(textureView);
-  expect(afterTexture!['values']).not.toBe(initial!['values']);
-  expect(resolve(getBuffer, getTextureView)).toBeNull();
-
-  buffer = {id: 'b', byteLength: 1024} as unknown as Buffer;
-  expect(resolve(getBuffer, getTextureView), 'a new buffer yields a new record').not.toBeNull();
-  expect(resolve(getBuffer, getTextureView)).toBeNull();
-
-  expect(createChangedBindingResolver({})(getBuffer), 'first call always resolves').toEqual({});
-  device.destroy();
-});
-
 test('createWGSLKernelNode rejects a binding above maxStorageBufferBindingSize at declaration', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device, {id: 'kernel-binding-size'});
@@ -157,5 +124,31 @@ test('createWGSLKernelNode rejects a binding above maxStorageBufferBindingSize a
       bindings: [{name: 'values', view: limit, type: 'f32', access: 'read_write'}]
     })
   ).not.toThrow();
+  device.destroy();
+});
+
+test('createPublishNode checks the device storage-buffer limit, not a fixed 8', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device, {id: 'publish-binding-limit'});
+  const requiredCount = createTransientView(graph, 'required-count', 'uint32', 1);
+  const output = {
+    ids: createTransientView(graph, 'ids', 'uint32', 4),
+    status: {
+      count: createTransientView(graph, 'count', 'uint32', 1),
+      overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+    }
+  };
+  // totalIn, countOut and overflowOut plus six extra counts: nine storage bindings.
+  const extraCounts = Array.from({length: 6}, (_, extraIndex) =>
+    createTransientView(graph, `extra-${extraIndex}`, 'uint32', 1)
+  );
+  const props = {id: 'publish', operation: 'WGSLKernelTest', requiredCount, output, extraCounts};
+  expect(() => createPublishNode(graph, props)).toThrow(
+    'WGSLKernelTest: kernel publish binds 9 storage buffers, more than the device limit of 8'
+  );
+  Object.defineProperty(device, 'limits', {
+    value: {...device.limits, maxStorageBuffersPerShaderStage: 10}
+  });
+  expect(() => createPublishNode(graph, props)).not.toThrow();
   device.destroy();
 });

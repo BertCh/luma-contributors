@@ -14,6 +14,7 @@ import {
   GPURasterGradient,
   type GPURasterBand,
   type GPURasterBorderMode,
+  type GPURasterHaloStage,
   type GPURasterMetadata
 } from '@luma.gl/graph/gpu-raster';
 import {
@@ -163,21 +164,23 @@ export type GPUTerrainDerivativesProps = {
  * degrees clockwise from north, which on a rotated `'uniform'` grid is the grid's up axis. Border
  * pixels use one-sided differences by default (`borderMode`). Invalid pixels (an invalid center or
  * 3x3 neighbor, or invalid settings) receive NaN and validity 0. For seamless tiles, pass a tile
- * with a one-pixel halo; the contributor satisfies the `GPURasterHaloStage` contract.
+ * with `requiredHalo` source pixels per side: two for one-sided extrapolation, one otherwise.
+ * The contributor satisfies the `GPURasterHaloStage` contract.
  */
-export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
+export class GPUTerrainDerivatives implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUTerrainDerivativesProps;
-  /** Receptive field in pixels (`GPURasterHaloStage` contract). */
-  readonly requiredHalo = 1;
+  /** Source-pixel radius, including the two inward samples used by one-sided extrapolation. */
+  readonly requiredHalo: number;
   /** Row direction the kernels use: the prop, or the direction the grid affine states. */
   readonly rowDirection: GPURasterRowDirection;
 
   constructor(props: GPUTerrainDerivativesProps) {
     this.id = props.id ?? 'terrain-derivatives';
     this.props = props;
+    this.requiredHalo = (props.borderMode ?? 'one-sided') === 'one-sided' ? 2 : 1;
     const {id} = this;
     const {output} = props;
     const pixelCount = validateRasterGrid(id, props.grid);

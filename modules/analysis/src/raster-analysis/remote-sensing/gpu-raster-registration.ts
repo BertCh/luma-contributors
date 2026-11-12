@@ -10,6 +10,9 @@ import {
 } from './raster-masked-registration';
 import {
   GPUFFT2D,
+  GPU_FFT2D_MAX_DIMENSION,
+  GPU_FFT2D_MIN_DIMENSION,
+  getGPUFFT2DSupport,
   createTransientView,
   type GraphDataView,
   type GPUCommandGraph,
@@ -38,8 +41,8 @@ import {
 
 export {MAXIMUM_MASKED_REGISTRATION_DIMENSION} from './raster-masked-registration';
 
-/** Periodic mode FFT side length: three complex scratch fields of side squared float32x2 must fit one 128 MiB binding (2048 squared is 32 MiB per field). */
-export const MAXIMUM_PERIODIC_REGISTRATION_DIMENSION = 2048;
+/** Periodic mode FFT side length, the published `GPU_FFT2D_MAX_DIMENSION`. */
+export const MAXIMUM_PERIODIC_REGISTRATION_DIMENSION = GPU_FFT2D_MAX_DIMENSION;
 /** Subpixel refinement window: (2 * ceil(factor / 2) + 1) squared candidates are scored per peak, so the factor bounds that dense window. */
 export const MAXIMUM_REGISTRATION_UPSAMPLE_FACTOR = 32;
 
@@ -149,7 +152,13 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
       ['grid.width', props.grid.width],
       ['grid.height', props.grid.height]
     ] as const) {
-      validatePowerOfTwo(this.id, name, dimension, 2, MAXIMUM_PERIODIC_REGISTRATION_DIMENSION);
+      validatePowerOfTwo(
+        this.id,
+        name,
+        dimension,
+        GPU_FFT2D_MIN_DIMENSION,
+        MAXIMUM_PERIODIC_REGISTRATION_DIMENSION
+      );
     }
     validateCapacity(
       this.id,
@@ -234,22 +243,30 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
       })
     );
     nodes.push(
-      ...new GPUFFT2D({
-        id: `${id}-reference-fft`,
-        input: reference,
-        output: referenceSpectrum,
-        width: props.grid.width,
-        height: props.grid.height
-      }).getCommandNodes(graph)
+      ...getRegistrationFFTNodes(
+        graph,
+        id,
+        new GPUFFT2D({
+          id: `${id}-reference-fft`,
+          input: reference,
+          output: referenceSpectrum,
+          width: props.grid.width,
+          height: props.grid.height
+        })
+      )
     );
     nodes.push(
-      ...new GPUFFT2D({
-        id: `${id}-moving-fft`,
-        input: moving,
-        output: movingSpectrum,
-        width: props.grid.width,
-        height: props.grid.height
-      }).getCommandNodes(graph)
+      ...getRegistrationFFTNodes(
+        graph,
+        id,
+        new GPUFFT2D({
+          id: `${id}-moving-fft`,
+          input: moving,
+          output: movingSpectrum,
+          width: props.grid.width,
+          height: props.grid.height
+        })
+      )
     );
     const scalarView = (view: GraphDataView<'float32x2'>) =>
       graph.createDataView(view.buffer, {
@@ -289,14 +306,18 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
       })
     );
     nodes.push(
-      ...new GPUFFT2D({
-        id: `${id}-inverse`,
-        input: crossPower,
-        output: correlation,
-        direction: 'inverse',
-        width: props.grid.width,
-        height: props.grid.height
-      }).getCommandNodes(graph)
+      ...getRegistrationFFTNodes(
+        graph,
+        id,
+        new GPUFFT2D({
+          id: `${id}-inverse`,
+          input: crossPower,
+          output: correlation,
+          direction: 'inverse',
+          width: props.grid.width,
+          height: props.grid.height
+        })
+      )
     );
     // Input screening by exact integer counts: any nonfinite value, or every value equal to the
     // first (a flat field), means there is no alignment evidence (status 1).
@@ -443,4 +464,23 @@ shift[shiftOffset] = select(vec2<f32>(missing()), result, valid); peak[peakOffse
     );
     return nodes;
   }
+}
+
+/**
+ * Returns the nodes of one published transform after asking the published support query whether
+ * the device can run it, so a device with smaller binding limits fails here with this
+ * contributor's ID and the prop that sets the size.
+ */
+function getRegistrationFFTNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  transform: GPUFFT2D
+): readonly GPUCommandNode<Parameters>[] {
+  const support = getGPUFFT2DSupport(graph.device, transform.props);
+  validateRequirement(
+    id,
+    support.supported,
+    `grid.width and grid.height exceed what this device can transform: ${support.reason}`
+  );
+  return transform.getCommandNodes(graph);
 }

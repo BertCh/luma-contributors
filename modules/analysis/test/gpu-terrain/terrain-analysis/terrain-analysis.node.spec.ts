@@ -320,7 +320,12 @@ it('GPUTerrainDerivatives schedules gradients and the shade kernel', () => {
     });
   };
   const contributor = create();
-  expect(contributor.requiredHalo).toBe(1);
+  // One-sided padding reads the second inward source sample, including for a one-column core.
+  expect(contributor.requiredHalo).toBe(2);
+  expect(create({borderMode: 'one-sided'}).requiredHalo).toBe(2);
+  for (const borderMode of ['clamp', 'reflect', 'constant', 'nodata'] as const) {
+    expect(create({borderMode}).requiredHalo, borderMode).toBe(1);
+  }
   expect(contributor.id).toBe('terrain-derivatives');
   // The default one-sided border canonicalizes the elevation and pads it by one cell before the
   // two official Sobel passes; the named 'clamp' border keeps the three-node pipeline.

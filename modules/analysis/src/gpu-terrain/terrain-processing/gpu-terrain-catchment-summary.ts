@@ -28,6 +28,8 @@ import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createSortedSegmentOffsetsNode} from '../../analysis-core/kernels/sorted-segment-offsets';
+import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
   FIXED_POINT_WGSL,
   getFixedPointHeadroomBits
@@ -65,7 +67,7 @@ export type GPUTerrainCatchmentSummaryProps = {
   elevation: GraphDataView<'float32'>;
   /** Optional per-cell validity of `elevation` (uint32, nonzero valid); a zero word counts as NaN, so the cell is excluded. */
   validity?: GraphDataView<'uint32'>;
-  /** Dense zero-based basin IDs; 0xffffffff excludes a cell. */
+  /** Dense zero-based basin IDs; a value of `basinCount` or more (such as 0xffffffff) excludes a cell. */
   basinIds: GraphDataView<'uint32'>;
   basinCount: number;
   /**
@@ -203,7 +205,7 @@ fn getStreamEdgeLength(cell: u32) -> f32 {
     const cells = createTransientView(graph, `${id}-cells`, 'uint32', count);
     const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', count);
     const order = createTransientView(graph, `${id}-order`, 'uint32', count);
-    const ranges = createTransientView(graph, `${id}-ranges`, 'uint32', props.basinCount * 2);
+    const ranges = createTransientView(graph, `${id}-ranges`, 'uint32', props.basinCount + 1);
     const states = [0, 1].map(side =>
       createTransientView(graph, `${id}-profiles-${side}`, 'uint32', count * 4)
     );
@@ -220,33 +222,23 @@ fn getStreamEdgeLength(cell: u32) -> f32 {
           terrainBinding('keys', keys, 'read_write'),
           terrainBinding('cells', cells, 'read_write')
         ],
-        body: `let basin = basins[basinsOffset + index]; keys[keysOffset + index] = select(0xffffffffu, basin, basin < ${props.basinCount}u && isFiniteValue(elevation[elevationOffset + index])); cells[cellsOffset + index] = index;`
+        body: `let basin = basins[basinsOffset + index]; keys[keysOffset + index] = select(${props.basinCount}u, basin, basin < ${props.basinCount}u && isFiniteValue(elevation[elevationOffset + index])); cells[cellsOffset + index] = index;`
       }),
       ...new GPUSort({
         id: `${id}-basin-sort`,
         keys,
         values: cells,
         outputKeys: sortedKeys,
-        outputValues: order
+        outputValues: order,
+        // Keys run from 0 through basinCount, the key of an excluded cell.
+        keyBits: getSortKeyBits(props.basinCount)
       }).getCommandNodes(graph),
-      createWGSLKernelNode(graph, {
-        id: `${id}-ranges-initialize`,
-        operation: 'GPUTerrainCatchmentSummary',
-        invocationCount: props.basinCount,
-        bindings: [terrainBinding('ranges', ranges, 'read_write')],
-        body: 'ranges[rangesOffset + index * 2u] = 0u; ranges[rangesOffset + index * 2u + 1u] = 0u;'
-      }),
-      createWGSLKernelNode(graph, {
+      createSortedSegmentOffsetsNode(graph, {
         id: `${id}-ranges`,
         operation: 'GPUTerrainCatchmentSummary',
-        invocationCount: count,
-        bindings: [
-          terrainBinding('keys', sortedKeys),
-          terrainBinding('ranges', ranges, 'read_write')
-        ],
-        body: `let basin = keys[keysOffset + index]; if (basin >= ${props.basinCount}u) { return; }
-if (index == 0u || keys[keysOffset + index - 1u] != basin) { ranges[rangesOffset + basin * 2u] = index; }
-if (index + 1u == ${count}u || keys[keysOffset + index + 1u] != basin) { ranges[rangesOffset + basin * 2u + 1u] = index + 1u; }`
+        segmentCount: props.basinCount,
+        sortedKeys,
+        segmentOffsets: ranges
       }),
       createWGSLKernelNode(graph, {
         id: `${id}-statistics`,
@@ -265,7 +257,7 @@ if (index + 1u == ${count}u || keys[keysOffset + index + 1u] != basin) { ranges[
         // as integers in that unit. No float32 partial sum exists, so nothing rounds per cell.
         body: `var sampleCount = 0u; var lower = infinity(); var upper = -lower;
 var elevationExponent = 0u; var areaExponent = 0u; var lengthExponent = 0u;
-for (var entry = ranges[rangesOffset + index * 2u]; entry < ranges[rangesOffset + index * 2u + 1u]; entry++) {
+for (var entry = ranges[rangesOffset + index]; entry < ranges[rangesOffset + index + 1u]; entry++) {
  let cell = order[orderOffset + entry];
  let value = elevation[elevationOffset + cell];
  if (basins[basinsOffset + cell] != index || !isFiniteValue(value)) { continue; }
@@ -278,7 +270,7 @@ let elevationUnit = getFixedPointUnitExponent(elevationExponent, ${headroomBits}
 let areaUnit = getFixedPointUnitExponent(areaExponent, ${headroomBits}u);
 let lengthUnit = getFixedPointUnitExponent(lengthExponent, ${headroomBits}u);
 var elevationSum = vec3<u32>(0u); var areaSum = vec3<u32>(0u); var lengthSum = vec3<u32>(0u);
-for (var entry = ranges[rangesOffset + index * 2u]; entry < ranges[rangesOffset + index * 2u + 1u]; entry++) {
+for (var entry = ranges[rangesOffset + index]; entry < ranges[rangesOffset + index + 1u]; entry++) {
  let cell = order[orderOffset + entry];
  let value = elevation[elevationOffset + cell];
  if (basins[basinsOffset + cell] != index || !isFiniteValue(value)) { continue; }
@@ -296,7 +288,7 @@ statistics[offset + 4u] = streamLength; statistics[offset + 5u] = select(getNaN(
 for (var bin = 0u; bin < ${props.histogramBins}u; bin++) {
  let threshold = lower + (upper - lower) * f32(bin + 1u) / ${getWGSLFloatLiteral(props.histogramBins)};
  var belowCount = 0u; var belowArea = vec3<u32>(0u);
- for (var entry = ranges[rangesOffset + index * 2u]; entry < ranges[rangesOffset + index * 2u + 1u]; entry++) {
+ for (var entry = ranges[rangesOffset + index]; entry < ranges[rangesOffset + index + 1u]; entry++) {
   let cell = order[orderOffset + entry];
   let value = elevation[elevationOffset + cell];
   if (basins[basinsOffset + cell] == index && isFiniteValue(value) && (value <= threshold || bin + 1u == ${props.histogramBins}u)) { belowCount++; ${isUniform ? '' : 'belowArea = addFixedPoint(belowArea, quantizeFixedPoint(getGroundCellArea(cell), areaUnit));'} }

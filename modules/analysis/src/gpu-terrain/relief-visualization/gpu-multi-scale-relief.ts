@@ -15,7 +15,7 @@ import {
   validateRasterCellSizeMode,
   type GPURasterCellSizeMode
 } from '../../analysis-core/raster-grid';
-import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -234,7 +234,7 @@ export type GPUMultiScaleReliefProps = GPUMultiScaleReliefScales & {
  * Larger grids use the separable O(radius) float filter. Table-path pixels with
  * `|z - anchor| >= 2^31 * quantum` are invalid.
  */
-export class GPUMultiScaleRelief implements GPUCommandNodeProducer {
+export class GPUMultiScaleRelief implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */

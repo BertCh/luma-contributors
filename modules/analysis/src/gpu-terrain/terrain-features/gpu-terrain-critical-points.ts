@@ -7,7 +7,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
@@ -101,11 +101,13 @@ export type GPUTerrainCriticalPointsProps = {
  * Nodata never contributes a height: an invalid neighbour makes the pixel `boundary` before any
  * height comparison is used.
  */
-export class GPUTerrainCriticalPoints implements GPUCommandNodeProducer {
+export class GPUTerrainCriticalPoints implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUTerrainCriticalPointsProps;
+  /** Receptive field in pixels (`GPURasterHaloStage` contract): both rings reach one pixel. */
+  readonly requiredHalo = 1;
 
   constructor(props: GPUTerrainCriticalPointsProps) {
     this.id = props.id ?? 'terrain-critical-points';

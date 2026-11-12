@@ -5,6 +5,7 @@
 import {existsSync, readdirSync, readFileSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {maskWGSLComments} from '@luma.gl/shaders/wgsl';
 import {describe, expect, it} from 'vitest';
 
 // Math correctness review, luma-official-02. AGENTS.md forbids copied luma.gl source. A few kernels
@@ -20,7 +21,7 @@ import {describe, expect, it} from 'vitest';
 // - a WGSL function in `modules/analysis/src` is identical to a function in the published
 //   `@luma.gl/graph` or `@luma.gl/shaders` kernels and is not listed here,
 // - a listed copy no longer exists (remove the row here and in the register).
-// Only text is read. Nothing is imported from luma.gl or from the analysis source.
+// Kernel files are only read as text; the public WGSL comment masker handles their comments.
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const THIS_SPEC = 'modules/analysis/test/analysis-core/official-wgsl-copies.node.spec.ts';
@@ -126,6 +127,7 @@ type WGSLFunctionText = {
 
 /** Every WGSL `fn name(...) { ... }` in `source`, with whitespace removed. */
 function getWGSLFunctionTexts(source: string): WGSLFunctionText[] {
+  source = maskWGSLComments(source);
   const functions: WGSLFunctionText[] = [];
   const pattern = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
   for (let match = pattern.exec(source); match !== null; match = pattern.exec(source)) {
@@ -166,10 +168,46 @@ function readRepositoryFile(repositoryPath: string): string {
   return readFileSync(resolve(REPOSITORY_ROOT, repositoryPath), 'utf8');
 }
 
-function getFunctionText(repositoryPath: string, functionName: string): string | undefined {
-  return getWGSLFunctionTexts(readRepositoryFile(repositoryPath)).find(
+function extractFunctionText(source: string, functionName: string, label: string): string {
+  const declarations = [
+    ...maskWGSLComments(source).matchAll(/\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)
+  ].filter(match => match[1] === functionName);
+  expect(declarations, `${label}: exactly one active fn ${functionName}`).toHaveLength(1);
+  const functions = getWGSLFunctionTexts(source).filter(
     wgslFunction => wgslFunction.name === functionName
-  )?.text;
+  );
+  expect(functions, `${label}: exactly one active fn ${functionName}`).toHaveLength(1);
+  return functions[0].text;
+}
+
+function getFunctionText(repositoryPath: string, functionName: string): string {
+  return extractFunctionText(readRepositoryFile(repositoryPath), functionName, repositoryPath);
+}
+
+function extractConstantText(source: string, constantName: string, label: string): string {
+  const activeSource = maskWGSLComments(source);
+  const declarations = [...activeSource.matchAll(/\bconst\s+([A-Za-z_][A-Za-z0-9_]*)\b/g)].filter(
+    match => match[1] === constantName
+  );
+  expect(declarations, `${label}: exactly one active const ${constantName}`).toHaveLength(1);
+  const start = declarations[0].index;
+  const end = activeSource.indexOf(';', start);
+  expect(end, `${label}: const ${constantName} must end with a semicolon`).toBeGreaterThan(start);
+  return activeSource.slice(start, end + 1).replace(/\s+/g, '');
+}
+
+function expectSemanticPin(
+  source: string,
+  functionName: string,
+  expectedFunction: string,
+  expectedConstants: readonly string[],
+  label: string
+): void {
+  expect(extractFunctionText(source, functionName, label), label).toBe(expectedFunction);
+  for (const constant of expectedConstants) {
+    const constantName = /^const([A-Za-z_][A-Za-z0-9_]*):/.exec(constant)![1];
+    expect(extractConstantText(source, constantName, label), label).toBe(constant);
+  }
 }
 
 function getCopyKey(localFile: string, functionName: string): string {
@@ -193,13 +231,13 @@ describe('private copies of official WGSL', () => {
         `${officialFile} no longer holds fn ${copy.functionName}: the official kernel moved, repoint the pin`
       ).toBeDefined();
     }
+    const local = getFunctionText(copy.localFile, copy.functionName);
+    for (const officialFile of copy.officialFiles) {
+      expect(local, `${copy.localFile} against ${officialFile}`).toBe(
+        getFunctionText(officialFile, copy.functionName)
+      );
+    }
     if (copy.pinSpec === THIS_SPEC) {
-      const local = getFunctionText(copy.localFile, copy.functionName);
-      for (const officialFile of copy.officialFiles) {
-        expect(local, `${copy.localFile} against ${officialFile}`).toBe(
-          getFunctionText(officialFile, copy.functionName)
-        );
-      }
       return;
     }
     expect(
@@ -276,5 +314,147 @@ describe('private copies of official WGSL', () => {
     ).toEqual([]);
     // Every listed copy is still an exact copy today (the per-copy pins say which official file).
     expect([...listedKeys].filter(key => !foundKeys.has(key))).toEqual([]);
+  });
+});
+
+const DGGS_KERNEL = 'node_modules/@luma.gl/shaders/dist/modules/geospatial/dggs/dggs-wgsl.js';
+
+type OfficialWGSLSemanticCopy = {
+  functionName: string;
+  localFile: string;
+  /** The local function, whitespace removed, as reviewed. */
+  localText: string;
+  officialFunctionName: string;
+  officialFile: string;
+  /** The official function, whitespace removed, as reviewed against `localText`. */
+  officialText: string;
+  /** Unique active WGSL constant declarations each side relies on, whitespace removed. */
+  localConstants: string[];
+  officialConstants: string[];
+  reason: string;
+};
+
+/**
+ * Copies that compute the same f32 result as an official function with different text (renamed
+ * constants, an equivalent exact rewrite), so the text scan above does not see them. Both texts are
+ * pinned as reviewed: a luma.gl upgrade that changes the official function, or a local edit, fails
+ * here and needs a new review of the arithmetic.
+ */
+const OFFICIAL_WGSL_SEMANTIC_COPIES: OfficialWGSLSemanticCopy[] = [
+  'modules/analysis/src/gpu-spatial-analysis/cell-cover/cell-cover-kernels.ts',
+  'modules/analysis/src/gpu-spatial-analysis/cell-cover/cell-cover-scanline.ts'
+].map(localFile => ({
+  functionName: 'coverTileLatitude',
+  localFile,
+  // `row * ROW_SCALE` with ROW_SCALE = 2^(1 - z) and `2.0 * tileY / tileScale` with
+  // tileScale = 2^z are both exact in f32; PI and DGGS_PI round to the same f32; the degree factor is
+  // the same literal. The result is bit-identical to the official function.
+  localText:
+    'fncoverTileLatitude(row:f32)->f32{lett=PI*(1.0-row*ROW_SCALE);return(2.0*atan(exp(t))-PI*0.5)*57.29577951308232;}',
+  officialFunctionName: 'dggs_web_mercator_tile_y_to_latitude',
+  officialFile: DGGS_KERNEL,
+  officialText:
+    'fndggs_web_mercator_tile_y_to_latitude(tileY:f32,tileScale:f32)->f32{letmercatorY=DGGS_PI*(1.0-2.0*tileY/tileScale);return(2.0*atan(exp(mercatorY))-DGGS_PI*0.5)*DGGS_RADIANS_TO_DEGREES;}',
+  localConstants: [
+    'constPI:f32=3.14159265358979;',
+    'constROW_SCALE:f32=${getWGSLFloatLiteral(2**(1-resolution))};'
+  ],
+  officialConstants: [
+    'constDGGS_PI:f32=3.141592653589793;',
+    'constDGGS_RADIANS_TO_DEGREES:f32=57.29577951308232;'
+  ],
+  reason:
+    'Quadbin cover must agree with the tile edges GPUCellGeometry draws with the official function; including the 70 KB dggs module in kernels that do not need it otherwise costs compile time.'
+}));
+
+describe('private semantic copies of official WGSL', () => {
+  it.each(
+    OFFICIAL_WGSL_SEMANTIC_COPIES
+  )('$functionName in $localFile is pinned to $officialFunctionName', copy => {
+    expectSemanticPin(
+      readRepositoryFile(copy.localFile),
+      copy.functionName,
+      copy.localText,
+      copy.localConstants,
+      copy.localFile
+    );
+    expectSemanticPin(
+      readRepositoryFile(copy.officialFile),
+      copy.officialFunctionName,
+      copy.officialText,
+      copy.officialConstants,
+      `${copy.officialFile}: review ${copy.localFile} again`
+    );
+    expect(Math.fround(3.14159265358979)).toBe(Math.fround(3.141592653589793));
+  });
+});
+
+describe('WGSL pin extraction', () => {
+  const functionSource = `fn coverTileLatitude(row: f32) -> f32 {
+    let t = PI * (1.0 - row * ROW_SCALE);
+    return (2.0 * atan(exp(t)) - PI * 0.5) * 57.29577951308232;
+  }`;
+  const constantSources = [
+    'const PI: f32 = 3.14159265358979;',
+    'const ROW_SCALE: f32 = ${getWGSLFloatLiteral(2 ** (1 - resolution))};'
+  ];
+  const source = [...constantSources, functionSource].join('\n');
+  const copy = OFFICIAL_WGSL_SEMANTIC_COPIES[0];
+  const checkPin = (candidate: string) =>
+    expectSemanticPin(candidate, copy.functionName, copy.localText, copy.localConstants, 'fixture');
+  const commentStyles = [
+    {
+      name: 'line',
+      comment: (text: string) =>
+        text
+          .split('\n')
+          .map(line => `// ${line}`)
+          .join('\n')
+    },
+    {name: 'block', comment: (text: string) => `/* ${text} */`},
+    {name: 'nested block', comment: (text: string) => `/* /* nested */ ${text} */`}
+  ];
+
+  it('accepts the reviewed active declarations with comments inside their bodies', () => {
+    checkPin(source);
+    checkPin(source.replace('let t', '/* } fn coverTileLatitude() { /* nested */ */ let t'));
+  });
+
+  it.each(
+    commentStyles
+  )('rejects an original function in a $name comment followed by changed code', ({comment}) => {
+    const changedFunction = functionSource.replace('row * ROW_SCALE', 'row + ROW_SCALE');
+    const candidate = [...constantSources, comment(functionSource), changedFunction].join('\n');
+    expect(extractFunctionText(candidate, copy.functionName, 'fixture')).toBe(
+      changedFunction.replace(/\s+/g, '')
+    );
+    expect(() => checkPin(candidate)).toThrow();
+  });
+
+  it.each(
+    commentStyles
+  )('rejects an original constant in a $name comment followed by a changed value', ({comment}) => {
+    const candidate = source.replace(
+      constantSources[0],
+      `${comment(constantSources[0])}\nconst PI: f32 = 3.0;`
+    );
+    expect(extractConstantText(candidate, 'PI', 'fixture')).toBe('constPI:f32=3.0;');
+    expect(() => checkPin(candidate)).toThrow();
+  });
+
+  it.each([
+    functionSource,
+    ...constantSources
+  ])('rejects duplicate active declarations: %s', declaration => {
+    expect(() => checkPin(`${source}\n${declaration}`)).toThrow(/exactly one active/);
+  });
+
+  it.each([
+    functionSource,
+    ...constantSources
+  ])('rejects missing active declarations: %s', declaration => {
+    expect(() => checkPin(source.replace(declaration, `/* ${declaration} */`))).toThrow(
+      /exactly one active/
+    );
   });
 });

@@ -9,7 +9,7 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
@@ -117,7 +117,7 @@ const METRICS = [
  * clamp/reflect applies to actual domain borders, never to an interior tile seam.
  * Input values and masks may change between graph executions without recompilation.
  */
-export class GPURasterFocalPairs implements GPUCommandNodeProducer {
+export class GPURasterFocalPairs implements GPUCommandNodeProducer, GPURasterHaloStage {
   readonly id: string;
   readonly props: GPURasterFocalPairsProps;
   readonly requiredHalo: number;

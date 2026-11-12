@@ -128,7 +128,7 @@ it('GPUPointInPolygonJoin schedules nodes in dependency order', () => {
     'j-assign',
     'j-collect-matches',
     'j-collect-matches-scan-level-0-scan',
-    'j-collect-matches-total',
+    'j-collect-matches-count',
     'j-collect-matches-write',
     'j-finalize'
   ]);
@@ -189,7 +189,7 @@ it('GPUNearestFeatureJoin schedules nodes in dependency order', () => {
     'n-assign',
     'n-collect-matches',
     'n-collect-matches-scan-level-0-scan',
-    'n-collect-matches-total',
+    'n-collect-matches-count',
     'n-collect-matches-write',
     'n-finalize'
   ]);

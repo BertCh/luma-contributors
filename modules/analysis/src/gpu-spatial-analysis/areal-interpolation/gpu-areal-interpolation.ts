@@ -5,6 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
+  GPUGather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -650,18 +651,13 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
     if (cellMask) {
       const sortedMask = createTransientView(graph, `${id}-sorted-mask`, 'float32', cellCount);
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        // `sortedItems` is a permutation of the cells, so no index is out of range.
+        ...new GPUGather({
           id: `${id}-gather-mask`,
-          operation: OPERATION,
-          variant: 'gather-mask',
-          bindings: [
-            {name: 'sortedItems', view: sort.sortedItems, type: 'u32', access: 'read'},
-            {name: 'cellMask', view: cellMask, type: 'f32', access: 'read'},
-            {name: 'sortedMask', view: sortedMask, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: cellCount,
-          body: 'sortedMask[sortedMaskOffset + index] = cellMask[cellMaskOffset + sortedItems[sortedItemsOffset + index]];'
-        }),
+          source: cellMask,
+          indices: sort.sortedItems,
+          output: sortedMask
+        }).getCommandNodes(graph),
         createSegmentSumNode<Parameters>(graph, {
           id: `${id}-pair-areas`,
           operation: OPERATION,

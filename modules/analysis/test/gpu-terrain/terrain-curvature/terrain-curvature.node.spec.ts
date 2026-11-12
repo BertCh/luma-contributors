@@ -102,11 +102,22 @@ it('GPUTerrainCurvature packs the grid and settings and groups outputs into kern
   ]);
   expect(fullIds.every(id => id.startsWith('full-'))).toBe(true);
 
-  expect(create({method: 'evans-young'}).requiredHalo).toBe(1);
-  expect(create({method: 'zevenbergen-thorne'}).requiredHalo).toBe(1);
-  expect(create({method: 'florinsky'}).requiredHalo).toBe(2);
+  // The default one-sided border reads two inward samples, even for a 3x3 method.
+  for (const method of ['evans-young', 'zevenbergen-thorne', 'florinsky'] as const) {
+    expect(create({method}).requiredHalo, method).toBe(2);
+    expect(create({method, borderMode: 'one-sided'}).requiredHalo, method).toBe(2);
+    for (const borderMode of ['clamp', 'nodata'] as const) {
+      expect(create({method, borderMode}).requiredHalo, `${method} ${borderMode}`).toBe(
+        method === 'florinsky' ? 2 : 1
+      );
+    }
+  }
   const ringView = () => createTransientView(graph, `ring-${++instance}`, 'float32', 30);
   expect(create({output: {ringCurvature: ringView()}}).requiredHalo).toBe(8);
+  expect(create({output: {ringCurvature: ringView()}, ringRadii: [1]}).requiredHalo).toBe(2);
+  expect(
+    create({borderMode: 'clamp', output: {ringCurvature: ringView()}, ringRadii: [1]}).requiredHalo
+  ).toBe(1);
   expect(create({output: {ringCurvature: ringView()}, ringRadii: [1, 2]}).requiredHalo).toBe(2);
   expect(
     create({method: 'florinsky', output: {ringCurvature: ringView()}, ringRadii: [1]}).requiredHalo

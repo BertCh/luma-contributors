@@ -5,6 +5,7 @@
 import {
   createTransientView,
   GPUSort,
+  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -92,24 +93,35 @@ export function createStableLexicographicIndexSortNodes<Parameters>(
     );
     const packed = column.length > 1;
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${props.id}-pass-${passIndex}-gather`,
-        operation: props.operation,
-        variant: packed ? 'lexicographic-key-pack' : 'lexicographic-key-gather',
-        bindings: [
-          ...column.map((key, keyIndex) => ({
-            name: `originalKeys${keyIndex}`,
-            view: key.view,
-            type: 'u32' as const,
-            access: 'read' as const
-          })),
-          {name: 'currentIndices', view: currentIndices, type: 'u32', access: 'read'},
-          {name: 'gatheredKeys', view: gatheredKeys, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: length,
-        body: `let originalIndex = currentIndices[currentIndicesOffset + index];
+      // A single key is gathered by the published gather. Several packed keys need one shader that
+      // reads each column, so they keep a local kernel.
+      ...(packed
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${props.id}-pass-${passIndex}-gather`,
+              operation: props.operation,
+              variant: 'lexicographic-key-pack',
+              bindings: [
+                ...column.map((key, keyIndex) => ({
+                  name: `originalKeys${keyIndex}`,
+                  view: key.view,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                })),
+                {name: 'currentIndices', view: currentIndices, type: 'u32', access: 'read'},
+                {name: 'gatheredKeys', view: gatheredKeys, type: 'u32', access: 'read_write'}
+              ],
+              invocationCount: length,
+              body: `let originalIndex = currentIndices[currentIndicesOffset + index];
   ${getPackedKeySource(column)}`
-      }),
+            })
+          ]
+        : new GPUUint32Gather({
+            id: `${props.id}-pass-${passIndex}-gather`,
+            source: column[0].view,
+            indices: currentIndices,
+            output: gatheredKeys
+          }).getCommandNodes(graph)),
       ...new GPUSort({
         id: `${props.id}-pass-${passIndex}-sort`,
         keys: gatheredKeys,
@@ -132,19 +144,12 @@ export function createStableLexicographicIndexSortNodes<Parameters>(
       length
     );
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      ...new GPUUint32Gather({
         id: `${props.id}-primary-gather`,
-        operation: props.operation,
-        variant: 'lexicographic-key-gather',
-        bindings: [
-          {name: 'originalKeys0', view: props.keys[0].view, type: 'u32', access: 'read'},
-          {name: 'currentIndices', view: currentIndices, type: 'u32', access: 'read'},
-          {name: 'gatheredKeys', view: sortedPrimaryKeys, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: length,
-        body: `let originalIndex = currentIndices[currentIndicesOffset + index];
-  ${getPackedKeySource([props.keys[0]])}`
-      })
+        source: props.keys[0].view,
+        indices: currentIndices,
+        output: sortedPrimaryKeys
+      }).getCommandNodes(graph)
     );
   }
 
@@ -183,11 +188,8 @@ function getColumnKeyBits(column: readonly StableLexicographicKey[]): number {
   return column.reduce((bits, key) => bits + (key.keyBits ?? 32), 0);
 }
 
-/** WGSL that writes `gatheredKeys[index]` from one key, or from several packed keys. */
+/** WGSL that writes `gatheredKeys[index]` from several packed keys. */
 function getPackedKeySource(column: readonly StableLexicographicKey[]): string {
-  if (column.length === 1) {
-    return 'gatheredKeys[gatheredKeysOffset + index] = originalKeys0[originalKeys0Offset + originalIndex];';
-  }
   const terms = column.map((key, keyIndex) => {
     const mask = 2 ** key.keyBits! - 1;
     return `packed = (packed << ${key.keyBits}u) | (originalKeys${keyIndex}[originalKeys${keyIndex}Offset + originalIndex] & ${mask}u);`;

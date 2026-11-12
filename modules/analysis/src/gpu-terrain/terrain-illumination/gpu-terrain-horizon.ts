@@ -13,6 +13,7 @@ import {
 import {
   GPURasterBufferToTexture,
   type GPURasterBand,
+  type GPURasterHaloStage,
   type GPURasterMetadata
 } from '@luma.gl/graph/gpu-raster';
 import {
@@ -673,7 +674,7 @@ function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string 
  * than `maximumRadius` to the tile edge see a truncated horizon: pass a tile with a
  * `maximumRadius` halo for seamless results (`GPURasterHaloStage` contract).
  */
-export class GPUTerrainHorizon implements GPUCommandNodeProducer {
+export class GPUTerrainHorizon implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */

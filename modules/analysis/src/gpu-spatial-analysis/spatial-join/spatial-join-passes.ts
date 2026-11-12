@@ -6,6 +6,7 @@ import {
   createTransientView,
   doGraphDataViewsOverlap,
   GPUBVH,
+  GPUFlagOffsets,
   GPUScan,
   GPUSort,
   GraphVectorView,
@@ -1277,27 +1278,18 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
     }
     chunkFirstRow += chunk.length;
   }
+  // The exclusive scan and the single-word match count (state word 2) come from one primitive.
   nodes.push(
-    ...new GPUScan({
-      id: `${props.id}-scan`,
-      input: flags,
-      output: offsets,
-      mode: 'exclusive'
+    ...new GPUFlagOffsets({
+      id: props.id,
+      flags,
+      offsets,
+      count: graph.createDataView(props.state.buffer, {
+        format: 'uint32',
+        length: 1,
+        byteOffset: props.state.byteOffset + 2 * Uint32Array.BYTES_PER_ELEMENT
+      })
     }).getCommandNodes(graph)
-  );
-  nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${props.id}-total`,
-      operation: props.operation,
-      variant: 'collect-match-total',
-      bindings: [
-        {name: 'flags', view: flags, type: 'u32', access: 'read'},
-        {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
-        {name: 'state', view: props.state, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: 1,
-      body: `state[stateOffset + 2u] = offsets[offsetsOffset + ${pointCount - 1}u] + flags[flagsOffset + ${pointCount - 1}u];`
-    })
   );
   if (capacity === 0) {
     return nodes;

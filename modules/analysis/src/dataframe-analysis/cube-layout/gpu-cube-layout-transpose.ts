@@ -59,6 +59,8 @@ export type GPUCubeLayoutTransposeProps = {
  * (33,554,432 values on a default device) and a `uint32` index. The transpose is a scatter with
  * one thread per element; the writes of neighboring threads are `periodCount` or `cellCount`
  * elements apart, which is acceptable for a layout change done once per cube.
+ * The published `GPUTranspose` pads tiles past the uint32 invocation limit for large degenerate
+ * cubes and does not check aligned storage binding sizes, so this kernel handles the copy.
  *
  * Per-frame (no recompile): the contents of `values` and `output`. Topology (needs a new graph):
  * `from`, `cellCount`, `periodCount` and the value format.
@@ -106,15 +108,14 @@ export class GPUCubeLayoutTranspose implements GPUCommandNodeProducer {
       elementCount * 4,
       'reduce cellCount * periodCount'
     );
-    const type = values.format === 'float32' ? 'f32' : 'u32';
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-transpose`,
         operation: OPERATION,
         variant: from === 'cell-major' ? 'to-period-major' : 'to-cell-major',
         bindings: [
-          {name: 'cube', view: values, type, access: 'read'},
-          {name: 'transposed', view: output, type, access: 'read_write'}
+          {name: 'cube', view: values, type: 'u32', access: 'read'},
+          {name: 'transposed', view: output, type: 'u32', access: 'read_write'}
         ],
         invocationCount: elementCount,
         // Sizes are overrides so that cubes of different shapes share one shader module.

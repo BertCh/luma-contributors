@@ -2,11 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 /** Marker for "no group" in per-row and per-position group indices. @internal */
 export const GROUP_NONE = 0xffffffff;
@@ -57,28 +54,3 @@ fn getValueKey(rawBits: u32) -> u32 {
   return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
 }
 `;
-
-/** Creates `target[i] = source[indices[i]]` for `u32` rows. @internal */
-export function createGatherNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    operation: string;
-    indices: GraphDataView<'uint32'>;
-    source: GraphDataView<'uint32'>;
-    target: GraphDataView<'uint32'>;
-  }
-): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
-    id: props.id,
-    operation: props.operation,
-    variant: 'gather',
-    bindings: [
-      readBinding('indices', props.indices),
-      readBinding('source', props.source),
-      writeBinding('gathered', props.target)
-    ],
-    invocationCount: props.target.length,
-    body: `gathered[gatheredOffset + index] = source[sourceOffset + indices[indicesOffset + index]];`
-  });
-}

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPU_WGS84_FLATTENING, GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from './contracts/earth';
+import {WEB_MERCATOR_EARTH_RADIUS} from '@luma.gl/graph/gpu-project';
 import {getWGSLFloatLiteral} from './kernels/wgsl-kernel-nodes';
 
 /**
@@ -131,7 +132,7 @@ export function getRasterGroundScale(mode: GPURasterCellSizeMode, edge: number):
   }
   if (mode === 'web-mercator') {
     // EPSG:3857 maps geodetic latitude with the spherical formula, so the row latitude is exact.
-    const mercatorY = edge / GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
+    const mercatorY = edge / WEB_MERCATOR_EARTH_RADIUS;
     const sinLatitude = Math.tanh(mercatorY);
     const curvature = 1 - WGS84_ECCENTRICITY_SQUARED * sinLatitude * sinLatitude;
     const primeVerticalRatio = 1 / Math.sqrt(curvature);
@@ -165,7 +166,7 @@ export function getRasterGroundScaleWGSL(mode: 'web-mercator' | 'geographic'): s
   if (mode === 'web-mercator') {
     return `// WGS84 ground meters per EPSG:3857 meter at the row latitude atan(sinh(y / a)):
   // x = N cos(lat) / a, y = M cos(lat) / a, with cos(lat) = 1 / cosh(y / a).
-  let mercatorY = edge * ${getWGSLFloatLiteral(1 / GPU_WGS84_SEMI_MAJOR_AXIS_METERS)};
+  let mercatorY = edge * ${getWGSLFloatLiteral(1 / WEB_MERCATOR_EARTH_RADIUS)};
   let sinLatitude = tanh(mercatorY);
   let curvature = 1.0 - ${eccentricitySquared} * sinLatitude * sinLatitude;
   let primeVertical = 1.0 / sqrt(curvature);

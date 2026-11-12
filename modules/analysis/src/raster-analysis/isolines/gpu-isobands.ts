@@ -25,7 +25,7 @@ import {
   validateRasterAlgebraView
 } from '../raster-algebra/raster-algebra-utils';
 import {validateRasterGrid} from '../raster-band-utils';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPU_ISOBANDS_PARAMETER_LENGTH} from './isobands-parameters';
 import {getIsobandsCellWGSL} from './isobands-wgsl';
 
@@ -148,11 +148,13 @@ export type GPUIsobandsProps = {
  * also swaps the documented side: high values are then on the right of a segment, and ring
  * windings are reversed. Following the grid affine is deferred (roadmap 12.4).
  */
-export class GPUIsobands implements GPUCommandNodeProducer {
+export class GPUIsobands implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUIsobandsProps;
+  /** Source-pixel radius: 0 for classes, 1 for triangles, 2 for adjacent-cell edge cancellation. */
+  readonly requiredHalo: number;
   /** Compile-time maximum break count (`breaks.length`). */
   readonly maximumBreakCount: number;
   /** `(width - 1) * (height - 1)` marching-squares cells. */
@@ -167,6 +169,7 @@ export class GPUIsobands implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     const {output} = props;
+    this.requiredHalo = output.edges ? 2 : output.triangles ? 1 : 0;
     const sampleCount = validateRasterGrid(id, props.grid);
     const {width, height} = props.grid;
     validateRasterAlgebraCount(id, 'grid width', width, 2, 0x7fffffff);

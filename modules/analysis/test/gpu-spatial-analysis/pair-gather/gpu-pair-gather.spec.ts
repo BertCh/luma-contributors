@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Buffer} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPU_PAIR_GATHER_NO_ROW,
@@ -11,6 +13,13 @@ import {
 } from '../../../src/gpu-spatial-analysis/pair-gather/index';
 import {createGeometryFixture, expectClose} from '../outline-geometry/geometry-fixture';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 
 type ExpectedRow = {
   left: number;
@@ -134,6 +143,140 @@ const NEAREST = {
 
 type Scene = typeof PREDICATE | typeof NEAREST;
 type TestDevice = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
+
+it.each([
+  0, 4
+])('GPUPairGather gathers a uint32 column at source byte offset %i into an output byte offset', async sourceByteOffset => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const buffers: Buffer[] = [];
+  const createInput = (name: string, values: number[]) => {
+    const buffer = createInputBuffer(device, new Uint32Array(values));
+    buffers.push(buffer);
+    return importGraphBuffer(graph, name, buffer, 'uint32', values.length);
+  };
+  const createOutput = (name: string) => {
+    const buffer = createOutputBuffer(device, 1);
+    buffers.push(buffer);
+    return importGraphBuffer(graph, name, buffer, 'uint32', 1);
+  };
+  try {
+    // The row output and the column output are separate buffers: a column kernel reads the rows
+    // and writes the column, and WebGPU refuses one buffer bound read-only and read-write in the
+    // same pass, whatever the byte ranges.
+    const leftRows = createOutput('left-rows');
+    const columnBuffer = createOutputBuffer(device, 128);
+    buffers.push(columnBuffer);
+    const columnView = importGraphBuffer(graph, 'column-output', columnBuffer, 'uint32');
+    const columnOutput = graph.createDataView(columnView.buffer, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: 256
+    });
+    const sourceStorage = createInput('source', sourceByteOffset === 0 ? [7] : [99, 7, 88]);
+    const source = graph.createDataView(sourceStorage.buffer, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: sourceByteOffset
+    });
+    graph.add(
+      new GPUPairGather({
+        pairs: {
+          leftIds: createInput('pair-left', [0]),
+          rightIds: createInput('pair-right', [0]),
+          status: {
+            count: createInput('pair-count', [1]),
+            requiredCount: createInput('pair-required', [1]),
+            overflow: createInput('pair-overflow', [0])
+          }
+        },
+        leftColumns: [{source, output: columnOutput}],
+        output: {
+          leftRows,
+          rightRows: createOutput('right-rows'),
+          rowCount: createOutput('row-count'),
+          status: {overflow: createOutput('overflow')}
+        }
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      const words = await readUint32(columnBuffer);
+      expect(words[0]).toBe(0);
+      expect(words[256 / Uint32Array.BYTES_PER_ELEMENT]).toBe(7);
+    } finally {
+      compiled.destroy();
+    }
+  } finally {
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
+
+it('GPUPairGather fills unmatched and out-of-range uint32 column rows with all ones', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createGeometryFixture(device, {
+    inputs: {
+      pairLeft: {values: new Uint32Array([0, 1]), format: 'uint32'},
+      pairRight: {values: new Uint32Array([0, 3]), format: 'uint32'},
+      pairCount: {values: new Uint32Array([2]), format: 'uint32'},
+      pairRequired: {values: new Uint32Array([2]), format: 'uint32'},
+      pairOverflow: {values: new Uint32Array([0]), format: 'uint32'},
+      unmatchedIds: {values: new Uint32Array([2]), format: 'uint32'},
+      unmatchedCount: {values: new Uint32Array([1]), format: 'uint32'},
+      unmatchedOverflow: {values: new Uint32Array([0]), format: 'uint32'},
+      column: {values: new Uint32Array([9]), format: 'uint32'}
+    },
+    outputs: {
+      leftRows: {format: 'uint32', length: 3},
+      rightRows: {format: 'uint32', length: 3},
+      rowCount: {format: 'uint32', length: 1},
+      overflow: {format: 'uint32', length: 1},
+      column: {format: 'uint32', length: 3}
+    },
+    create: ({inputs: inputViews, outputs: outputViews}) => {
+      const inputs = inputViews as Record<string, GraphDataView<'uint32'>>;
+      const outputs = outputViews as Record<string, GraphDataView<'uint32'>>;
+      return new GPUPairGather({
+        how: 'left',
+        pairs: {
+          leftIds: inputs['pairLeft'],
+          rightIds: inputs['pairRight'],
+          status: {
+            count: inputs['pairCount'],
+            requiredCount: inputs['pairRequired'],
+            overflow: inputs['pairOverflow']
+          }
+        },
+        unmatchedLeft: {
+          ids: inputs['unmatchedIds'],
+          status: {
+            count: inputs['unmatchedCount'],
+            overflow: inputs['unmatchedOverflow']
+          }
+        },
+        rightColumns: [{source: inputs['column'], output: outputs['column']}],
+        output: {
+          leftRows: outputs['leftRows'],
+          rightRows: outputs['rightRows'],
+          rowCount: outputs['rowCount'],
+          status: {overflow: outputs['overflow']}
+        }
+      });
+    }
+  });
+  try {
+    const result = await fixture.run();
+    expect(result['rowCount']).toEqual([3]);
+    expect(result['overflow']).toEqual([0]);
+    expect(result['rightRows']).toEqual([0, 3, GPU_PAIR_GATHER_NO_ROW]);
+    expect(result['column']).toEqual([9, 0xffffffff, 0xffffffff]);
+  } finally {
+    fixture.destroy();
+  }
+});
 
 function pad(values: number[], length: number): Uint32Array {
   const padded = new Uint32Array(length);

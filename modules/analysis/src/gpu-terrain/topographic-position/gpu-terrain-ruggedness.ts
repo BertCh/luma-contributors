@@ -7,7 +7,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -80,7 +80,7 @@ export type GPUTerrainRuggednessProps = {
  * Outputs use elevation units (no cell size, no z factor). Invalid pixels receive NaN and
  * validity 0. The contributor satisfies the `GPURasterHaloStage` contract with a one-pixel halo.
  */
-export class GPUTerrainRuggedness implements GPUCommandNodeProducer {
+export class GPUTerrainRuggedness implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */

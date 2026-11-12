@@ -662,46 +662,6 @@ export function createFlowPairSortPrepareNode<Parameters>(
   });
 }
 
-/** sortedContributions[i] = contributions[sortedIndices[i]]. @internal */
-export function createFlowSortedGatherNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    sortedIndices: GraphDataView<'uint32'>;
-    contributions: GraphDataView<'float32'>;
-    sortedContributions: GraphDataView<'float32'>;
-  }
-): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
-    id: props.id,
-    operation: OPERATION,
-    variant: 'pair-sum-gather',
-    bindings: [
-      {
-        name: 'sortedIndices',
-        view: props.sortedIndices,
-        type: 'u32',
-        access: 'read'
-      },
-      {
-        name: 'contributions',
-        view: props.contributions,
-        type: 'f32',
-        access: 'read'
-      },
-      {
-        name: 'sortedContributions',
-        view: props.sortedContributions,
-        type: 'f32',
-        access: 'read_write'
-      }
-    ],
-    invocationCount: props.sortedIndices.length,
-    body: `sortedContributions[sortedContributionsOffset + index] =
-    contributions[contributionsOffset + sortedIndices[sortedIndicesOffset + index]];`
-  });
-}
-
 /**
  * Sums each stored pair's contributions with one 256-thread workgroup per stored pair: a strided
  * per-thread partial sum, then a fixed binary tree (the same order as the zonal-statistics segment

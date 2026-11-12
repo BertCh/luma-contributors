@@ -20,7 +20,7 @@ import {
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPU_FOCAL_STATISTICS_PARAMETER_LENGTH} from './spatial-interpolation-parameters';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
@@ -98,12 +98,17 @@ export type GPUFocalStatisticsProps = {
  *
  * Moments (sum, mean, standard deviation, count) and extremes (min, max, range) are separate
  * kernels; each is scheduled only when one of its outputs is requested.
+ *
+ * `requiredHalo` is `maximumRadius`, the compile-time cap on the per-frame radius, so it bounds
+ * every window the kernel can read.
  */
-export class GPUFocalStatistics implements GPUCommandNodeProducer {
+export class GPUFocalStatistics implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUFocalStatisticsProps;
+  /** Receptive field in pixels (`GPURasterHaloStage` contract): the largest window radius. */
+  readonly requiredHalo: number;
   /** `grid.width * grid.height`. */
   readonly cellCount: number;
 
@@ -113,6 +118,7 @@ export class GPUFocalStatistics implements GPUCommandNodeProducer {
     const {id} = this;
     this.cellCount = validateRasterGrid(id, props.grid);
     validateCapacity(id, 'maximumRadius', props.maximumRadius, 0, MAXIMUM_FOCAL_RADIUS);
+    this.requiredHalo = props.maximumRadius;
     if (props.noDataValue !== undefined && !Number.isFinite(props.noDataValue)) {
       throw new Error(`${id} noDataValue must be finite (NaN cells are always nodata)`);
     }

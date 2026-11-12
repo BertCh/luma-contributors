@@ -6,6 +6,7 @@ import {
   createTransientView,
   GPUScan,
   GPUSort,
+  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -18,7 +19,7 @@ import {
   createWGSLKernelNode,
   createPublishNode
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {createGatherNode, GROUP_NONE, readBinding, writeBinding} from './group-statistics-common';
+import {GROUP_NONE, readBinding, writeBinding} from './group-statistics-common';
 
 /**
  * Sorted-group layout shared by every column reduction.
@@ -68,7 +69,6 @@ export function getKeyOrderNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    operation: string;
     keyLow: GraphDataView<'uint32'>;
     keyHigh?: GraphDataView<'uint32'>;
     rowIds: GraphDataView<'uint32'>;
@@ -82,7 +82,7 @@ export function getKeyOrderNodes<Parameters>(
   /** `keyLow` in sorted order when there is no `keyHigh` and no `initialRows`. */
   sortedKeyLow?: GraphDataView<'uint32'>;
 } {
-  const {id, operation, keyLow, keyHigh, rowIds} = props;
+  const {id, keyLow, keyHigh, rowIds} = props;
   const rowCount = keyLow.length;
   const nodes: GPUCommandNode<Parameters>[] = [];
   const u32 = (name: string) => createTransientView(graph, `${id}-${name}`, 'uint32', rowCount);
@@ -92,13 +92,12 @@ export function getKeyOrderNodes<Parameters>(
   if (props.initialRows) {
     lowKeys = u32('low-by-rows');
     nodes.push(
-      createGatherNode(graph, {
+      ...new GPUUint32Gather({
         id: `${id}-gather-low`,
-        operation,
-        indices: props.initialRows,
         source: keyLow,
-        target: lowKeys
-      })
+        indices: props.initialRows,
+        output: lowKeys
+      }).getCommandNodes(graph)
     );
   }
   const afterLow = u32('rows-by-low');
@@ -117,13 +116,12 @@ export function getKeyOrderNodes<Parameters>(
   if (keyHigh) {
     const highKeys = u32('high-by-rows');
     nodes.push(
-      createGatherNode(graph, {
+      ...new GPUUint32Gather({
         id: `${id}-gather-high`,
-        operation,
-        indices: rows,
         source: keyHigh,
-        target: highKeys
-      })
+        indices: rows,
+        output: highKeys
+      }).getCommandNodes(graph)
     );
     const afterHigh = u32('rows-by-high');
     nodes.push(
@@ -221,7 +219,6 @@ export function getGroupStructureNodes<Parameters>(
   // 2. Stable sort by key.
   const order = getKeyOrderNodes<Parameters>(graph, {
     id: `${id}-order`,
-    operation,
     keyLow,
     keyHigh,
     rowIds,
@@ -233,25 +230,23 @@ export function getGroupStructureNodes<Parameters>(
   if (!sortedLow) {
     sortedLow = u32('sorted-low', rowCount);
     nodes.push(
-      createGatherNode(graph, {
+      ...new GPUUint32Gather({
         id: `${id}-gather-sorted-low`,
-        operation,
-        indices: permutation,
         source: keyLow,
-        target: sortedLow
-      })
+        indices: permutation,
+        output: sortedLow
+      }).getCommandNodes(graph)
     );
   }
   const sortedHigh = twoWords ? u32('sorted-high', rowCount) : undefined;
   if (sortedHigh && keyHigh) {
     nodes.push(
-      createGatherNode(graph, {
+      ...new GPUUint32Gather({
         id: `${id}-gather-sorted-high`,
-        operation,
-        indices: permutation,
         source: keyHigh,
-        target: sortedHigh
-      })
+        indices: permutation,
+        output: sortedHigh
+      }).getCommandNodes(graph)
     );
   }
   const sortedBindings = () => [

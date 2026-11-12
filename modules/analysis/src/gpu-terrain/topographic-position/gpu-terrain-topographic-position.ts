@@ -8,7 +8,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -142,7 +142,7 @@ export type GPUTerrainTopographicPositionProps = {
  * count of valid cells is a third table plane), which differs from WhiteboxTools only along the
  * border band, where Whitebox's clamped corner indices drop the first row and column.
  */
-export class GPUTerrainTopographicPosition implements GPUCommandNodeProducer {
+export class GPUTerrainTopographicPosition implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */

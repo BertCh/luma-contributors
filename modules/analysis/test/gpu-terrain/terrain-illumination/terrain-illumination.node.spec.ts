@@ -251,7 +251,12 @@ it('GPUReliefShading validates props and packs MDOW and custom lights', () => {
     });
   };
   const contributor = create();
+  // Default clamped Horn support is one pixel; one-sided padding reads two inward samples.
   expect(contributor.requiredHalo).toBe(1);
+  expect(create({borderMode: 'one-sided'}).requiredHalo).toBe(2);
+  for (const borderMode of ['clamp', 'reflect', 'constant', 'nodata'] as const) {
+    expect(create({borderMode}).requiredHalo, borderMode).toBe(1);
+  }
   expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
     'relief-shading-gradient-x',
     'relief-shading-gradient-y',
@@ -350,6 +355,8 @@ it('GPUTextureShading validates props and approximates a fractional Laplacian', 
   };
   const contributor = create();
   const radii = getGPUTextureShadingCascadeSigmas(3, 1).map(sigma => Math.ceil(3 * sigma));
+  // These sigma-one levels stay at full resolution, so nominal radii cover their support.
+  expect(contributor.levelScaleLog2).toEqual([0, 0, 0]);
   expect(contributor.requiredHalo).toBe(radii.reduce((sum, radius) => sum + radius, 0));
   expect(
     contributor

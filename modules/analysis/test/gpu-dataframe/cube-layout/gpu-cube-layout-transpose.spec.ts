@@ -92,10 +92,13 @@ describe('GPUCubeLayoutTranspose', () => {
             // Distinct bit patterns, including NaN payloads and signed zero for floats.
             values[index] = Math.imul(index + 1, 2654435761) >>> 0;
           }
-          if (format === 'float32' && values.length > 3) {
+          if (format === 'float32' && values.length > 4) {
             values[0] = 0x7fc00123;
             values[1] = 0x80000000;
             values[2] = 0x7f800000;
+            // Signalling NaN payloads: only a word copy keeps them.
+            values[3] = 0x7f800001;
+            values[4] = 0xffa00005;
           }
           const result = await transpose(values, format, from, cellCount, periodCount);
           expect(Array.from(result), `${format} ${from} ${cellCount}x${periodCount}`).toEqual(

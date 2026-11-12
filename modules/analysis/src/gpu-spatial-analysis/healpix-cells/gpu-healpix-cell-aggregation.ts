@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  GPUGather,
   GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -341,18 +342,13 @@ const CAPACITY: u32 = ${capacity}u;`;
     if (props.values) {
       const gathered = view('sorted-values', 'float32', rows);
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        // `sortedIndices` is a permutation of the rows, so no index is out of range.
+        ...new GPUGather({
           id: `${id}-gather-values`,
-          operation: OPERATION,
-          variant: 'gather-values',
-          bindings: [
-            {name: 'sortedIndices', view: sorted.sortedIndices, type: 'u32', access: 'read'},
-            {name: 'values', view: props.values, type: 'f32', access: 'read'},
-            {name: 'gathered', view: gathered, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: rows,
-          body: 'gathered[gatheredOffset + index] = values[valuesOffset + sortedIndices[sortedIndicesOffset + index]];'
-        })
+          source: props.values,
+          indices: sorted.sortedIndices,
+          output: gathered
+        }).getCommandNodes(graph)
       );
       for (const [name, reduction] of [
         ['sums', 'sum'],

@@ -435,7 +435,8 @@ const NO_FEATURE: u32 = ${NO_FEATURE}u;`,
       })
     );
 
-    // Stage 3: columns, copied as raw words.
+    // Stage 3: columns, copied as raw words by one local kernel for both formats. The published
+    // gather would write 0 instead of NaN for an unmatched float32 row.
     const columnNode = (name: string, column: GPUPairGatherColumn, rows: GraphDataView<'uint32'>) =>
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-${name}`,

@@ -11,6 +11,7 @@ import {
   GPUReduction,
   GPUScan,
   GPUSort,
+  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -468,16 +469,13 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
         outputValues: permutationY,
         keyBits: LATTICE_KEY_BITS
       }).getCommandNodes(graph),
-      kernel(
-        'gather-x',
-        rows,
-        [
-          read('permutation', permutationY, 'u32'),
-          read('latticeX', latticeX, 'u32'),
-          write('keys', keysX, 'u32')
-        ],
-        'keys[keysOffset + index] = latticeX[latticeXOffset + permutation[permutationOffset + index]];'
-      ),
+      // Both permutations below are permutations of the row indices: no index is out of range.
+      ...new GPUUint32Gather({
+        id: `${id}-gather-x`,
+        source: latticeX,
+        indices: permutationY,
+        output: keysX
+      }).getCommandNodes(graph),
       ...new GPUSort({
         id: `${id}-sort-x`,
         keys: keysX,
@@ -486,16 +484,12 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
         outputValues: permutationX,
         keyBits: LATTICE_KEY_BITS
       }).getCommandNodes(graph),
-      kernel(
-        'gather-group',
-        rows,
-        [
-          read('permutation', permutationX, 'u32'),
-          read('groupKeys', sortGroupKeys, 'u32'),
-          write('keys', keysGroup, 'u32')
-        ],
-        'keys[keysOffset + index] = groupKeys[groupKeysOffset + permutation[permutationOffset + index]];'
-      ),
+      ...new GPUUint32Gather({
+        id: `${id}-gather-group`,
+        source: sortGroupKeys,
+        indices: permutationX,
+        output: keysGroup
+      }).getCommandNodes(graph),
       ...new GPUSort({
         id: `${id}-sort-group`,
         keys: keysGroup,

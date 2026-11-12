@@ -12,6 +12,7 @@ import {
 import {
   GPURasterBufferToTexture,
   type GPURasterBand,
+  type GPURasterHaloStage,
   type GPURasterMetadata
 } from '@luma.gl/graph/gpu-raster';
 import {
@@ -216,11 +217,13 @@ const ANCHOR_PROBE_COUNT = 64;
  * `downsampleLevels` (default), levels with incremental sigma of at least
  * {@link DOWNSAMPLE_MINIMUM_SIGMA} pixels run on grids decimated by 2 per level and the cost of those
  * levels becomes nearly constant; the result then differs from the exact cascade by under 1% of
- * the output range. `hasNodata: false` skips the validity channel. `requiredHalo` is the nominal
- * receptive field of the exact cascade; decimated levels add at most a few pixels beyond the
- * 3-sigma kernel cutoff, where the Gaussian weight is negligible.
+ * the output range. `hasNodata: false` skips the validity channel. `requiredHalo` sums each actual
+ * blur radius multiplied by its grid scale, plus the largest decimated scale for bilinear reads
+ * (the upper sample is fetched even at zero interpolation weight). Without decimation this is
+ * the sum of nominal radii. Decimated tiles must also align their expanded origins to the largest
+ * grid scale in both axes; a halo alone cannot correct a different decimation phase.
  */
-export class GPUTextureShading implements GPUCommandNodeProducer {
+export class GPUTextureShading implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
@@ -231,7 +234,7 @@ export class GPUTextureShading implements GPUCommandNodeProducer {
   readonly levelScaleLog2: readonly number[];
   /** Nominal full-resolution kernel of each cascade level. */
   readonly kernels: readonly Float32Array[];
-  /** Receptive field in pixels: the summed pass radii (`GPURasterHaloStage` contract). */
+  /** Source-pixel radius including scaled blur kernels and bilinear reconstruction support. */
   readonly requiredHalo: number;
 
   constructor(props: GPUTextureShadingProps) {
@@ -260,7 +263,12 @@ export class GPUTextureShading implements GPUCommandNodeProducer {
     this.kernels = getGPUTextureShadingCascadeSigmas(levelCount, baseSigma).map(
       getGPUTextureShadingKernel
     );
-    this.requiredHalo = this.kernels.reduce((sum, kernel) => sum + (kernel.length - 1) / 2, 0);
+    this.requiredHalo =
+      getGPUTextureShadingCascadeSigmas(levelCount, baseSigma).reduce((radius, sigma, level) => {
+        const scale = 2 ** this.levelScaleLog2[level];
+        return radius + scale * Math.max(1, Math.ceil(3 * (sigma / scale)));
+      }, 0) +
+      (this.levelScaleLog2[levelCount - 1] === 0 ? 0 : 2 ** this.levelScaleLog2[levelCount - 1]);
     if (!output.textureShade && !output.outputValidity && !output.textureShadeTexture) {
       throw new Error(`${id} requires at least one output`);
     }

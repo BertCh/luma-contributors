@@ -190,16 +190,19 @@ export type GPUGeomorphonsProps = {
  * which `anglev2` reads as a tie and turns into +1; here no sample means no relief evidence, so the
  * digit stays 0 in every comparison mode.
  *
- * `requiredHalo` equals `searchRadius` cells along the row metric; for non-square geographic
- * cells the east-west reach in columns can exceed it. The cell size is the ground size of the
- * centre row, so the search distance is `searchRadius * cellSizeY` ground metres.
+ * `requiredHalo` is the nominal row-based `searchRadius`, not a complete source-pixel bound.
+ * Search distance is `searchRadius * groundCellY` at the centre row; east-west reach can exceed
+ * it whenever `groundCellY > groundCellX`, including projected grids. Cell sizes are per-frame,
+ * so construction cannot bound every allowed update. This class does not implement
+ * `GPURasterHaloStage`; do not pass it directly to the published halo assembler for seam-free
+ * results. A caller must bound both axes over every processed row and parameter update.
  */
 export class GPUGeomorphons implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGeomorphonsProps;
-  /** Receptive field in pixels (`GPURasterHaloStage` contract), equal to `searchRadius`. */
+  /** Nominal row-based search radius; does not bound east-west source-pixel reach. */
   readonly requiredHalo: number;
   /** Row direction the kernel uses: the prop, or the direction the grid affine states. */
   readonly rowDirection: GPURasterRowDirection;

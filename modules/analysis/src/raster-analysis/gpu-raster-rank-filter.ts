@@ -12,7 +12,11 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {
+  GPURasterBufferBand,
+  GPURasterHaloStage,
+  GPURasterMetadata
+} from '@luma.gl/graph/gpu-raster';
 import {getRasterBandViews, getRasterBufferBandNodes} from './raster-band-utils';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -41,10 +45,15 @@ export type GPURasterRankFilterProps = {
   };
 };
 
-/** Raster-native rank selection. Invalid centers remain invalid; omitted neighbors never become zeros. */
-export class GPURasterRankFilter implements GPUCommandNodeProducer {
+/**
+ * Raster-native rank selection. Invalid centers remain invalid; omitted neighbors never become zeros.
+ * `requiredHalo` is `radius`: execute on a halo-expanded source and keep only core outputs.
+ */
+export class GPURasterRankFilter implements GPUCommandNodeProducer, GPURasterHaloStage {
   readonly id: string;
   readonly props: GPURasterRankFilterProps;
+  /** Receptive field in pixels (`GPURasterHaloStage` contract): the square footprint radius. */
+  readonly requiredHalo: number;
   constructor(props: GPURasterRankFilterProps) {
     this.id = props.id ?? 'raster-rank-filter';
     this.props = props;
@@ -58,6 +67,7 @@ export class GPURasterRankFilter implements GPUCommandNodeProducer {
       requireRasterLength(view, count, this.id, `output.${name}`);
     }
     validateCapacity(this.id, 'radius', props.radius, 0, MAXIMUM_RADIUS);
+    this.requiredHalo = props.radius;
     validateFiniteNumber(this.id, 'quantile', props.quantile ?? 0.5, 0, 1);
   }
   getCommandNodes<Parameters>(

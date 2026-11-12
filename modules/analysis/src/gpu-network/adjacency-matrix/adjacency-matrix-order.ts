@@ -5,6 +5,7 @@
 import {
   createTransientView,
   GPUSort,
+  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -132,29 +133,14 @@ export class GPUAdjacencyMatrixOrder implements GPUCommandNodeProducer {
       sortedVertices = byTie;
     }
     const groupKeys = transient('group-keys');
+    // `sortedVertices` is a permutation of the node indices, so no index is out of range.
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      ...new GPUUint32Gather({
         id: `${id}-gather-groups`,
-        operation,
-        variant: 'gather-groups',
-        bindings: [
-          {
-            name: 'vertices',
-            view: sortedVertices,
-            type: 'u32',
-            access: 'read'
-          },
-          {name: 'groups', view: props.groups, type: 'u32', access: 'read'},
-          {
-            name: 'keysOut',
-            view: groupKeys,
-            type: 'u32',
-            access: 'read_write'
-          }
-        ],
-        invocationCount: count,
-        body: 'keysOut[keysOutOffset + index] = groups[groupsOffset + vertices[verticesOffset + index]];'
-      })
+        source: props.groups,
+        indices: sortedVertices,
+        output: groupKeys
+      }).getCommandNodes(graph)
     );
     const sortedGroupKeys = transient('group-sorted-keys');
     const byGroup = transient('group-sorted-vertices');

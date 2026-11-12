@@ -62,3 +62,27 @@ it('createSegmentSumNode rejects offsets or an output shorter than the segment c
     })
   ).toThrow(/^sums segmentCount must be at most 3/);
 });
+
+it('getSortedSegmentSumNodes accepts zero rows and retains the empty-segment reduction', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const nodes = getSortedSegmentSumNodes(graph, {
+      id: 'empty',
+      operation: 'GPUDemo',
+      segmentCount: 3,
+      segmentKeys: createTransientView(graph, 'keys', 'uint32', 0),
+      sumContributions: createTransientView(graph, 'contributions', 'float32', 0),
+      sums: createTransientView(graph, 'sums', 'float32', 3)
+    });
+
+    // With no indices the published gather emits no pass; offsets and sums still run.
+    expect(nodes.map(node => node.id)).toEqual([
+      'empty-sort-prepare',
+      'empty-segment-offsets',
+      'empty-reduce-sums'
+    ]);
+  } finally {
+    device.destroy();
+  }
+});

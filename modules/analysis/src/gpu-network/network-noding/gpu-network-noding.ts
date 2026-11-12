@@ -7,6 +7,7 @@ import {
   createTransientView,
   GPUScan,
   GPUSort,
+  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -486,18 +487,13 @@ fn snapKey(value: f32, origin: f32, size: f32, isOverflow: ptr<function, bool>) 
         outputKeys: sortedKeysY,
         outputValues: orderY
       }).getCommandNodes(graph),
-      createWGSLKernelNode<Parameters>(graph, {
+      // `orderY` is a permutation of the endpoint indices, so no index is out of range.
+      ...new GPUUint32Gather({
         id: `${id}-gather-x`,
-        operation: OPERATION,
-        variant: 'gather-x',
-        bindings: [
-          {name: 'orderY', view: orderY, type: 'u32', access: 'read'},
-          {name: 'keysX', view: keysX, type: 'u32', access: 'read'},
-          {name: 'gatheredKeysX', view: gatheredKeysX, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: endpointCount,
-        body: 'gatheredKeysX[gatheredKeysXOffset + index] = keysX[keysXOffset + orderY[orderYOffset + index]];'
-      }),
+        source: keysX,
+        indices: orderY,
+        output: gatheredKeysX
+      }).getCommandNodes(graph),
       ...new GPUSort({
         id: `${id}-sort-x`,
         keys: gatheredKeysX,

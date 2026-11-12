@@ -7,7 +7,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   getRasterGridWGSL,
   writeRasterGridPrefix
@@ -137,11 +137,13 @@ export type GPUTerrainFlowFieldProps = {
  * The field model comes from the Rigi terrain viewer's flow layer (MIT, same author), which pairs
  * it with a port of luma.gl's `FlowParticleSimulation`.
  */
-export class GPUTerrainFlowField implements GPUCommandNodeProducer {
+export class GPUTerrainFlowField implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUTerrainFlowFieldProps;
+  /** Receptive field in pixels (`GPURasterHaloStage` contract): central differences reach one pixel. */
+  readonly requiredHalo = 1;
 
   constructor(props: GPUTerrainFlowFieldProps) {
     this.id = props.id ?? 'terrain-flow-field';

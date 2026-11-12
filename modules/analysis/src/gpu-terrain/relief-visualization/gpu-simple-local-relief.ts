@@ -9,7 +9,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -148,7 +148,7 @@ export type GPUSimpleLocalReliefProps = {
  * O(radius) float filter, accurate to float32 rounding of the relief. Table-path pixels with
  * `|z - anchor| >= 2^31 * quantum` are invalid.
  */
-export class GPUSimpleLocalRelief implements GPUCommandNodeProducer {
+export class GPUSimpleLocalRelief implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */

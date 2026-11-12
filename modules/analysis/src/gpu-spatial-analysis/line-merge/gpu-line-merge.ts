@@ -6,6 +6,7 @@ import {
   createTransientView,
   GPUScan,
   GPUSort,
+  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -337,12 +338,13 @@ ${declarations}`,
         outputKeys: sortedY,
         outputValues: orderY
       }).getCommandNodes(graph),
-      kernel(
-        'gather-x',
-        [read('keyX', keyX), read('orderY', orderY), write('secondKeys', secondKeys)],
-        endpointCount,
-        `secondKeys[secondKeysOffset + index] = keyX[keyXOffset + orderY[orderYOffset + index]];`
-      ),
+      // `orderY` is a permutation of the endpoint indices, so no index is out of range.
+      ...new GPUUint32Gather({
+        id: `${id}-gather-x`,
+        source: keyX,
+        indices: orderY,
+        output: secondKeys
+      }).getCommandNodes(graph),
       ...new GPUSort({
         id: `${id}-sort-x`,
         keys: secondKeys,

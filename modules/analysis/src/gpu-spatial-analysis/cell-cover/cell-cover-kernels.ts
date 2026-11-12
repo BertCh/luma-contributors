@@ -464,6 +464,10 @@ const CORE_MARGIN: f32 = ${getWGSLFloatLiteral(CELL_COVER_CORE_MARGIN_DEGREES)};
 `;
   let evaluation: string;
   if (family === 'quadbin') {
+    // `coverTileLatitude` is bit-identical to `dggs_web_mercator_tile_y_to_latitude` of the
+    // published `dggs` shader module, so covered tiles agree with the edges `GPUCellGeometry` draws.
+    // It is a pinned copy (`official-wgsl-copies.node.spec.ts`) to keep the 70 KB module, which only
+    // the H3 branch needs, out of the Quadbin kernels.
     const layout = getCellKeyLayout('quadbin', resolution);
     declarations += `${getQuadbinConstantsWGSL(context)}${CELL_KEY_WGSL}${QUADBIN_TILE_WGSL}
 fn coverTileLatitude(row: f32) -> f32 {

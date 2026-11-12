@@ -35,6 +35,7 @@ it('GPUGeomorphons schedules elevation canonicalization and one classify kernel'
     });
   };
   const contributor = create();
+  // Nominal row-based search radius; per-frame anisotropic cells can reach farther east/west.
   expect(contributor.requiredHalo).toBe(4);
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[ids.length - 1]).toBe('geomorphons-classify');

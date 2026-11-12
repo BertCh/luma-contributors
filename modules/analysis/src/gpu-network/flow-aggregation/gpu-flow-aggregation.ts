@@ -5,6 +5,7 @@
 import {
   createTransientView,
   GPUGroupAggregation,
+  GPUGather,
   GPUHashIndex,
   GPUHashIndexQuery,
   GPUReduction,
@@ -52,7 +53,6 @@ import {
   createFlowPairSortPrepareNode,
   createFlowPairSumNode,
   createFlowSlotKeysNode,
-  createFlowSortedGatherNode,
   createFlowWeightKeysNode,
   getFlowWeightKeyBits,
   createFlowZoneNode,
@@ -783,12 +783,12 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
           output: rowOffsets,
           mode: 'exclusive'
         }).getCommandNodes(graph),
-        createFlowSortedGatherNode(graph, {
+        ...new GPUGather({
           id: `${id}-pair-sum-gather`,
-          sortedIndices,
-          contributions,
-          sortedContributions
-        }),
+          source: contributions,
+          indices: sortedIndices,
+          output: sortedContributions
+        }).getCommandNodes(graph),
         pairSumDispatch.updateNode,
         createFlowPairSumNode(graph, {
           id: `${id}-pair-sum`,

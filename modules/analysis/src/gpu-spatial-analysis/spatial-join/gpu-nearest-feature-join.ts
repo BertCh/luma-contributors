@@ -14,7 +14,6 @@ import {createFillNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 import {
   createTransientView,
-  type GPUBVH,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
@@ -945,7 +944,7 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
     const pointCount = points.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
-    const {bvh: featureBVH, nodes: bvhNodes} = getNearestBVHNodes(graph, {
+    const {bvh, nodes: bvhNodes} = getNearestBVHNodes(graph, {
       id,
       operation: OPERATION,
       features,
@@ -956,7 +955,6 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
       prepared: views.prepared
     });
     // The probe pass only reads node bounds, leaf IDs and the internal node count.
-    const bvh = featureBVH as GPUBVH;
     nodes.push(...bvhNodes);
 
     const state = createTransientView(graph, `${id}-state`, 'uint32', 4);

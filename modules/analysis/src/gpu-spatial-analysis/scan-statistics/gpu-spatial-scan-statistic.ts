@@ -6,6 +6,7 @@ import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
   getBoundedDispatchLayout,
+  GPUScan,
   type GPUCommandGraphNodeCondition,
   type GraphBufferUse,
   type GPUCommandGraph,
@@ -288,7 +289,9 @@ export type GPUSpatialScanStatisticProps = {
  * Capacity: one `(R + 1) * zones * timeBuckets` word count table (at most 2^25 words), two
  * neighbor tables of `zones * (maximumWindowZones + 1)` words (at most 2^24 each) plus two sort
  * scratch tables of the same size that are only live while the neighbor tables are built, and
- * `P + 1` window maxima; work is about `(P + 1) * zones * windowZones * timeBuckets^2`,
+ * `P + 1` window maxima, and for the Poisson model one `zones * timeBuckets` word table of cell
+ * weights (at most 2^24 words, since the count table holds at least two slots) that feeds the
+ * cumulative table scan; work is about `(P + 1) * zones * windowZones * timeBuckets^2`,
  * `windowZones` the zones of the largest window.
  *
  * P-values come from the Monte Carlo maximum over every window, so they already account for the
@@ -505,7 +508,8 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
   /**
    * Returns the nodes in order: `nearest`, the model preparation (`population` for Bernoulli,
    * `margins` and `weights` for the space-time permutation model), `block-totals`, `totals`, for
-   * Poisson and Bernoulli the cumulative table (`weight-sums`, `weight-scan`, `cdf`),
+   * Poisson and Bernoulli the cumulative table (`cell-weights` for Poisson only, the `GPUScan` levels of `cumulative`, and
+   * `weight-total`),
    * `init-counts`, `window-limit`, `evaluate` (the observed data), then per replicate batch
    * `batch-control`, `batch-clear`, the draw kernel (`scatter-<batch>`, `draw-labels-<batch>` or
    * `draw-times-<batch>`) and `batch-evaluate`, then `select-init`, then per cluster
@@ -581,8 +585,6 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
         : null;
     const blockBaseline = f32('block-baseline', blocks);
     const blockCases = u32('block-cases', blocks);
-    const blockWeights = u32('block-weights', blocks);
-    const blockOffsets = u32('block-offsets', blocks);
     // Words: cases, baseline bits, weight total, next batch base, running batch base (replicates
     // done before the running batch). The batch control kernels advance the two base words.
     const totals = u32('totals', TOTALS_WORDS);
@@ -939,63 +941,45 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
     );
 
     if (model !== 'space-time-permutation') {
+      // The integer cumulative table is the inclusive prefix sum of the cell weights. Bernoulli
+      // scans its population directly; Poisson first writes each cell's share of 2^31.
+      let cellWeights = population;
+      if (!cellWeights) {
+        cellWeights = u32('cell-weights', cells);
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-cell-weights`,
+            operation: OPERATION,
+            variant: 'cell-weights',
+            bindings: [
+              cellWeightBinding,
+              {name: 'totals', view: totals, type: 'u32', access: 'read'},
+              {name: 'cellWeights', view: cellWeights, type: 'u32', access: 'read_write'}
+            ],
+            invocationCount: cells,
+            declarations: common,
+            body: `let totalBaseline = bitcast<f32>(totals[totalsOffset + 1u]);
+  cellWeights[cellWeightsOffset + index] = ${cellWeight('index')};`
+          })
+        );
+      }
       nodes.push(
+        ...new GPUScan({
+          id: `${id}-cumulative`,
+          input: cellWeights,
+          output: cumulative,
+          mode: 'inclusive'
+        }).getCommandNodes(graph),
         createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-weight-sums`,
+          id: `${id}-weight-total`,
           operation: OPERATION,
-          variant: 'weight-sums',
+          variant: 'weight-total',
           bindings: [
-            cellWeightBinding,
-            {name: 'totals', view: totals, type: 'u32', access: 'read'},
-            {name: 'blockWeights', view: blockWeights, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: blocks,
-          declarations: common,
-          body: `let totalBaseline = bitcast<f32>(totals[totalsOffset + 1u]);
-  var weightSum = 0u;
-  let first = index * CELLS_PER_BLOCK;
-  for (var cell = first; cell < min(first + CELLS_PER_BLOCK, CELLS); cell++) {
-    weightSum += ${cellWeight('cell')};
-  }
-  blockWeights[blockWeightsOffset + index] = weightSum;`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-weight-scan`,
-          operation: OPERATION,
-          variant: 'weight-scan',
-          bindings: [
-            {name: 'blockWeights', view: blockWeights, type: 'u32', access: 'read'},
-            {name: 'blockOffsets', view: blockOffsets, type: 'u32', access: 'read_write'},
+            {name: 'cumulative', view: cumulative, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'u32', access: 'read_write'}
           ],
           invocationCount: 1,
-          declarations: common,
-          body: `var running = 0u;
-  for (var blockIndex = 0u; blockIndex < BLOCKS; blockIndex++) {
-    blockOffsets[blockOffsetsOffset + blockIndex] = running;
-    running += blockWeights[blockWeightsOffset + blockIndex];
-  }
-  totals[totalsOffset + 2u] = running;`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-cdf`,
-          operation: OPERATION,
-          variant: 'cdf',
-          bindings: [
-            cellWeightBinding,
-            {name: 'totals', view: totals, type: 'u32', access: 'read'},
-            {name: 'blockOffsets', view: blockOffsets, type: 'u32', access: 'read'},
-            {name: 'cumulative', view: cumulative, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: blocks,
-          declarations: common,
-          body: `let totalBaseline = bitcast<f32>(totals[totalsOffset + 1u]);
-  var running = blockOffsets[blockOffsetsOffset + index];
-  let first = index * CELLS_PER_BLOCK;
-  for (var cell = first; cell < min(first + CELLS_PER_BLOCK, CELLS); cell++) {
-    running += ${cellWeight('cell')};
-    cumulative[cumulativeOffset + cell] = running;
-  }`
+          body: `totals[totalsOffset + 2u] = cumulative[cumulativeOffset + ${cells - 1}u];`
         })
       );
     }

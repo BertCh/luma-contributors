@@ -407,8 +407,9 @@ ${DECODE_ORDERED_KEY_WGSL}`,
   state[stateOffset + 7u] = f32(count);`
       }),
       // 3. Histogram (cleared every encoding, transient buffers are not zero-initialised).
-      // Not GPUHistogram: it needs a materialized calibrated view (this reads the raw band with the
-      // window and mask), moves boundary bins by rounding, and is slower above 256 bins.
+      // Not GPURasterHistogram: although it reads a raw band with validity, it has no per-frame
+      // window and no region mask (this counts only cells inside the window and the mask), and its
+      // boundary bins follow its own rounding rule, not the one this stretch defines.
       createFillNode<Parameters>(graph, {
         id: `${id}-clear-histogram`,
         operation: OPERATION,

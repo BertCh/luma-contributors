@@ -179,7 +179,10 @@ export type GPUTerrainWeissLandformsProps = {
  * cancellation occurs. Slope is Horn's 3×3 slope with clamped borders. A cell is invalid when its
  * elevation, either position value, or its slope is invalid. Global statistics make the classes
  * depend on the whole tile, as in the original ArcView method; use `'local'` for tile-independent
- * classes.
+ * classes. `requiredHalo` bounds the local position and slope terms only; it is sufficient for
+ * `'local'` standardization, but no fixed local radius covers `'global'`. This class does not
+ * implement `GPURasterHaloStage`; do not pass a global-standardized instance directly to the
+ * published halo assembler expecting seam-free results.
  *
  * Classes (`s`, `l` = small and large standardized position, `t` = `standardThreshold`):
  * `s ≤ -t`: canyon (`l ≤ -t`), midslope drainage, upland drainage (`l ≥ t`);

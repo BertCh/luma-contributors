@@ -18,7 +18,7 @@ Large typechecks need `NODE_OPTIONS=--max-old-space-size=8192` or more.
 ## Relationship to luma.gl (upstream-first)
 - This repository contains only geospatial and analysis code. Everything else comes from **published**
   `@luma.gl/core`, `@luma.gl/shaders`, `@luma.gl/graph` (and, for examples and tests only,
-  `@luma.gl/engine`) at `10.0.0-alpha.12`, through their public package entry points.
+  `@luma.gl/engine`) at `10.0.0-alpha.13`, through their public package entry points.
 - Never import a `@luma.gl/*` path with an `_internal` segment (even one listed in the package's
   exports), deep `dist` paths, or copied luma.gl source. Never fork,
   re-implement or re-export luma.gl APIs. See `dev-docs/upstream-first-plan.md`.

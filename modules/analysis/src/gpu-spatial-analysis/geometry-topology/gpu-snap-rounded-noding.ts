@@ -7,6 +7,7 @@ import {
   createTransientView,
   GPUScan,
   GPUSort,
+  GPUUint32Gather,
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -673,18 +674,13 @@ fn readTerms(index: u32) -> array<u32, 12> {
         algorithm: 'radix',
         keyBits: LATTICE_KEY_BITS
       }).getCommandNodes(graph),
-      createWGSLKernelNode<Parameters>(graph, {
+      // `orderByY` is a permutation of the hot rows, so no index is out of range.
+      ...new GPUUint32Gather({
         id: `${id}-gather-x`,
-        operation: OPERATION,
-        variant: 'gather-x',
-        bindings: [
-          {name: 'keysX', view: keysX, type: 'u32', access: 'read'},
-          {name: 'orderByY', view: orderByY, type: 'u32', access: 'read'},
-          {name: 'keysXByY', view: keysXByY, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: hotCapacity,
-        body: 'keysXByY[keysXByYOffset + index] = keysX[keysXOffset + orderByY[orderByYOffset + index]];'
-      }),
+        source: keysX,
+        indices: orderByY,
+        output: keysXByY
+      }).getCommandNodes(graph),
       ...new GPUSort({
         id: `${id}-sort-x`,
         keys: keysXByY,

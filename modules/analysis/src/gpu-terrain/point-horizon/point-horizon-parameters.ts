@@ -4,10 +4,8 @@
 
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import type {GPUTerrainHeightReference} from '../../analysis-core/contracts/vertical-datum';
-import {
-  GPU_EARTH_MEAN_RADIUS_METERS,
-  GPU_WGS84_SEMI_MAJOR_AXIS_METERS
-} from '../../analysis-core/contracts/earth';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../analysis-core/contracts/earth';
+import {WEB_MERCATOR_EARTH_RADIUS} from '@luma.gl/graph/gpu-project';
 import {getRasterGridGeoreference} from '../../analysis-core/raster-grid';
 import {validateParameterTarget} from '../../raster-analysis/raster-band-utils';
 
@@ -101,7 +99,7 @@ export type GPUPointHorizonTraversal = 'march' | 'pyramid';
  * and positive). Web Mercator cell-size model: the grid is a window of EPSG:3857 meters with
  * square pixels and rows increasing to the south; the world size `worldPixelSize` (pixels per 360
  * degrees) is `2 * pi * a / cellSize` and the Mercator ordinate of the top edge of row 0 is
- * `northEdge / a`, with `a = 6378137` m, which equals the former `originY` form
+ * `northEdge / a`, with `a` the Web Mercator sphere radius `WEB_MERCATOR_EARTH_RADIUS` (6378137 m), which equals the former `originY` form
  * `pi * (1 - 2 * originY / worldPixelSize)`. Distances are WGS84 ground meters: the arc on the
  * sphere of `R = 6371008.8` m scaled by the ellipsoid's local metric at the observer latitude
  * (see {@link GPUPointHorizonProjection}).
@@ -183,8 +181,8 @@ function packModelSettings(
     }
     // Pixels per 360 degrees and the Mercator ordinate (radians) of the top edge of row 0, in
     // float64 before the float32 pack. northEdge is EPSG:3857 meters.
-    target[1] = (2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS) / cellSizeX;
-    target[2] = northEdge / GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
+    target[1] = (2 * Math.PI * WEB_MERCATOR_EARTH_RADIUS) / cellSizeX;
+    target[2] = northEdge / WEB_MERCATOR_EARTH_RADIUS;
   } else {
     target[1] = cellSize[0];
     target[2] = cellSize[1];

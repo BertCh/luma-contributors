@@ -11,6 +11,7 @@ import {
 import type {
   GPURasterBand,
   GPURasterBorderMode,
+  GPURasterHaloStage,
   GPURasterMetadata
 } from '@luma.gl/graph/gpu-raster';
 import {
@@ -166,7 +167,7 @@ export type GPUTerrainVectorRuggednessProps = {
  * O(radius^2). An invalid centre normal gives NaN and validity 0. Satisfies the
  * `GPURasterHaloStage` contract with `requiredHalo = maximumRadius + 1`.
  */
-export class GPUTerrainVectorRuggedness implements GPUCommandNodeProducer {
+export class GPUTerrainVectorRuggedness implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */

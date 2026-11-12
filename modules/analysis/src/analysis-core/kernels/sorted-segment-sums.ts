@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  GPUGather,
   GPUSort,
   type GPUCommandGraph,
   type GPUCommandGraphNodeCondition,
@@ -186,26 +187,13 @@ export function getSortedSegmentSumNodes<Parameters>(
       pointCount
     );
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      // `sortedIndices` is a permutation of the rows, so no index is out of range.
+      ...new GPUGather({
         id: `${id}-gather-${reduction.name}`,
-        operation,
-        variant: 'gather',
-        bindings: [
-          {name: 'sortedIndices', view: sortedIndices, type: 'u32', access: 'read'},
-          {name: 'contributions', view: reduction.contributions, type: 'f32', access: 'read'},
-          {
-            name: 'sortedContributions',
-            view: sortedContributions,
-            type: 'f32',
-            access: 'read_write'
-          }
-        ],
-        invocationCount: pointCount,
-        body: `sortedContributions[sortedContributionsOffset + index] =
-    contributions[contributionsOffset + sortedIndices[sortedIndicesOffset + index]];`
-      })
-    );
-    nodes.push(
+        source: reduction.contributions,
+        indices: sortedIndices,
+        output: sortedContributions
+      }).getCommandNodes(graph),
       createSegmentSumNode<Parameters>(graph, {
         id: `${id}-reduce-${reduction.name}`,
         operation,

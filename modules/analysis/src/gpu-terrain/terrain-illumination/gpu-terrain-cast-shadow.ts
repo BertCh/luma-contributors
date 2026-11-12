@@ -12,6 +12,7 @@ import {
 import {
   GPURasterBufferToTexture,
   type GPURasterBand,
+  type GPURasterHaloStage,
   type GPURasterMetadata
 } from '@luma.gl/graph/gpu-raster';
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -212,7 +213,7 @@ export type GPUTerrainCastShadowProps = {
  * elevation receive NaN. Pixels closer than `maximumRadius` to the tile edge see a truncated
  * horizon: pass a tile with a `maximumRadius` halo for seamless results.
  */
-export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
+export class GPUTerrainCastShadow implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */

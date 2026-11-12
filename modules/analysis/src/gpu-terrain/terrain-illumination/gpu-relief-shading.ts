@@ -14,6 +14,7 @@ import {
   GPURasterGradient,
   type GPURasterBand,
   type GPURasterBorderMode,
+  type GPURasterHaloStage,
   type GPURasterMetadata
 } from '@luma.gl/graph/gpu-raster';
 import {
@@ -364,21 +365,23 @@ export type GPUReliefShadingProps = {
  * (elevation-dependent contrast), both before `exposure`. `'imhof-swing'` weighting swings each
  * light's azimuth toward the aspect (see {@link GPUReliefShadingWeighting}). Every style value is per-frame, so restyling
  * never recompiles. Invalid pixels (an invalid 3x3 neighborhood or a NaN optional input) receive
- * NaN, color 0, and validity 0. For seamless tiles pass a one-pixel halo.
+ * NaN, color 0, and validity 0. For seamless tiles pass `requiredHalo` source pixels per side:
+ * two for one-sided extrapolation, one for the default clamped border and other modes.
  */
-export class GPUReliefShading implements GPUCommandNodeProducer {
+export class GPUReliefShading implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUReliefShadingProps;
-  /** Receptive field in pixels (`GPURasterHaloStage` contract). */
-  readonly requiredHalo = 1;
+  /** Source-pixel radius, including the two inward samples used by one-sided extrapolation. */
+  readonly requiredHalo: number;
   /** Row direction the kernels use: the prop, or the direction the grid affine states. */
   readonly rowDirection: GPURasterRowDirection;
 
   constructor(props: GPUReliefShadingProps) {
     this.id = props.id ?? 'relief-shading';
     this.props = props;
+    this.requiredHalo = props.borderMode === 'one-sided' ? 2 : 1;
     const {id} = this;
     const {output} = props;
     const pixelCount = validateRasterGrid(id, props.grid);

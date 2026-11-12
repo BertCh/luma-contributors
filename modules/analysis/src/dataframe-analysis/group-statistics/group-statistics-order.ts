@@ -6,6 +6,7 @@ import {
   createTransientView,
   GPUScan,
   GPUSort,
+  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,7 +15,6 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
 import {
   atomicBinding,
-  createGatherNode,
   GROUP_VALUE_KEY_WGSL,
   readBinding,
   writeBinding
@@ -111,7 +111,6 @@ export function getColumnOrderNodes<Parameters>(
   );
   const order = getKeyOrderNodes<Parameters>(graph, {
     id: `${id}-order`,
-    operation,
     keyLow: structure.keyLow,
     keyHigh: structure.keyHigh,
     rowIds: structure.rowIds,
@@ -121,13 +120,12 @@ export function getColumnOrderNodes<Parameters>(
   nodes.push(...order.nodes);
   const sortedKeys = u32('sorted-keys');
   nodes.push(
-    createGatherNode(graph, {
+    ...new GPUUint32Gather({
       id: `${id}-gather-sorted-keys`,
-      operation,
-      indices: order.permutation,
       source: valueKeys,
-      target: sortedKeys
-    })
+      indices: order.permutation,
+      output: sortedKeys
+    }).getCommandNodes(graph)
   );
 
   // 2. Quantiles.

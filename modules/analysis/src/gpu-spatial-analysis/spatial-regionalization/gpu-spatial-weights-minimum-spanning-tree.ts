@@ -5,6 +5,7 @@
 import {
   createTransientView,
   GPUCompaction,
+  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -541,18 +542,13 @@ ${IS_FINITE_FLOAT_WGSL}`,
         invocationCount: rows,
         body: 'atomicMin(&minimumLabel[minimumLabelOffset + component[componentOffset + index]], index);'
       }),
-      createWGSLKernelNode<Parameters>(graph, {
+      // Every `component` entry is a tree root, a row index below `rows`, so none is out of range.
+      ...new GPUUint32Gather({
         id: `${id}-label-write`,
-        operation: OPERATION,
-        variant: 'label-write',
-        bindings: [
-          {name: 'component', view: component, type: 'u32', access: 'read'},
-          {name: 'minimumLabel', view: minimumLabel, type: 'u32', access: 'read'},
-          {name: 'labels', view: componentLabels, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: rows,
-        body: 'labels[labelsOffset + index] = minimumLabel[minimumLabelOffset + component[componentOffset + index]];'
-      })
+        source: minimumLabel,
+        indices: component,
+        output: componentLabels
+      }).getCommandNodes(graph)
     );
 
     if (output.edges) {

@@ -12,6 +12,7 @@ import {
 import {
   GPURasterContours,
   type GPURasterBand,
+  type GPURasterHaloStage,
   type GPURasterMetadata
 } from '@luma.gl/graph/gpu-raster';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -112,7 +113,7 @@ export type GPUTerrainContoursProps = {
  * contributor-wide overflow flag reports truncation in any level. Per-level layout errors surface from
  * `GPURasterContours` when the contributor is added to a graph.
  */
-export class GPUTerrainContours implements GPUCommandNodeProducer {
+export class GPUTerrainContours implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */

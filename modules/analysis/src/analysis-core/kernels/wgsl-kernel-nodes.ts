@@ -3,7 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Binding, type BindingDeclaration, type TextureView} from '@luma.gl/core';
-import {Kernel} from '@luma.gl/graph';
+import {getPlatformInfo, Kernel} from '@luma.gl/graph';
+import {
+  fp64,
+  fp64arithmetic,
+  getShaderModuleDependencies,
+  WGSLShaderAssembler,
+  type ShaderModule
+} from '@luma.gl/shaders';
+import {maskWGSLComments} from '@luma.gl/shaders/wgsl';
 import {
   createGPUComputeCommandNode,
   createTransientView,
@@ -19,10 +27,10 @@ import {
   type GraphBufferUse,
   type GraphDataView,
   type GraphResourceUse,
-  type GraphTextureHandle,
   type GraphTextureView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCompactOutput} from './gpu-contributor-types';
+import {validateMaximumCount, validateRequirement} from './gpu-contributor-utils';
 
 const DEFAULT_WORKGROUP_SIZE = 256;
 
@@ -268,14 +276,16 @@ export type WGSLKernelProps<Parameters> = {
   operation: string;
   /** Optional implementation variant reported in the workload estimate. */
   variant?: string;
-  /** Storage bindings in `@binding` order. At most 8 for the WebGPU default limit. */
+  /**
+   * Storage bindings in `@binding` order. At most the device's `maxStorageBuffersPerShaderStage`
+   * (8 by WebGPU default).
+   */
   bindings: readonly WGSLKernelBinding[];
   /**
    * Sampled-texture bindings, declared after the storage bindings at the following `@binding`
    * locations (`bindings.length + i`). They are resolved with the encode context's
-   * `getTextureView`, declared as `'sampled'` node resources, and share the bind-group identity
-   * cache of the storage bindings: the bind group is rebuilt only when a resolved buffer or
-   * texture view changes. At most `maxSampledTexturesPerShaderStage`.
+   * `getTextureView`, declared as `'sampled'` node resources, and supplied with the storage
+   * bindings on every dispatch. At most `maxSampledTexturesPerShaderStage`.
    */
   textures?: readonly WGSLKernelTextureBinding[];
   /** Number of linear invocations. Each invocation sees `index` in `[0, invocationCount)`. */
@@ -304,6 +314,20 @@ export type WGSLKernelProps<Parameters> = {
   condition?: GPUCommandGraphNodeCondition<Parameters>;
   /** Additional declared resource uses, such as the `'indirect'` use of a condition buffer. */
   extraResources?: readonly GraphBufferUse[];
+  /**
+   * Published shader modules from `@luma.gl/shaders`, such as `fp64`. When the list is non-empty
+   * the generated WGSL is assembled with the published `WGSLShaderAssembler` for
+   * `getPlatformInfo(graph.device)`: the modules (with their dependencies) are emitted before the
+   * kernel, and the application bindings keep their locations. Omitted or empty, nothing is
+   * assembled and the kernel is exactly the generated WGSL. See {@link createWGSLKernelNode} for
+   * what is accepted.
+   */
+  modules?: readonly ShaderModule<any, any, any>[];
+  /**
+   * Preprocessor defines for the module assembly; they win over the platform and module defines.
+   * Needs `modules`.
+   */
+  defines?: Readonly<Record<string, boolean | number>>;
 };
 
 /**
@@ -313,6 +337,32 @@ export type WGSLKernelProps<Parameters> = {
  * is kept in the pipeline layout even when `body` never reads it, so callers may declare bindings
  * conditionally used by generated WGSL. Dispatch uses a bounded 3D layout so large inputs never
  * exceed `maxComputeWorkgroupsPerDimension`.
+ *
+ * With `modules`, the WGSL is assembled before the kernel is built, and the node record holds the
+ * assembled text. The node binds only its own storage and texture bindings, so it accepts only
+ * modules that need nothing bound, and it checks that at construction:
+ * - Application bindings must stay below `@binding(100)`; the assembler gives group-0 locations
+ *   from 100 up to module bindings.
+ * - With `fp64arithmetic` in the module set (directly or through `fp64`), the node always
+ *   defines `LUMA_FP64_INTEGER_ARITHMETIC`, on every platform, and rejects `defines` that turn it
+ *   off. The integer arithmetic functions do not read the module's `fp64arithmetic` uniform,
+ *   so WebGPU's `layout: 'auto'` leaves it out when no caller code references it. The
+ *   published assembler itself chooses the integer variant only for Apple GPUs; elsewhere it
+ *   chooses the classic variant without the code-elimination barrier, which measured at float32
+ *   accuracy (`dev-docs/research/extended-precision-2026-11-11`), and the per-vendor helpers
+ *   that choose classic safely are internal to `@luma.gl/graph`. A classic path also has to bind
+ *   the uniform; until one exists, the node masks WGSL comments in `body`, `declarations` and
+ *   every module source except the published `fp64` and `fp64arithmetic` objects, then rejects
+ *   any whole identifier naming the uniform or its reader helpers (`fp64_runtime_zero_bits`,
+ *   `fp64_runtime_zero`, and `prevent_fp64_optimization`, which reads it when the code-elimination
+ *   workaround is enabled).
+ * - Any other module binding (a uniform block, a texture, a buffer) is rejected.
+ * Section 2 of `dev-docs/research/extended-precision-2026-11-11/README.md` measured the loop probe
+ * on the test GPU (Apple Metal, headless Chromium), including upload and readback: classic with
+ * the workaround 145 ms, integer 380 ms, and local double-float 132 ms. Separately, luma.gl's
+ * `node_modules/@luma.gl/graph/dist/geospatial/geospatial-utils.js` says D3D12 inlining makes
+ * integer shaders too large to compile in practical time; its platform selector uses classic
+ * on D3D11, D3D12 and Vulkan.
  */
 export function createWGSLKernelNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -406,6 +456,12 @@ fn main(
   ${props.guardIndex === false ? '' : 'if (index >= INVOCATION_COUNT) {\n    return;\n  }'}
   ${props.body}
 }`;
+  const kernelSource = props.modules?.length
+    ? assembleWGSLKernelSource(graph, props, source)
+    : source;
+  if (props.defines && !props.modules?.length) {
+    throw new Error(`${props.id} defines need modules: without modules nothing is assembled`);
+  }
   const resources: GraphResourceUse[] = props.bindings.map(binding => ({
     buffer: binding.view,
     usage: binding.access === 'read' ? 'storage-read' : 'storage-read-write'
@@ -441,7 +497,7 @@ fn main(
     compile: ({device}) => {
       const kernel = new Kernel(device, {
         id: props.id,
-        source,
+        source: kernelSource,
         constants: {
           ...props.constants,
           INVOCATION_COUNT: props.invocationCount,
@@ -472,6 +528,11 @@ fn main(
           ]
         }
       });
+      // The binding record is rebuilt only when a resolved buffer or texture view changes. That
+      // saves the JavaScript allocation of the `getViewBinding` records on every encode, nothing
+      // more: `Kernel.dispatch` passes the bindings to `ComputePass.setBindings`, which asks the
+      // bind-group factory without cache keys, so WebGPU creates a new bind group on every
+      // dispatch whatever the identity of these objects (luma.gl 10.0.0-alpha.13).
       let resolvedBuffers: Buffer[] = [];
       let resolvedTextureViews: TextureView[] = [];
       let resolvedBindings: Record<string, Binding> = {};
@@ -511,8 +572,97 @@ fn main(
   });
   // One WeakMap lookup when the graph records nothing. When it does, the entry references only
   // values the node's compile and encode closures already hold.
-  WGSL_KERNEL_NODE_RECORDS.get(graph)?.set(props.id, {props, source, workgroupSize, layout});
+  WGSL_KERNEL_NODE_RECORDS.get(graph)?.set(props.id, {
+    props,
+    source: kernelSource,
+    workgroupSize,
+    layout
+  });
   return node;
+}
+
+/** Name of the published double-single arithmetic module and of its uniform block. */
+const FP64_ARITHMETIC_MODULE_NAME = 'fp64arithmetic';
+/** Define that selects the integer-controlled double-single variant of `fp64arithmetic`. */
+const FP64_INTEGER_ARITHMETIC_DEFINE = 'LUMA_FP64_INTEGER_ARITHMETIC';
+/** First group-0 binding location the published assembler gives to module bindings. */
+const FIRST_MODULE_BINDING_LOCATION = 100;
+/** Whole identifiers for the uniform and helpers that can read it under integer arithmetic. */
+const FP64_UNIFORM_READER_PATTERN =
+  /\b(?:fp64arithmetic|fp64_runtime_zero(?:_bits)?|prevent_fp64_optimization)\b/;
+
+/** One assembler for every kernel, so module binding locations stay stable between kernels. */
+let wgslKernelAssembler: WGSLShaderAssembler | undefined;
+
+/**
+ * Assembles the generated WGSL of {@link createWGSLKernelNode} with its shader modules, and
+ * rejects module sets whose bindings the node would have to bind.
+ */
+function assembleWGSLKernelSource<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: WGSLKernelProps<Parameters>,
+  source: string
+): string {
+  const modules = [...(props.modules ?? [])];
+  validateMaximumCount(
+    props.id,
+    'storage and sampled-texture bindings with shader modules',
+    props.bindings.length + (props.textures?.length ?? 0),
+    FIRST_MODULE_BINDING_LOCATION
+  );
+  const resolvedModules = getShaderModuleDependencies(modules);
+  const usesFP64Arithmetic = resolvedModules.some(
+    module => module.name === FP64_ARITHMETIC_MODULE_NAME
+  );
+  const defines: Record<string, boolean | number> = {...props.defines};
+  if (usesFP64Arithmetic) {
+    const integerDefine = defines[FP64_INTEGER_ARITHMETIC_DEFINE];
+    validateRequirement(
+      props.id,
+      integerDefine === undefined || Boolean(integerDefine),
+      `defines must leave ${FP64_INTEGER_ARITHMETIC_DEFINE} on with module ` +
+        `${FP64_ARITHMETIC_MODULE_NAME}: the classic variant needs its uniform bound, which ` +
+        'createWGSLKernelNode does not bind'
+    );
+    defines[FP64_INTEGER_ARITHMETIC_DEFINE] = true;
+    const readerSources = [
+      `${props.declarations ?? ''}\n${props.body}`,
+      ...resolvedModules
+        .filter(module => module !== fp64 && module !== fp64arithmetic)
+        .map(module => module.source ?? '')
+    ];
+    validateRequirement(
+      props.id,
+      !readerSources.some(readerSource =>
+        FP64_UNIFORM_READER_PATTERN.test(maskWGSLComments(readerSource))
+      ),
+      `body, declarations and modules must not read the ${FP64_ARITHMETIC_MODULE_NAME} uniform ` +
+        '(fp64arithmetic, fp64_runtime_zero_bits, fp64_runtime_zero, ' +
+        'prevent_fp64_optimization): createWGSLKernelNode ' +
+        'does not bind it'
+    );
+  }
+  wgslKernelAssembler ??= new WGSLShaderAssembler();
+  const assembly = wgslKernelAssembler.assembleWGSLShader({
+    platformInfo: getPlatformInfo(graph.device),
+    source,
+    modules,
+    defines,
+    shaderStage: 'compute',
+    computeEntryPoint: 'main',
+    scanVertexAttributes: false
+  });
+  for (const assignment of assembly.bindingAssignments) {
+    validateRequirement(
+      props.id,
+      usesFP64Arithmetic &&
+        assignment.moduleName === FP64_ARITHMETIC_MODULE_NAME &&
+        assignment.name === FP64_ARITHMETIC_MODULE_NAME,
+      `module ${assignment.moduleName} binding ${assignment.name} needs a bound resource, which ` +
+        'createWGSLKernelNode does not bind'
+    );
+  }
+  return assembly.source;
 }
 
 /** Kernel facts of one node built by {@link createWGSLKernelNode}, for computation records. */
@@ -523,7 +673,10 @@ export type WGSLKernelNodeRecord = {
   operation: string;
   /** Implementation variant from the workload estimate, when set. */
   variant?: string;
-  /** Full generated WGSL module text, exactly as passed to the kernel. */
+  /**
+   * Full WGSL module text exactly as passed to the kernel: the generated text, assembled with its
+   * shader modules when the kernel has any.
+   */
   source: string;
   /** Author-written body (`WGSLKernelProps.body`), shared by differently bound instances. */
   body: string;
@@ -790,9 +943,8 @@ export function createPublishNode<Parameters>(
   for (const [extraIndex, extra] of extraCounts.entries()) {
     bindings.push({name: `extraOut${extraIndex}`, view: extra, type: 'u32', access: 'read_write'});
   }
-  if (bindings.length > 8) {
-    throw new Error(`${props.id} needs more than 8 storage bindings`);
-  }
+  // createWGSLKernelNode rejects more bindings than the device's maxStorageBuffersPerShaderStage,
+  // naming the operation, the node and the limit.
   const overflowExpression = [
     'total > CAPACITY',
     ...overflowSources.map(
@@ -854,92 +1006,4 @@ export function createFillNode<Parameters>(
     invocationCount: componentCount,
     body: `fillTarget[fillTargetOffset + index] = ${props.value};`
   });
-}
-
-/**
- * Returns a resolver that yields new bindings only when a resolved buffer or texture view differs
- * from the last call, and `null` otherwise.
- *
- * `getViewBinding` allocates a fresh binding object per call, and the WebGPU pipeline compares
- * bindings by identity, so passing fresh objects to `setBindings` on every encode resets the
- * pipeline's bind-group cache and rebuilds the bind group each time. Reusing the same binding
- * objects while the resources are unchanged lets the pipeline keep its cached bind group.
- * Apply bindings only when the resolver returns a record; see `createCachedBindingResolver` for
- * per-dispatch `Kernel` bindings.
- *
- * Texture views are included in the identity check because the command graph replaces a view when
- * its texture is replaced or, for frame-scoped textures, when the frame changes.
- *
- * @param views Buffer-backed views keyed by binding name.
- * @param textures Texture handles or views keyed by binding name. The returned function then needs
- *   its `getTextureView` argument.
- * @internal
- */
-export function createChangedBindingResolver(
-  views: Record<string, GraphDataView>,
-  textures: Record<string, GraphTextureHandle | GraphTextureView> = {}
-): (
-  getBuffer: (view: GraphDataView) => Buffer,
-  getTextureView?: (texture: GraphTextureHandle | GraphTextureView) => TextureView
-) => Record<string, Binding> | null {
-  const viewEntries = Object.entries(views);
-  const textureEntries = Object.entries(textures);
-  let resolved = false;
-  let resolvedBuffers: Buffer[] = [];
-  let resolvedTextureViews: TextureView[] = [];
-  return (getBuffer, getTextureView) => {
-    const nextBuffers = viewEntries.map(([, view]) => getBuffer(view));
-    const nextTextureViews = textureEntries.map(([, texture]) => {
-      // Texture entries are only declared by callers that also pass the graph's resolver.
-      if (!getTextureView) {
-        throw new Error(
-          'WGSL binding resolver: textures were declared, so getTextureView must be passed'
-        );
-      }
-      return getTextureView(texture);
-    });
-    if (
-      resolved &&
-      nextBuffers.every((buffer, index) => buffer === resolvedBuffers[index]) &&
-      nextTextureViews.every((view, index) => view === resolvedTextureViews[index])
-    ) {
-      return null;
-    }
-    resolved = true;
-    resolvedBuffers = nextBuffers;
-    resolvedTextureViews = nextTextureViews;
-    const bindings: Record<string, Binding> = {};
-    for (const [index, [name, view]] of viewEntries.entries()) {
-      const buffer = nextBuffers[index]!;
-      bindings[name] = getViewBinding(view, () => buffer);
-    }
-    for (const [index, [name]] of textureEntries.entries()) {
-      bindings[name] = nextTextureViews[index]!;
-    }
-    return bindings;
-  };
-}
-
-/**
- * Returns a resolver that always yields bindings for a per-dispatch `Kernel`, reusing the previous
- * record while every resolved buffer and texture view is unchanged.
- *
- * @param views Buffer-backed views keyed by binding name.
- * @param textures Texture handles or views keyed by binding name. The returned function then needs
- *   its `getTextureView` argument.
- * @internal
- */
-export function createCachedBindingResolver(
-  views: Record<string, GraphDataView>,
-  textures: Record<string, GraphTextureHandle | GraphTextureView> = {}
-): (
-  getBuffer: (view: GraphDataView) => Buffer,
-  getTextureView?: (texture: GraphTextureHandle | GraphTextureView) => TextureView
-) => Record<string, Binding> {
-  const resolveChangedBindings = createChangedBindingResolver(views, textures);
-  let bindings: Record<string, Binding> = {};
-  return (getBuffer, getTextureView) => {
-    bindings = resolveChangedBindings(getBuffer, getTextureView) ?? bindings;
-    return bindings;
-  };
 }

@@ -9,7 +9,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
@@ -229,7 +229,7 @@ export type GPULocalDominanceProps = GPULocalDominanceGeometry & {
  * exact arithmetic. Offsets are baked into the WGSL (see {@link getGPULocalDominanceShifts}), so
  * cost is `distances * angles` samples per pixel. `requiredHalo` is `maximumRadius`.
  */
-export class GPULocalDominance implements GPUCommandNodeProducer {
+export class GPULocalDominance implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */

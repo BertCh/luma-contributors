@@ -12,8 +12,6 @@ import {
 } from '../../src/analysis-core/contracts/spatial-frame';
 import {createGPUSpatialFrameFromCRS} from '../../src/analysis-core/contracts/spatial-frame-crs';
 import {createGPULocalFrame} from '../../src/analysis-core/contracts/local-frame';
-import {getGPUSpatialContextCompatibility} from '../../src/analysis-core/contracts/spatial-context';
-import {getGPUProjectionSpatialContext} from '../../src/geospatial-analysis/projection-spatial-context';
 
 describe('GPUSpatialFrame facade', () => {
   it.each([
@@ -41,13 +39,7 @@ describe('GPUSpatialFrame facade', () => {
       crs => createGPUSpatialFrameFromCRS(crs).id
     );
     expect(ids).toEqual(['EPSG:3857', 'EPSG:3857', 'EPSG:3857']);
-    const a = getGPUProjectionSpatialContext(
-      'epsg:3857',
-      createGPUSpatialFrameFromCRS('epsg:3857')
-    )!;
-    const b = getGPUProjectionSpatialContext('EPSG:3857')!;
-    expect(getGPUSpatialContextCompatibility(a, b).compatible).toBe(true);
-    expect(a.frame?.crs).toBe('epsg:3857');
+    expect(createGPUSpatialFrameFromCRS('epsg:3857').crs).toBe('epsg:3857');
   });
 
   it('fills metadata from resolved math.gl descriptors', async () => {
@@ -68,12 +60,6 @@ describe('GPUSpatialFrame facade', () => {
     expect(mercator.id).toBe('EPSG:3857');
     expect(mercator.signature).toBe('EPSG:3857');
     expect(getGPUSpatialFrameContextUnits(mercator)).toBe('meters');
-  });
-
-  it('declares meters on projection contexts when the unit is known', () => {
-    expect(getGPUProjectionSpatialContext('EPSG:32633')?.units).toBe('meters');
-    expect(getGPUProjectionSpatialContext('EPSG:3857')?.units).toBe('meters');
-    expect(getGPUProjectionSpatialContext('EPSG:2263')?.units).toBeUndefined();
   });
 
   it('maps local frame kinds in one place', () => {

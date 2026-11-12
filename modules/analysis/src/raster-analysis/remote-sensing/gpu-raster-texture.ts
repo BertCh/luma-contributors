@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {validateRasterGrid} from '../raster-band-utils';
 import type {
   GraphDataView,
@@ -48,7 +48,7 @@ export const MAXIMUM_TEXTURE_RADIUS = 8;
  * Run once per direction; symmetry counts each directed pair twice. requiredHalo is radius,
  * since endpoints outside each window are excluded. Interior seams require a source halo.
  */
-export class GPURasterTexture implements GPUCommandNodeProducer {
+export class GPURasterTexture implements GPUCommandNodeProducer, GPURasterHaloStage {
   readonly id: string;
   readonly requiredHalo: number;
   constructor(readonly props: GPURasterTextureProps) {

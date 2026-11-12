@@ -6,6 +6,7 @@ import {
   createTransientView,
   GPUScan,
   GPUSort,
+  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -408,12 +409,12 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
     if (twoWords && keyHigh) {
       const highByFirst = u32('high-by-low-order', rightCount);
       nodes.push(
-        node(
-          'gather-high',
-          [read('rows', firstRows), read('keyHigh', keyHigh), write('gathered', highByFirst)],
-          rightCount,
-          'gathered[gatheredOffset + index] = keyHigh[keyHighOffset + rows[rowsOffset + index]];'
-        )
+        ...new GPUUint32Gather({
+          id: `${id}-gather-high`,
+          source: keyHigh,
+          indices: firstRows,
+          output: highByFirst
+        }).getCommandNodes(graph)
       );
       sortedHigh = u32('sorted-high', rightCount);
       sortedRows = u32('sorted-rows', rightCount);
@@ -429,12 +430,12 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
       );
       sortedLow = u32('sorted-low', rightCount);
       nodes.push(
-        node(
-          'gather-low',
-          [read('rows', sortedRows), read('keyLow', keyLow), write('gathered', sortedLow)],
-          rightCount,
-          'gathered[gatheredOffset + index] = keyLow[keyLowOffset + rows[rowsOffset + index]];'
-        )
+        ...new GPUUint32Gather({
+          id: `${id}-gather-low`,
+          source: keyLow,
+          indices: sortedRows,
+          output: sortedLow
+        }).getCommandNodes(graph)
       );
     }
     const sortedKeyBindings = (): WGSLKernelBinding[] => [

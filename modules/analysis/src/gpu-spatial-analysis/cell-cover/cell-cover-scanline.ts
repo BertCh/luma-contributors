@@ -176,6 +176,9 @@ const X_SLACK_RELATIVE: f32 = ${getWGSLFloatLiteral(CELL_COVER_SCANLINE_X_SLACK_
 fn coverFloorToInt(value: f32) -> i32 { return i32(clamp(floor(value), -2.0e9, 2.0e9)); }
 fn coverCeilToInt(value: f32) -> i32 { return i32(clamp(ceil(value), -2.0e9, 2.0e9)); }
 `;
+  // `coverTileLatitude` is bit-identical to `dggs_web_mercator_tile_y_to_latitude` of the published
+  // `dggs` shader module, so scanline rows agree with the tile edges `GPUCellGeometry` draws. It is a
+  // pinned copy (`official-wgsl-copies.node.spec.ts`) to keep the 70 KB module out of this kernel.
   if (context.family === 'quadbin') {
     const resolution = context.resolution;
     return /* wgsl */ `${common}${CELL_KEY_WGSL}${QUADBIN_TILE_WGSL}

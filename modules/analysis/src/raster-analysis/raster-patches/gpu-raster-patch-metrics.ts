@@ -9,6 +9,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {WEB_MERCATOR_EARTH_RADIUS} from '@luma.gl/graph/gpu-project';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -116,7 +117,7 @@ export type GPURasterPatchMetricsProps = GPURasterPatchLabels & {
   output: GPURasterPatchMetricsOutput;
 };
 
-// Not GPURasterRegionMeasurements: it takes dense component labels with convergence/overflow gating and yields no bbox or perimeter faces (count/area only).
+// GPURasterRegionMeasurements takes the same dense labels with the same convergence and overflow guards, but yields only pixel counts, intensity statistics, centroids and areas, with no perimeter or bounding-box columns. Here, counts use integer accumulation and ground areas use fixed-point accumulation, independent of summation order; area outputs are float32, with rounding and ground-weight quantization.
 /**
  * Per-patch metrics of a dense label raster: area, perimeter and bounding box
  * (the `r.clump` / FRAGSTATS companions to `GPURasterConnectedComponents`).
@@ -584,7 +585,7 @@ function getGroundScaleBounds(
         const edge =
           mode === 'geographic'
             ? signedLatitude
-            : 6378137 * Math.atanh(Math.sin((signedLatitude * Math.PI) / 180));
+            : WEB_MERCATOR_EARTH_RADIUS * Math.atanh(Math.sin((signedLatitude * Math.PI) / 180));
         const [scaleX, scaleY] = getRasterGroundScale(mode, edge);
         maximumX = Math.max(maximumX, scaleX);
         maximumY = Math.max(maximumY, scaleY);

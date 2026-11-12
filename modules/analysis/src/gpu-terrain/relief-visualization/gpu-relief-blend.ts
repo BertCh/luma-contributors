@@ -13,7 +13,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateParameterTarget,
@@ -202,10 +202,13 @@ export type GPUReliefBlendProps = {
  * `render_images` then blends the result with itself and the layer opacity has no effect for
  * those two modes. This contributor applies the documented opacity to every mode instead.
  *
- * Percentile ("percent") stretches are not implemented because they need a histogram; callers
- * pass the numeric `minimum` and `maximum`, for example from `GPURasterStatistics`.
+ * The stretch takes the numeric per-layer `minimum` and `maximum` as parameters; this class does
+ * not compute them. For approximate percent-stretch bounds, initialize a shared accumulator with
+ * `GPURasterGlobalInitialize`, run `GPURasterGlobalStatisticsMerge`, replay tiles through
+ * `GPURasterGlobalHistogramMerge`, and write `GPURasterGlobalPercentile` results into the parameters;
+ * interior percentiles are histogram bin centres from at most 256 bins, while endpoints are exact.
  */
-export class GPUReliefBlend implements GPUCommandNodeProducer {
+export class GPUReliefBlend implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */

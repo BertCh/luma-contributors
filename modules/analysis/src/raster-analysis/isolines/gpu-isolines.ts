@@ -23,7 +23,7 @@ import {
   createRasterIterationState
 } from '../cost-distance/raster-relaxation';
 import {validateRasterGrid} from '../raster-band-utils';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPU_ISOLINES_PARAMETER_LENGTH} from './isolines-parameters';
 import {
   getIsolinesCornersWGSL,
@@ -155,7 +155,7 @@ export type GPUIsolinesProps = {
  * also swaps the documented side: high values are then on the right of a segment, and ring
  * windings are reversed. Following the grid affine is deferred (roadmap 12.4).
  */
-export class GPUIsolines implements GPUCommandNodeProducer {
+export class GPUIsolines implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
