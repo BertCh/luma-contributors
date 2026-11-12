@@ -263,6 +263,69 @@ it('resident explorer bounds concurrent readback and releases failed constructio
   }
 });
 
+it('resident explorer summaries reuse staging and submit and map once per read', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) throw new Error('WebGPU is required');
+  const value = makeVector(device, 'float32', [new Float32Array([5, 15, 25, 35])]);
+  const explorer = new GPUResidentExplorer({
+    device,
+    columns: {value},
+    dimensions: [{id: 'value', kind: 'range', column: 'value'}],
+    histograms: [{id: 'bins', column: 'value', domain: [0, 40], binCount: 4}],
+    domains: [{id: 'selected', column: 'value'}]
+  });
+  // Raw WebGPU handle calls also count the temporary staging buffers that readAsync makes.
+  const handle = (device as unknown as {handle: GPUDevice}).handle;
+  try {
+    submit(device, explorer);
+    const expected = {
+      selectedCount: 4,
+      histograms: {bins: new Uint32Array([1, 1, 1, 1])},
+      domains: {selected: [5, 35]}
+    };
+    expect(await explorer.readSummary()).toMatchObject(expected);
+    const allocations = vi.spyOn(handle, 'createBuffer');
+    const submissions = vi.spyOn(handle.queue, 'submit');
+    const mappings = vi.spyOn(GPUBuffer.prototype, 'mapAsync');
+    try {
+      for (let index = 0; index < 10; index++)
+        expect(await explorer.readSummary()).toMatchObject(expected);
+      expect(allocations).not.toHaveBeenCalled();
+      expect(submissions).toHaveBeenCalledTimes(10);
+      expect(mappings).toHaveBeenCalledTimes(10);
+    } finally {
+      allocations.mockRestore();
+      submissions.mockRestore();
+      mappings.mockRestore();
+    }
+  } finally {
+    explorer.destroy();
+    value.destroy();
+  }
+});
+
+it('resident explorer over zero source batches reports an empty summary', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) throw new Error('WebGPU is required');
+  const value = makeVector(device, 'float32', []);
+  const explorer = new GPUResidentExplorer({
+    device,
+    columns: {value},
+    dimensions: [{id: 'value', kind: 'range', column: 'value'}],
+    domains: [{id: 'selected', column: 'value'}]
+  });
+  try {
+    submit(device, explorer);
+    expect(await explorer.readSummary()).toMatchObject({
+      selectedCount: 0,
+      domains: {selected: null}
+    });
+  } finally {
+    explorer.destroy();
+    value.destroy();
+  }
+});
+
 function makeVector<Format extends 'float32' | 'uint32'>(
   device: Device,
   format: Format,

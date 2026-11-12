@@ -32,18 +32,45 @@ test('inspection read batches preserve the first input error and wait for every 
   expect(await result).toBe(failure);
 });
 
-test('explorer destruction waits for sibling summary mappings after an early rejection', async () => {
-  let resolve!: (value: Uint8Array) => void;
-  const pending = new Promise<Uint8Array>(complete => {
+test.each([
+  {phase: 'mapping', mappingOutcome: 'reject'},
+  {phase: 'finish', mappingOutcome: 'resolve'},
+  {phase: 'finish', mappingOutcome: 'reject'},
+  {phase: 'submit', mappingOutcome: 'resolve'},
+  {phase: 'submit', mappingOutcome: 'reject'}
+])('explorer keeps admission and destruction pending after $phase failure ($mappingOutcome)', async ({
+  phase,
+  mappingOutcome
+}) => {
+  const failure = new Error(`${phase} failed`);
+  let resolve!: (bytes: Uint8Array) => void;
+  let reject!: (error: Error) => void;
+  const pending = new Promise<Uint8Array>((complete, fail) => {
     resolve = complete;
+    reject = fail;
   });
   const destroy = vi.fn();
+  const destroyRing = vi.fn();
+  // One staging ticket carries the whole summary; its mapping is the only GPU wait.
+  const ticket = {buffer: {}, markEncoded: vi.fn(), read: vi.fn(() => pending), cancel: vi.fn()};
   // Controlled IO fixture exercises the real read/destroy methods without compiling a GPU graph.
   const explorer: GPUResidentExplorer = Object.assign(
     Object.create(GPUResidentExplorer.prototype),
     {
-      selectedCount: {byteLength: 4, readAsync: () => Promise.reject(new Error('Mapping failed'))},
-      histogramBuffers: new Map([['histogram', {byteLength: 4, readAsync: () => pending}]]),
+      device: {
+        createCommandEncoder: () => ({
+          copyBufferToBuffer: vi.fn(),
+          finish: () => {
+            if (phase === 'finish') throw failure;
+          }
+        }),
+        submit: () => {
+          if (phase === 'submit') throw failure;
+        }
+      },
+      readbackRings: [{tryAcquire: () => ticket, destroy: destroyRing}],
+      selectedCount: {byteLength: 4},
+      histogramBuffers: new Map([['histogram', {byteLength: 4}]]),
       domainBuffers: new Map(),
       predicates: new Map(),
       domainPredicates: new Map(),
@@ -62,15 +89,29 @@ test('explorer destruction waits for sibling summary mappings after an early rej
     }
   );
   const read = explorer.readSummary();
-  const result = read.catch(error => error);
-  await Promise.resolve();
-  await Promise.resolve();
+  let readSettled = false;
+  const result = read.catch(error => {
+    readSettled = true;
+    return error;
+  });
+  // Let all ready continuations run while the controlled mapping stays pending.
+  await new Promise<void>(complete => setTimeout(complete, 0));
+  expect(ticket.read).toHaveBeenCalledOnce();
+  expect(readSettled).toBe(false);
   expect(await explorer.readSummary()).toBeNull();
-  const closing = explorer.destroyAsync();
+  let destructionSettled = false;
+  const closing = explorer.destroyAsync().then(() => {
+    destructionSettled = true;
+  });
   await Promise.resolve();
+  expect(destructionSettled).toBe(false);
   expect(destroy).not.toHaveBeenCalled();
-  resolve(new Uint8Array(4));
-  expect((await result).message).toBe('Mapping failed');
+  expect(ticket.markEncoded).toHaveBeenCalledWith({byteOffset: 0, byteLength: 8});
+  if (mappingOutcome === 'resolve') resolve(new Uint8Array(8));
+  else reject(phase === 'mapping' ? failure : new Error('Cleanup mapping failed'));
+  expect(await result).toBe(failure);
   await closing;
   expect(destroy).toHaveBeenCalledOnce();
+  expect(destroyRing).toHaveBeenCalledOnce();
+  expect(ticket.cancel).not.toHaveBeenCalled();
 });

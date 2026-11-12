@@ -68,6 +68,11 @@ export type GPUKeplerSelectionScopesStatus = {
   overflow: number;
 };
 
+/** Marks the all-rows population, an identity for AND that needs no buffer in a conjunction. */
+const ALL_ROWS = Symbol('all-rows');
+/** A composed population: a graph mask view, or every row. */
+type ScopeMask = GraphVectorView<'uint32'> | typeof ALL_ROWS;
+
 type SpatialPredicate = {
   geometry: KeplerSelectionGeometry;
   geometryRevision: number;
@@ -617,58 +622,110 @@ export class GPUKeplerSelectionScopes {
       plannedTransientByteLength += template.length * Uint32Array.BYTES_PER_ELEMENT;
       return createTransientVectorView(graph, `scope-${sequence++}`, template);
     };
+    // One published GPUMask pass reads every input; each input and the output take one storage
+    // binding, and GPUMask does not split by the device limit, so longer lists chain in groups.
+    const groupCapacity = this.props.device.limits.maxStorageBuffersPerShaderStage - 1;
+    if (!(groupCapacity >= 2))
+      throw new Error('Selection scopes require at least three storage buffers per shader stage');
     const compose = (
+      operation: 'and' | 'or' | 'difference' | 'not',
       inputs: readonly GraphVectorView<'uint32'>[],
-      output: GraphVectorView<'uint32'>,
-      operation: 'and' | 'or' | 'not' = 'and'
+      output: GraphVectorView<'uint32'>
     ): void => {
-      if (operation === 'not') {
-        graph.add(new GPUMask({id: `not-${sequence++}`, inputs, output, operation}));
-        return;
-      }
-      let previous = inputs[0];
-      if (inputs.length === 1) {
-        graph.add(new GPUMask({id: `copy-${sequence++}`, inputs, output}));
-        return;
-      }
-      for (let index = 1; index < inputs.length; index++) {
-        const target = index === inputs.length - 1 ? output : transient(output);
+      // 'and', 'or' and 'difference' (first AND NOT the rest) all fold left: the running result
+      // becomes the first input of the next group.
+      let first = 0;
+      let previous: GraphVectorView<'uint32'> | undefined;
+      while (first < inputs.length) {
+        const capacity = previous ? groupCapacity - 1 : groupCapacity;
+        const group = [...(previous ? [previous] : []), ...inputs.slice(first, first + capacity)];
+        first += capacity;
+        const target = first >= inputs.length ? output : transient(output);
         graph.add(
-          new GPUMask({
-            id: `compose-${sequence++}`,
-            inputs: [previous, inputs[index]],
-            output: target,
-            operation
-          })
+          new GPUMask({id: `${operation}-${sequence++}`, inputs: group, output: target, operation})
         );
         previous = target;
       }
     };
-    const allRows = transient();
-    compose([importMask(this.zeroMask)], allRows, 'not');
-    const live = this.props.liveMask ? importMask(this.props.liveMask) : allRows;
+    // The all-rows mask is an identity for AND, so it is a marker that conjunctions drop; it is
+    // written to a buffer only where a pass must read it.
+    let allRowsView: GraphVectorView<'uint32'> | undefined;
+    const materializeAllRows = (): GraphVectorView<'uint32'> => {
+      if (!allRowsView) {
+        allRowsView = transient();
+        compose('not', [importMask(this.zeroMask)], allRowsView);
+      }
+      return allRowsView;
+    };
+    const isMaskView = (input: ScopeMask): input is GraphVectorView<'uint32'> => input !== ALL_ROWS;
+    /** Writes (AND of `inputs`) AND NOT (each of `excluded`) into `output`. */
+    const writeConjunction = (
+      inputs: readonly ScopeMask[],
+      output: GraphVectorView<'uint32'>,
+      excluded: readonly GraphVectorView<'uint32'>[] = []
+    ): void => {
+      const included = inputs.filter(isMaskView);
+      if (!excluded.length) {
+        if (included.length) compose('and', included, output);
+        else compose('not', [importMask(this.zeroMask)], output);
+      } else if (!included.length && excluded.length === 1) {
+        compose('not', excluded, output);
+      } else {
+        let first = included.length ? included[0] : materializeAllRows();
+        if (included.length > 1) {
+          first = transient(output);
+          compose('and', included, first);
+        }
+        compose('difference', [first, ...excluded], output);
+      }
+    };
+    /** Returns a view of the conjunction, reusing a single input instead of copying it. */
+    const conjunction = (
+      inputs: readonly ScopeMask[],
+      excluded: readonly GraphVectorView<'uint32'>[] = [],
+      template: GraphVectorView<'uint32'> = display
+    ): ScopeMask => {
+      const included = inputs.filter(isMaskView);
+      if (!excluded.length && !included.length) return ALL_ROWS;
+      if (!excluded.length && included.length === 1) return included[0];
+      const output = transient(template);
+      writeConjunction(included, output, excluded);
+      return output;
+    };
+    const disjunction = (inputs: readonly ScopeMask[]): ScopeMask => {
+      if (inputs.some(input => !isMaskView(input))) return ALL_ROWS;
+      const included = inputs.filter(isMaskView);
+      if (included.length === 1) return included[0];
+      const output = transient();
+      compose('or', included, output);
+      return output;
+    };
+    const live: ScopeMask = this.props.liveMask ? importMask(this.props.liveMask) : ALL_ROWS;
+    // An inverted scalar filter is negated once here and shared by every population that uses
+    // it, which costs fewer passes than a 'difference' in each population.
     const scalarMasks = new Map<string, GraphVectorView<'uint32'>>();
     for (const filter of this.scalarFilters) {
       const mask = importMask(filter.mask);
       const predicate = filter.inverted ? transient() : mask;
-      if (filter.inverted) compose([mask], predicate, 'not');
+      if (filter.inverted) compose('not', [mask], predicate);
       scalarMasks.set(filter.filterId, predicate);
     }
-    compose([live, ...this.plan.scalarFilterIds.map(id => scalarMasks.get(id)!)], display);
-    compose(
+    writeConjunction([live, ...this.plan.scalarFilterIds.map(id => scalarMasks.get(id)!)], display);
+    writeConjunction(
       [live, ...this.plan.nativeTopologyFilterIds.map(id => scalarMasks.get(id)!)],
       nativeTopology
     );
     const brush = this.brushMask ? importMask(this.brushMask) : undefined;
     const brushFor = (target: keyof GPUKeplerBrushTargets) =>
       brush && this.brushTargets[target] ? [brush] : [];
-    compose(
+    writeConjunction(
       [live, ...this.plan.domainFilterIds.map(id => scalarMasks.get(id)!), ...brushFor('legends')],
       importMask(this.domainMask)
     );
-    const polygonMasks = new Map<string, GraphVectorView<'uint32'>>();
+    const polygonMasks = new Map<string, ScopeMask>();
     for (const layer of this.layers) {
       const predicates: GraphVectorView<'uint32'>[] = [];
+      const invertedPredicates: GraphVectorView<'uint32'>[] = [];
       for (const id of this.plan.layerFilterIds[layer.id]) {
         const filter = this.polygonFilters.find(candidate => candidate.id === id)!;
         const geometry = layer.geometry;
@@ -684,7 +741,7 @@ export class GPUKeplerSelectionScopes {
           let pointMask = masks[0];
           if (geometry.pointValidity) {
             const valid = transient(pointMask);
-            compose([pointMask, importMask(geometry.pointValidity)], valid);
+            writeConjunction([pointMask, importMask(geometry.pointValidity)], valid);
             pointMask = valid;
           }
           rowMask = transient();
@@ -712,7 +769,7 @@ output[outputOffset + index] = accepted;`
           }
           if (geometry.validity) {
             const valid = transient();
-            compose([rowMask, importMask(geometry.validity)], valid);
+            writeConjunction([rowMask, importMask(geometry.validity)], valid);
             rowMask = valid;
           }
         } else {
@@ -720,35 +777,34 @@ output[outputOffset + index] = accepted;`
             geometry.kind === 'endpoint-pair'
               ? [geometry.sourceValidity, geometry.targetValidity]
               : [geometry.validity];
-          rowMask = transient();
-          compose(
-            [...masks, ...validity.flatMap(mask => (mask ? [importMask(mask)] : []))],
-            rowMask
-          );
+          const inputs = [...masks, ...validity.flatMap(mask => (mask ? [importMask(mask)] : []))];
+          if (inputs.length === 1) {
+            rowMask = inputs[0];
+          } else {
+            rowMask = transient();
+            writeConjunction(inputs, rowMask);
+          }
         }
-        if (filter.inverted) {
-          const inverted = transient();
-          compose([rowMask], inverted, 'not');
-          rowMask = inverted;
-        }
-        predicates.push(rowMask);
+        // Inversion applies after validity, so an inverted filter subtracts the whole row mask.
+        (filter.inverted ? invertedPredicates : predicates).push(rowMask);
       }
-      const polygonMask = predicates.length ? transient() : allRows;
-      if (predicates.length) compose(predicates, polygonMask);
+      const polygonMask = conjunction(predicates, invertedPredicates);
       polygonMasks.set(layer.id, polygonMask);
-      compose([display, polygonMask], importMask(this.layerMasks.get(layer.id)!));
-      compose([nativeTopology, polygonMask], importMask(this.layerTopologyMasks.get(layer.id)!));
-    }
-    const nativeSpatial = this.plan.targetedLayerIds.length ? transient() : allRows;
-    if (this.plan.targetedLayerIds.length)
-      compose(
-        this.plan.targetedLayerIds.map(id => polygonMasks.get(id)!),
-        nativeSpatial,
-        'or'
+      writeConjunction([display, polygonMask], importMask(this.layerMasks.get(layer.id)!));
+      writeConjunction(
+        [nativeTopology, polygonMask],
+        importMask(this.layerTopologyMasks.get(layer.id)!)
       );
-    compose([display, nativeSpatial, ...brushFor('table')], importMask(this.nativeFilteredMask));
+    }
+    const nativeSpatial = this.plan.targetedLayerIds.length
+      ? disjunction(this.plan.targetedLayerIds.map(id => polygonMasks.get(id)!))
+      : ALL_ROWS;
+    writeConjunction(
+      [display, nativeSpatial, ...brushFor('table')],
+      importMask(this.nativeFilteredMask)
+    );
     for (const [filterId, mask] of this.plotMasks) {
-      compose(
+      writeConjunction(
         [
           live,
           ...this.plan.scalarFilterIds
@@ -761,7 +817,7 @@ output[outputOffset + index] = accepted;`
       );
     }
     for (const {mask, scope} of this.consumerMasks.values()) {
-      compose(
+      writeConjunction(
         [
           live,
           ...planKeplerConsumerFilterIds(this.scalarFilters, scope).map(id => scalarMasks.get(id)!),

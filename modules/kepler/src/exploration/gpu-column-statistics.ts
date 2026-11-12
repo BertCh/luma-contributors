@@ -178,7 +178,8 @@ export async function readGPUColumnStatistics(props: {
         }
       })
     );
-    compiled = graph.compile();
+    // Starts every pipeline compile before waiting, instead of compiling them one by one.
+    compiled = await graph.compileAsync();
     compiled.encode(encoder, {parameters: undefined});
     device.submit(encoder.finish());
     const [statisticsBytes, countsBytes, histogramBytes] = await Promise.all([

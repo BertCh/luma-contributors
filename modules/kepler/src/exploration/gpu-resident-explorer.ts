@@ -3,10 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {MeteredCommandGraph} from '../session/metered-command-graph';
-import {readBufferUint32Scalar} from '../runtime/gpu-readback';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
-import {readAllBuffers} from './read-all-buffers';
 import {DynamicBuffer} from '@luma.gl/core/dynamic';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {
@@ -14,6 +12,8 @@ import {
   GPUGather,
   GPUHistogram,
   GPUMask,
+  GPUReadbackRing,
+  type GPUReadbackTicket,
   GPUReduction,
   type CompiledGPUCommandGraph
 } from '@luma.gl/graph/gpu-core';
@@ -147,7 +147,10 @@ export class GPUResidentExplorer {
   private revision = 0;
   private encodedRevision = -1;
   private destroyed = false;
+  /** Admitted reads still using explorer resources; bounded by maximumConcurrentReads. */
   private activeReads = 0;
+  /** Single-slot rings grow lazily up to maximumConcurrentReads as reads need staging. */
+  private readonly readbackRings: GPUReadbackRing[] = [];
   private transferredBytes = 0;
   private resourcesReleased = false;
   private releaseWaiters: (() => void)[] = [];
@@ -539,7 +542,7 @@ export class GPUResidentExplorer {
     if (revision === null) return null;
     try {
       this.transferredBytes += 4;
-      const selectedCount = await readBufferUint32Scalar(this.selectedCount);
+      const selectedCount = await this.readSelectedCountValue();
       if (!this.isCurrent(revision)) return null;
       return {
         revision,
@@ -571,8 +574,8 @@ export class GPUResidentExplorer {
         ...[...this.domainBuffers.values()].map(value => value.buffer)
       ];
       this.transferredBytes += buffers.reduce((total, buffer) => total + buffer.byteLength, 0);
-      const results = await readAllBuffers(
-        buffers.map(buffer => () => buffer.readAsync(0, buffer.byteLength))
+      const results = await this.readThroughRing(
+        buffers.map(buffer => ({buffer, byteLength: buffer.byteLength}))
       );
       if (!this.isCurrent(revision)) return null;
       return {
@@ -624,14 +627,15 @@ export class GPUResidentExplorer {
     if (new Set(columns).size !== columns.length || columns.some(name => !this.columns[name]))
       throw new Error('Unknown or duplicate inspection column');
     this.validateInspectionBudget(limit, columns);
+    const inspectionColumns = [...columns];
     const revision = this.beginRead();
     if (revision === null) return null;
     try {
       this.transferredBytes += 4;
-      const count = await readBufferUint32Scalar(this.selectedCount);
+      const count = await this.readSelectedCountValue();
       if (!this.isCurrent(revision)) return null;
       const length = Math.min(limit, Math.max(0, count - offset));
-      return await this.gatherPage(offset, length, columns, revision);
+      return await this.gatherPage(offset, length, inspectionColumns, revision);
     } finally {
       this.endRead();
     }
@@ -651,10 +655,12 @@ export class GPUResidentExplorer {
     if (new Set(columns).size !== columns.length || columns.some(name => !this.columns[name]))
       throw new Error('Unknown or duplicate inspection column');
     this.validateInspectionBudget(sourceRows.length, columns);
+    const rows = [...sourceRows];
+    const inspectionColumns = [...columns];
     const revision = this.beginRead();
     if (revision === null) return null;
     try {
-      return await this.gatherPage(0, sourceRows.length, columns, revision, sourceRows);
+      return await this.gatherPage(0, rows.length, inspectionColumns, revision, rows);
     } finally {
       this.endRead();
     }
@@ -766,9 +772,6 @@ export class GPUResidentExplorer {
         'indices',
         new GPUData({buffer: indices, format: 'uint32', length, ownsBuffer: false})
       );
-      const encoder = this.device.createCommandEncoder();
-      if (sourceRows) indices.write(new Uint32Array(sourceRows));
-      else copyVectorRange(encoder, this.selectedRows, offset, length, indices);
       const outputs: {
         name: string;
         validity: boolean;
@@ -806,12 +809,17 @@ export class GPUResidentExplorer {
           );
         }
       }
-      compiled = graph.compile();
-      compiled.encode(encoder, {parameters: undefined});
-      this.device.submit(encoder.finish());
+      const gather = await graph.compileAsync();
+      compiled = gather;
       this.transferredBytes += buffers.length * length * 4;
-      const bytes = await readAllBuffers(
-        buffers.map(buffer => () => buffer.readAsync(0, length * 4))
+      // Index copy, gather and staging copies share one encoder and one submission.
+      const bytes = await this.readThroughRing(
+        buffers.map(buffer => ({buffer, byteLength: length * 4})),
+        encoder => {
+          if (sourceRows) indices.write(new Uint32Array(sourceRows));
+          else copyVectorRange(encoder, this.selectedRows, offset, length, indices);
+          gather.encode(encoder, {parameters: undefined});
+        }
       );
       if (!this.isCurrent(revision)) return null;
       const page: GPUResidentPage = {
@@ -835,6 +843,99 @@ export class GPUResidentExplorer {
       compiled?.destroy();
       for (const buffer of buffers) buffer.destroy();
     }
+  }
+
+  private async readSelectedCountValue(): Promise<number> {
+    const [bytes] = await this.readThroughRing([{buffer: this.selectedCount, byteLength: 4}]);
+    return new Uint32Array(bytes.buffer, bytes.byteOffset, 1)[0];
+  }
+
+  /**
+   * Records `recordWork` and then copies each source range, back to back, into one staging slot
+   * on a single encoder; submits once and maps once. Returns one independent copy per source.
+   * Admission (beginRead) caps reads at the slot count. Each read holds at most one slot at a
+   * time and remains admitted until its mapping, including error cleanup, has settled.
+   */
+  private async readThroughRing(
+    sources: readonly {buffer: Buffer; byteLength: number}[],
+    recordWork?: (commandEncoder: CommandEncoder) => void
+  ): Promise<Uint8Array[]> {
+    const ticket = await this.acquireReadbackTicket();
+    let state: 'reserved' | 'encoded' | 'submitted' = 'reserved';
+    try {
+      const commandEncoder = this.device.createCommandEncoder();
+      recordWork?.(commandEncoder);
+      let byteLength = 0;
+      for (const source of sources) {
+        commandEncoder.copyBufferToBuffer({
+          sourceBuffer: source.buffer,
+          destinationBuffer: ticket.buffer,
+          destinationOffset: byteLength,
+          size: source.byteLength
+        });
+        byteLength += source.byteLength;
+      }
+      ticket.markEncoded({byteOffset: 0, byteLength});
+      state = 'encoded';
+      this.device.submit(commandEncoder.finish());
+      state = 'submitted';
+      const bytes = await ticket.read();
+      let byteOffset = 0;
+      return sources.map(source => {
+        const part = bytes.slice(byteOffset, byteOffset + source.byteLength);
+        byteOffset += source.byteLength;
+        return part;
+      });
+    } finally {
+      // The ring's rule: an unused slot is cancelled; an encoded one is read before it is reused.
+      if (state === 'reserved') ticket.cancel();
+      else if (state === 'encoded') await ticket.read().catch(() => undefined);
+    }
+  }
+
+  private acquireReadbackTicket(): GPUReadbackTicket {
+    for (const ring of this.readbackRings) {
+      const ticket = ring.tryAcquire();
+      if (ticket) return ticket;
+    }
+    // Admission limits concurrent tickets; an unavailable full pool cannot serve this read.
+    if (this.readbackRings.length >= this.maximumConcurrentReads)
+      throw new KeplerAllocationError('device-out-of-memory', {
+        message: 'Readback staging slots are unavailable'
+      });
+    let ring: GPUReadbackRing;
+    try {
+      // A one-slot constructor cannot leave earlier allocations behind if allocation fails.
+      ring = new GPUReadbackRing(this.device, {
+        id: `kepler-explorer-readback-${this.readbackRings.length}`,
+        byteLength: this.getReadbackSlotByteLength(),
+        slotCount: 1
+      });
+    } catch (cause) {
+      throw new KeplerAllocationError('device-out-of-memory', {cause});
+    }
+    this.readbackRings.push(ring);
+    return ring.tryAcquire()!;
+  }
+
+  /**
+   * Largest payload one admitted read copies: a summary, or a full page of row IDs, every column
+   * and every validity mask. Both are validated against maximumReadbackBytes, so a slot never
+   * exceeds the readback reservation.
+   */
+  private getReadbackSlotByteLength(): number {
+    const summaryByteLength = [
+      this.selectedCount,
+      ...this.histogramBuffers.values(),
+      ...[...this.domainBuffers.values()].map(output => output.buffer)
+    ].reduce((total, buffer) => total + buffer.byteLength, 0);
+    const names = Object.keys(this.columns);
+    const pageByteLength =
+      this.maximumPageSize *
+      (1 + names.length + names.filter(name => this.validity[name]).length) *
+      4;
+    const budgetByteLength = Math.floor(this.maximumReadbackBytes / 4) * 4;
+    return Math.max(4, Math.min(budgetByteLength, Math.max(summaryByteLength, pageByteLength)));
   }
 
   private allocateVector(name: string, lengths: readonly number[]): GPUVector<'uint32'> {
@@ -908,6 +1009,7 @@ export class GPUResidentExplorer {
   private releaseResources(): void {
     if (this.resourcesReleased) return;
     this.resourcesReleased = true;
+    for (const ring of this.readbackRings) ring.destroy();
     this.compiled.destroy();
     this.filter.destroy();
     for (const scopedFilter of this.domainFilters) scopedFilter.destroy();

@@ -107,7 +107,8 @@ function importBuffer<Format extends 'uint32' | 'float32' | 'float32x2'>(
 }
 
 async function runGraph(device: Device, graph: GPUCommandGraph): Promise<void> {
-  const compiled = graph.compile() as CompiledGPUCommandGraph<undefined>;
+  // Starts every pipeline compile before waiting, instead of compiling them one by one.
+  const compiled = (await graph.compileAsync()) as CompiledGPUCommandGraph<undefined>;
   try {
     const commandEncoder = device.createCommandEncoder({id: `${graph.id}-encoder`});
     compiled.encode(commandEncoder, {parameters: undefined});

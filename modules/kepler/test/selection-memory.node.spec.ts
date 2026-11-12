@@ -181,6 +181,26 @@ test('composition rolls back failed compilation and returns its temporary charge
     maxBindGroups: 4,
     maxBindingsPerBindGroup: 1000
   });
+  // An inverted scalar filter is negated into a graph transient, so compilation allocates one.
+  const filterMask = new GPUVector({
+    type: 'data',
+    name: 'filter',
+    format: 'uint32',
+    data: [2, 0, 1].map(
+      length =>
+        new GPUData({
+          buffer: device.createBuffer({byteLength: Math.max(4, length * 4), usage: Buffer.STORAGE}),
+          format: 'uint32',
+          length,
+          ownsBuffer: true
+        })
+    ),
+    ownsData: true
+  });
+  scopes.setFilters(
+    [{filterId: 'inverted', mask: filterMask, dynamicDomain: false, inverted: true}],
+    []
+  );
   const allocate = vi.spyOn(device, 'createBuffer');
   const compile = vi.spyOn(GPUCommandGraph.prototype, 'compile');
   // NullDevice deliberately rejects executable pipelines after graph transients were allocated.
@@ -195,5 +215,6 @@ test('composition rolls back failed compilation and returns its temporary charge
   allocate.mockRestore();
   await scopes.destroy(Promise.resolve());
   expect(registry.memoryUsage.totalBytes).toBe(0);
+  filterMask.destroy();
   device.destroy();
 });

@@ -4,7 +4,6 @@
 
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {Buffer} from '@luma.gl/core';
-import {readAllBuffers} from './read-all-buffers';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {MeteredCommandGraph} from '../session/metered-command-graph';
 import {GPUCommandGraph, GPUGather, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -508,13 +507,28 @@ export class GPUKeplerTableInspector {
           );
         }
       }
-      compiled = graph.compile();
+      compiled = await graph.compileAsync();
+      // One mappable staging buffer receives every output on the gather's encoder, so the page
+      // costs one submission and one mapping. It stays inside this read's reservation.
+      const staging = this.session.device.createBuffer({
+        byteLength: outputs.length * rows.byteLength,
+        usage: Buffer.MAP_READ | Buffer.COPY_DST
+      });
+      buffers.push(staging);
       const encoder = this.session.device.createCommandEncoder();
       compiled.encode(encoder, {parameters: undefined});
+      for (const [index, output] of outputs.entries())
+        encoder.copyBufferToBuffer({
+          sourceBuffer: output.buffer,
+          destinationBuffer: staging,
+          destinationOffset: index * rows.byteLength,
+          size: rows.byteLength
+        });
       this.session.device.submit(encoder.finish());
       this.transferredBytes += outputs.length * rows.byteLength;
-      const values = await readAllBuffers(
-        outputs.map(output => () => output.buffer.readAsync(0, rows.byteLength))
+      const stagedBytes = await staging.readAsync(0, staging.byteLength);
+      const values = outputs.map((_, index) =>
+        stagedBytes.slice(index * rows.byteLength, (index + 1) * rows.byteLength)
       );
       for (const [index, output] of outputs.entries()) {
         if (output.validity)
