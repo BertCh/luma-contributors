@@ -13,6 +13,7 @@ import {
 import {Buffer, type Device, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
 import type {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
+import {maskWGSLComments} from '@luma.gl/shaders/wgsl';
 import type {ClassTable} from '../cartography/types';
 import {evaluateZoomStops, type ZoomStops} from '../cartography/zoom';
 import type {AnalysisFrame} from './analysis-frame';
@@ -733,10 +734,12 @@ export function writeStyle(
   buffer.write(new Uint8Array(data));
 }
 
-/** Names of the `var<...> name:` declarations in a WGSL source. */
+/** Names of the `var<...> name:` declarations in a WGSL source; commented-out ones do not count. */
 function getDeclaredBindings(source: string): Set<string> {
   return new Set(
-    [...source.matchAll(/var<(?:uniform|storage)[^>]*>\s+(\w+)\s*:/g)].map(match => match[1])
+    [...maskWGSLComments(source).matchAll(/var<(?:uniform|storage)[^>]*>\s+(\w+)\s*:/g)].map(
+      match => match[1]
+    )
   );
 }
 

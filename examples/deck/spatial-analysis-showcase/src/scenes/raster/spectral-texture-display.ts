@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Buffer, type Device} from '@luma.gl/core';
+import {Buffer, type Device, Texture} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphTextureView} from '@luma.gl/graph/gpu-core';
 import {
   getGPURasterProfileParameterValues,
@@ -233,7 +233,7 @@ export function addSpectralDisplayGraph(
       format: 'rgba32float',
       width: 128,
       height: 128,
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING
+      usage: Texture.STORAGE | Texture.SAMPLE
     })
   );
   const textureHandle = graph.importTexture(
@@ -242,7 +242,7 @@ export function addSpectralDisplayGraph(
       format: 'rgba32float',
       width: 128,
       height: 128,
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING
+      usage: Texture.STORAGE | Texture.SAMPLE
     },
     transportTexture
   );
