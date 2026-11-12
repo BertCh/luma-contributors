@@ -59,6 +59,10 @@ const TIMED_FAMILIES = new Set(['spatial', 'network', 'raster', 'terrain', 'poin
 const KERNELS_WITHOUT_FACTS: readonly {pattern: RegExp; reason: string}[] = [
   {pattern: /^GPUScan:/, reason: 'published GPUScan (also inside published GPUSort)'},
   {
+    pattern: /^(GPUGather|GPUUint32Gather):/,
+    reason: 'published gathers (permutation gathers between sort passes, segment-sum inputs)'
+  },
+  {
     pattern: /^unnamed:.*-radix-digit-\d+-(histogram|scatter)$/,
     reason: 'published GPUSort radix passes; they publish no operation name either'
   },

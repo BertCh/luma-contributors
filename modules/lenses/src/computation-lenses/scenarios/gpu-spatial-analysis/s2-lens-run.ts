@@ -138,7 +138,7 @@ export async function runS2Lens(
         )
       )
     });
-    const compiled = graph.compile();
+    const compiled = await graph.compileAsync();
     try {
       const entry = getSpatialOperatorEntry(props.element);
       const formula = entry && 'tex' in entry.formula ? entry.formula : undefined;

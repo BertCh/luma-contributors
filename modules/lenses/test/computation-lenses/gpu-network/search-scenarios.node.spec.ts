@@ -99,7 +99,8 @@ for (const searchCase of CASES) {
       expect(record.graphs[0].nodes.length).toBeGreaterThan(0);
       // Kernels built by createWGSLKernelNode carry a `wgsl:` source and their bindings even on a
       // null device; the rest are published @luma.gl/graph primitives (GPUScan, GPUGroupAggregation,
-      // GPUSort passes, which name no operation). Formula and loop provenance stay pack-level.
+      // the gathers, and GPUSort passes, which name no operation). Formula and loop provenance stay
+      // pack-level.
       const computeNodes = record.graphs[0].nodes.filter(node => node.kind === 'compute');
       const kernelNodes = computeNodes.filter(node => node.source?.startsWith('wgsl:'));
       expect(kernelNodes.length).toBeGreaterThan(0);
@@ -110,7 +111,7 @@ for (const searchCase of CASES) {
             node =>
               !node.source &&
               node.op !== undefined &&
-              !['GPUScan', 'GPUGroupAggregation'].includes(node.op)
+              !['GPUScan', 'GPUGroupAggregation', 'GPUGather', 'GPUUint32Gather'].includes(node.op)
           )
           .map(node => node.id)
       ).toEqual([]);

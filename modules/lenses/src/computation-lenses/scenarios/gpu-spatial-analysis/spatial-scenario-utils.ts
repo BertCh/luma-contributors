@@ -154,7 +154,7 @@ export async function runSpatialScenario(
     id: props.id,
     views: props.views
   });
-  const compiled = props.graph.compile();
+  const compiled = await props.graph.compileAsync();
   try {
     const description = describeGPUCommandGraph(compiled, {
       graph: props.graph,

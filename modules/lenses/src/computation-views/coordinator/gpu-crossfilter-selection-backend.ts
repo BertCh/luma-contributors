@@ -42,7 +42,7 @@ export type GPUCrossfilterSelectionBackendProps = {
  *
  * Call crossfilter.addToGraph() first, then construct this adapter before compiling. The adapter
  * owns compilation/submission of that dedicated void-parameter graph and its packed count buffer.
- * Publish persistent mask storage (explicit outputMask or skipUnchangedDimensions: true).
+ * Publish persistent mask storage (set the crossfilter's outputMask).
  * Call destroy() before destroying the caller-owned crossfilter and imported buffers.
  *
  * A source maps to dimensions[source]. For excludeSource, register a crossfilter view with that
@@ -208,9 +208,7 @@ export class GPUCrossfilterSelectionBackend implements GPUSelectionBackend {
       throw new Error(`Crossfilter mask length differs from key space ${keySpace}`);
     const chunks = mask instanceof GraphVectorView ? mask.chunks.map(chunk => chunk.data) : [mask];
     if (chunks.some(chunk => chunk.buffer.transient))
-      throw new Error(
-        'GPU selection handles require persistent masks; set outputMask or skipUnchangedDimensions'
-      );
+      throw new Error('GPU selection handles require persistent masks; set outputMask');
     return mask;
   }
 
@@ -226,6 +224,19 @@ export class GPUCrossfilterSelectionBackend implements GPUSelectionBackend {
       this.allRows.set(keySpace, view);
     }
     return view;
+  }
+
+  /** True when a self-excluding view of this space has no mask and falls back to all rows. */
+  private needsAllRows(keySpace: string, isCrossfilterMask: boolean): boolean {
+    if (!isCrossfilterMask) return true;
+    const dimensionIds = new Set(Object.values(this.getSpace(keySpace).dimensions));
+    return this.props.crossfilter.views.some(
+      view =>
+        view.dimension !== undefined &&
+        dimensionIds.has(view.dimension) &&
+        view.includeOwnSelection !== true &&
+        this.props.crossfilter.getViewMask(view.id) === undefined
+    );
   }
 
   private importValues(name: string, values: Uint32Array): GraphDataView<'uint32'> {
@@ -272,13 +283,17 @@ export class GPUCrossfilterSelectionBackend implements GPUSelectionBackend {
     const packed = this.importValues('counts', new Uint32Array(keySpaces.length));
     this.counts = this.ownedBuffers[this.ownedBuffers.length - 1];
     keySpaces.forEach((keySpace, index) => {
-      const allRows = this.getAllRows(keySpace);
+      const space = this.getSpace(keySpace);
       const mask = this.resolveMask(keySpace);
+      // The crossfilter mask is canonical 0/1, so its sum is the count. A relation target may
+      // hold counts above one (GPUTransferMask count mode), so it sums ones under the mask.
+      const isCrossfilterMask = Object.keys(space.dimensions).length > 0;
+      if (this.needsAllRows(keySpace, isCrossfilterMask)) this.getAllRows(keySpace);
       graph.add(
         new GPUReduction({
           id: `${this.props.crossfilter.id}-selection-count-${keySpace}`,
-          input: allRows,
-          mask,
+          input: isCrossfilterMask ? mask : this.getAllRows(keySpace),
+          mask: isCrossfilterMask ? undefined : mask,
           output: graph.createDataView(packed.buffer, {
             format: 'uint32',
             length: 1,
