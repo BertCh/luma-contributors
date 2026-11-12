@@ -123,20 +123,18 @@ types. Local frame transforms use `projectionEngine` from `@math.gl/geospatial/p
 `gpu-project` execution bundle imports math.gl types only, so it stays free of math.gl CRS runtime
 code; only `createGPUSpatialFrameFromCRS` pulls the runtime in.
 
-## Projection spatial context
+## Frames and the published projection classes
 
-`getGPUProjectionSpatialContext(targetCrs?, frame?)` is internal (`@internal`) and builds the planar
-native context for rows projected into a target CRS. It returns `undefined` when neither argument
-is given. A `frame` wins over `targetCrs`; otherwise a frame is made with
-`createGPUSpatialFrameFromIdentifier(targetCrs)`. `units` is declared when the frame unit is known.
-
-`GPUProjection`, `CoordinateProjectionGraph`, and `prepareCRSProjection` accept optional
-`sourceFrame` and `targetFrame` props next to the CRS string props. A frame's `crs` takes
-precedence over the matching string, and results expose `spatialContext` built from the target
-frame. A target frame origin becomes the compiled plan's `destinationOrigin` when its anchor is
-`'relative-origin'`, or when its precision is `'float32-origin-relative'` without a
-`'projection-center'` anchor. An explicit `destinationOrigin` compile option still wins, and
-behavior without frames is unchanged. `sourceFrame` currently only supplies the source CRS.
+The published projection entry points (`prepareCRSProjection` of `@luma.gl/graph/gpu-project/crs`,
+and the plans and programs of `@luma.gl/graph/gpu-project`) take CRS strings and an optional
+`destinationOrigin`. They do not take a `GPUSpatialFrame`. To project into a frame, pass the frame's `crs` as the target CRS. Pass the
+frame's `origin` as `destinationOrigin` only when that origin is a point in the target CRS that
+the coordinates are stored relative to: `anchor: 'relative-origin'`, or
+`precision: 'float32-origin-relative'` with an anchor other than `'projection-center'`. A frame
+anchored at `'projection-center'` (a local frame) holds its origin as longitude and latitude, the
+centre of the projection, and its coordinates are already relative to it: pass no
+`destinationOrigin` for such a frame. Without a `destinationOrigin` the compiled plan keeps the
+origin the projection compiler chooses.
 
 ## deck.gl adapter
 

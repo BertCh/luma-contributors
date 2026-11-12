@@ -1,6 +1,6 @@
 # Roadmap
 
-Status date: 2026-11-11. Baseline: `@luma-contributors/analysis`, `/lenses` and `/kepler` on published `@luma.gl/*@10.0.0-alpha.12`. The work of sections 10 to 14 was reviewed, committed and pushed to `origin` (`master` and `upstream-first`) on 2026-11-11, and the website is published on GitHub Pages (section 15). Outcome paragraphs in sections 10 to 13 that say "in the working tree, uncommitted" describe the state before that commit.
+Status date: 2026-11-12. Baseline: `@luma-contributors/analysis`, `/lenses` and `/kepler` on published `@luma.gl/*@10.0.0-alpha.13` (moved from alpha.12 on 2026-11-11 with no source change; section 16). The work of sections 10 to 14 was reviewed, committed and pushed to `origin` (`master` and `upstream-first`) on 2026-11-11, and the website is published on GitHub Pages (section 15). Outcome paragraphs in sections 10 to 13 that say "in the working tree, uncommitted" describe the state before that commit. The luma.gl usage review and its changes (section 16) are in the working tree, uncommitted.
 
 This is the single current roadmap. It replaces about 19 planning documents from the luma.gl `map-contributors` branch. The superseded documents are kept verbatim in [archive/](./archive/README.md) as the evidence trail.
 
@@ -319,7 +319,7 @@ Merges, upstream moves and missing capabilities.
 | DUP-03 | Operation parity across H3, S2 and Quadbin (matrix in the cells report); one `GPUCellFamily` type | M | M |
 | UPS-01 | luma.gl pull request: graph algorithms accept command-graph views, then delete `createNetworkAnalyticsTopology` and the local components and degree | M | M |
 | UPS-02 | Offer upstream: generic image operators (rank filter, reconstruction, skeleton, medial axis, phase correlation, GLCM), generic graph algorithms (reachability engine, Brandes, SCC, flow), exact quantiles | L | L |
-| UPS-03 | Use the published raster tile-halo and cross-tile components instead of per-contributor halos; build arithmetic, stretch and focal statistics on the published band math, contrast and neighbourhood operators | M | M |
+| UPS-03 | Raster inputs and operators on the published classes. Corrected 2026-11-12 (section 16.6): no contributor builds its own tile halo; 22 declare the published `GPURasterHaloStage` contract, with halo values checked against the kernels. What is left: arithmetic, stretch and focal statistics on the published band math, contrast and neighbourhood operators where the register's reasons stop holding (section 4 of `upstream-workarounds.md`), and a statement of which global operators cannot be tiled with a halo | M | M |
 | GAP-01 | Geometry: pairwise overlay that keeps both inputs' attributes, per-feature buffer, attribute dissolve of overlapping polygons, topology-preserving simplification, Voronoi polygons, split by a second geometry, antimeridian cutting, points along lines | M each | M |
 | GAP-02 | Raster and terrain: QA bits to masks, clip by polygon, rasterize lines and points, polygonize, zonal histogram, median and majority; pour-point snapping, stream orders, whole-DEM breaching | S to M each | M |
 | GAP-03 | Network: demand loaded onto shortest paths (edge volumes; pairs with MOB-05), nearest points of interest, street-network statistics, graph simplification, angular (space-syntax) measures | M each | M |
@@ -385,7 +385,7 @@ Do not implement these here. If a consumer needs one, open a luma.gl pull reques
 6. Website, independent of the items above: the open items of sections 7.5 and 7.6, starting with WEB-PIC-12 (an independent re-score of the pictures) and WEB-INT-16 (text in pictures). How-it-works pages: the WEB-HIW rows of section 9.6, starting with WEB-HIW-01 and WEB-HIW-02.
 7. Spatiotemporal, section 2.15: what remains after the 2026-11-10 implementation (section 8.5): LN-ST, the R-only fixtures of PLAT-06, A5 in RTS-08, then the M rows.
 8. Library convergence, section 2.16. Landed 2026-11-09: the contract and its checker, the registry, and the cheap reworks. Next: FX-17 and LN-REC2; STD-10 once the solver files are quiet; the rest of STD-03, STD-06 and STD-07 by directory; the breaking half of STD-09 in one pass with lenses, kepler and the website; then GPU-05, GPU-07 and the larger reworks by consumer demand. New contributors follow `contributor-contract.md` and add their catalog entry and kernel-audit case in the same change. GAP rows wait for a consumer.
-9. CPU twins and mixed CPU/GPU graphs, section 13. Landed 2026-11-11: the operation form, contract section 14 and 125 twins (sections 13.5 and 13.8). Next: FP64-01 and FP64-02 (native fp64 in kernels, section 13.7), CPU-07 (a `docs/api` page), CPU-05 (the twin in the catalog), the leads in the research folder's two `existing-contributor-findings` files, and the upstream pull request UPS-CPU-1.
+9. CPU twins and mixed CPU/GPU graphs, section 13. Landed 2026-11-11: the operation form, contract section 14 and 125 twins (sections 13.5 and 13.8). FP64-01 landed on 2026-11-12 (section 16.6); FP64-04 was reviewed and closed there (keep the local rounding-error helpers). Next: FP64-02 after FP64-05 (section 13.7, LUM-20), CPU-07 (a `docs/api` page), CPU-05 (the twin in the catalog), the leads in the research folder's two `existing-contributor-findings` files, and the upstream pull request UPS-CPU-1.
 10. New contributors, section 14. Nothing is implemented; the research and three GPU probes are in [research/new-contributors-2026-11-11](./research/new-contributors-2026-11-11/README.md). First the decisions of 14.5, then wave 0 (the shared fitting kernels, the forest layout, the probes on a second device), then LRN-01, EMB-01 to EMB-05, SIM-01 and CART-03.
 
 ## 7. Plan: card header pictures (WEB-INT, WEB-PIC)
@@ -1085,10 +1085,8 @@ What follows from the numbers:
 
 | ID | Item | Priority |
 | --- | --- | --- |
-| FP64-01 | Let `createWGSLKernelNode` take shader modules and defines and assemble them with `WGSLShaderAssembler` before it builds the `Kernel`; `@luma.gl/shaders` is already a dependency | H |
-| FP64-02 | Replace the private double-float code of `GPUPointToCell` (`h3-index-extended-wgsl.ts`) with the published modules and delete the register row | H |
+| FP64-02 | Replace the private double-float code of `GPUPointToCell` (`h3-index-extended-wgsl.ts`) with the published modules and delete the register row. Possible since FP64-01 landed on 2026-11-12 (section 16.6, LUM-02), but only the integer variant is safe on every vendor and it measured about 3 times slower than the local code; see LUM-20 | M |
 | FP64-03 | An fp64 mode for the precision-limited data-parallel contributors: `GPUCellMeasures` (unreliable beyond resolution 10), S2 keys at levels 26 to 30 in `GPUPointToCell`, `GPUGeodesicPairs` (near-antipodal fallback), `GPUSphericalPolygonContains` (tolerance band). Their CPU twins from 13.6 serve as the oracle | M |
-| FP64-04 | Review the integer rounding-error helpers and "rounded difference" guards of contract section 11 against `fp64arithmetic`: where one published call replaces a local helper, use it | M |
 | FP64-05 | Measure the classic double-single path on a non-Apple GPU (it should be far cheaper than the integer path) before deciding how widely to use fp64 | M |
 
 ### 13.8 Outcome of the second wave (2026-11-11)
@@ -1280,3 +1278,108 @@ The website is served by GitHub Pages at `https://bertch.github.io/luma-contribu
 | INT-07 | The open findings of the split review (research folder above): the gpu-graph lens pack and four showcase files dropped without a record, five kepler specs in no exclusion list, lost tests, the lower EC03 limits and weaker validation not in the register, four errors in `upstream-workarounds.md`. Checked against `edf9ca10` only; re-check each before acting | M |
 | INT-08 | CI: `.github/workflows/test.yml` has never produced a run. Find out why before relying on it, and decide whether the Pages build should move into a workflow | M |
 | INT-09 | The website's GitHub link (`site-header.tsx`) points at the private repository, which a visitor cannot open | L |
+
+## 16. Plan: luma.gl usage review (2026-11-11)
+
+Question: is the repository using published luma.gl and its built-in features as well as it can. Eight read-only reviewers compared the code with the installed packages by capability area; their reports, the brief and the inventory scripts are in [research/luma-usage-review-2026-11-11](./research/luma-usage-review-2026-11-11/README.md). It extends the comparison of 2026-11-10 (`luma-official.md`, against alpha.10) to what that one left out: `modules/kepler`, `modules/lenses`, the website, the examples, the test helpers, `@luma.gl/engine`, gather, run-length and point-to-segment code, and the execution machinery.
+
+### 16.1 What was found
+
+- **Release.** `10.0.0-alpha.13` was published on 2026-11-11. The pins moved from alpha.12 with no source change. It adds `GPUGraphReduction` and `GPUGraphGroupAggregation` (semantic `GPUGraph` operations), `DeviceResource` in core and dispatch-workgroup metadata on the published reduction and group aggregation. None of the 27 names the workarounds register waits for became public, so no row retires by name.
+- **Use of the published surface.** `modules/*/src` imports 53 of the 182 value exports of `@luma.gl/graph/gpu-core` and 11 of the 48 of `gpu-raster`. For most of the rest there is no local code doing the same job (the reviewers' "checked and fine" lists: 129 lines). Not one published graph algorithm is imported by source, for the reason the register gives, which still holds.
+- **Findings.** 77 across the eight streams, by the class each reviewer gave first: 13 `adopt-now`, 20 `adopt-with-cost`, 17 `misuse`, 8 `unused-feature`, 9 `blocked` and not yet registered, 8 `stale-claim`, 2 register additions; and 34 corrections to `upstream-workarounds.md`. Nothing was run on a GPU by the reviewers: every finding is from reading both sides, and the ones marked as leads in the reports were inferred.
+- **Most important.** Every kernel dispatch creates a bind group (two streams, read independently): the "identity cache" comments in `wgsl-kernel-nodes.ts` and register row "Bind-group reuse" describe a reuse that never happens, and the two resolver helpers have no caller. Published primitives behave the same. Whether the public pipeline-bindings route gains anything is a measurement, not a reading (LUM-03).
+
+### 16.2 Wave 1: the plan (what happened to each item is in 16.6)
+
+One owner per file set. Each change keeps results equal (bit-identical where the row says so) and is verified by the existing spec of the contributor, plus a new spec where the row names one.
+
+| ID | Item | Source finding |
+| --- | --- | --- |
+| LUM-01 | `wgsl-kernel-nodes.ts`: delete the two dead binding resolvers and their tests, correct the comments, check publish nodes against the device storage-buffer limit instead of 8 | GM-01, GM-05, SC-01 |
+| LUM-02 | FP64-01: `createWGSLKernelNode` takes `modules` and `defines` and assembles with the published `WGSLShaderAssembler` and `getPlatformInfo`; fp64 modules always get the integer variant (no uniform to bind); the node record holds the assembled text | SC-02, SC-03 |
+| LUM-03 | Measure bind-group creation per dispatch against `kernel.pipeline.setBindings` plus a dispatch without bindings, on distinct and on shared pipelines. Probe only; adopt or not from the numbers | SC-01, GM-02 |
+| LUM-04 | Hand-written `uint32` gathers onto `GPUUint32Gather` (15 sites in 9 files, and the two in `stable-lexicographic-index-sort.ts`) | PD-01 |
+| LUM-05 | Hand-written `float32` gathers onto `GPUGather` (4 sites, among them the shared `sorted-segment-sums.ts`); `GPUPairGather` `uint32` columns onto `GPUUint32Gather` with `invalidValue` | PD-02, PD-03 |
+| LUM-06 | `spatial-join-passes.ts` collect total onto `GPUFlagOffsets`; spatial scan statistic weight prefix onto `GPUScan`; needless `GPUBVH` cast | PD-08, PD-05, PN-08 |
+| LUM-07 | `GPUCubeLayoutTranspose` kernel onto `GPUTranspose` (word copy, which makes its NaN-payload promise true); `splitTime` onto published `fp64ify` | PN-01, SC-07 |
+| LUM-08 | Catchment summary: `basinCount` as the excluded key with `keyBits` (half the radix passes) and the shared segment-offsets node | PD-07 |
+| LUM-09 | `GPURasterFillHoles` on published `GPURasterConnectedComponents` of the background. The flood advances one pixel per unrolled round (`maximumIterations`, 64 by default), so background further than that from the border is reported as a hole unless the caller raises the budget; the published labelling does not grow with hole size | RT-01 |
+| LUM-10 | FFT limits from `GPU_FFT2D_MAX_DIMENSION` / `GPU_FFT2D_MIN_DIMENSION` and a `getGPUFFT2DSupport` check; Web Mercator radius from `WEB_MERCATOR_EARTH_RADIUS` (5 sites); `implements GPURasterHaloStage` on the contributors that already declare `requiredHalo` | RT-05, PN-06, NC-05, RT-02 |
+| LUM-11 | `GPULocalFrameProjection` on published `planProjection` with `destinationOrigin` and `GPUProjectionProgram`, if the existing specs hold without a tolerance change; timing recorded | NC-01 |
+| LUM-12 | Cell cover calls `dggs_web_mercator_tile_y_to_latitude` instead of two private copies; delete the dead `projection-spatial-context.ts` | NC-04, NC-06 |
+| LUM-13 | Kepler selection: one N-ary `GPUMask` per composition with `difference`, grouped by the storage-buffer limit; predicates encoded only when their parameters or the revision change; `nullable` through `fields` | KL-03, KL-02, KL-11 |
+| LUM-14 | Kepler exploration: the sorted permutation feeds the gather without a CPU round trip; summary and page reads through one `GPUReadbackRing`; `compileAsync` in async paths | KL-06, KL-01, GM-06 |
+| LUM-15 | Lenses: remove the `skipUnchangedDimensions` advice (no such option), delete five dead dataframe helpers, count a canonical mask by summing it, `compileAsync` in async paths | KL-05, KL-08, KL-10, GM-06 |
+| LUM-16 | Website and docs: range and `afterRun` reads coalesced to one in flight; the leaked projection plan; raw `GPUTextureUsage`; the `Uint32Array` readback bug in `docs/api/gpu-network/operators.md` | WE-01, NC-07, WE-06, WE-12 |
+| LUM-17 | `upstream-workarounds.md`: the 34 corrections, the new rows, baseline alpha.13 | all |
+
+### 16.3 Deferred, with the cost
+
+| ID | Item | Why not now | Pri |
+| --- | --- | --- | --- |
+| LUM-20 | FP64-02 (published fp64 in `GPUPointToCell`) | With LUM-02 it is possible, but only the integer variant is safe on every vendor: about 3 times slower than the local double-float in the loop probe, and luma.gl says it compiles slowly on D3D12. Equal accuracy on the test GPU. Decide after FP64-05 (a non-Apple GPU) or when luma.gl exports its per-vendor define helpers | M |
+| LUM-21 | Dependency-carrying WGSL helpers (`dggs`, H3, S2, cell key, `guardedAtan2`: about 30 kernels) as shader modules through LUM-02 | Retires 16 hand-kept "concatenate after" rules and a duplicate-function trap; costs 5 to 17 ms of graph-build time per kernel. Not for the 140 single-function snippets | M |
+| LUM-22 | The eight hand-written multi-key sorts onto `createStableLexicographicIndexSortNodes`; where both keys fit 32 bits one radix sort goes away | Some sites read the sorted low word and need one more gather; per-site work | M |
+| LUM-23 | Dot-density triangle CDF onto segmented `GPUScan` | Needs proof that triangles of different features never interleave | L |
+| LUM-24 | `GPURasterEmbeddingKNearestClassifier` onto `GPUSimilaritySearch` (removes the 4,096 training-vector cap) | A `pixelCount x k x 8` byte transient and one more pass. The empty-slot vote defect is local and should be fixed either way | M |
+| LUM-25 | Three raw-value raster contributors (`GPURasterReclassify`, `GPURasterConditional`, `GPURasterStretch`) onto `GPURasterBufferBand` inputs | Prop change for callers; part of STD-04 | M |
+| LUM-26 | `GPURasterReprojection` projecting inside its sampler with `CompiledProjection.getShader()` | One pass and two full-raster transients fewer, and double-single programs; a rewrite of the kernel | M |
+| LUM-27 | Website: 85 `afterRun` runs read back, reshape and upload only to draw; one device per card | Display reshapes can stay on the GPU; a shared device shares pipelines but one loss ends every card. Needs the posters regenerated | M |
+| LUM-28 | Budgeted execution (`createExecution`) for the longest unrolled graphs in kepler and lenses | Lead; not run | L |
+| LUM-29 | About 20 inline scan totals over counts have no wrap guard | Each needs a bound or `createSaturatedScanTotalNodes`; not a luma.gl matter | M |
+| LUM-30 | A leak check in the test setup; `getResourceCounts` reads a texture statistic luma.gl 10 no longer keeps | Report upstream; read the buffer count directly meanwhile | L |
+| LUM-31 | Kepler group-by onto `GPUDataFrameGroupedAggregationQuery` | Loses the null-key group and the nonfinite counts | L |
+
+### 16.4 For luma.gl (ordinary pull requests; nothing here waits)
+
+Added to [upstream-proposal-math-review.md](./upstream-proposal-math-review.md) or the register by LUM-17: export `getGPUComputeDispatchWorkgroups` or `gateGPUCommandNodes` (a gated loop cannot gate a published primitive: `GPUPycnophylactic` reduces every round after convergence); a cache key on `Kernel.dispatch`; `GPUSort` with 64-bit or multi-key input; `GPUGridIndex` with GPU-held bounds and a stated order inside a cell; `GPUGridIndexQuery` cell test that can miss a point within a few ULP of a cell edge; the fp64 per-vendor define helpers; the `dggs` base-cell and face-neighbour tables as data; a mask-only compile of a dataframe filter and `stats` on compiled dataframe queries; the GPU error type kept in `reportError`; a null test device of WebGPU type; an offsets-only mode of `GPUCOOToCSR`.
+
+### 16.5 Rules for the work
+
+- Public entry points only. No delegation that loses accuracy, determinism, a limit or a capability a caller uses; say so and leave the code when one would.
+- No tolerance is loosened. A spec that fails after a delegation means the delegation is wrong or the difference is recorded as a finding.
+- The lens records lose the kernel text of nodes that move onto published primitives (register section 2, first row). Accepted; recapture is INT-01.
+
+### 16.6 Outcome (2026-11-12)
+
+In the working tree, uncommitted. Reviewers and wave-1 implementors were Claude agents; from the middle of the pass, at the maintainer's request, every independent review and every fix from a review was done by Codex agents (`gpt-6.1-sol`), with the lead running the GPU specs their sandbox cannot.
+
+**Adopted** (results equal; the spec named is the proof):
+
+- LUM-01. The two dead binding resolvers and their tests are gone, the comments say what the identity cache does (it saves the JavaScript allocation of binding records, not a bind group), and publish nodes are checked against the device storage-buffer limit.
+- LUM-02 (FP64-01). `createWGSLKernelNode` takes `modules` and `defines` and assembles with the published `WGSLShaderAssembler` and `getPlatformInfo`. An fp64 module always gets the integer variant; construction refuses defines that turn it off and any use of the module uniform in caller text. Through the factory on the test GPU: add 7.4e-16, multiply 3.5e-15, divide 2.7e-15 relative, sine 7.1e-15 and cosine 2.4e-15 absolute (`wgsl-kernel-node-fp64.spec.ts`). A kernel without modules produces the same text as before (`wgsl-kernel-node-modules.node.spec.ts`). No kernel uses it yet.
+- LUM-04, LUM-05. 17 hand-written `uint32` gathers are published `GPUUint32Gather` and 4 `float32` gathers are published `GPUGather`, among them the one inside the shared exact segment sums (`sorted-segment-sums-gather.spec.ts`: NaN payloads and negative zero are copied bit for bit).
+- LUM-06. The spatial-join collect total is published `GPUFlagOffsets`. The scan statistic's cumulative weights are published `GPUScan`: every output is bit-identical to the old code in eight configurations (three models, parallel draws, two batch sizes), compared by running both versions.
+- LUM-07 (half). `splitTime` is published `fp64ify` (`time-split-fp64ify.node.spec.ts`).
+- LUM-08. The catchment summary sorts with `keyBits` and takes its ranges from the shared segment-offsets node (`gpu-terrain-catchment-summary-excluded-keys.spec.ts`).
+- LUM-10. FFT limits and the support check come from the published constants and `getGPUFFT2DSupport`; the Web Mercator radius from `WEB_MERCATOR_EARTH_RADIUS`; 22 contributors declare the published `GPURasterHaloStage`. The review of that declaration found six halo values that did not cover what the kernel reads (most older than this pass): isoband edges need 2, the one-sided border of derivatives, relief shading and 3x3 curvature needs 2, and decimated texture shading needs its scaled support (41, 182 and 734 where the nominal sum gave 38, 167 and 667). They are corrected and pinned on the GPU (`terrain-halo-one-sided.spec.ts`: slope 45 degrees for a true 0 with the old value; `isobands-halo-edges.spec.ts`: two false edges). `GPUGeomorphons` and `GPUTerrainWeissLandforms` do not declare the contract, because no construction-time halo bounds them, and say so.
+- LUM-12. The dead projection glue is deleted. The two cell-cover copies of the published tile-latitude function stay (including the `dggs` module would add about 70 KB of shader text to two kernels) and are pinned; the pins now read active WGSL only.
+- LUM-13 (half), LUM-14, LUM-15. Kepler composes selection masks with one N-ary `GPUMask` per group (`selection-scope-composition.spec.ts`); the explorer stages summary, page and count reads through published `GPUReadbackRing`s (ten summaries: no staging allocation and one submission each, where they made 30 temporary buffers); async paths await `compileAsync`, with `MeteredCommandGraph` keeping its scratch accounting. Lenses: the nonexistent option is out of the messages, five dead helpers are deleted, canonical masks are summed directly.
+- LUM-16. The website run framework keeps one range read and one `afterRun` pass in flight, stages range reads through a readback ring, and no longer leaks the projection plan; the readback snippet in the docs is fixed; the docs section on frames and projection described props that exist nowhere and is rewritten.
+- LUM-17. The register has the corrections, 16 new rows and the outcomes below.
+
+**Measured or reviewed and not adopted** (the local code stays, the register has the reason):
+
+| Item | What was found |
+| --- | --- |
+| LUM-03 bind groups | With pipeline-held bindings, bind groups per encode drop from N to 0 except on a shared pipeline with alternating bindings (the unrolled-loop case), where nothing changes. Encode time at 2,000 dispatches: 7.0 to 7.4 ms down to about 3 ms. About 2 microseconds per avoided bind group, from the second encode on. Not worth what it costs: pipelines would keep buffers alive for the device lifetime, a skipped `setBindings` would bind another node's buffers, and the route goes against what `Kernel` documents. The upstream cache key stands |
+| LUM-05 `GPUPairGather` columns | One local kernel for both formats: the published float gather writes 0, not NaN, for an unmatched row |
+| LUM-07 `GPUCubeLayoutTranspose` | Published `GPUTranspose` refuses large degenerate cubes the local class accepts (its tile-padded invocation count overflows at 268,435,456 x 1) and does not check the aligned binding size. The local kernel now copies raw words, which makes its bit-for-bit promise true for NaN payloads |
+| LUM-11 `GPULocalFrameProjection` | The published route with `destinationOrigin` is more accurate (0.0010 against 0.0032 to 0.0039 m at 0.25 degrees; it works at 2 and 4 degrees, where the local route throws) and 6.5 to 29 times slower at 1,000,000 rows (about 29 ms against 1 to 4.5 ms), because it runs double-single arithmetic on every row |
+
+**What the reviews of the changes found.** Thirteen streams were each read by a reviewer that did not write them. Seven had no defect. The others: the transpose delegation (reverted, above); a readback-ring ticket that was never released on an encode failure, an aggregate staging size above the device limit, and a missing range read in the website framework; in the kepler explorer a cleanup mapping that outlived destruction, caller arrays read after an await, and a ring construction that could leak; a pattern check in the fp64 route that three forms of uniform read could bypass; the six halo values; a pin that commented-out code could satisfy. All are fixed with a test that fails without the fix, and the two lifetime fixes were reviewed a second time. One review finding was itself wrong (a buffer layout said to have worked before is refused by WebGPU); the GPU run settled it.
+
+**Gates.** On alpha.13 before any source change: `yarn typecheck`, `yarn typecheck-tests`, `yarn build`, `yarn verify-package-exports` (17 entry points), both checkers, `yarn test-node` (1,062 files, 10,408 tests) and the headless suite (1,055 files, run per directory) all passed, so the bump alone changes nothing. On the final tree: `yarn lint-fix` (nothing to fix, 75 warnings, no errors), `yarn typecheck`, `yarn typecheck-tests`, `yarn build`, `yarn verify-package-exports` (17), both checkers; `yarn test-node`: 1,064 files, 10,468 tests passed and 4 failed, all four being lens structure specs whose list of published primitives lacked the gathers (list extended, the folder rerun: 77 tests pass; the whole node suite was not rerun after that); headless in six runs: 1,064 files, 11,614 tests passed and 1 failed, the lens kernel-facts spec for the same reason (list extended, rerun alone, passes). Website: typecheck, `check-catalog` (532 of 532), all 1,064 posters regenerated from the final build with 1,062 byte-identical (the two that differ are `computation-metrics`, which pictures timings; kept as committed), `verify-runs` on five runs with pointer gestures and `afterRun` (5 of 5; the one warning, on `snapshot-arena`, is the same with the framework as committed), the how-it-works page data regenerated (the upstream-first page now says alpha.13). `yarn build` in `website` and `check-all-pages.mjs` on all 547 pages: 544 passed in the full run and the other three, which failed on a connection reset and two navigation timeouts while the preview server started, passed when rerun. The lens records lose the kernel text of the nodes that became published gathers; recapture is INT-01.
+
+### 16.7 Open after this pass
+
+| ID | Item | Pri |
+| --- | --- | --- |
+| LUM-09 | Decision: `GPURasterFillHoles` on published `GPURasterConnectedComponents`. Measured: the published labelling converged in 3 to 5 rounds on spirals, serpentines and noise rasters up to 512 x 512 where the flood did not in 64, with 59 command nodes against 89; connectivity, size limit and determinism match. It changes the meaning of the `iterationCount` status word (flood depth today, which the CPU twin also reports and a comparison spec pins). Either the word becomes the labelling round count, or it is documented as not comparable between GPU and twin | H (decision) |
+| LUM-32 | Kepler predicate encode gate (KL-02): filters used only for their mask are re-encoded every frame. A gate is unsafe today because `encode` never learns whether the caller's encoder was submitted. Needs a submit confirmation in the explorer and scalar-selection contract | M |
+| LUM-33 | Kepler sorted pages (KL-06): feed the gather from the GPU permutation. Needs a pass-through on `KeplerSessionExplorer` and two pinned `readbackByteLength` values change | M |
+| LUM-34 | Website `settle()` gives up after 400 frames with work still pending and now warns; decide whether capture should fail instead | L |
+| LUM-35 | The remaining `readAsync` calls in 48 website run entries and 6 kepler files (style legend, resident page loader, column statistics, spatial-selection status) are still one staging buffer and one submission each | M |
+
+For luma.gl, added to 16.4 by this pass: a float32 projection program fitted relative to the output origin; `fields` on `new GPUTable({vectors})`; `GPUTranspose` planning that does not overflow for degenerate shapes; cleanup in the `GPUReadbackRing` constructor when a slot allocation throws.

@@ -1,0 +1,248 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// Temporary measurement probe (NC-01): old route (compileProjectionPlan + GPUProjection with the
+// origin overwritten) against the published route (planProjection + GPUProjectionProgram).
+import {Buffer, type Device} from '@luma.gl/core';
+import {it} from 'vitest';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUProjection,
+  GPUProjectionProgram,
+  compileProjectionPlan,
+  planProjection,
+  type ProjectionBounds
+} from '@luma.gl/graph/gpu-project';
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {
+  createGPULocalFrame,
+  type GPULocalFrame
+} from '../../../src/analysis-core/contracts/local-frame';
+import {captureGraphCommandNodes} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
+
+type Route = 'old' | 'new';
+
+function makeRows(bounds: ProjectionBounds, rowCount: number): Float64Array {
+  const values = new Float64Array(rowCount * 2);
+  let seed = 12345;
+  const random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 2 ** 32;
+  };
+  for (let row = 0; row < rowCount; row++) {
+    values[row * 2] = bounds[0] + (bounds[2] - bounds[0]) * random();
+    values[row * 2 + 1] = bounds[1] + (bounds[3] - bounds[1]) * random();
+  }
+  return values;
+}
+
+function addRoute(
+  graph: GPUCommandGraph,
+  route: Route,
+  frame: GPULocalFrame,
+  bounds: ProjectionBounds,
+  positions: any,
+  output: any,
+  validity: any
+): {destroy: () => void; patches: number} {
+  if (route === 'old') {
+    const compiled = compileProjectionPlan({
+      projection: (coordinates: number[]) => frame.project(coordinates[0], coordinates[1]),
+      bounds,
+      tolerance: 0.01
+    });
+    const projection = new GPUProjection({
+      positions,
+      output,
+      validity,
+      plan: {...compiled, destinationOrigin: [0, 0]}
+    });
+    graph.add({
+      getCommandNodes: (target: GPUCommandGraph) =>
+        captureGraphCommandNodes(target, () => projection.addToGraph(target))
+    } as any);
+    return {destroy: () => projection.destroy(), patches: compiled.patches.length};
+  }
+  const result = planProjection({
+    projection: (coordinates: readonly number[]) => frame.project(coordinates[0], coordinates[1]),
+    bounds,
+    tolerance: 0.01,
+    precision: 'local-f32',
+    destinationOrigin: [0, 0],
+    inputFormat: 'uint32x4',
+    onUnsupported: 'throw'
+  });
+  if (result.status !== 'ready') throw new Error('unsupported');
+  const program = new GPUProjectionProgram({
+    projection: result.compiled,
+    positions,
+    output,
+    validity
+  });
+  graph.add({
+    getCommandNodes: (target: GPUCommandGraph) =>
+      captureGraphCommandNodes(target, () => program.addToGraph(target))
+  } as any);
+  const operation = result.program.operations[0];
+  return {
+    destroy: () => program.destroy(),
+    patches: operation.type === 'adaptive' ? operation.plan.patches.length : -1
+  };
+}
+
+async function waitForQueue(device: Device): Promise<void> {
+  await (device as any).handle.queue.onSubmittedWorkDone();
+}
+
+async function runRoute(
+  device: Device,
+  route: Route,
+  frame: GPULocalFrame,
+  bounds: ProjectionBounds,
+  values: Float64Array,
+  timedRuns: number
+) {
+  const rowCount = values.length / 2;
+  const inputBuffer = device.createBuffer({
+    byteLength: values.byteLength,
+    usage: Buffer.STORAGE | Buffer.COPY_DST
+  });
+  inputBuffer.write(new Uint32Array(values.buffer));
+  const outputBuffer = device.createBuffer({
+    byteLength: rowCount * 8,
+    usage: Buffer.STORAGE | Buffer.COPY_SRC
+  });
+  const validityBuffer = device.createBuffer({
+    byteLength: rowCount * 4,
+    usage: Buffer.STORAGE | Buffer.COPY_SRC
+  });
+  const graph = new GPUCommandGraph(device, {id: `probe-${route}`});
+  const view = (id: string, buffer: any, format: any) =>
+    graph.createDataView(
+      graph.importBuffer({id, byteLength: buffer.byteLength, usage: buffer.usage}, buffer),
+      {format, length: rowCount}
+    );
+  const planStart = performance.now();
+  const contributor = addRoute(
+    graph,
+    route,
+    frame,
+    bounds,
+    view('positions', inputBuffer, 'uint32x4'),
+    view('output', outputBuffer, 'float32x2'),
+    view('validity', validityBuffer, 'uint32')
+  );
+  const planTime = performance.now() - planStart;
+  const compileStart = performance.now();
+  const compiled = graph.compile();
+  const compileTime = performance.now() - compileStart;
+  const firstStart = performance.now();
+  let encoder = device.createCommandEncoder({id: 'probe'});
+  compiled.encode(encoder, {parameters: undefined});
+  device.submit(encoder.finish());
+  await waitForQueue(device);
+  const firstRunTime = performance.now() - firstStart;
+  const times: number[] = [];
+  for (let run = 0; run < timedRuns; run++) {
+    const start = performance.now();
+    encoder = device.createCommandEncoder({id: 'probe'});
+    compiled.encode(encoder, {parameters: undefined});
+    device.submit(encoder.finish());
+    await waitForQueue(device);
+    times.push(performance.now() - start);
+  }
+  times.sort((a, b) => a - b);
+  const bytes = await outputBuffer.readAsync(0, rowCount * 8);
+  const output = new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + rowCount * 8));
+  const validityBytes = await validityBuffer.readAsync(0, rowCount * 4);
+  const validity = new Uint32Array(
+    validityBytes.buffer.slice(validityBytes.byteOffset, validityBytes.byteOffset + rowCount * 4)
+  );
+  compiled.destroy();
+  contributor.destroy();
+  inputBuffer.destroy();
+  outputBuffer.destroy();
+  validityBuffer.destroy();
+  return {
+    planTime,
+    compileTime,
+    firstRunTime,
+    median: times.length ? times[Math.floor(times.length / 2)] : NaN,
+    output,
+    validity,
+    patches: contributor.patches
+  };
+}
+
+function maximumError(frame: GPULocalFrame, values: Float64Array, output: Float32Array, validity: Uint32Array) {
+  let maximum = 0;
+  let invalid = 0;
+  for (let row = 0; row < values.length / 2; row++) {
+    if (validity[row] !== 1) {
+      invalid++;
+      continue;
+    }
+    const [x, y] = frame.project(values[row * 2], values[row * 2 + 1]);
+    maximum = Math.max(maximum, Math.abs(output[row * 2] - x), Math.abs(output[row * 2 + 1] - y));
+  }
+  return {maximum, invalid};
+}
+
+it('local frame projection route probe', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const lines: string[] = [];
+  // Accuracy.
+  for (const kind of ['azimuthal-equidistant', 'lambert-equal-area'] as const) {
+    for (const [label, origin] of [
+      ['mid', [8.5417, 47.3769]],
+      ['high', [18.9553, 69.6496]]
+    ] as const) {
+      const frame = createGPULocalFrame({origin: [origin[0], origin[1]], kind});
+      for (const halfWidth of [0.25, 1, 2, 4]) {
+        const bounds: ProjectionBounds = [
+          origin[0] - halfWidth,
+          origin[1] - halfWidth,
+          origin[0] + halfWidth,
+          origin[1] + halfWidth
+        ];
+        const values = makeRows(bounds, 65536);
+        const cells: string[] = [];
+        for (const route of ['old', 'new'] as const) {
+          try {
+            const result = await runRoute(device, route, frame, bounds, values, 0);
+            const error = maximumError(frame, values, result.output, result.validity);
+            cells.push(
+              `${route}: ${result.patches} patches, max ${error.maximum.toFixed(4)} m, invalid ${error.invalid}`
+            );
+          } catch (error) {
+            cells.push(`${route}: throws ${(error as Error).message.slice(0, 80)}`);
+          }
+        }
+        lines.push(`${kind} ${label} ±${halfWidth}: ${cells.join(' | ')}`);
+      }
+    }
+  }
+  // Speed.
+  const frame = createGPULocalFrame({origin: [8.5417, 47.3769], kind: 'azimuthal-equidistant'});
+  for (const halfWidth of [0.25, 1]) {
+    const bounds: ProjectionBounds = [
+      8.5417 - halfWidth,
+      47.3769 - halfWidth,
+      8.5417 + halfWidth,
+      47.3769 + halfWidth
+    ];
+    for (const rowCount of [65536, 1_000_000]) {
+      const values = makeRows(bounds, rowCount);
+      for (const route of ['old', 'new', 'old', 'new'] as const) {
+        const result = await runRoute(device, route, frame, bounds, values, 9);
+        lines.push(
+          `speed ±${halfWidth} ${rowCount} ${route}: plan ${result.planTime.toFixed(1)} ms, compile ${result.compileTime.toFixed(1)} ms, first run ${result.firstRunTime.toFixed(2)} ms, median of 9 ${result.median.toFixed(3)} ms`
+        );
+      }
+    }
+  }
+  throw new Error(`PROBE REPORT\n${lines.join('\n')}`);
+}, 600_000);

@@ -1,0 +1,104 @@
+SPECIFIERS (import statements per area)
+  @luma.gl/core                                {"analysis-src":73,"lenses-src":446,"kepler-src":24,"tests":594,"website":30,"examples":412}
+  @luma.gl/core/dynamic                        {"analysis-src":1,"kepler-src":2}
+  @luma.gl/core/test-utils                     {"analysis-src":1,"tests":1139}
+  @luma.gl/core/webgl                          {"examples":2}
+  @luma.gl/core/webgpu                         {"examples":4}
+  @luma.gl/engine                              {"tests":1,"website":10,"examples":54}
+  @luma.gl/engine/arrow                        {"tests":9,"examples":17}
+  @luma.gl/engine/gltf                         {"examples":3}
+  @luma.gl/engine/text                         {"tests":3,"examples":5}
+  @luma.gl/graph                               {"analysis-src":2,"kepler-src":7,"tests":2,"website":4,"examples":32}
+  @luma.gl/graph/arrow                         {"analysis-src":1,"kepler-src":2,"tests":1,"examples":19}
+  @luma.gl/graph/experimental/simulation       {"examples":1}
+  @luma.gl/graph/geospatial                    {"analysis-src":12,"tests":2,"examples":2}
+  @luma.gl/graph/gpu-core                      {"analysis-src":1056,"lenses-src":441,"kepler-src":36,"tests":1103,"website":128,"examples":439,"docs":8}
+  @luma.gl/graph/gpu-crossfilter               {"lenses-src":2,"kepler-src":2,"tests":2,"examples":4}
+  @luma.gl/graph/gpu-data                      {"analysis-src":6,"lenses-src":6,"kepler-src":17,"tests":95,"website":2,"examples":122,"docs":1}
+  @luma.gl/graph/gpu-dataframe                 {"lenses-src":1,"kepler-src":3,"tests":8,"examples":16}
+  @luma.gl/graph/gpu-dggs                      {"tests":1}
+  @luma.gl/graph/gpu-graph-algorithms          {"tests":9,"examples":6}
+  @luma.gl/graph/gpu-pointcloud                {"tests":2,"website":1,"examples":3}
+  @luma.gl/graph/gpu-project                   {"analysis-src":6,"tests":7,"examples":2}
+  @luma.gl/graph/gpu-project/crs               {"tests":3}
+  @luma.gl/graph/gpu-raster                    {"analysis-src":138,"lenses-src":66,"kepler-src":4,"tests":77,"website":3,"examples":22,"docs":1}
+  @luma.gl/graph/gpu-simple-graph              {"examples":2}
+  @luma.gl/graph/gpu-sql                       {"examples":1}
+  @luma.gl/graph/gpu-tables                    {"kepler-src":6,"tests":2,"examples":10}
+  @luma.gl/graph/gpu-vector-search             {"analysis-src":3}
+  @luma.gl/graph/src/private                   {"tests":1}
+  @luma.gl/shaders                             {"analysis-src":17,"tests":9,"examples":8}
+
+ENTRY value exports / used in src / used only outside src / unused
+  @luma.gl/core                                75 6 8 61
+  @luma.gl/core/webgl                          24 0 1 23
+  @luma.gl/core/webgpu                         11 0 1 10
+  @luma.gl/core/webgl-constants                0 0 0 0
+  @luma.gl/core/wgsl                           1 0 0 1
+  @luma.gl/core/wgsl-binding-scan              9 0 0 9
+  @luma.gl/core/webgl-debug                    4 0 0 4
+  @luma.gl/core/dynamic                        25 1 0 24
+  @luma.gl/core/test-utils                     14 1 1 12
+  @luma.gl/core/test-utils-legacy              2 0 0 2
+  @luma.gl/core/shadertypes                    20 0 0 20
+  @luma.gl/shaders                             97 1 6 90
+  @luma.gl/shaders/wgsl                        14 0 1 13
+  @luma.gl/shaders/glsl                        4 0 0 4
+  @luma.gl/shaders/types                       13 0 0 13
+  @luma.gl/graph                               40 13 2 25
+  @luma.gl/graph/gpu-core                      184 53 7 124
+  @luma.gl/graph/gpu-parse                     66 0 0 66
+  @luma.gl/graph/gpu-graph-algorithms          14 0 10 4
+  @luma.gl/graph/gpu-graph                     27 11 2 14
+  @luma.gl/graph/gpu-graph-algorithms/benchmarks 2 0 0 2
+  @luma.gl/graph/gpu-vector-search             5 2 0 3
+  @luma.gl/graph/gpu-dggs                      1 0 1 0
+  @luma.gl/graph/gpu-dggs/benchmarks           1 0 0 1
+  @luma.gl/graph/gpu-h3                        1 0 0 1
+  @luma.gl/graph/gpu-a5                        1 0 0 1
+  @luma.gl/graph/gpu-physics                   26 0 0 26
+  @luma.gl/graph/gpu-timeseries                2 0 0 2
+  @luma.gl/graph/gpu-geometry                  3 0 0 3
+  @luma.gl/graph/gpu-pointcloud                4 0 3 1
+  @luma.gl/graph/geospatial                    9 3 5 1
+  @luma.gl/graph/gpu-tables                    15 2 0 13
+  @luma.gl/graph/gpu-raster                    48 11 30 7
+  @luma.gl/graph/lucim                         9 0 0 9
+  @luma.gl/graph/gpu-project                   24 4 9 11
+  @luma.gl/graph/gpu-project/benchmarks        6 0 0 6
+  @luma.gl/graph/gpu-project/geoarrow          5 0 0 5
+  @luma.gl/graph/gpu-project/graph             1 0 0 1
+  @luma.gl/graph/gpu-project/crs               8 0 2 6
+  @luma.gl/graph/gpu-dataframe                 25 10 3 12
+  @luma.gl/graph/gpu-sql                       2 0 2 0
+  @luma.gl/graph/gpu-crossfilter               2 2 0 0
+  @luma.gl/graph/gpu-trace                     36 0 0 36
+  @luma.gl/graph/gpu-simulation                10 0 0 10
+  @luma.gl/graph/gpu-effects                   5 0 0 5
+  @luma.gl/graph/gpu-simple-graph              46 1 3 42
+  @luma.gl/graph/experimental/simulation       19 0 2 17
+  @luma.gl/graph/experimental/models           7 0 0 7
+  @luma.gl/graph/experimental                  26 0 2 24
+  @luma.gl/graph/arrow                         85 1 1 83
+  @luma.gl/graph/gpu-data                      27 3 3 21
+  @luma.gl/graph/gpu-simple-graph/cpu          14 0 1 13
+  @luma.gl/graph/gpu-simple-graph/webgl        14 0 1 13
+  @luma.gl/graph/gpu-simple-graph/webgpu       14 0 1 13
+  @luma.gl/engine                              115 1 6 108
+  @luma.gl/engine/experimental/controls        4 0 0 4
+  @luma.gl/engine/experimental/materials       15 0 0 15
+  @luma.gl/engine/experimental/textures        3 0 0 3
+  @luma.gl/engine/experimental/webxr           5 0 0 5
+  @luma.gl/engine/physics                      10 0 0 10
+  @luma.gl/engine/tables                       3 0 0 3
+  @luma.gl/engine/models                       18 0 0 18
+  @luma.gl/engine/gltf                         35 0 1 34
+  @luma.gl/engine/gltf-physics                 10 0 0 10
+  @luma.gl/engine/splats                       48 0 0 48
+  @luma.gl/engine/text                         18 0 3 15
+  @luma.gl/engine/text-fonts                   19 0 2 17
+  @luma.gl/engine/text-3d                      9 0 0 9
+  @luma.gl/engine/text-experimental            72 0 0 72
+  @luma.gl/engine/effects                      73 0 0 73
+  @luma.gl/engine/arrow                        91 0 0 91
+  @luma.gl/engine/lighting                     39 0 0 39

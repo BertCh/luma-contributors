@@ -1,0 +1,262 @@
+// luma.gl contributors
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// Probe (roadmap 16, LUM-03): bind-group creation per encode for published `Kernel`s on today's
+// route (`kernel.dispatch(pass, {bindings, x})`) against the public pipeline-bindings route
+// (`kernel.pipeline.setBindings(bindings)` then `kernel.dispatch(pass, {x})`).
+//
+// Scenarios, each with N nodes per encode:
+// - distinct: N kernels with distinct sources (N pipelines), ping-pong bindings between A and B.
+// - shared-alternating: N kernels with one source (one pipeline through PipelineFactory),
+//   ping-pong bindings between A and B: the unrolled-loop case.
+// - shared-same: N kernels with one source and the same single binding on every dispatch.
+// Every node adds one to every element, so after E encodes the last-written buffer holds E * N.
+//
+// The probe reports by throwing an Error whose message is the table (the headless runner does not
+// print console output). To run it, copy it to `modules/analysis/test/analysis-core/` as a
+// `.spec.ts` file, run `yarn vitest run --project headless <file>`, and delete the copy.
+//
+// Measured 2026-11-11, apple metal-3, headless Chromium (two runs agree to 0.1 to 1 ms; the
+// browser timer resolution is 0.1 ms). 11 encodes per route, the first two not counted in the
+// steady columns; every output equals today's route and the expected E * N:
+//
+// | N | scenario | route | bind groups, first encode | per encode, steady | median encode ms |
+// | 200 | distinct | per-dispatch | 200 | 200 | 0.70 |
+// | 200 | distinct | pipeline | 200 | 0 | 0.40 |
+// | 200 | shared-alternating | per-dispatch | 200 | 200 | 0.60 to 0.70 |
+// | 200 | shared-alternating | pipeline | 200 | 200 | 0.80 |
+// | 200 | shared-same | per-dispatch | 200 | 200 | 0.50 to 0.60 |
+// | 200 | shared-same | pipeline | 1 | 0 | 0.30 |
+// | 2000 | distinct | per-dispatch | 2000 | 2000 | 7.0 to 7.4 |
+// | 2000 | distinct | pipeline | 2000 | 0 | 2.9 to 3.0 |
+// | 2000 | shared-alternating | per-dispatch | 2000 | 2000 | 6.2 to 8.7 |
+// | 2000 | shared-alternating | pipeline | 2000 | 2000 | 6.7 |
+// | 2000 | shared-same | per-dispatch | 2000 | 2000 | 5.3 |
+// | 2000 | shared-same | pipeline | 1 | 0 | 1.9 |
+//
+// Swapping the bound buffer between encodes on the pipeline route created one new bind group and
+// wrote the new buffer, not the old one (no stale binding).
+// The swap check prints only the first output word and adds no failures to `problems`.
+
+import type {Binding, Buffer, Device} from '@luma.gl/core';
+import {Buffer as LumaBuffer} from '@luma.gl/core';
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {Kernel} from '@luma.gl/graph';
+import {it} from 'vitest';
+
+const ELEMENT_COUNT = 64;
+const WARMUP_ENCODES = 2;
+const MEASURED_ENCODES = 9;
+const ENCODE_COUNT = WARMUP_ENCODES + MEASURED_ENCODES;
+
+type Route = 'per-dispatch' | 'pipeline';
+type Scenario = 'distinct' | 'shared-alternating' | 'shared-same';
+
+function getPingPongSource(salt: string): string {
+  return `// ${salt}
+@group(0) @binding(0) var<storage, read> sourceValues: array<u32>;
+@group(0) @binding(1) var<storage, read_write> destinationValues: array<u32>;
+@compute @workgroup_size(${ELEMENT_COUNT})
+fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
+  destinationValues[invocation.x] = sourceValues[invocation.x] + 1u;
+}`;
+}
+
+function getInPlaceSource(salt: string): string {
+  return `// ${salt}
+@group(0) @binding(0) var<storage, read_write> values: array<u32>;
+@compute @workgroup_size(${ELEMENT_COUNT})
+fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
+  values[invocation.x] = values[invocation.x] + 1u;
+}`;
+}
+
+const PING_PONG_LAYOUT = {
+  bindings: [
+    {name: 'sourceValues', type: 'read-only-storage' as const, group: 0, location: 0},
+    {name: 'destinationValues', type: 'storage' as const, group: 0, location: 1}
+  ]
+};
+const IN_PLACE_LAYOUT = {
+  bindings: [{name: 'values', type: 'storage' as const, group: 0, location: 0}]
+};
+
+function createStorageBuffer(device: Device): Buffer {
+  return device.createBuffer({
+    byteLength: ELEMENT_COUNT * 4,
+    usage: LumaBuffer.STORAGE | LumaBuffer.COPY_SRC | LumaBuffer.COPY_DST
+  });
+}
+
+async function readWords(buffer: Buffer): Promise<Uint32Array> {
+  const bytes = await buffer.readAsync();
+  return new Uint32Array(bytes.slice().buffer, 0, ELEMENT_COUNT);
+}
+
+function getMedian(values: number[]): number {
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.floor(sorted.length / 2)]!;
+}
+
+type Measurement = {
+  scenario: Scenario;
+  route: Route;
+  nodeCount: number;
+  firstEncodeBindGroups: number;
+  steadyBindGroups: number;
+  medianEncodeMilliseconds: number;
+  output: Uint32Array[];
+};
+
+it('bind-group probe', {timeout: 900_000}, async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device || device.type !== 'webgpu') throw new Error('probe needs WebGPU');
+  const gpuDevice = device.handle as GPUDevice;
+  const originalCreateBindGroup = gpuDevice.createBindGroup.bind(gpuDevice);
+  let bindGroupCount = 0;
+  gpuDevice.createBindGroup = (descriptor: GPUBindGroupDescriptor) => {
+    bindGroupCount++;
+    return originalCreateBindGroup(descriptor);
+  };
+
+  const first = createStorageBuffer(device);
+  const second = createStorageBuffer(device);
+  const lines: string[] = [];
+  const measurements: Measurement[] = [];
+  const buildTimes: string[] = [];
+  const problems: string[] = [];
+
+  try {
+    for (const nodeCount of [200, 2000]) {
+      for (const scenario of ['distinct', 'shared-alternating', 'shared-same'] as Scenario[]) {
+        const buildStart = performance.now();
+        const kernels: Kernel[] = [];
+        for (let nodeIndex = 0; nodeIndex < nodeCount; nodeIndex++) {
+          const salt =
+            scenario === 'distinct'
+              ? `distinct-${nodeCount}-${nodeIndex}`
+              : `${scenario}-${nodeCount}`;
+          kernels.push(
+            new Kernel(device, {
+              id: `${scenario}-${nodeIndex}`,
+              source: scenario === 'shared-same' ? getInPlaceSource(salt) : getPingPongSource(salt),
+              shaderLayout: scenario === 'shared-same' ? IN_PLACE_LAYOUT : PING_PONG_LAYOUT
+            })
+          );
+        }
+        const pipelineCount = new Set(kernels.map(kernel => kernel.pipeline)).size;
+        buildTimes.push(
+          `${scenario} N=${nodeCount}: ${kernels.length} kernels, ${pipelineCount} pipelines, built in ${(performance.now() - buildStart).toFixed(0)} ms`
+        );
+        // Stable binding records, as the factory keeps them: identity changes only with the set.
+        const forward: Record<string, Binding> = {sourceValues: first, destinationValues: second};
+        const backward: Record<string, Binding> = {sourceValues: second, destinationValues: first};
+        const inPlace: Record<string, Binding> = {values: first};
+        const getBindings = (nodeIndex: number) =>
+          scenario === 'shared-same' ? inPlace : nodeIndex % 2 === 0 ? forward : backward;
+
+        for (const route of ['per-dispatch', 'pipeline'] as Route[]) {
+          first.write(new Uint32Array(ELEMENT_COUNT));
+          second.write(new Uint32Array(ELEMENT_COUNT));
+          await device.handle.queue.onSubmittedWorkDone();
+          const counts: number[] = [];
+          const times: number[] = [];
+          for (let encodeIndex = 0; encodeIndex < ENCODE_COUNT; encodeIndex++) {
+            bindGroupCount = 0;
+            const start = performance.now();
+            const commandEncoder = device.createCommandEncoder({id: 'probe'});
+            const computePass = commandEncoder.beginComputePass({id: 'probe-pass'});
+            for (const [nodeIndex, kernel] of kernels.entries()) {
+              const bindings = getBindings(nodeIndex);
+              if (route === 'per-dispatch') {
+                kernel.dispatch(computePass, {bindings, x: 1, y: 1, z: 1});
+              } else {
+                kernel.pipeline.setBindings(bindings);
+                kernel.dispatch(computePass, {x: 1, y: 1, z: 1});
+              }
+            }
+            computePass.end();
+            const commandBuffer = commandEncoder.finish();
+            times.push(performance.now() - start);
+            counts.push(bindGroupCount);
+            device.submit(commandBuffer);
+          }
+          const output = [await readWords(first), await readWords(second)];
+          measurements.push({
+            scenario,
+            route,
+            nodeCount,
+            firstEncodeBindGroups: counts[0]!,
+            steadyBindGroups: getMedian(counts.slice(WARMUP_ENCODES)),
+            medianEncodeMilliseconds: getMedian(times.slice(WARMUP_ENCODES)),
+            output
+          });
+          // Expected: the last-written buffer holds ENCODE_COUNT * N everywhere.
+          const expected = ENCODE_COUNT * nodeCount;
+          const lastWritten = output[0]!;
+          if (!lastWritten.every(value => value === expected)) {
+            problems.push(
+              `${scenario} ${route} N=${nodeCount}: first buffer holds ${lastWritten[0]}, expected ${expected}`
+            );
+          }
+          if (scenario !== 'shared-same' && !output[1]!.every(value => value === expected - 1)) {
+            problems.push(
+              `${scenario} ${route} N=${nodeCount}: second buffer holds ${output[1]![0]}, expected ${expected - 1}`
+            );
+          }
+        }
+
+        // Stale-binding check on the pipeline route: swap the bound buffer between encodes.
+        if (scenario === 'shared-same') {
+          const replacement = createStorageBuffer(device);
+          replacement.write(new Uint32Array(ELEMENT_COUNT));
+          first.write(new Uint32Array(ELEMENT_COUNT));
+          const swapped: Record<string, Binding> = {values: replacement};
+          bindGroupCount = 0;
+          const commandEncoder = device.createCommandEncoder({id: 'probe-swap'});
+          const computePass = commandEncoder.beginComputePass({id: 'probe-swap-pass'});
+          for (const kernel of kernels) {
+            kernel.pipeline.setBindings(swapped);
+            kernel.dispatch(computePass, {x: 1, y: 1, z: 1});
+          }
+          computePass.end();
+          device.submit(commandEncoder.finish());
+          const replacementWords = await readWords(replacement);
+          const firstWords = await readWords(first);
+          lines.push(
+            `swap check N=${nodeCount}: ${bindGroupCount} bind groups; replacement ${replacementWords[0]} (expected ${nodeCount}), old buffer ${firstWords[0]} (expected 0)`
+          );
+          replacement.destroy();
+        }
+        for (const kernel of kernels) kernel.destroy();
+      }
+    }
+  } finally {
+    gpuDevice.createBindGroup = originalCreateBindGroup;
+    first.destroy();
+    second.destroy();
+  }
+
+  const table = [
+    '| N | scenario | route | bind groups, first encode | bind groups per encode, steady | median encode ms | output = per-dispatch |',
+    '| --- | --- | --- | --- | --- | --- | --- |'
+  ];
+  for (const measurement of measurements) {
+    const reference = measurements.find(
+      candidate =>
+        candidate.nodeCount === measurement.nodeCount &&
+        candidate.scenario === measurement.scenario &&
+        candidate.route === 'per-dispatch'
+    )!;
+    const identical = measurement.output.every((words, index) =>
+      words.every((value, wordIndex) => value === reference.output[index]![wordIndex])
+    );
+    table.push(
+      `| ${measurement.nodeCount} | ${measurement.scenario} | ${measurement.route} | ${measurement.firstEncodeBindGroups} | ${measurement.steadyBindGroups} | ${measurement.medianEncodeMilliseconds.toFixed(2)} | ${identical ? 'yes' : 'NO'} |`
+    );
+  }
+  throw new Error(
+    `PROBE adapter ${JSON.stringify(device.info)}\n${table.join('\n')}\n${lines.join('\n')}\n${buildTimes.join('\n')}\nproblems: ${problems.length ? problems.join('; ') : 'none'}`
+  );
+});

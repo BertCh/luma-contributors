@@ -55,7 +55,7 @@ Site counts come from a sampled sweep of `modules/*/src` and `docs/api` and are 
 
 ## 4. What stands in the way
 
-- `createWGSLKernelNode` builds raw `Kernel` source and does not run luma.gl's shader assembler. Using a published module needs it to accept modules and defines; the module also declares a uniform at `@binding(auto)`.
+- `createWGSLKernelNode` builds raw `Kernel` source and does not run luma.gl's shader assembler. Using a published module needs it to accept modules and defines; the module also declares a uniform at `@binding(auto)`. Done on 2026-11-12 (roadmap LUM-02): `createWGSLKernelNode` takes `modules` and `defines`, assembles with the published `WGSLShaderAssembler` and `getPlatformInfo`, and forces the integer variant whenever an fp64 module is present, so the uniform is never read and nothing is bound. Measured through the factory on the test GPU (Apple, `modules/analysis/test/analysis-core/wgsl-kernel-node-fp64.spec.ts`): add 7.4e-16, multiply 3.5e-15, divide 2.7e-15 relative; sine 7.1e-15 and cosine 2.4e-15 absolute; assembly about 14 ms per kernel, first compile and run 165 to 194 ms with a cold shader cache. No kernel uses it yet (LUM-20).
 - The public route exists: `fp64arithmetic` and `preprocess` from `@luma.gl/shaders`, `WGSLShaderAssembler` from `@luma.gl/shaders/wgsl`. The assembler selects the integer variant only for Apple WebGPU and sets no barrier define for classic on other vendors. The helpers that choose per device, `getPlatformFP64Arithmetic` and `getClassicFP64Defines`, are `@internal` in `@luma.gl/graph`. The upstream request in `upstream-workarounds.md` narrows to exporting them.
 - The exact difference changes the input contract of a contributor from `float32x2` to `uint32x4` rows.
 
