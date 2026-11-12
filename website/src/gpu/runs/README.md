@@ -93,14 +93,20 @@ Without an `update`, every parameter change rebuilds. The graph runs once per ch
 
 **`afterRun`** (optional, async) is for operations whose output is not a buffer the graph wrote but
 something read back from it or recorded about it: a snapshot arena, a described command graph, a CPU
-summary from a readback ring. It runs after every run (the first one included) with
-`{device, compiled, inputs, outputs, values, upload, allocate}` and returns any value, which `draw`
-receives as `extra`. Draw it by uploading CPU data with `state.upload(id, format, typedArray)` (same
+summary from a readback ring. It runs after the first run and coalesces later runs as described below.
+It receives `{device, compiled, inputs, outputs, values, upload, allocate}` and returns any value, which
+`draw` receives as `extra`. Draw it by uploading CPU data with `state.upload(id, format, typedArray)` (same
 formats as `builder.upload`) and putting the returned `RunBuffer`s in `extra`. Those buffers belong to
 that result and are destroyed when the next one replaces it, so create them inside `afterRun`, every
-time. The framework drops the result of a run that a newer run or a rebuild superseded, keeps the
-previous `extra` until the new one is ready, and the harness `settle()` waits for it. Runs without
-`afterRun` are unchanged (`extra` is `undefined`).
+time. One `afterRun` call is in flight at a time: runs that finish meanwhile get one follow-up call
+for the latest run, so under a moving pointer it is called less often than the graph runs, and the
+run that ends a burst always gets its call. The framework drops a result whose build a rebuild
+replaced and keeps the previous `extra` until the new one is ready. The harness `settle()` waits up to
+400 animation frames for runs, rebuilds, `afterRun`, peeks and pointer settlement. If work is still
+pending, it logs a console warning, reads the ranges of the latest committed buffers, draws that
+state and resolves even though pending results may be missing from the capture. That final range
+read (including any follow-up) is still awaited without a frame bound. Destruction stops settlement
+without further drawing. Runs without `afterRun` are unchanged (`extra` is `undefined`).
 
 ```ts
 defineOperationRun({
@@ -121,7 +127,9 @@ defineOperationRun({
 `builder.own(resource)` hands any object with `destroy()` to the framework; it is destroyed with the
 build's buffers on rebuild and on destroy. A stateful resource that a run consumes (an arena that
 `read()` closes) needs a rebuild per run, so leave `update` out. Examples: the six
-`computation-*` and `snapshot-*` runs and `region-statistics-readback`.
+`computation-*` and `snapshot-*` runs and `region-statistics-readback`. A build that owns a resource
+is not kept by `buildCache`; pass `builder.own(resource, {reusable: true})` for one no run changes
+(an operation that owns a constant plan buffer, as in `geometry-processing/local-frame-projection`).
 
 **`draw`** lists layers in paint order: input context first, then the operation's output. Use a
 function when layers depend on `values` (ranges, counts, which ramp).

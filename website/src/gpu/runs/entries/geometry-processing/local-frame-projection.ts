@@ -57,7 +57,9 @@ export default defineOperationRun({
       Float32Array.from([...degrees, ...coast.flat()])
     );
     const meters = builder.allocate('meters', 'float32x2', vertexCount);
-    builder.graph.add(
+    // The projection owns its plan buffer; the framework destroys it with this build. The plan is
+    // fixed at construction and no run changes it, so the build stays in `buildCache`.
+    const projection = builder.own(
       new GPULocalFrameProjection({
         frame: createGPULocalFrame({
           origin: [ORIGIN_LONGITUDE, originLatitude],
@@ -72,8 +74,10 @@ export default defineOperationRun({
           ORIGIN_LONGITUDE + HALF_LONGITUDE,
           originLatitude + HALF_LATITUDE
         ]
-      })
+      }),
+      {reusable: true}
     );
+    builder.graph.add(projection);
     const layout = (id: string, source: typeof lonLat, body: string) => {
       const result = builder.allocate(id, 'float32x2', vertexCount);
       addKernel(builder, {

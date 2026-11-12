@@ -9,6 +9,7 @@
 import {Buffer, type Device} from '@luma.gl/core';
 import {
   GPUCommandGraph,
+  GPUReadbackRing,
   type CompiledGPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
@@ -105,14 +106,22 @@ export type RunBuilder = {
   allocate<Format extends RunFormat>(id: string, format: Format, length: number): RunBuffer<Format>;
   /**
    * Hands a resource the run must clean up (a snapshot arena, a readback ring) to the framework.
-   * It is destroyed together with this build's buffers, on rebuild and on destroy.
+   * It is destroyed together with this build's buffers, on rebuild and on destroy. A build that
+   * owns a resource is not kept by `buildCache`, because a run may consume it (an arena that
+   * `read()` closes); pass `{reusable: true}` for a resource no run changes (an operation's
+   * constant plan buffer), which keeps the build eligible for the cache.
    */
-  own<Resource extends {destroy(): void}>(resource: Resource): Resource;
+  own<Resource extends {destroy(): void}>(
+    resource: Resource,
+    options?: {reusable?: boolean}
+  ): Resource;
 };
 
 class RunBufferSet {
   readonly buffers: Buffer[] = [];
   readonly resources: {destroy(): void}[] = [];
+  /** Owned resources a run may consume: a build holding any cannot be reused from the cache. */
+  consumableResourceCount = 0;
 
   createBuilder(device: Device, graph: GPUCommandGraph<void>): RunBuilder {
     const wrap = <Format extends RunFormat>(
@@ -148,8 +157,9 @@ class RunBufferSet {
           createEmptyStorageBuffer(device, length * FORMAT_LAYOUT[format].components),
           length
         ),
-      own: resource => {
+      own: (resource, options) => {
         this.resources.push(resource);
+        if (!options?.reusable) this.consumableResourceCount++;
         return resource;
       }
     };
@@ -158,6 +168,7 @@ class RunBufferSet {
   destroy(): void {
     for (const resource of this.resources) resource.destroy();
     this.resources.length = 0;
+    this.consumableResourceCount = 0;
     for (const buffer of this.buffers) buffer.destroy();
     this.buffers.length = 0;
   }
@@ -374,10 +385,12 @@ export type OperationRunSpec<Inputs, Outputs, Extra = undefined> = {
   /**
    * Optional asynchronous post-run hook, for operations whose output is not a buffer but a
    * readback or a record of the run (a snapshot arena, a command-graph description, a CPU
-   * summary). Called after every run, with the finished graph; its result is handed to `draw` as
-   * `extra`. Buffers made through `state.upload` are drawn like any other. Results of superseded
-   * runs are dropped, and `draw` keeps the previous `extra` until the new one is ready. Runs
-   * without `afterRun` behave exactly as before.
+   * summary), with the finished graph; its result is handed to `draw` as `extra`. Buffers made
+   * through `state.upload` are drawn like any other. One call is in flight at a time: runs that
+   * finish meanwhile get one follow-up call for the latest run when it returns, so under a moving
+   * pointer it is called less often than the graph runs, and every run that ends a burst gets
+   * its call. A rebuild drops the result of a call on the old build, and `draw` keeps the
+   * previous `extra` until the new one is ready. Runs without `afterRun` behave exactly as before.
    */
   afterRun?: (state: RunAfterState<Inputs, Outputs>) => Promise<Extra> | Extra;
   /** Layers to draw, in order: input context first, then the operation's output. */
@@ -397,7 +410,7 @@ export type OperationRunSpec<Inputs, Outputs, Extra = undefined> = {
   /**
    * Keep up to this many compiled builds, keyed by the values of the compile-time parameters, so
    * returning to a value the reader already visited does not recompile. Leave it out for runs that
-   * hand stateful resources to `builder.own`.
+   * hand stateful resources to `builder.own` (resources owned with `{reusable: true}` are fine).
    */
   buildCache?: number;
   /** One line shown by the verification harness. */
@@ -414,7 +427,12 @@ export type RunScene = GpuScene & {
 export type RunDebug = {
   /** Draws only the `context` layers (the inputs) when true. */
   setInputsOnly(isInputsOnly: boolean): void;
-  /** Resolves when the last run and value-range readback have finished and the frame is drawn. */
+  /**
+   * Waits up to 400 animation frames for runs, rebuilds, `afterRun`, peeks and pointer settlement.
+   * If work remains, warns and uses the latest committed state, which may omit pending results.
+   * Then waits for its value-range read (including any follow-up), draws and resolves. The range
+   * read has no frame bound. Stops without further drawing if the run is destroyed.
+   */
   settle(): Promise<void>;
   getRunCount(): number;
   getRebuildCount(): number;
@@ -554,7 +572,7 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
     const retireBuilt = (key: string, built: Built) => {
       const capacity = spec.buildCache ?? 0;
       // A build that owns stateful resources (an arena a run consumes) cannot be reused.
-      if (capacity <= 0 || builtCache.has(key) || built.buffers.resources.length > 0) {
+      if (capacity <= 0 || builtCache.has(key) || built.buffers.consumableResourceCount > 0) {
         destroyBuilt(built);
         return;
       }
@@ -662,6 +680,7 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
           wanted.map(async ([buffer, entry]) => {
             try {
               const bytes = await buffer.readAsync();
+              if (isDestroyed) return null;
               const copy = bytes.buffer.slice(
                 bytes.byteOffset,
                 bytes.byteOffset + bytes.byteLength
@@ -1137,17 +1156,142 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
       }
     };
 
-    const refreshRanges = async () => {
-      const wanted = [...wantedRanges];
-      const measured = await Promise.all(
-        wanted.map(async ([buffer, format]) => {
-          try {
-            return [buffer, readRange(await buffer.readAsync(), format)] as const;
-          } catch {
-            return [buffer, null] as const;
+    // Batch auto ranges through one reusable staging slot when they fit the device's buffer limit.
+    // Larger batches use separate reads so their combined size does not limit readable inputs.
+    let rangeRing: GPUReadbackRing | null = null;
+    /** Copies the wanted buffers into the staging slot and measures each one's range. */
+    const readRanges = async (): Promise<(readonly [Buffer, [number, number] | null])[]> => {
+      if (isDestroyed) return [];
+      const wanted: {
+        buffer: Buffer;
+        format: ValueFormat;
+        byteOffset: number;
+        byteLength: number;
+      }[] = [];
+      let byteLength = 0;
+      for (const [buffer, format] of wantedRanges) {
+        // Buffers of a replaced `afterRun` result are destroyed: stop measuring them.
+        if (buffer.destroyed) {
+          wantedRanges.delete(buffer);
+          continue;
+        }
+        const size = Math.floor(buffer.byteLength / 4) * 4;
+        if (size === 0) continue;
+        wanted.push({buffer, format, byteOffset: byteLength, byteLength: size});
+        byteLength += size;
+      }
+      if (wanted.length === 0) return [];
+      if (
+        byteLength > device.limits.maxBufferSize ||
+        wanted.some(source => (source.buffer.usage & Buffer.COPY_SRC) === 0)
+      ) {
+        return Promise.all(
+          wanted.map(async source => {
+            try {
+              const bytes = await source.buffer.readAsync();
+              if (isDestroyed) return [source.buffer, null] as const;
+              return [source.buffer, readRange(bytes, source.format)] as const;
+            } catch {
+              return [source.buffer, null] as const;
+            }
+          })
+        );
+      }
+      if (!rangeRing || rangeRing.byteLength < byteLength) {
+        rangeRing?.destroy();
+        rangeRing = null;
+        rangeRing = new GPUReadbackRing(device, {
+          id: 'run-ranges',
+          byteLength,
+          slotCount: 1
+        });
+      }
+      // One read is in flight at a time, so the single slot is free here.
+      const ticket = rangeRing.tryAcquire();
+      if (!ticket) return [];
+      let isEncoded = false;
+      let hasStartedRead = false;
+      try {
+        if (isDestroyed) return [];
+        const commandEncoder = device.createCommandEncoder({id: 'run-ranges-encoder'});
+        try {
+          for (const source of wanted) {
+            commandEncoder.copyBufferToBuffer({
+              sourceBuffer: source.buffer,
+              destinationBuffer: ticket.buffer,
+              destinationOffset: source.byteOffset,
+              size: source.byteLength
+            });
           }
-        })
-      );
+          const commandBuffer = commandEncoder.finish();
+          ticket.markEncoded({byteOffset: 0, byteLength});
+          isEncoded = true;
+          device.submit(commandBuffer);
+        } finally {
+          commandEncoder.destroy();
+        }
+        hasStartedRead = true;
+        const bytes = await ticket.read();
+        if (isDestroyed) return [];
+        return wanted.map(
+          source =>
+            [
+              source.buffer,
+              readRange(
+                bytes.subarray(source.byteOffset, source.byteOffset + source.byteLength),
+                source.format
+              )
+            ] as const
+        );
+      } finally {
+        if (isEncoded && !hasStartedRead) {
+          // Submission can throw after queuing work. Drain the encoded slot before reusing it.
+          const discarded = ticket.read();
+          ticket.cancel();
+          await discarded.catch(() => undefined);
+        } else {
+          // Unsubmitted reservations release immediately; read() releases mapped slots itself.
+          ticket.cancel();
+        }
+      }
+    };
+    /** The range read in flight, including the follow-up it owes to requests made meanwhile. */
+    let pendingRanges: Promise<void> | null = null;
+    let isRangeStale = false;
+    let needsExtraRanges = false;
+    /**
+     * Measures the auto ranges of the drawn buffers. One read is in flight at a time; a request
+     * made meanwhile marks it stale and exactly one follow-up read of the latest state happens
+     * when it finishes. The returned promise resolves after that follow-up, so `await` always
+     * sees the ranges of the latest run.
+     */
+    const refreshRanges = (): Promise<void> => {
+      if (pendingRanges) {
+        isRangeStale = true;
+        return pendingRanges;
+      }
+      const task = (async () => {
+        try {
+          do {
+            isRangeStale = false;
+            await applyRanges();
+          } while (isRangeStale && !isDestroyed);
+        } finally {
+          // Cleared in the same step as the last stale check, so no request can fall between.
+          pendingRanges = null;
+        }
+      })();
+      pendingRanges = task;
+      return task;
+    };
+    const applyRanges = async () => {
+      let measured: (readonly [Buffer, [number, number] | null])[];
+      try {
+        measured = await readRanges();
+      } catch {
+        // The device or a source buffer went away while the read was in flight.
+        return;
+      }
       if (isDestroyed) return;
       let changed = false;
       for (const [buffer, range] of measured) {
@@ -1224,6 +1368,11 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
       for (const layer of glyphLayers) layer.draw(renderPass);
       renderPass.end();
       device.submit();
+      if (needsExtraRanges) {
+        // Resolving the new layers above registers their auto-range buffers before this read.
+        needsExtraRanges = false;
+        void refreshRanges();
+      }
     };
 
     const runOperation = () => {
@@ -1232,52 +1381,86 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
       runCount++;
     };
 
-    /** Runs `afterRun` for the build that just ran; a newer run or rebuild supersedes it. */
-    const refreshExtra = (): Promise<void> => {
+    /**
+     * Runs `afterRun` once for `built`. Its result is committed unless a rebuild has replaced the
+     * build meanwhile (the result could describe destroyed buffers).
+     */
+    const runAfter = async (built: Built): Promise<void> => {
       const afterRun = spec.afterRun;
-      if (!afterRun) return Promise.resolve();
+      if (!afterRun) return;
       const generation = ++afterGeneration;
-      const built = current;
       const staged = new RunBufferSet();
-      const task = (async () => {
-        let result: Extra;
-        try {
-          const builder = staged.createBuilder(
-            device,
-            new GPUCommandGraph<void>(device, {id: 'run-after'})
-          );
-          result = await afterRun({
-            device,
-            compiled: built.runner.compiled,
-            inputs,
-            outputs: built.result.outputs,
-            values: {...values},
-            upload: builder.upload,
-            allocate: builder.allocate
-          });
-        } catch (error) {
-          staged.destroy();
-          // A rebuild or newer run may have destroyed what this one was reading.
-          if (isDestroyed || generation !== afterGeneration) return;
-          throw error;
-        }
-        if (isDestroyed || generation !== afterGeneration) {
-          staged.destroy();
-          return;
-        }
-        extraBuffers?.destroy();
-        extraBuffers = staged;
-        extra = result;
-        framesToDraw = 3;
-        scheduler.request();
-      })();
-      // The caller handles `task`'s rejection; this copy only tracks that a run is in flight.
-      const tracked: Promise<void> = task
-        .catch(() => undefined)
-        .finally(() => {
-          if (pendingAfter === tracked) pendingAfter = null;
+      let result: Extra;
+      try {
+        const builder = staged.createBuilder(
+          device,
+          new GPUCommandGraph<void>(device, {id: 'run-after'})
+        );
+        result = await afterRun({
+          device,
+          compiled: built.runner.compiled,
+          inputs,
+          outputs: built.result.outputs,
+          values: {...values},
+          upload: builder.upload,
+          allocate: builder.allocate
         });
-      pendingAfter = tracked;
+      } catch (error) {
+        staged.destroy();
+        // A rebuild may have destroyed what this one was reading.
+        if (isDestroyed || generation !== afterGeneration) return;
+        throw error;
+      }
+      if (isDestroyed || generation !== afterGeneration) {
+        staged.destroy();
+        return;
+      }
+      extraBuffers?.destroy();
+      extraBuffers = staged;
+      extra = result;
+      needsExtraRanges = true;
+      framesToDraw = 3;
+      scheduler.request();
+    };
+
+    /** The build whose newest run still needs an `afterRun` pass after the one in flight. */
+    let queuedAfterBuilt: Built | null = null;
+    /**
+     * Runs `afterRun` for the build that just ran. One pass is in flight at a time: a run that
+     * finishes meanwhile queues exactly one follow-up pass for the latest state, which starts when
+     * the pass in flight has committed. A rebuild drops the pass in flight and its queued
+     * follow-up; the new build's first run asks again. The returned promise resolves after the
+     * follow-up, so `await` sees the `extra` of the latest run.
+     */
+    const refreshExtra = (): Promise<void> => {
+      if (!spec.afterRun || isDestroyed) return Promise.resolve();
+      if (pendingAfter) {
+        queuedAfterBuilt = current;
+        return pendingAfter;
+      }
+      const task = (async () => {
+        let built: Built | null = current;
+        let failure: {error: unknown} | null = null;
+        try {
+          while (built && !isDestroyed) {
+            queuedAfterBuilt = null;
+            try {
+              await runAfter(built);
+            } catch (error) {
+              failure = {error};
+            }
+            if (isDestroyed) return;
+            built = queuedAfterBuilt && queuedAfterBuilt === current ? queuedAfterBuilt : null;
+          }
+        } finally {
+          // Cleared in the same step as the last queue check, so no request can fall between.
+          queuedAfterBuilt = null;
+          pendingAfter = null;
+        }
+        if (failure) throw failure.error;
+      })();
+      // The first caller handles `task`'s rejection; later callers wait on this copy.
+      pendingAfter = task.catch(() => undefined);
       return task;
     };
 
@@ -1297,7 +1480,9 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         peeks.clear();
         peekEpoch++;
         buildNumber++;
+        // Drops the `afterRun` pass in flight and its queued follow-up: they describe the old build.
         afterGeneration++;
+        queuedAfterBuilt = null;
         retireBuilt(currentKey, current);
         current = next;
         currentKey = nextKey;
@@ -1465,6 +1650,7 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         overlay.destroy();
         if (dummyValues) dummyValues.destroy();
         extraBuffers?.destroy();
+        rangeRing?.destroy();
         destroyBuilt(current);
         for (const built of builtCache.values()) destroyBuilt(built);
         builtCache.clear();
@@ -1476,27 +1662,35 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
           scheduler.request();
         },
         async settle() {
+          if (isDestroyed) return;
           scheduler.cancel();
           const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
           finishPointer(true);
-          for (
-            let attempt = 0;
-            attempt < 400 &&
-            (rebuildPromise ||
-              needsRebuild ||
-              needsRun ||
-              pendingAfter ||
-              pendingPeek ||
-              pendingSettle);
-            attempt++
-          ) {
+          const hasPendingWork = () =>
+            Boolean(
+              rebuildPromise ||
+                needsRebuild ||
+                needsRun ||
+                pendingAfter ||
+                pendingPeek ||
+                pendingSettle
+            );
+          for (let attempt = 0; attempt < 400 && hasPendingWork(); attempt++) {
             // A readback can arm the settle debounce again: apply it rather than wait it out.
             if (pendingSettle && !rebuildPromise) applySettle();
             draw();
             await nextFrame();
+            if (isDestroyed) return;
+          }
+          if (hasPendingWork()) {
+            // biome-ignore lint/suspicious/noConsole: make captures of unfinished work visible
+            console.warn(
+              'Operation run did not settle within 400 animation frames; drawing the latest committed state.'
+            );
           }
           render();
           await refreshRanges();
+          if (isDestroyed) return;
           render();
           await nextFrame();
         },
