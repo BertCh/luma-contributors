@@ -1,39 +1,22 @@
 # Developer documents
 
-Planning, decisions and research for `@luma-contributors/*`. User documentation lives in `docs/`.
-
-## Current
+Plans, rules and research for `@luma-contributors/*`. User documentation lives in `docs/`.
 
 | Document | What it is |
 | --- | --- |
-| [roadmap.md](./roadmap.md) | The single current roadmap: prioritized backlog by domain, with IDs, current limits and sources |
-| [contributor-contract.md](./contributor-contract.md) | The rules every contributor follows: shape, parallelism, iteration budget, parameters, context, no-data, output layout, status, limits |
+| [roadmap.md](./roadmap.md) | The one roadmap: open work by domain with IDs and current limits, decisions waiting for the maintainer, and a short log of finished passes |
+| [contributor-contract.md](./contributor-contract.md) | The rules every contributor follows: shape, parallelism, iteration budget, parameters, no-data, output layout, status, limits, WGSL numerics |
 | [coverage-matrix.md](./coverage-matrix.md) | Function-by-function coverage and the entry point each symbol lives in |
-| [upstream-workarounds.md](./upstream-workarounds.md) | Capabilities dropped, worked around or regressed by depending on published luma.gl, and the upgrade procedure for each `@luma.gl` alpha |
-| [upstream-first-plan.md](./upstream-first-plan.md) | Rules and phases for depending only on published luma.gl |
-| [upstream-first-pending.md](./upstream-first-pending.md) | Replacements for the quarantined luma.gl extensions |
-| [upstream-first-foundation.md](./upstream-first-foundation.md) | Kernel-node helpers and test utilities on published luma.gl |
-| [upstream-first-recording.md](./upstream-first-recording.md) | Computation records built from public `GPUCommandGraph` data |
-| [upstream-proposal-gpu-resident-iteration.md](./upstream-proposal-gpu-resident-iteration.md) | Draft proposal, not sent upstream: batched indirect dispatch (PLAT-04) |
-| [upstream-proposal-adapter-limits-subgroups.md](./upstream-proposal-adapter-limits-subgroups.md) | Draft proposal, not sent upstream: adapter limits, subgroups, buffer_view (PLAT-05) |
-| [upstream-proposal-math-review.md](./upstream-proposal-math-review.md) | Draft proposal, not sent upstream: 13 luma.gl pull requests from the math correctness review (grid cell coordinate, graph algorithms on caller CSR, haversine, finite difference, morphology, histogram, k-means, contours, 64-bit keys, exact point-in-ring, 64-bit words, `count`, compensated sums) |
-
-## Research
-
-[research/](./research/README.md) holds evidence that still informs decisions: kepler sandbox review,
-implementation sources and licensing, kepler SQL ledger, condensed performance findings, the
-showcase overhaul notes, and the small evidence JSON cited by tests and docs. Large artifacts are
-listed with checksums in manifests and are not stored in git.
-
-## Archive
-
-[archive/](./archive/README.md) keeps the planning documents from the luma.gl `map-contributors`
-branch verbatim, each with a banner. They are the evidence trail behind the roadmap. Do not update
-them; change [roadmap.md](./roadmap.md) instead.
+| [upstream-first-plan.md](./upstream-first-plan.md) | The rules for depending only on published luma.gl, what the split replaced or dropped, and the shared helpers that stand on the published API |
+| [upstream-first-recording.md](./upstream-first-recording.md) | How computation records are built from public `GPUCommandGraph` data |
+| [upstream-workarounds.md](./upstream-workarounds.md) | Every capability dropped, worked around or regressed by depending on published luma.gl, and the procedure for each `@luma.gl` bump. The website reads its tables |
+| [upstream-proposals.md](./upstream-proposals.md) | Feedback and proposed pull requests for luma.gl, with reproductions. Nothing has been filed |
+| [research/](./research/README.md) | Dated reviews, measurements and the reference data that scripts, specs and docs read |
 
 ## Maintenance rules
 
-- Plans go in `roadmap.md`, not in new roadmap files. Finished items are deleted from it.
-- A new regression or workaround caused by luma.gl goes in `upstream-workarounds.md` in the same change.
-- A superseded document moves to `archive/` with a banner naming its replacement.
-- Research artifacts over 1 MB go in a release asset with a sha256 manifest, never in git.
+- Plans go in `roadmap.md`. A finished item is deleted from it; a finished pass gets one line in its log.
+- A new regression or workaround caused by luma.gl goes in `upstream-workarounds.md` in the same change. Keep one table row per capability and keep the status word first in the last cell: `website/src/components/meta/pages/upstream-first/generate-data.ts` counts rows by it.
+- Something luma.gl should change goes in `upstream-proposals.md` with a reproduction.
+- A superseded document is deleted, not archived; git history keeps it. Fix the references to it in the same change.
+- State what is true now. Dated narration of how a document got there belongs in commit messages.

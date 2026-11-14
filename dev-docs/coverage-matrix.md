@@ -1,6 +1,6 @@
 # Function coverage matrix
 
-Status date: 2026-11-07. Ported from the luma.gl branch matrix ([archive/geospatial-function-coverage.md](./archive/geospatial-function-coverage.md), audit of 2026-10-23, KG rows 2026-10-25) and re-pointed at this repository. This is the living inventory of which reference functions the GPU analysis packages cover. Open work and priorities are in [roadmap.md](./roadmap.md). Dropped capabilities and workarounds are in [upstream-workarounds.md](./upstream-workarounds.md).
+Status date: 2026-11-07. Ported from the luma.gl branch matrix (audit of 2026-10-23, KG rows 2026-10-25) and re-pointed at this repository. This is the living inventory of which reference functions the GPU analysis packages cover. Open work and priorities are in [roadmap.md](./roadmap.md). Dropped capabilities and workarounds are in [upstream-workarounds.md](./upstream-workarounds.md).
 
 ## How to read this matrix
 

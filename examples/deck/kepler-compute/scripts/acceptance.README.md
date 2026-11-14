@@ -1,6 +1,6 @@
 # Acceptance harness
 
-`acceptance.mjs` is a Playwright harness that measures resident interactions at 1M, 5M, and 10M rows and compares them with per-hardware-tier targets. Measured results of the first runs are summarized in `dev-docs/archive/kepler-compute-integration-implementation.md`; reports are not committed. The existing 1M smoke reports in `resident-performance.README.md` remain comparisons, not acceptance.
+`acceptance.mjs` is a Playwright harness that measures resident interactions at 1M, 5M, and 10M rows and compares them with per-hardware-tier targets. Measured results of the first runs are summarized in `dev-docs/archive/kepler-compute-integration-implementation.md` (removed from the tree on 2026-11-13; in git history at `d9d56f0f`); reports are not committed. The existing 1M smoke reports in `resident-performance.README.md` remain comparisons, not acceptance.
 
 ## Running
 
@@ -56,7 +56,7 @@ Metric keys per row count: `filterLatency`, `brushLatency`, `histogramLatency`, 
 
 | Origin | Meaning |
 | --- | --- |
-| `plan` | Stated in `dev-docs/archive/kepler-compute-integration-plan.md` |
+| `plan` | Stated in `dev-docs/archive/kepler-compute-integration-plan.md` (in git history at `d9d56f0f`) |
 | `derived` | Computed from a plan target |
 | `provisional` | Proposed here; needs ratification before it counts as acceptance |
 

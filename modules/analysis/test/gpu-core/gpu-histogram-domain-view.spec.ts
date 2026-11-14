@@ -5,7 +5,7 @@
 /**
  * Published `GPUHistogram` (`@luma.gl/graph` 10.0.0-alpha.12, public entry point) run twice on the
  * same float32 values: with the domain as a literal pair and with the same two numbers in a
- * GPU-resident view. See `dev-docs/upstream-proposal-math-review.md` section 6.
+ * GPU-resident view. See `dev-docs/upstream-proposals.md` (GPUHistogram).
  *
  * The values are the bin edges themselves: `binCount` bins of width `binWidth` from `minimum`, and
  * one value on each of the `binCount + 1` edges. Every edge and the width of the domain are

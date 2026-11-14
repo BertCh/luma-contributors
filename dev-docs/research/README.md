@@ -1,29 +1,41 @@
 # Research
 
-Research reports and measurement evidence carried over from the luma.gl `map-contributors` branch on 2026-11-07. Paths inside these documents (`modules/graph/src/...`, `@luma.gl/graph/...`, `../../perf/...`) refer to that branch unless a directory README says otherwise. Superseded planning documents are in [../archive](../archive/README.md); current plans are in [../roadmap.md](../roadmap.md).
+Reviews, measurements and reference data that still inform decisions or that code, tests and docs
+read. Each report is a dated snapshot: it describes the tree on its date and is not updated. Open
+work that came out of a report is tracked in [../roadmap.md](../roadmap.md); luma.gl gaps are in
+[../upstream-workarounds.md](../upstream-workarounds.md) and [../upstream-proposals.md](../upstream-proposals.md).
 
-| Directory | What | Status | Size |
-| --- | --- | --- | --- |
-| [kepler-sandbox-2026-10-28](./kepler-sandbox-2026-10-28/README.md) | Independent review of the Kepler sandbox: capability matrix, verification log, source manifest | current | 156 KB |
-| [gpu-geospatial-implementations-2026-10-23](./gpu-geospatial-implementations-2026-10-23/README.md) | Primary-source survey of reference implementations by domain (geometry, network/movement, raster, statistics, terrain) with licensing findings | current (basis of the upstream-first policy) | 116 KB |
-| [kepler-sql-2026-10-25](./kepler-sql-2026-10-25/query-ledger.md) | SQL query ledger, DuckDB reference script and results for the GPU SQL subset used by Kepler | historical | 20 KB |
-| [gpu-geospatial-performance-2026-10-23](./gpu-geospatial-performance-2026-10-23/README.md) | Performance research: sources, algorithm practices, decision brief, evidence audit, next decisions, plus [integration-notes.md](./gpu-geospatial-performance-2026-10-23/integration-notes.md) condensing the analysis integration reports | historical (analysis-level subset) | 224 KB |
-| [showcase-overhaul-2026-10-25](./showcase-overhaul-2026-10-25/README.md) | Narrative research, acceptance ledgers and reference oracles for the spatial-analysis showcase; read by `examples/deck/spatial-analysis-showcase/scripts/check-*.mjs` | historical, oracle JSON still read by scripts | 9.3 MB |
-| [evidence](./evidence/README.md) | Small measurement JSON cited by LIB READMEs | historical | 1.2 MB |
-| [card-interaction-audit-2026-11-09](./card-interaction-audit-2026-11-09/README.md) | Audit of the 428 website operation runs: current card scrub, proposed pointer gesture and binding per entry, picture issues and fixes, WebGPU baseline measurements. Written in this repository, not carried over | historical baseline (state before roadmap section 7 was implemented) | 880 KB |
-| [spatiotemporal-review-2026-11-09](./spatiotemporal-review-2026-11-09/README.md) | Review of the spatial and spatiotemporal code (five code reports) and web research on directions (five research reports): confirmed defects, the missing time contract, ranked new work, one float32 experiment. Written in this repository, not carried over | current (basis of roadmap section 2.15) | 420 KB |
-| [library-review-2026-11-09](./library-review-2026-11-09/README.md) | Review of the whole analysis package against its own contract: a census of 418 contributor files, nine code reports with one verdict per contributor (conform, align, rework, merge, move), duplicated machinery, the four inventories, missing capabilities per domain, and the proposed contributor contract. Written in this repository, not carried over | current (basis of roadmap section 2.16) | 470 KB |
-| [math-correctness-review-2026-11-10](./math-correctness-review-2026-11-10/README.md) | Review of the math of every contributor against its reference method, of how consistently conventions are applied, and of local code against published luma.gl: seventeen domain reports (166 findings, 10 wrong on ordinary input) and one library-wide comparison with the official luma.gl classes. The findings were fixed the same day: each report ends with a Resolution section, and the folder also holds five reviews of the fixes and the list of behaviour changes for callers. Written in this repository, not carried over | current (basis of roadmap section 12) | 1.1 MB |
-| [picture-rescore-2026-11-10](./picture-rescore-2026-11-10/README.md) | Independent re-score of the 428 website run pictures and gestures on the card audit's 1 to 5 scale, from the verification pictures of 2026-11-09, with `scores.json`. Written in this repository, not carried over | current (roadmap WEB-PIC-12) | 60 KB |
-| [parallel-pass-2026-11-10](./parallel-pass-2026-11-10/README.md) | Reports of the streams of roadmap section 11: what each changed, what it verified, the renames and adoptions left for wave 2, the `@luma.gl` alpha.12 trial and its patch, and the text-layer wiring diff. Written in this repository, not carried over | current (basis of roadmap section 11.6) | 290 KB |
-| [cpu-suitability-2026-11-11](./cpu-suitability-2026-11-11/README.md) | Which contributors suit the CPU and how CPU stages mix with GPU contributors in a published luma.gl `GPUGraph`: what the mixed executor provides and its limits, the bridge, boundary-cost measurements, a survey with one verdict per contributor (60 CPU-preferred, 160 twin-useful, 292 GPU-only) in `survey.json`, and two lists of things noticed in existing GPU contributors while their twins were written. Written in this repository, not carried over | current (basis of roadmap section 13) | 480 KB |
-| [extended-precision-2026-11-11](./extended-precision-2026-11-11/README.md) | What published luma.gl and deck.gl offer for 64-bit emulation (integer-controlled double-single, the exact difference from raw float64 words, double-single functions in WGSL), a probe of the variants on the test GPU, and which groups of float32-limited contributors they would improve. Written in this repository, not carried over | current (findings, no plan yet) | 20 KB |
-| [new-contributors-2026-11-11](./new-contributors-2026-11-11/README.md) | Directions for new contributors that lean on the GPU at browser sizes: a census of what exists, five web research reports (models fitted in the browser, pretrained models and embedding products, simulation and uncertainty, presentation, WebGPU limits and runtimes), three probes on the test GPU (dense and convolution layer throughput, a coordinate network trained in WGSL, forest inference) with `probe-results.json`, a size budget, and five directions with ranked candidates. Written in this repository, not carried over | current (basis of roadmap section 14) | 250 KB |
-| [luma-usage-review-2026-11-11](./luma-usage-review-2026-11-11/README.md) | Whether the repository uses published luma.gl and its built-in features as well as it can, at `10.0.0-alpha.13`: an export and import inventory made by script (with the scripts), eight reports by capability area (77 findings, 34 corrections to the workarounds register), a bind-group measurement, and what was adopted, what was measured and rejected, and what goes upstream. Written in this repository, not carried over | current (basis of roadmap section 16) | 365 KB |
-| [split-review-2026-11-08](./split-review-2026-11-08/README.md) | Read-only comparison of the luma.gl snapshot `e0ed33791` with this repository at `edf9ca10`: undocumented drops (the gpu-graph lens pack, four showcase files, five kepler specs, lost tests), behaviour changes (EC03 limits, weaker validation and tests), and errors in the workarounds register and the docs. Eighteen findings, each marked verified or reviewer-read; checked against `edf9ca10` only. Written in this repository, not carried over | open findings (roadmap section 15) | 14 KB |
+Reports may link to documents removed on 2026-11-13 (`dev-docs/archive/`, the per-stream pass
+reports, the card interaction audit, the performance research). Those resolve in git history at
+`d9d56f0f`.
 
-## What was left behind
+## Reviews of this repository
 
-- **luma.gl solver work.** `dev-docs/perf/` (5.2 GB, about 12,500 files) and about 80 reports in `gpu-geospatial-performance-2026-10-23/` cover PCG, shared SpMV, allocator, Jacobi, residual and neighborhood-cooperative experiments. This is luma.gl graph infrastructure, not analysis code, and stays in luma.gl (at git ref `6ca1f10bc` and on disk in the branch worktree). Only the analysis-level documents and the small JSON cited by LIB READMEs were copied.
-- **Large blobs.** Showcase JSON snapshots of 1 MB or more (about 106 MB), source-audit tarballs, Python/Node reference scripts and bytecode are listed with sha256 in [showcase-overhaul-2026-10-25/MANIFEST.md](./showcase-overhaul-2026-10-25/MANIFEST.md). They remain on disk in the branch worktree and should be published as a release asset (for example `evidence-2026-10`) rather than committed. Rule: nothing over 1 MB, no `.pyc`, `.gz` or `.tar` in git.
-- **Not research.** Luma-owned roadmaps, benchmarks, RFCs and the whole-tree GPU review stay in luma.gl.
+| Directory | What it holds | Feeds |
+| --- | --- | --- |
+| [split-review-2026-11-08](./split-review-2026-11-08/README.md) | What the split from luma.gl dropped or changed without saying so: eighteen findings | roadmap, open findings |
+| [fork-comparison-2026-11-13](./fork-comparison-2026-11-13/README.md) | What the luma.gl fork changed in luma.gl-owned code (graph, core, engine, deck layers), whether published luma.gl has it, what stands in for it here, and the measurements the fork recorded | proposals, workarounds register, roadmap |
+| [library-review-2026-11-09](./library-review-2026-11-09/README.md) | The analysis package against its own contract: one verdict per contributor, duplicated machinery, missing capabilities per domain | [../contributor-contract.md](../contributor-contract.md), roadmap |
+| [spatiotemporal-review-2026-11-09](./spatiotemporal-review-2026-11-09/README.md) | Five code reports and five web research reports on spatial and spatiotemporal work; two float32 experiment scripts that a spec and two API pages cite | roadmap |
+| [math-correctness-review-2026-11-10](./math-correctness-review-2026-11-10/README.md) | The math of every contributor against its reference method: seventeen domain reports with their resolutions, the comparison with published luma.gl classes (`luma-official.md`), the shader-compiler findings, the behaviour changes for callers. Specs cite the closing fix reviews | workarounds register, proposals, `CHANGELOG.md` |
+| [cpu-suitability-2026-11-11](./cpu-suitability-2026-11-11/README.md) | Which contributors suit the CPU, how CPU stages mix with GPU contributors in a `GPUGraph`, boundary-cost measurements, one verdict per contributor in `survey.json` | roadmap |
+| [luma-usage-review-2026-11-11](./luma-usage-review-2026-11-11/README.md) | Whether the code uses published luma.gl as well as it can: eight reports, the bind-group and local-frame probes, and the export and usage inventory scripts the upgrade procedure runs | workarounds register |
+| [extended-precision-2026-11-11](./extended-precision-2026-11-11/README.md) | What published luma.gl offers for 64-bit emulation and a probe of the variants on the test GPU | workarounds register |
+| [new-contributors-2026-11-11](./new-contributors-2026-11-11/README.md) | Directions for new contributors: a census, five web research reports, three GPU probes, ranked candidates | roadmap |
+| [picture-rescore-2026-11-10](./picture-rescore-2026-11-10/README.md) | Independent score of the website run pictures and gestures, with `scores.json` | roadmap WEB-PIC-12 |
+
+## Sources and reference data
+
+| Directory | What it holds | Read by |
+| --- | --- | --- |
+| [gpu-geospatial-implementations-2026-10-23](./gpu-geospatial-implementations-2026-10-23/README.md) | Survey of reference implementations by domain, with licensing findings | the upstream-first policy |
+| [gpu-geospatial-performance-2026-10-23](./gpu-geospatial-performance-2026-10-23/integration-notes.md) | Condensed performance findings for analysis kernels | `docs/api/gpu-spatial-analysis/interpolation-expansion.md` |
+| [kepler-sandbox-2026-10-28](./kepler-sandbox-2026-10-28/README.md) | Review of the Kepler sandbox: capability matrix (regenerated by a script), verification log | `examples/deck/kepler-compute` |
+| [showcase-overhaul-2026-10-25](./showcase-overhaul-2026-10-25/README.md) | Reference and oracle JSON for the showcase | `examples/deck/spatial-analysis-showcase/scripts/check-*.mjs` |
+| [evidence](./evidence/README.md) | Measurement captures | module test READMEs, API pages, the kepler example |
+
+## Rules
+
+- A new review gets its own dated folder with a README that states what was checked, on which commit, and what was run as opposed to read.
+- When a review's findings are all closed, keep the README and the files that code, specs or docs cite, and delete the rest.
+- Nothing over 1 MB, and no archives or bytecode, in git.

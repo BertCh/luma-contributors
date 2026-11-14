@@ -62,4 +62,4 @@ First standalone version, split on 2026-11-07 from the luma.gl `map-contributors
   pages. It can be built for a sub-path (`SITE_BASE_PATH`) and `yarn website-deploy` publishes it to
   GitHub Pages.
 - Documentation moved from `docs/api-reference/experimental` to `docs/api`. Release notes from the
-  luma.gl era are in `dev-docs/archive/luma-era-release-notes.md`.
+  luma.gl era are in git history (`dev-docs/archive/luma-era-release-notes.md` at `d9d56f0f`).

@@ -1,138 +1,59 @@
 # Upstream-first plan
 
-Goal: this repository contains only geospatial and analysis code. Everything else comes from
-published `@luma.gl/*` packages through their public entry points. We accept more verbose code and
-upstream design decisions over carrying parallel, forked or divergent code.
-
-Status: executed. The fork is deleted and `src/_pending/` no longer exists. Outcomes are recorded in
-`upstream-first-foundation.md`, `upstream-first-recording.md` and `upstream-first-pending.md`. The
-sections below keep the original plan for context; open follow-ups live in `roadmap.md` and
-`upstream-workarounds.md`.
+This repository contains geospatial and analysis code built on published luma.gl public entry points. The installed and pinned release is `10.0.0-alpha.13`. `10.0.0-alpha.14` changes colour conversion, expression operations and SQL; these do not change this plan.
 
 ## Rules
 
-1. Import luma.gl only through published public entry points. Do not use `_internal`, deep `dist`
-   paths, copied luma.gl source or a forked graph layer.
-2. When luma.gl lacks something, try these in order:
-   1. Use the public API, even if it is more verbose.
-   2. Adapt to luma.gl's design.
-   3. Drop the feature.
-   4. Write a small helper named for the analysis domain, not a luma.gl replacement.
-3. Improvements to luma.gl go to luma.gl as ordinary pull requests. This repository never waits on
-   them and never carries them. When a release ships them, delete the local workaround.
-4. A check fails the build on any non-public `@luma.gl` import and on any file under
-   `modules/analysis/src` that is not in an analysis-owned directory (`scripts/check-upstream-first.mjs`).
+1. Depend on published `@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph`; use `@luma.gl/engine` only in examples and tests. A public entry point must be explicitly published by the package.
+2. Never import an `_internal` segment, even if listed in `exports`, or a deep `dist` path. Never copy, fork, re-implement or re-export luma.gl APIs.
+3. When an API is missing, use the public API even if verbose; adapt to luma.gl's design; drop the feature; only as a last resort write a small helper named for the analysis domain.
+4. Send luma.gl improvements upstream as ordinary pull requests. Do not carry them here or wait for them. Remove a workaround when a published release supplies its replacement.
+5. Source under `modules/analysis/src` belongs only in `analysis-core`, `computation-record`, `gpu-spatial-analysis`, `gpu-network`, `gpu-terrain`, `testing`, `dataframe-analysis`, `raster-analysis`, `pointcloud-analysis` and `geospatial-analysis`.
+6. `scripts/check-upstream-first.mjs` enforces published entry points, forbidden `_internal` segments, analysis-owned directories and no luma.gl re-exports from `modules/*/src`.
+7. Validate contributor props once at construction with named-limit helpers; follow [contributor-contract.md](./contributor-contract.md).
 
-## Measured gap
+Exceptional grid WGSL copies are allowed only for kernels consuming published grid state. Each needs a row in [upstream-workarounds.md](./upstream-workarounds.md), an entry in `modules/analysis/test/analysis-core/official-wgsl-copies.node.spec.ts` and a pin comparing the copy with upstream text. Match the paired class's arithmetic: `GPUGridIndex` and `GPUGridBinning` differ.
 
-The experiment (since removed with the migration scripts) deleted all 422 forked luma.gl
-files, pointed every import at npm `@luma.gl/graph@10.0.0-alpha.10`, and typechecked the sources.
-That gave 704 errors with these root causes:
+The dependency direction is `kepler → lenses → analysis → @luma.gl/{graph,core,shaders}`. Lenses remains private while dataset licensing is unresolved in `THIRD-PARTY-DATA.md`.
 
-| Bucket | Errors | Cause | Resolution |
-| --- | --- | --- | --- |
-| A | 401 | Analysis symbols that were exported only through luma.gl barrels (`gpu-dataframe/index.ts`, `gpu-raster/index.ts`), such as `GPUClassBreaks`, `GPURipley` and `makeGPURasterBand` | Mechanical: move them into analysis-owned directories with their own entry points |
-| C | 116 | Computation-record hooks on `GPUCommandGraph` (`withRecordScope`, `recording`, `describe`, node `annotation`) | Design decision 1 |
-| B | 63 uses, 35 symbols | Non-public luma.gl helpers (see `unfork-missing-symbols.json`): `getSpatialOperationNodes`, `GPUSegmentedReduction`, bounded-dispatch helpers, raster validation utils, command-graph compiler internals | Per symbol: public alternative, inline in the analysis domain, or drop |
-| G | 23 | Primitive API changes: `GraphDataView` vs `GPUVector`, `GPUGridIndex` `boundsBuffer`, `GPUCompaction` `strategy`, point-in-polygon `queryPositions` | Call the published signatures |
-| D | 16 | Crossfilter extensions: external masks, `invalidate`, `setExternalActive` | kepler builds selection masks on the public crossfilter API or in its own kernel |
-| E | 8 | Raster metadata: `verticalDatum`, `makeGPURasterBand` | Keep vertical-datum metadata beside the band in terrain code |
-| H, Z | 75 | Cascades: implicit `any`, `unknown` | Disappear once A to G are fixed |
+## Completed phases and maintenance
 
-The three core shims also go:
-- Replace `waitForSubmittedWork` with `device.createFence()`, which is public.
-- Call `setBindings` without cache keys, accepting the loss of bind-group reuse.
-- Detect out-of-memory errors by `error.name` or `GPUOutOfMemoryError`, inline in kepler.
+The fork, quarantine and compatibility layer are removed; analysis has its own entry points, consumers use published signatures, computation records use public graph data, and tests cover analysis rather than luma.gl internals. Keep analysis, oracle and parity tests.
 
-## Keep (analysis code)
+Open work belongs in [roadmap.md](./roadmap.md). [upstream-workarounds.md](./upstream-workarounds.md) owns the capability register, local copies and deletion triggers; [upstream-proposals.md](./upstream-proposals.md) describes the requested upstream APIs. Bump `@luma.gl/*` with each alpha, all pins together; compare public entry-point exports, retire supplied workarounds and follow the register's verification procedure. Published `GPUSort` and `GPUScan` determine the default throughput; the old approximately 4.2M-row dispatch limit does not describe current primitives (`modules/analysis/test/gpu-core/gpu-primitive-large-input-plat01.spec.ts`, `ROW_COUNTS`, covers up to 33.5M rows; PLAT-01).
 
-- `gpu-spatial-analysis`, `gpu-network` and `gpu-terrain`.
-- `analysis-core` domain contracts.
-- The analytic subdirectories of `gpu-dataframe`:
-  - classification
-  - profile
-  - pair statistics
-  - temporal reduction
-  - time windows
-  - calendar buckets
-  - composite indicators
-  - group statistics
-  - key join
-  - standardization
-- The analytic subdirectories of `gpu-raster`:
-  - algebra
-  - cost distance
-  - distance field
-  - isolines
-  - patches
-  - sampling
-  - zonal statistics
-  - remote sensing
-  - flow textures
-  - polygon rasterization
-- The `gpu-pointcloud` analytics: ground, SMRF, ICP, features and change.
-- The `gpu-project` datum grid transform.
+## Other split outcomes
 
-## Drop (luma.gl extensions that are not analysis)
+Capabilities already listed in the workaround register are not repeated here. The fork also changed luma.gl-owned code (about 360 files in graph, core and engine); none of that is in published luma.gl, and [research/fork-comparison-2026-11-13](./research/fork-comparison-2026-11-13/README.md) records each change, where it is tracked and which ones this repository turned out not to need.
 
-Consumers move to the published equivalents.
+| Former extension | Current outcome |
+| --- | --- |
+| `getPhysicalBuffer`, `getAdjacencyVectors` from algorithms-utils | No analysis replacement; they have no consumer. Computation capture uses copy nodes rather than physical-buffer access. |
+| `createGPUGraphAlgorithmsIterationGate` | No separate graph-algorithm gate. Raster iteration uses `createRasterIterationGateNode` in `modules/analysis/src/raster-analysis/cost-distance/raster-relaxation.ts`. |
+| `addDirectLocalClusteringToGraph` | No local extension or consumer; the published class is `GPUGraphAlgorithmsLocalClusteringCoefficient`. |
+| `kernel-dispatch` (`declareKernelConstants`, `dispatchHandlerKernel`, `KernelConstants`) | No consumer or replacement. |
+| `rigid-body-dispatch` (`getRigidBodyDispatchCount`, `RIGID_BODY_LINEAR_WORKGROUP_SIZE`) | No consumer or replacement; physics is outside the analysis scope. |
+| Sparse resistance adapters | `addRasterResistanceConnectivityRecipe` exists in `modules/analysis/src/gpu-spatial-analysis/landscape-ecology/raster-resistance-connectivity.ts`; `addSparseResistanceComponents` and `addSerialSparseResistanceComponents` have no source implementation. The raster adapter is EC03-R; the shared solver is covered by the register (EC03). |
+| Multi-chunk `GPUVariableStandardization` | `GPUVariableStandardization` in `modules/analysis/src/dataframe-analysis/variable-standardization/gpu-variable-standardization.ts` requires single-chunk `values`, `mask` and `output`; pack streamed batches before use. |
 
-- **`gpu-core` additions:**
-  - Onesweep sort and look-back scan (use `GPUSort` and `GPUScan` defaults).
-  - `gpu-kernel-node` and `utils/wgsl-kernel-nodes` (write nodes with the published
-    `GPUCommandGraph` node API).
-  - `gpu-double-single`, the describe and record helpers, and the benchmarks.
-- **`gpu-graph-algorithms` additions:** strongly connected components and the iteration gate.
-  Network analysis uses the published algorithms, or an SCC written in `gpu-network` if it is
-  essential.
-- **Other non-analysis additions:**
-  - `gpu-simple-graph` kernel dispatch
-  - `gpu-physics` rigid-body dispatch
-  - `gpu-tables` residency arena and tile LOD selection
-  - the `arrow/gpu` analytics adapters and batch stream
+## Shared helpers on published luma.gl
 
-  Each is reviewed for whether an analysis consumer needs it. If one does, it is rewritten on
-  public APIs inside that consumer.
-- **`utils/` infrastructure:** `gpu-contributor-utils` and `gpu-contributor-types`. The WGSL math
-  helpers (exact predicates, Philox, fixed-point accumulation) stay only where analysis kernels use
-  them, under an analysis directory.
+Paths below are under `modules/analysis/src`. Import analysis contracts from `@luma-contributors/analysis/analysis-core`; `graph-support` has no separate package entry point. These are analysis helpers, not additional luma.gl APIs. Their upstream replacement conditions belong in the register.
 
-## Decisions (resolved)
+| Path and symbols | Current role |
+| --- | --- |
+| `analysis-core/kernels/wgsl-kernel-nodes.ts`: `createWGSLKernelNode`, `createWGSLActiveCountDispatch`, `createWGSLDispatchGate`, `getAutomaticWGSLKernelWorkgroupSize`, `getWGSLFloatLiteral` | Builds published `Kernel` and command nodes with typed bindings, public bounded-dispatch layout and GPU indirect conditions. Binding-record identity caching saves JavaScript allocations; dispatch still supplies bindings each time. |
+| `analysis-core/kernels/gpu-contributor-utils.ts`: `GPUParameterBuffer`, `importGraphBuffer`, `captureGraphCommandNodes`, `validateCapacity`, `validateMaximumCount`, `validateRequirement`, `validateSinglePackedView`, `validateGPUStorageBindingByteLength`, `getStorageBindingElementLimit`, `getNextPowerOfTwo` | Parameter upload, view import, attachment of published `addToGraph` contributors and construction-time limits. |
+| `analysis-core/kernels/gpu-contributor-types.ts`: `GPUCompactOutput`, `GPUUint32Rows`, `GPUStatusScalar` | Analysis ports and bounded-output contracts. Import `GPUFloat32Positions` directly from `@luma.gl/graph/geospatial`. |
+| `analysis-core/kernels/sorted-segment-sums.ts`: `createSegmentSumNode`, `getSortedSegmentSumNodes`, `getSegmentTreeSumWGSL`, `getSegmentSumDispatchShape`, `SEGMENT_WORKGROUP_SIZE`, `getSortKeyBits` | Published gather followed by a local 256-lane segment tree; no private `GPUSegmentedReduction` import. |
+| `analysis-core/kernels/exact-orientation-wgsl.ts`: `EXACT_ORIENTATION_WGSL`; `philox-random.ts`: `PHILOX_WGSL`; `fixed-point-accumulator.ts`: `FIXED_POINT_WGSL` | Exact orientation, counter-based random draws and deterministic fixed-point sums for analysis kernels. |
+| `analysis-core/kernels/hash-uint32.ts`: `HASH_UINT32_WGSL`; `scan-total.ts`: `createSaturatedScanTotalNodes`; `load-balanced-for-each.ts`: `createLoadBalancedForEachNode`; `parallel-merge-tree.ts`: `getParallelMergeTreeNodes` | Hashing, saturated scan totals and work distribution for analysis. |
+| `analysis-core/kernels/polygon-edge-slabs.ts`: `getPolygonEdgeSlabNodes`; `stable-lexicographic-index-sort.ts`: `createStableLexicographicIndexSortNodes`; `study-window-wgsl.ts`: `getStudyWindowWGSL`; `wgsl-common.ts`: `GET_NAN_WGSL` | Polygon candidate slabs, stable key ordering, study-window sampling and shared WGSL constants. |
+| `analysis-core/contracts/spatial-context.ts`: `GPUSpatialContext`, `validateGPUSpatialContext`; `analysis-core/polygon-triangulation/gpu-polygon-triangulation.ts`: `getPolygonTriangulationIndexCount`; `analysis-core/ring-assembly/gpu-segment-ring-assembly.ts`: `GPU_SEGMENT_RING_ASSEMBLY_NONE` | Spatial contracts, polygon triangulation sizing and ring assembly. |
+| `analysis-core/network-topology.ts`: `GPUNetworkTopology`, `validateGPUNetworkTopology`; `analysis-core/raster-grid.ts`: `getRasterGroundCellSize`; `analysis-core/lon-lat-ring-wgsl.ts`: `createLonLatPolygonCheckNode` | Network, raster ground-spacing and longitude/latitude ring contracts. |
+| `analysis-core/graph-support/arrow-analytics-normalization.ts`: `prepareArrowTableForGPUAnalytics`; `arrow-analytics-time-upload.ts`: `makeGPUTimeVectorFromPreparedArrowColumn`; `arrow-analytics-wide-numeric.ts`: `isWideNumericType`, `convertWideNumericValue`, `convertWideNumericVector` | Arrow normalization and exact time upload over published Arrow and GPU-data APIs. |
+| `testing/gpu-contributor-test-utils.ts`: `createNullWebGPUDevice`, `getGPUCommandNodeKernelSources`, `getGPUCommandNodePipelineKeys`, `getParsedKernelSources`; `testing/require-test-device.ts`: `requireTestDevice` | Workspace-only test helpers. The null-device shim supplies WebGPU type and limits for declaration and kernel inspection, not GPU execution. `testing/index.ts` is a TypeScript workspace alias, not a published package export. |
 
-Resolutions: (1) a `GPUComputationRecorder` built on public compiled-graph data (see
-`upstream-first-recording.md`); (2) kepler adapters stay as `@luma-contributors/kepler` on public APIs and the
-`kepler-compute` example stays parked (see `roadmap.md`); (3) regressions accepted.
+[upstream-first-recording.md](./upstream-first-recording.md) describes `recordWGSLKernelNodes` and `GPUComputationRecorder`. Public luma.gl helpers such as `getBoundedDispatchLayout`, `getBoundedInvocationIndexSource`, `getViewBinding` and `device.createFence()` should be used directly. For packed chunks use public `GraphVectorView.data` or `graph.createDataView`; do not restore private alignment utilities.
 
-1. **Computation records and lenses.** This is the largest coupling: 116 errors, plus most of the
-   lens errors. Options:
-   - Spike a recorder built from public `GPUCommandGraph` data (plan steps, encoding stats, timings).
-   - Drop recording and keep lenses as static documentation.
-   - Take lenses out of this library's scope.
-2. **Kepler adapters.** Keep them as an integration package on public APIs, or treat them as out of
-   scope like the parked `kepler-compute` example.
-3. **Regressions on published primitives.** Published graph lacks the branch's fixes, so we accept
-   that until luma.gl releases them:
-   - bounded dispatch above about 4.2M rows
-   - compensated sums
-   - block compaction
-
-   The optional upstream track sends those fixes to luma.gl as pull requests and does not maintain
-   them here.
-
-## Phases
-
-1. **Guard rails.** Add the public-import and allowed-directory check. The
-   package was renamed from `@luma-contributors/graph` to `@luma-contributors/analysis`, since it no longer carries a graph.
-2. **Re-home bucket A.** Move the analysis files out of luma-owned directories into analysis-owned
-   ones (`dataframe-analysis/`, `raster-analysis/`, `pointcloud-analysis/`, ...) and give each an
-   entry point. Mechanical, about 240 files.
-3. **Delete the fork.** Delete the 422 forked files and the compat shim, and point imports at npm.
-   Expect the measured 704 errors.
-4. **Fix B, D, E and G.** Fix the remaining errors symbol by symbol, following the rules above.
-   Record each workaround with the upstream release that would remove it.
-5. **Drop the non-analysis extensions** and move their consumers to the published primitives.
-6. **Resolve decisions 1 and 2.**
-7. **Tests.** Delete tests of luma.gl code. Keep analysis, oracle and parity tests. Investigate any
-   numerical drift from the published primitives, and accept it or fix it in the analysis code.
-8. **Upgrade cadence.** Bump `@luma.gl/*` with each alpha. Delete workarounds the release makes
-   unnecessary.
+Kernel audits use `ANALYSIS_BARRELS` and `selectAnalysisCases` in `modules/analysis/test/analysis-core/kernel-audit/analysis-contributors.ts`; update the matching `cases-*.ts` when contributors change. `cases-pointcloud-and-datum.ts` covers point-cloud and datum-grid contributors. `SKIPPED_CONTRIBUTORS` in `modules/analysis/test/analysis-core/kernel-audit.node.spec.ts` records the four chunked spatial-weights exceptions. `analysis-layering.node.spec.ts`, `analysis-runtime-boundaries.node.spec.ts` and `analysis-vocabulary.node.spec.ts` enforce package boundaries; `doc-snippets.node.spec.ts` and `doc-parameters.node.spec.ts` check documented APIs.

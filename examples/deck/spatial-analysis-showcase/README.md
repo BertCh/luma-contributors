@@ -32,13 +32,10 @@ The coverage report records executable call sites separately from scene metadata
 Add `--functionality` to inspect public methods and option variants. This is a static inventory;
 GPU execution and numerical correctness require separate browser and reference checks.
 
-The [October 2026 expansion sprint](../../../dev-docs/archive/showcase-sprint-2026-10-24.md)
-links the API inventory, dataset research, story designs, implementation ledger, and verification.
-Research candidates are kept separate from datasets actually bundled with the showcase.
-
-The [showcase overhaul](../../../dev-docs/research/showcase-overhaul-2026-10-25/README.md) records
-the subsequent atlas redesign, domain research, independent numerical references, source-data
-provenance and verification results.
+The reference and oracle JSON that the `scripts/check-*.mjs` checks read is in
+[dev-docs/research/showcase-overhaul-2026-10-25](../../../dev-docs/research/showcase-overhaul-2026-10-25/README.md).
+The sprint and overhaul planning records were removed from the tree on 2026-11-13 and are in git
+history at `d9d56f0f` (`dev-docs/archive/showcase-sprint-2026-10-24.md` and the same research folder).
 
 To inspect the sprint stories against a running local server:
 

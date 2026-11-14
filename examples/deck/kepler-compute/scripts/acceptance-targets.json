@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Kepler compute acceptance targets. origin=plan only where dev-docs/archive/kepler-compute-integration-plan.md states the target; origin=ratified values were scaled from the plan and ratified by the project owner on 2026-10-31; memoryAccounted scales as max(512 MiB, 96 bytes per row). Tier rule semantics: within one rule all keys must hold; *array keys match if any substring occurs (case-insensitive) in vendor/architecture/device/description (text = all four); exclude* keys reject on any match; match.anyOf is satisfied by any rule; an empty match always matches.",
+  "description": "Kepler compute acceptance targets. origin=plan only where dev-docs/archive/kepler-compute-integration-plan.md (in git history at d9d56f0f) states the target; origin=ratified values were scaled from the plan and ratified by the project owner on 2026-10-31; memoryAccounted scales as max(512 MiB, 96 bytes per row). Tier rule semantics: within one rule all keys must hold; *array keys match if any substring occurs (case-insensitive) in vendor/architecture/device/description (text = all four); exclude* keys reject on any match; match.anyOf is satisfied by any rule; an empty match always matches.",
   "sizes": [
     1000000,
     5000000,
