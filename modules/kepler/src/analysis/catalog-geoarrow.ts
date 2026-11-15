@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GeoArrowBuilder} from '@math.gl/geospatial/geoarrow';
+import {GeoArrowBuilder} from '@math.gl/arrow/geoarrow-utils';
 import type {
   GeoArrowColumn,
   GeoArrowGeometryValue,
   GeoArrowList
-} from '@math.gl/geospatial/geoarrow';
+} from '@math.gl/arrow/geoarrow-utils';
 import type {CatalogPosition} from './catalog-geojson';
 
 /** Encodes one row family of GeoJSON-like coordinates into a Float32 interleaved XY GeoArrow column. */

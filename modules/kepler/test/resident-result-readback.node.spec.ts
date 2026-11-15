@@ -26,9 +26,7 @@ describe('size-gated resident result publication', () => {
     expect(shouldReadBackResidentResult(262145)).toBe(false);
   });
 
-  // Skipped: resident-result-readback.ts needs prepareArrowTableForGPUAnalytics, which published
-  // @luma.gl/graph/arrow 10.0.0-alpha.10 does not export.
-  test.skip('builds one Arrow batch per GPU chunk with nulls, dictionaries and metadata', () => {
+  test('builds one Arrow batch per GPU chunk with nulls, dictionaries and metadata', () => {
     const columns: ResidentReadbackColumn[] = [
       {
         name: 'label',
@@ -67,12 +65,10 @@ describe('size-gated resident result publication', () => {
     expect(result.table.getChild('label')!.toJSON()).toEqual(['b', null, 'a']);
     expect(result.table.getChild('score')!.toJSON()).toEqual([0.5, null, 2]);
     expect(result.table.getChild('delta')!.toJSON()).toEqual([-3, 4, 5]);
-    expect(result.prepared.dictionaries.label.values).toEqual(['a', 'b']);
+    expect(result.prepared.dictionaries['label']!.values).toEqual(['a', 'b']);
   });
 
-  // Skipped: resident-result-readback.ts needs prepareArrowTableForGPUAnalytics, which published
-  // @luma.gl/graph/arrow 10.0.0-alpha.10 does not export.
-  test.skip('refuses invalid validity, dictionary codes and non-finite aggregates', () => {
+  test('refuses invalid validity, dictionary codes and non-finite aggregates', () => {
     const build = (column: ResidentReadbackColumn) =>
       makeResidentReadbackTable({columns: [column], metadata: {}});
     expect(() =>

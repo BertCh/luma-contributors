@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {GPUPointLabelLayer} from '@deck.gl-community/gpu-layers';
+import {GPUPointLabelLayer} from '../gpu-layers/index';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {
   KeplerArrowDataset,

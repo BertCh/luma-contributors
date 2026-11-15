@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GetPickingInfoParams, PickingInfo} from '@deck.gl/core';
-import {GPUScatterplotLayer, type GPUScatterplotLayerProps} from '@deck.gl-community/gpu-layers';
+import {GPUScatterplotLayer, type GPUScatterplotLayerProps} from '../gpu-layers/index';
 import type {RenderPass} from '@luma.gl/core';
 import {
   getCartogramMercatorLayerProps,

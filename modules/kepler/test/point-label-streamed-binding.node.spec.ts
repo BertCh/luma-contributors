@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {beforeEach, describe, expect, it, vi} from 'vitest';
+import {afterAll, beforeEach, describe, expect, it, vi} from 'vitest';
+
 import * as arrow from 'apache-arrow';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import type {KeplerArrowDataset, KeplerComputeSession} from '../src/session/compute-session';
@@ -22,7 +23,7 @@ const mocked = vi.hoisted(() => {
     runtimes: 0
   };
 });
-vi.mock('@deck.gl-community/gpu-layers', () => ({
+vi.mock('../../../examples/deck/kepler-compute/gpu-layers/index', () => ({
   GPUPointLabelLayer: class {
     constructor(readonly props: object) {}
   }
@@ -162,4 +163,12 @@ describe('streamed point labels above the glyph cap', () => {
     ).toHaveLength(1);
     await owner.destroy(Promise.resolve());
   });
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('../../../examples/deck/kepler-compute/gpu-layers/index');
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/label-runtime');
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/label-streamed-runtime');
+  vi.resetModules();
 });

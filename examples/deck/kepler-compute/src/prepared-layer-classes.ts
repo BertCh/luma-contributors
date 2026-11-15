@@ -3,6 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {LayerClassesType, Layer as KeplerLayer} from '@kepler.gl/layers';
+import {DatasetType} from '@kepler.gl/constants';
+
+const TABLELESS_DATASET_TYPES = new Set<string>([
+  DatasetType.TILE_3D,
+  DatasetType.BITMAP,
+  DatasetType.VECTOR_TILE,
+  DatasetType.RASTER_TILE,
+  DatasetType.WMS_TILE
+]);
 
 export const PREPARE_DATA_MESSAGE =
   'Open Add Data → Prepare data, select the imported dataset, and publish it to show it on the map.';
@@ -28,10 +37,11 @@ export function createPreparedLayerClasses(
         ...parameters: Parameters<KeplerLayer['renderLayer']>
       ): ReturnType<KeplerLayer['renderLayer']> {
         const datasetId = this.config.dataId;
-        // 3D tilesets and image overlays carry only a URL: there is no table to prepare, Deck streams
-        // the tiles or decodes the image itself.
+        // All five native streamed/image dataset types carry URLs or tile metadata rather than
+        // a table to prepare. Blocking vector/raster/WMS here prevents their resident tile/WGSL
+        // adapters from ever running, and cannot be remedied by publishing tabular fields.
         const datasetType = parameters[0]?.dataset?.type as string | undefined;
-        const isTableless = datasetType === 'tile-3d' || datasetType === 'bitmap';
+        const isTableless = datasetType !== undefined && TABLELESS_DATASET_TYPES.has(datasetType);
         if (datasetId && !isTableless && !options.isPrepared(datasetId)) {
           if (options.isPending?.(datasetId)) return [];
           const failure = options.getFailure?.(datasetId);

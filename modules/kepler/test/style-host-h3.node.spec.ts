@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {afterEach, beforeAll, expect, test, vi} from 'vitest';
+import {afterAll, afterEach, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import type {CommandEncoder} from '@luma.gl/core';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerComputeSession} from '../src/session/compute-session';
@@ -10,7 +13,7 @@ import type {NativeStyleLayer} from '../../../examples/deck/kepler-compute/src/n
 import type {H3GPUVectors} from '../../../examples/deck/kepler-compute/src/h3-runtime';
 import {H3Runtime, H3MetadataRuntime} from '../../../examples/deck/kepler-compute/src/h3-runtime';
 
-let NativeStyleRuntime: typeof import('../../../examples/deck/kepler-compute/src/style-host-runtime').NativeStyleRuntime;
+import {NativeStyleRuntime} from '../../../examples/deck/kepler-compute/src/style-host-runtime';
 const state = vi.hoisted(() => ({
   order: [] as string[],
   summary: {count: 2, minimumResolution: 7, maximumResolution: 7, hasPentagon: false},
@@ -52,12 +55,6 @@ vi.mock('../../../examples/deck/kepler-compute/src/h3-runtime', () => ({
     };
   })
 }));
-beforeAll(async () => {
-  vi.resetModules();
-  ({NativeStyleRuntime} = await import(
-    '../../../examples/deck/kepler-compute/src/style-host-runtime'
-  ));
-});
 afterEach(() => {
   vi.clearAllMocks();
   state.order = [];
@@ -264,4 +261,10 @@ test('pending topology clears prior diagnostics even when a hidden layer is not 
   await context.runtime.readLegends();
   expect(context.onUnsupported).toHaveBeenLastCalledWith(context.layer.id, null);
   await context.runtime.destroy(Promise.resolve());
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/h3-runtime');
+  vi.resetModules();
 });

@@ -73,7 +73,8 @@ try {
   await panel.getByRole('button', {name: 'Fit variogram automatically', exact: true}).click();
   const status = panel.getByRole('status').filter({hasText: 'Fitted'});
   await status.waitFor({timeout: 30000});
-  assert.match(await status.innerText(), /Fitted (spherical|exponential|gaussian): nugget .*range \d+ m from [\d,]+ pairs/);
+  // Automatic fitting now considers both analysis Matérn families as well as the original three.
+  assert.match(await status.innerText(), /Fitted (spherical|exponential|gaussian|matern-3\/2|matern-5\/2): nugget .*range \d+ m from [\d,]+ pairs/);
   const fittedRange = Number(await panel.getByLabel('Kriging effective range in meters', {exact: true}).inputValue());
   assert(fittedRange > 0, `Expected a positive fitted range, got ${fittedRange}`);
   await panel.getByLabel('Prediction interval level (blank: none, for example 0.95)', {exact: true}).fill('0.95');

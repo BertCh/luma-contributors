@@ -38,7 +38,7 @@ it('native time histogram classifies more than 256 intervals exactly on the GPU'
     )
   });
   const dataset = session.importArrowDataset({id: 'wide-time-histogram', table});
-  const source = dataset.value.timeColumns.time;
+  const source = dataset.value.timeColumns['time'];
   const selected = new GPUVector({
     name: 'selected',
     type: 'data',

@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
+import {formatTimestampTicks} from '@luma-contributors/analysis/dataframe-analysis';
+import {readOriginalTimestampTicks} from './original-column-values';
 import {
   materializeKeplerSelection,
   type KeplerComputeSession,
@@ -279,11 +281,7 @@ export function quoteCSV(value: string): string {
 export function formatCSVValue(vector: arrow.Vector, row: number, type: arrow.DataType): string {
   if (!vector.isValid(row)) return '';
   if (arrow.DataType.isTimestamp(type)) {
-    const data = vector.data[0];
-    const raw = data.values[row];
-    if (typeof raw !== 'bigint')
-      throw new Error('Timestamp export requires exact 64-bit source storage');
-    return formatTimestamp(raw, type.unit);
+    return formatTimestampTicks(readOriginalTimestampTicks(vector, row), type.unit);
   }
   const value: unknown = vector.get(row);
   if (value === null || value === undefined) return '';
@@ -296,27 +294,6 @@ export function formatCSVValue(vector: arrow.Vector, row: number, type: arrow.Da
       Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
     );
   return JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? item.toString() : item));
-}
-
-function formatTimestamp(value: bigint, unit: arrow.TimeUnit): string {
-  const scale = [1_000_000_000n, 1_000_000n, 1_000n, 1n][unit];
-  const nanoseconds = value * scale;
-  let seconds = nanoseconds / 1_000_000_000n;
-  let fraction = nanoseconds % 1_000_000_000n;
-  if (fraction < 0) {
-    seconds--;
-    fraction += 1_000_000_000n;
-  }
-  const milliseconds = Number(seconds * 1000n);
-  const instant = new Date(milliseconds);
-  if (!Number.isSafeInteger(milliseconds) || !Number.isFinite(instant.getTime()))
-    return `${value} ${['s', 'ms', 'us', 'ns'][unit]} since Unix epoch`;
-  return instant
-    .toISOString()
-    .replace(
-      '.000Z',
-      `${fraction ? `.${fraction.toString().padStart(9, '0').replace(/0+$/, '')}` : ''}Z`
-    );
 }
 
 async function yieldExport(assertCurrent: () => void): Promise<void> {

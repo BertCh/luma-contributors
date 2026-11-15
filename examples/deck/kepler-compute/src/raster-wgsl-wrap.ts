@@ -8,7 +8,11 @@ import {
   type RasterWgslImages,
   type RasterWgslLayerProps
 } from './raster-wgsl-layer';
-import {planRasterRender, type RasterWgslSubLayerProps} from './raster-wgsl-shader';
+import {
+  planRasterRender,
+  type RasterWgslSubLayerProps,
+  type RasterTerrainMesh
+} from './raster-wgsl-shader';
 
 type DeckLayerLike = {
   id: string;
@@ -19,7 +23,11 @@ type DeckLayerLike = {
   clone(props: Record<string, unknown>): DeckLayerLike;
 };
 
-type TileLike = {index?: {x: number; y: number; z: number}};
+type TileLike = {
+  index?: {x: number; y: number; z: number};
+  boundingBox?: [[number, number], [number, number]];
+  bbox?: {west: number; south: number; east: number; north: number};
+};
 
 const WRAPPED = Symbol.for('luma.kepler.rasterWgslWrapped');
 
@@ -40,12 +48,21 @@ export function getRasterSubLayerPlanProps(
   subLayerProps: Record<string, unknown>,
   images: RasterWgslImages
 ): RasterWgslSubLayerProps {
+  // Native renderSubLayers aliases props.minPixelValue/maxPixelValue to local "global" names;
+  // those aliases are not props. Finite overrides must win over each tile's own statistics.
+  const tileData = subLayerProps['data'] as
+    | {minPixelValue?: number; maxPixelValue?: number}
+    | undefined;
+  const resolveRange = (name: 'minPixelValue' | 'maxPixelValue') => {
+    const globalValue = subLayerProps[name];
+    return Number.isFinite(globalValue) ? (globalValue as number) : tileData?.[name];
+  };
   return {
     renderBandIndexes: subLayerProps['renderBandIndexes'] as readonly number[] | undefined,
     bandCombination: subLayerProps['bandCombination'] as string | undefined,
     bandMathExpression: subLayerProps['bandMathExpression'] as string | undefined,
-    minPixelValue: subLayerProps['minPixelValue'] as number | undefined,
-    maxPixelValue: subLayerProps['maxPixelValue'] as number | undefined,
+    minPixelValue: resolveRange('minPixelValue'),
+    maxPixelValue: resolveRange('maxPixelValue'),
     linearRescalingFactor: subLayerProps['linearRescalingFactor'] as
       | readonly [number, number]
       | undefined,
@@ -71,14 +88,14 @@ export function getRasterSubLayerPlanProps(
  * Replaces Kepler's GLSL `RasterLayer` tile sublayers with the WGSL `RasterWgslLayer`. The host
  * calls `wrapLayer` for every top-level Deck layer; only tile layers that render Kepler raster
  * sublayers are cloned, with a memoized `renderSubLayers` so the prop identity stays stable.
- * Only unparsable custom expressions, expressions past b8 and terrain meshes keep Kepler's own
+ * Only unparsable custom expressions and expressions past b8 keep Kepler's own
  * sublayer; unknown presets that parse as band math draw in WGSL with up to eight bands. Rescale (linear/non-linear), gamma, sigmoidal contrast, saturation and
  * categorical colormap stepping are reproduced in WGSL.
  */
 export class RasterWgslWrapper {
   private readonly wrappedRenderers = new WeakMap<
     object,
-    (props: Record<string, unknown>) => unknown
+    Map<string, (props: Record<string, unknown>) => unknown>
   >();
   /** Counts replaced and kept sublayers, for test hooks. */
   readonly statistics = {replacedCount: 0, keptCount: 0};
@@ -90,13 +107,20 @@ export class RasterWgslWrapper {
     const original = layer.props.renderSubLayers;
     if (typeof original !== 'function' || (original as {[WRAPPED]?: boolean})[WRAPPED])
       return layer;
-    let wrapped = this.wrappedRenderers.get(original);
+    let renderers = this.wrappedRenderers.get(original);
+    if (!renderers) {
+      renderers = new Map();
+      this.wrappedRenderers.set(original, renderers);
+    }
+    let wrapped = renderers.get(layer.id);
     if (!wrapped) {
       const tileLayerId = layer.id;
       wrapped = (subLayerProps: Record<string, unknown>) =>
         this.renderSubLayers(tileLayerId, original, subLayerProps);
       (wrapped as unknown as {[WRAPPED]: boolean})[WRAPPED] = true;
-      this.wrappedRenderers.set(original, wrapped);
+      // Native raster layers share the same module-level renderer. Its resident-texture lookup
+      // also needs the owning layer id, or a second raster can sample the first raster's bands.
+      renderers.set(layer.id, wrapped);
     }
     return layer.clone({renderSubLayers: wrapped}) as LayerType;
   }
@@ -107,23 +131,42 @@ export class RasterWgslWrapper {
     subLayerProps: Record<string, unknown>
   ): unknown {
     const result = original(subLayerProps);
-    if (!Array.isArray(result)) return result;
     const tileIndex = (subLayerProps['tile'] as TileLike | undefined)?.index;
-    return result.map(sublayer => {
-      if (!isDeckLayerLike(sublayer) || sublayer.constructor.layerName !== 'RasterLayer')
+    const replaceSublayer = (sublayer: unknown): unknown => {
+      if (Array.isArray(sublayer)) return sublayer.map(replaceSublayer);
+      if (
+        !isDeckLayerLike(sublayer) ||
+        !['RasterLayer', 'RasterMeshLayer'].includes(sublayer.constructor.layerName ?? '')
+      )
         return sublayer;
       const props = sublayer.props as unknown as {
         id: string;
         images?: RasterWgslImages;
         bounds?: [number, number, number, number];
+        mesh?: RasterTerrainMesh;
         opacity?: number;
         visible?: boolean;
       };
+      const tile = subLayerProps['tile'] as TileLike | undefined;
+      const tileBounds = tile?.boundingBox;
+      const tileBox = tile?.bbox;
+      const bounds =
+        props.bounds ??
+        (tileBounds
+          ? ([...tileBounds[0], ...tileBounds[1]] as [number, number, number, number])
+          : tileBox
+            ? ([tileBox.west, tileBox.south, tileBox.east, tileBox.north] as [
+                number,
+                number,
+                number,
+                number
+              ])
+            : undefined);
       const plan =
-        props.images && props.bounds
+        props.images && bounds
           ? planRasterRender(getRasterSubLayerPlanProps(subLayerProps, props.images))
           : null;
-      if (!plan || !props.images || !props.bounds) {
+      if (!plan || !props.images || !bounds) {
         this.statistics.keptCount++;
         return sublayer;
       }
@@ -132,7 +175,8 @@ export class RasterWgslWrapper {
       this.statistics.replacedCount++;
       const layerProps: Partial<RasterWgslLayerProps> = {
         id: `${props.id}-wgsl`,
-        bounds: props.bounds,
+        bounds,
+        mesh: props.mesh,
         images: props.images,
         plan,
         opacity: props.opacity,
@@ -144,6 +188,10 @@ export class RasterWgslWrapper {
       };
       // Inherit the tile sublayer props (coordinate system, model matrix, extensions) from Kepler's layer.
       return new RasterWgslLayer(sublayer.props as unknown as RasterWgslLayerProps, layerProps);
-    });
+    };
+    // Deck accepts a layer, a nested layer array, or null from renderSubLayers. Every RasterLayer
+    // must be replaced before initialization: its deck 9 ShaderAssembler/inject hooks do not
+    // exist in luma 10, even though constructing the unused native layer is harmless.
+    return replaceSublayer(result);
   }
 }

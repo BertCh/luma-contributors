@@ -50,7 +50,7 @@ test('geographic DBSCAN preserves source rows, crosses the antimeridian and reco
     id: 'dbscan-source',
     table: batch(0, 4).concat(batch(4, 9))
   });
-  const sourceChunks = [...dataset.value.columns.longitude.data];
+  const sourceChunks = [...dataset.value.columns['longitude'].data];
   // Arrow uploads may use DynamicBuffer; retain the actual backing buffers for ownership checks.
   const sourceBuffers = sourceChunks.map(chunk =>
     chunk.buffer instanceof Buffer ? chunk.buffer : chunk.buffer.buffer
@@ -161,7 +161,7 @@ test('geographic DBSCAN preserves source rows, crosses the antimeridian and reco
     await render();
     expect(analysis.summary?.dbscan?.clusterCount).toBe(2);
     expect((await analysis.readRow(3))?.value).toBe(1);
-    expect(dataset.value.columns.longitude.data).toEqual(sourceChunks);
+    expect(dataset.value.columns['longitude'].data).toEqual(sourceChunks);
     expect(sourceChunks.map(chunk => chunk.length)).toEqual([4, 5]);
   } finally {
     const fence = device.createFence();

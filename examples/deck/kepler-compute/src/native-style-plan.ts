@@ -150,6 +150,27 @@ export type NativeStylePlanContext = {
   };
 };
 
+/** GPU upload objects can contain undefined channels; these must not erase known absence. */
+export function getNativeGeometryStyleProperties(
+  sourceProperties: readonly string[],
+  uploaded: NativeStylePlanContext['geojsonProperties'] = {}
+): NonNullable<NativeStylePlanContext['geojsonProperties']> {
+  const names = [
+    'fillColor',
+    'lineColor',
+    'lineWidth',
+    'radius',
+    'elevation',
+    'elevationOffset'
+  ] as const;
+  return Object.fromEntries(
+    names.map(name => [
+      name,
+      uploaded[name] ?? (sourceProperties.includes(name) ? undefined : 'absent')
+    ])
+  );
+}
+
 export type NativeStyleChannelPlan =
   | {kind: 'constant'; value: number | readonly number[]}
   | {kind: 'resident'; plan: KeplerResidentStylePlan}

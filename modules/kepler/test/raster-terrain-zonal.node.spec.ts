@@ -77,3 +77,46 @@ test('without a device the zonal terrain falls back to the CPU reference with a 
   expect(result.statistics[0]!.mean).toBeGreaterThan(0);
   expect(result.statistics[1]).toBeNull();
 });
+
+test('terrain fallback preserves same-zoom tile seam populations with neighbor halos', async () => {
+  const {createTerrainRasterSourceAsync} = await import(
+    '../../../examples/deck/kepler-compute/src/analysis3-raster-terrain-gpu'
+  );
+  const source = makeSource();
+  const left = source.tiles[0];
+  const right = createNumericRasterTile({
+    id: 't1',
+    width: SIZE,
+    height: SIZE,
+    zoom: left.zoom,
+    extent: [0.016, 0, 0.032, 0.016],
+    bands: [
+      {
+        values: Float32Array.from(
+          {length: SIZE * SIZE},
+          (_, index) => 4 * (SIZE + (index % SIZE)) + Math.floor(index / SIZE)
+        )
+      }
+    ]
+  });
+  const mosaic = {...source, tiles: [left, right]};
+  const withHalo = await createTerrainRasterSourceAsync(
+    mosaic,
+    {operation: 'slope'},
+    {engine: 'cpu'}
+  );
+  const withoutHalo = await createTerrainRasterSourceAsync(
+    mosaic,
+    {operation: 'slope'},
+    {engine: 'cpu', useNeighborHalo: false}
+  );
+  const row = 8;
+  expect(withHalo.source.tiles[0].bands[0].validity[row * SIZE + SIZE - 1]).toBe(1);
+  expect(withHalo.source.tiles[1].bands[0].validity[row * SIZE]).toBe(1);
+  expect(withoutHalo.source.tiles[0].bands[0].validity[row * SIZE + SIZE - 1]).toBe(0);
+  expect(withHalo.source.tiles[0].bands[0].values[row * SIZE + SIZE - 1]).toBeCloseTo(
+    withHalo.source.tiles[0].bands[0].values[row * SIZE + SIZE - 2],
+    6
+  );
+  expect(withHalo.source.tiles[0].bands[0].validity[row * SIZE]).toBe(0);
+});

@@ -498,12 +498,14 @@ export async function executeResidentJoin(props: {
       validIncluded: validIncluded.view,
       summary: summary.view
     });
+    // Published luma.gl has no pre-compile resource plan: compile, then reserve the measured
+    // transient bytes. The cleanup destroys the compiled graph if the reservation fails.
+    compiledKeys = graphA.compile();
     const plannedBytesA =
-      graphA.planResources().stats.physicalTransientResourceBytes +
+      compiledKeys.stats.physicalTransientResourceBytes +
       outputs.reduce((bytes, buffer) => bytes + buffer.byteLength, 0);
     // resize enforces the registry budget; this is the documented memory bound, not a row cap.
     gpuReservation.resize(Math.max(gpuReservation.byteLength, plannedBytesA));
-    compiledKeys = graphA.compile();
     assertCurrent();
     encoder = device.createCommandEncoder();
     if (composite) {
@@ -743,13 +745,14 @@ export async function executeResidentJoin(props: {
       });
     }
     const ownedBytes = outputs.reduce((bytes, buffer) => bytes + buffer.byteLength, 0);
-    const plannedBytes = graph.planResources().stats.physicalTransientResourceBytes + ownedBytes;
+    // Published luma.gl has no pre-compile resource plan: compile, then admit the measured bytes.
+    compiled = graph.compile();
+    const plannedBytes = compiled.stats.physicalTransientResourceBytes + ownedBytes;
     if (plannedBytes > admittedBytesB)
       throw new KeplerAllocationError('memory-budget', {
         message: 'Join exceeds admitted GPU working memory'
       });
     gpuReservation.resize(plannedBytes);
-    compiled = graph.compile();
     assertCurrent();
     encoder = device.createCommandEncoder();
     compiled.encode(encoder, {parameters: undefined});

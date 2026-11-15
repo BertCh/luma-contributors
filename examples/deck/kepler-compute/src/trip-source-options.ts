@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type * as arrow from 'apache-arrow';
-import type {GeoJSONTripPreparationOptions} from '@luma.gl/engine/arrow';
+import type {KeplerGeoJSONTripPreparationOptions} from './geometry-preparation';
 import {preparePublishedTrips} from './source-publication';
 
 /**
@@ -15,16 +15,25 @@ export type TripGrouping = {
   longitudeColumn: string;
   latitudeColumn: string;
   altitudeColumn?: string;
+  partColumn?: string;
 };
 /** The sandbox accepts geographic input; CRS transformations require separate preparation. */
 export type SandboxTripOptions = Pick<
-  GeoJSONTripPreparationOptions,
+  KeplerGeoJSONTripPreparationOptions,
   'timestampEncoding' | 'originMilliseconds' | 'maximumTimeErrorMilliseconds'
 > & {grouping?: TripGrouping};
 /** Preparation options accepted by published sources, including optional crs retention. */
-export type TripPreparationOptions = GeoJSONTripPreparationOptions & {grouping?: TripGrouping};
+export type TripPreparationOptions = KeplerGeoJSONTripPreparationOptions & {
+  grouping?: TripGrouping;
+};
 
-const GROUPING_KEYS = ['timestampColumn', 'longitudeColumn', 'latitudeColumn', 'altitudeColumn'];
+const GROUPING_KEYS = [
+  'timestampColumn',
+  'longitudeColumn',
+  'latitudeColumn',
+  'altitudeColumn',
+  'partColumn'
+];
 
 function readTripGrouping(value: unknown): TripGrouping {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -38,7 +47,11 @@ function readTripGrouping(value: unknown): TripGrouping {
   const altitude = record['altitudeColumn'];
   if (altitude !== undefined && (typeof altitude !== 'string' || !altitude))
     throw new Error('Trip altitude column must be a column name');
+  const part = record['partColumn'];
+  if (part !== undefined && (typeof part !== 'string' || !part))
+    throw new Error('Trip part column must be a column name');
   return {
+    ...(part === undefined ? {} : {partColumn: part}),
     timestampColumn: record['timestampColumn'] as string,
     longitudeColumn: record['longitudeColumn'] as string,
     latitudeColumn: record['latitudeColumn'] as string,

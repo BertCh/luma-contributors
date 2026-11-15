@@ -191,6 +191,39 @@ scripts and per-dataset READMEs are in `examples/deck/spatial-analysis-showcase/
 `ny-taxi-trips` and `sf-bike-parking` have a dataset entry but no committed data directory (they load
 remotely from deck.gl-data), so nothing is redistributed for them.
 
+## Kepler public sample maps (runtime only)
+
+`examples/deck/kepler-compute` reads the public
+[sample catalog](https://raw.githubusercontent.com/keplergl/kepler.gl-data/master/samples.json)
+at runtime. The [kepler.gl-data repository licence](https://github.com/keplergl/kepler.gl-data/blob/master/LICENSE)
+is Apache-2.0. That licence is recorded separately from source data terms: the catalog's `detail`
+attributes providers but usually does not declare a dataset licence. The UI displays the runtime
+attribution with provider links and this distinction. No sample datasets are bundled or committed
+here. Script-only offline fixtures are gitignored and read-only.
+
+| Sample ID | Source attribution in the catalog | Source licence statement in the catalog |
+| --- | --- | --- |
+| earthquakes | USGS earthquake data | Unspecified; provider terms apply |
+| nyctrips | NYC Taxi and Limousine Commission | Unspecified; provider terms apply |
+| sfcontour | DataSF, San Francisco Elevation Contours | Unspecified; provider terms apply |
+| nyc_earnings | Center for Spatial Data Science, University of Chicago; LEHD source page | Unspecified; provider terms apply |
+| fsq_places | Foursquare Open Source Places, data/schema documentation | Unspecified; provider terms apply |
+| mvt_population | U.S. Census; prepared and hosted by Foursquare | Unspecified; provider terms apply |
+| lake_lucerne_raster | Historic Lake Lucerne PMTiles; provider not named in `detail` | Unspecified; attribution/licence incomplete upstream |
+| wms_conus_cref_qcd | NCEP WMS, MRMS Quality Controlled CONUS Radar Composite Reflectivity | Unspecified; provider terms apply |
+| nyc_census | NYC Open Data, 2010 census tracts and tract populations | Unspecified; provider terms apply |
+| sftrees | DataSF, DPW-maintained Street Tree List | Unspecified; provider terms apply |
+| ukcommute | Nomis, 2011 Census of England and Wales residence/workplace flows | Unspecified; provider terms apply |
+| la_assessorparcels | County of Los Angeles Open Data, Assessor Parcels | Unspecified; provider terms apply |
+| movement_pittsburgh | Uber Movement | Creative Commons Noncommercial Attribution; version unspecified |
+| county_unemployment | Bureau of Labor Statistics; Census Bureau county boundaries | Unspecified; provider terms apply |
+| usdot | No `detail` attribution supplied (hidden legacy saved-map entry) | Unspecified; attribution/licence incomplete upstream |
+| world_flights | OpenSky Network live API, September 3 2019; airlinecodes.co.uk airline information | Unspecified; provider terms apply |
+
+This records catalog declarations, not an independent legal audit or permission to redistribute
+source data. In particular, retain the non-commercial restriction on `movement_pittsburgh`.
+New or changed upstream entries carry their runtime `detail` attribution into the UI automatically.
+
 ## Lens data
 
 Location: `modules/lenses/src/computation-lenses/data/` (formerly

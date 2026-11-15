@@ -11,6 +11,12 @@ import {
   type ResidentRecoverySnapshot
 } from '../../../examples/deck/kepler-compute/src/resident-device-recovery';
 import {IncompleteSandboxPopulationError} from '../../../examples/deck/kepler-compute/src/sandbox-population';
+import {
+  assertSampleMapCheckpointSupported,
+  beginSampleMapMutation,
+  SampleMapCheckpointDeferredError,
+  REMOTE_SAMPLE_RECOVERY_NOTICE
+} from '../../../examples/deck/kepler-compute/src/sample-map-lifecycle';
 
 type Runtime = {id: string};
 
@@ -241,6 +247,52 @@ it('unfinished-stream schema deferral preserves the last complete checkpoint for
   recovery.markLost(previous, 'Device lost');
   expect(await recovery.recover()).toBe(replacement);
   expect(props.rebuild).toHaveBeenCalledWith(snapshot, expect.anything());
+  await recovery.dispose();
+});
+
+it('remote sample checkpoint deferral preserves and recovers the last healthy workspace', async () => {
+  const {recovery, props, previous, replacement, snapshot} = harness();
+  expect(recovery.checkpoint(previous)).toBe(true);
+  props.capture = vi.fn(runtime => {
+    if (runtime === previous)
+      assertSampleMapCheckpointSupported({
+        config: {
+          visState: {
+            layers: [{type: 'vectorTile', config: {dataId: 'remote-population'}}]
+          }
+        }
+      });
+    return snapshot;
+  });
+  expect(recovery.checkpoint(previous)).toBe(false);
+  expect(recovery.checkpointSnapshot).toBe(snapshot);
+  expect(recovery.status.hasCheckpoint).toBe(true);
+  expect(recovery.status.reason).toContain(REMOTE_SAMPLE_RECOVERY_NOTICE);
+  expect(() => assertSampleMapCheckpointSupported({}, [{type: 'wms-tile'}])).toThrow(
+    SampleMapCheckpointDeferredError
+  );
+  recovery.markLost(previous, 'Device lost');
+  expect(await recovery.recover()).toBe(replacement);
+  expect(props.rebuild).toHaveBeenCalledWith(snapshot, expect.anything());
+  await recovery.dispose();
+});
+
+it('a pending sample transaction defers checkpoint capture without invalidating its healthy predecessor', async () => {
+  const {recovery, props, previous, snapshot} = harness();
+  expect(recovery.checkpoint(previous)).toBe(true);
+  props.capture = vi.fn(() => {
+    assertSampleMapCheckpointSupported({});
+    return snapshot;
+  });
+  const finish = beginSampleMapMutation();
+  try {
+    expect(recovery.checkpoint(previous)).toBe(false);
+    expect(recovery.checkpointSnapshot).toBe(snapshot);
+    expect(recovery.status.hasCheckpoint).toBe(true);
+  } finally {
+    finish();
+  }
+  expect(recovery.checkpoint(previous)).toBe(true);
   await recovery.dispose();
 });
 

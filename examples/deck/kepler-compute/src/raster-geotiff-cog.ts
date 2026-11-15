@@ -289,6 +289,10 @@ export type CogReadOptions = Readonly<{
   id?: string;
   /** Pick the finest level whose pixel count is at most this. Default 16 million. */
   maximumPixelCount?: number;
+  /** Refuse oversized decoded windows before allocating sample arrays (independent of overview selection). */
+  maximumOutputPixelCount?: number;
+  maximumOutputBandCount?: number;
+  maximumOutputElementCount?: number;
   /** Pick the coarsest level that is still at least this wide (overrides the pixel cap choice). */
   targetWidth?: number;
   /** Explicit directory index (0 = full resolution). */
@@ -469,6 +473,15 @@ export async function readCloudOptimizedGeoTIFF(
   }
   const outputWidth = columnEnd - columnStart;
   const outputHeight = rowEnd - rowStart;
+  if (
+    outputWidth * outputHeight > (options.maximumOutputPixelCount ?? Infinity) ||
+    directory.samplesPerPixel > (options.maximumOutputBandCount ?? Infinity) ||
+    outputWidth * outputHeight * directory.samplesPerPixel >
+      (options.maximumOutputElementCount ?? Infinity)
+  )
+    throw new Error(
+      'GeoTIFF decoded window exceeds the requested pixel, band or element limit; choose a smaller source-CRS window'
+    );
   const bytesPerSample = directory.bitsPerSample / 8;
   const planeCount = directory.planarConfiguration === 2 ? directory.samplesPerPixel : 1;
   const bandValues = Array.from(

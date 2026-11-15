@@ -1,0 +1,349 @@
+{
+  "provenance": "Evaluated unmodified @loaders.gl/gis 4.5.4 converter resolved from pinned @kepler.gl/layers 3.3.0-alpha.18 node_modules; calculateMeanCenters:true; Apache Arrow17.0.0 Float64 coordinates. No tessellation. Coordinate arrays trimmed to declared logical lengths so reference does not count Arrow allocation padding. Centers are vertex means and each polygon ring first vertex is excluded.",
+  "cases": [
+    {
+      "name": "xyz-points",
+      "encoding": "geoarrow.point",
+      "dimension": 3,
+      "depth": 0,
+      "rows": [
+        [
+          1,
+          2,
+          100
+        ],
+        [
+          7,
+          8,
+          -20
+        ]
+      ],
+      "expected": [
+        [
+          1,
+          2
+        ],
+        [
+          7,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "multipoint-vertex-weighting",
+      "encoding": "geoarrow.multipoint",
+      "dimension": 2,
+      "depth": 1,
+      "rows": [
+        [
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            9,
+            6
+          ]
+        ],
+        [
+          [
+            2,
+            5
+          ],
+          [
+            4,
+            9
+          ]
+        ]
+      ],
+      "expected": [
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          7
+        ]
+      ]
+    },
+    {
+      "name": "line-closure-retained",
+      "encoding": "geoarrow.linestring",
+      "dimension": 2,
+      "depth": 1,
+      "rows": [
+        [
+          [
+            0,
+            0
+          ],
+          [
+            9,
+            3
+          ],
+          [
+            0,
+            0
+          ]
+        ],
+        [
+          [
+            1,
+            1
+          ],
+          [
+            2,
+            5
+          ],
+          [
+            9,
+            0
+          ]
+        ]
+      ],
+      "expected": [
+        [
+          3,
+          1
+        ],
+        [
+          4,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "multipart-line-vertex-weighting",
+      "encoding": "geoarrow.multilinestring",
+      "dimension": 2,
+      "depth": 2,
+      "rows": [
+        [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              6,
+              0
+            ]
+          ],
+          [
+            [
+              0,
+              6
+            ],
+            [
+              0,
+              12
+            ],
+            [
+              0,
+              18
+            ]
+          ]
+        ]
+      ],
+      "expected": [
+        [
+          1.2,
+          7.2
+        ]
+      ]
+    },
+    {
+      "name": "polygon-hole-vertex-weighting",
+      "encoding": "geoarrow.polygon",
+      "dimension": 2,
+      "depth": 2,
+      "rows": [
+        [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              12,
+              0
+            ],
+            [
+              12,
+              4
+            ],
+            [
+              0,
+              4
+            ],
+            [
+              0,
+              0
+            ]
+          ],
+          [
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        ]
+      ],
+      "expected": [
+        [
+          4.142857142857143,
+          1.7142857142857142
+        ]
+      ]
+    },
+    {
+      "name": "polygon-open-ring-first-skipped",
+      "encoding": "geoarrow.polygon",
+      "dimension": 2,
+      "depth": 2,
+      "rows": [
+        [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              10,
+              0
+            ],
+            [
+              0,
+              10
+            ]
+          ]
+        ],
+        [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              10,
+              0
+            ],
+            [
+              0,
+              10
+            ],
+            [
+              0,
+              0
+            ]
+          ]
+        ]
+      ],
+      "expected": [
+        [
+          5,
+          5
+        ],
+        [
+          3.3333333333333335,
+          3.3333333333333335
+        ]
+      ]
+    },
+    {
+      "name": "multipolygon-all-rings-vertex-weighting",
+      "encoding": "geoarrow.multipolygon",
+      "dimension": 2,
+      "depth": 3,
+      "rows": [
+        [
+          [
+            [
+              [
+                0,
+                0
+              ],
+              [
+                4,
+                0
+              ],
+              [
+                0,
+                4
+              ],
+              [
+                0,
+                0
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                10,
+                10
+              ],
+              [
+                14,
+                10
+              ],
+              [
+                14,
+                14
+              ],
+              [
+                10,
+                14
+              ],
+              [
+                10,
+                10
+              ]
+            ],
+            [
+              [
+                11,
+                11
+              ],
+              [
+                12,
+                11
+              ],
+              [
+                11,
+                12
+              ],
+              [
+                11,
+                11
+              ]
+            ]
+          ]
+        ]
+      ],
+      "expected": [
+        [
+          8.6,
+          8.6
+        ]
+      ]
+    }
+  ]
+}

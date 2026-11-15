@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {describe, expect, test} from 'vitest';
+import {getFlowFieldSpawnRegion} from '@luma-contributors/analysis/raster-analysis';
 import {
   advanceFlowFieldParticle,
   buildFlowFieldGrid,
@@ -12,7 +13,6 @@ import {
 } from '../../../examples/deck/kepler-compute/src/flow-field-grid';
 import {
   getFlowFieldPalette,
-  getFlowFieldSpawnRegion,
   normalizeFlowFieldColor,
   planFlowField
 } from '../../../examples/deck/kepler-compute/src/flow-field-plan';

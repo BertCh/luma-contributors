@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Layer} from '@deck.gl/core';
+import {Layer, type Deck, type DeckProps, type Viewport} from '@deck.gl/core';
 import {getResidentHeatmapReadiness} from './resident-heatmap-layer';
 
-export function getRenderedLayerInfo(value: unknown): {
+export function getRenderedLayerInfo(
+  value: unknown,
+  view?: {viewport: Viewport; layerFilter: DeckProps['layerFilter']}
+): {
   id: string;
   renderId: string;
   layerClass: string;
@@ -32,7 +35,7 @@ export function getRenderedLayerInfo(value: unknown): {
   maskBufferIds?: string[];
   labelBufferIds?: string[];
 }[] {
-  if (Array.isArray(value)) return value.flatMap(getRenderedLayerInfo);
+  if (Array.isArray(value)) return value.flatMap(layer => getRenderedLayerInfo(layer, view));
   if (
     !value ||
     typeof value !== 'object' ||
@@ -117,7 +120,14 @@ export function getRenderedLayerInfo(value: unknown): {
         properties &&
           typeof properties === 'object' &&
           'visible' in properties &&
-          properties.visible
+          properties.visible &&
+          (!view?.layerFilter ||
+            view.layerFilter({
+              layer: value as Layer,
+              viewport: view.viewport,
+              isPicking: false,
+              renderPass: 'screen'
+            }))
       ),
       loaded: 'isLoaded' in value && Boolean(value.isLoaded),
       heatmapReadiness: value instanceof Layer ? getResidentHeatmapReadiness(value) : undefined,
@@ -128,6 +138,19 @@ export function getRenderedLayerInfo(value: unknown): {
         : {})
     }
   ];
+}
+
+/** Effective draw visibility on the actual shared Deck, including its per-viewport filter. */
+export function getRenderedViewLayerInfo(deck?: Pick<Deck, 'props' | 'getViewports'>) {
+  return (
+    deck?.getViewports().map(viewport => ({
+      id: viewport.id,
+      layers: getRenderedLayerInfo(deck.props.layers, {
+        viewport,
+        layerFilter: deck.props.layerFilter
+      })
+    })) ?? []
+  );
 }
 
 export function getGPUAttributeInfo(

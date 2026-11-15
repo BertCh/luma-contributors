@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {WgslReflect} from 'wgsl_reflect';
+import {color, project32, phongMaterial, WebMercatorViewport} from '@deck.gl/core';
+import {WGSLShaderAssembler} from '@luma.gl/shaders';
 import {describe, expect, it} from 'vitest';
 import {
   mergeRasterZoneColumns,
@@ -21,6 +23,7 @@ import {computeRasterZonalStatistics} from '../../../examples/deck/kepler-comput
 import {
   buildRasterTileWgsl,
   createRasterTileMesh,
+  createRasterTerrainMesh,
   getRasterRescaleFlags,
   planRasterRender,
   planRasterRescale,
@@ -385,6 +388,101 @@ describe('WMS time extent', () => {
 });
 
 describe('raster WGSL wrapper', () => {
+  it('assembles raster textures alongside published phong lighting without binding collisions', () => {
+    const shader = new WGSLShaderAssembler().assembleWGSLShader({
+      platformInfo: {
+        type: 'webgpu',
+        shaderLanguage: 'wgsl',
+        shaderLanguageVersion: 300,
+        gpu: 'test',
+        features: new Set<string>()
+      },
+      source: buildRasterTileWgsl('b1', true, true),
+      modules: [
+        project32,
+        color,
+        phongMaterial,
+        {name: 'rasterWgsl', source: RASTER_WGSL_MODULE_SOURCE}
+      ]
+    });
+    const reflection = new WgslReflect(shader.source);
+    const bindings = [...reflection.uniforms, ...reflection.textures, ...reflection.samplers];
+    const slots = bindings.map(binding => `${binding.group}/${binding.binding}`);
+    expect(new Set(slots).size).toBe(slots.length);
+    expect(reflection.textures).toHaveLength(14);
+  });
+  it('preserves indexed terrain positions, UVs and smooth normals', () => {
+    const mesh = createRasterTerrainMesh({
+      attributes: {
+        POSITION: {value: [0, 0, 10, 1, 0, 20, 0, 1, 30]},
+        TEXCOORD_0: {value: [0, 1, 1, 1, 0, 0]},
+        NORMAL: {value: [0, 0, 1, 0, 1, 0, 1, 0, 0]}
+      },
+      indices: {value: [2, 0, 1]}
+    });
+    expect(Array.from(mesh.positions)).toEqual([0, 1, 30, 0, 0, 10, 1, 0, 20]);
+    expect(Array.from(mesh.texCoords)).toEqual([0, 0, 0, 1, 1, 1]);
+    expect(Array.from(mesh.normals)).toEqual([1, 0, 0, 0, 0, 1, 0, 1, 0]);
+    new WgslReflect(buildRasterTileWgsl('b1', true, true));
+  });
+  it('uses Kepler global range overrides before tile statistics', async () => {
+    const {getRasterSubLayerPlanProps} = await import(
+      '../../../examples/deck/kepler-compute/src/raster-wgsl-wrap'
+    );
+    const images = {imageBands: [{data: new Float32Array([50]), width: 1, height: 1}]};
+    const argumentsWithRange = {
+      bandCombination: 'single',
+      data: {minPixelValue: 0, maxPixelValue: 100},
+      minPixelValue: NaN,
+      maxPixelValue: undefined
+    };
+    const tilePlan = planRasterRender(getRasterSubLayerPlanProps(argumentsWithRange, images))!;
+    expect(tilePlan.domain).toEqual([0, 100]);
+    expect(tilePlan.rescale.scaler).toBe(0.01);
+    const override = getRasterSubLayerPlanProps(
+      {...argumentsWithRange, minPixelValue: 0, maxPixelValue: 200},
+      images
+    );
+    expect(planRasterRender(override)!.domain).toEqual([0, 200]);
+    expect(planRasterRender(override)!.rescale.scaler).toBe(0.005);
+    expect(
+      planRasterRender(
+        getRasterSubLayerPlanProps(
+          {...argumentsWithRange, minPixelValue: -100, maxPixelValue: 200},
+          images
+        )
+      )!.domain
+    ).toEqual([-100, 200]);
+    const otherTile = getRasterSubLayerPlanProps(
+      {
+        ...argumentsWithRange,
+        minPixelValue: 0,
+        maxPixelValue: 200,
+        data: {minPixelValue: 20, maxPixelValue: 50}
+      },
+      images
+    );
+    expect(planRasterRender(otherTile)!.rescale).toEqual(planRasterRender(override)!.rescale);
+    expect(
+      planRasterRender(
+        getRasterSubLayerPlanProps(
+          {...argumentsWithRange, minPixelValue: -Infinity, maxPixelValue: Infinity},
+          images
+        )
+      )!.domain
+    ).toEqual([0, 100]);
+  });
+
+  it('tessellates east-west globe edges as well as north-south edges', () => {
+    const mesh = createRasterTileMesh([-180, -80, 180, 80], 32, 72);
+    expect(mesh.vertexCount).toBe(32 * 72 * 6);
+    for (let vertex = 0; vertex < mesh.vertexCount; vertex += 3) {
+      const longitudes = [0, 1, 2].map(offset => mesh.positions[(vertex + offset) * 3]);
+      expect(Math.max(...longitudes) - Math.min(...longitudes)).toBeLessThanOrEqual(5);
+    }
+    expect(buildRasterTileWgsl()).toContain('gpuGlobeIsCommonHidden(varyings.globePosition)');
+  });
+
   it('replaces RasterLayer sublayers, keeps others, and stays idempotent', async () => {
     const {RasterWgslWrapper} = await import(
       '../../../examples/deck/kepler-compute/src/raster-wgsl-wrap'
@@ -402,6 +500,8 @@ describe('raster WGSL wrapper', () => {
         id: `${layerName}-1`,
         bounds: [0, 0, 1, 1],
         opacity: 1,
+        // Match the inherited public Deck defaults of a constructed native raster sublayer.
+        visible: true,
         images: {
           imageBands: [{data: new Float32Array(4), width: 2, height: 2}],
           imageColormap: {data: new Uint8Array(8), width: 2, height: 1}
@@ -437,6 +537,87 @@ describe('raster WGSL wrapper', () => {
     expect(wrapper.statistics.replacedCount).toBe(1);
     // A second wrap of the already wrapped layer must not double wrap.
     expect(wrapper.wrapLayer(wrapped)).toBe(wrapped);
+    const secondTileLayer = wrapper.wrapLayer({...tileLayer, id: 'second-raster'});
+    (secondTileLayer.props.renderSubLayers as (props: object) => unknown)({
+      bandCombination: 'single',
+      tile: {index: {x: 1, y: 2, z: 3}}
+    });
+    expect(requested[1]).toEqual(['second-raster', {x: 1, y: 2, z: 3}, [0, 0, 0, 0]]);
+    // Deck renderSubLayers also accepts a single layer or nested arrays. These must never reach
+    // native RasterLayer.initializeState, which calls the removed luma 9 ShaderAssembler API.
+    for (const result of [
+      makeSublayer('RasterLayer'),
+      makeSublayer('RasterMeshLayer'),
+      [[makeSublayer('RasterLayer')], null]
+    ]) {
+      const direct = wrapper.wrapLayer({
+        ...tileLayer,
+        props: {renderSubLayers: () => result}
+      });
+      const replaced = (direct.props.renderSubLayers as (props: object) => unknown)({
+        bandCombination: 'single'
+      });
+      const layers = [replaced].flat(Infinity).filter(Boolean);
+      expect(layers).toHaveLength(1);
+      expect((layers[0] as {constructor: {layerName: string}}).constructor.layerName).toBe(
+        'RasterWgslLayer'
+      );
+    }
+    const terrain = makeSublayer('RasterMeshLayer');
+    const mesh = {
+      attributes: {
+        POSITION: {value: [0, 0, 1, 1, 0, 1, 0, 1, 1]},
+        TEXCOORD_0: {value: [0, 0, 1, 0, 0, 1]}
+      }
+    };
+    const terrainTile = wrapper.wrapLayer({
+      ...tileLayer,
+      props: {
+        renderSubLayers: () => ({...terrain, props: {...terrain.props, bounds: undefined, mesh}})
+      }
+    });
+    const renderedTerrain = (terrainTile.props.renderSubLayers as (props: object) => unknown)({
+      bandCombination: 'single',
+      tile: {bbox: {west: 0, south: 0, east: 1, north: 1}}
+    }) as import('../../../examples/deck/kepler-compute/src/raster-wgsl-layer').RasterWgslLayer;
+    expect(renderedTerrain.props.mesh).toBe(mesh);
+    expect(renderedTerrain.props.bounds).toEqual([0, 0, 1, 1]);
+    expect(
+      renderedTerrain.props.visible,
+      'native terrain fixture must carry the inherited Deck visible default'
+    ).toBe(true);
+    // Native quantized-mesh output has no NORMAL. Native RasterMeshLayer derives face normals
+    // in that case; inspect the replacement's actual shader, not a manually flat-shaded builder.
+    Object.assign(renderedTerrain, {
+      context: {
+        viewport: new WebMercatorViewport({width: 128, height: 128}),
+        defaultShaderModules: [],
+        defaultShaderPlugins: []
+      }
+    });
+    const shaders = renderedTerrain.getShaders();
+    expect(shaders.source).toContain(
+      'normalize(cross(dpdy(input.globePosition), dpdx(input.globePosition)))'
+    );
+    expect(shaders.modules).toContain(phongMaterial);
+    const smoothMesh = {
+      ...mesh,
+      attributes: {...mesh.attributes, NORMAL: {value: [0, 0, 1, 0, 0, 1, 0, 0, 1]}}
+    };
+    const smooth = renderedTerrain.clone({mesh: smoothMesh});
+    Object.assign(smooth, {context: renderedTerrain.context});
+    expect(smooth.getShaders().source).not.toContain('cross(dpdy(');
+    const explicitFlat = smooth.clone({flatShading: true});
+    Object.assign(explicitFlat, {context: renderedTerrain.context});
+    expect(explicitFlat.getShaders().source).toContain('cross(dpdy(');
+    const hiddenTile = wrapper.wrapLayer({
+      ...tileLayer,
+      props: {renderSubLayers: () => ({...terrain, props: {...terrain.props, visible: false}})}
+    });
+    const hiddenTerrain = (hiddenTile.props.renderSubLayers as (props: object) => unknown)(
+      {}
+    ) as typeof renderedTerrain;
+    expect(hiddenTerrain.props.visible, 'intentional native visibility is preserved').toBe(false);
   });
 });
 

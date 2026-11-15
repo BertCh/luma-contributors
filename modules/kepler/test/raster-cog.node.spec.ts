@@ -402,6 +402,32 @@ describe('GeoTIFF sync reader overviews and caps', () => {
     }
   ]);
 
+  it('admits bounded embedding windows without silently choosing a generic overview', async () => {
+    for (const limits of [
+      {maximumOutputPixelCount: 20},
+      {maximumOutputElementCount: 20},
+      {maximumOutputBandCount: 0}
+    ])
+      await expect(
+        readCloudOptimizedGeoTIFF(createBufferByteSource(bytes), {overviewLevel: 0, ...limits})
+      ).rejects.toThrow('decoded window exceeds');
+    const result = await readCloudOptimizedGeoTIFF(createBufferByteSource(bytes), {
+      overviewLevel: 0,
+      maximumOutputPixelCount: 4,
+      maximumOutputBandCount: 1,
+      maximumOutputElementCount: 4,
+      window: [10, 19, 11, 20]
+    });
+    expect(result.levelIndex).toBe(0);
+    expect(result.source.tiles[0].width * result.source.tiles[0].height).toBe(4);
+    expect(Array.from(result.source.tiles[0].bands[0].values)).toEqual([
+      full[0],
+      full[1],
+      full[10],
+      full[11]
+    ]);
+  });
+
   it('parses the directory chain', () => {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const directories = parseTiffDirectoryChain(bytes, view, true, false);

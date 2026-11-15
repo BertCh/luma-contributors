@@ -2,32 +2,54 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Layer, color, project32, type LayerContext, type LayerProps} from '@deck.gl/core';
-import {Buffer, Texture, type Device} from '@luma.gl/core';
+import {
+  Layer,
+  color,
+  project32,
+  phongMaterial,
+  type LayerContext,
+  type LayerProps,
+  type UpdateParameters
+} from '@deck.gl/core';
+import {
+  Buffer,
+  Texture,
+  getExternalImageSize,
+  isExternalImage,
+  type Device,
+  type ExternalImage
+} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
 import type {ShaderModule} from '@luma.gl/shaders';
 import {
   buildRasterTileWgsl,
   getRasterRescaleFlags,
   createRasterTileMesh,
+  createRasterTerrainMesh,
   RASTER_WGSL_BAND_SLOT_COUNT,
   RASTER_WGSL_EXTENDED_SLOT_COUNT,
   RASTER_WGSL_MODE_CODES,
   RASTER_WGSL_MODULE_SOURCE,
   RASTER_WGSL_TEXTURE_NAMES,
   RASTER_WGSL_UNFILTERABLE_TEXTURE_NAMES,
-  type RasterWgslRenderPlan
+  type RasterWgslRenderPlan,
+  type RasterTerrainMesh
 } from './raster-wgsl-shader';
 
 /** Structural view of one Kepler tile band descriptor (`images.imageBands[n]`). */
 type KeplerBandDescriptor = {data?: ArrayLike<number>; width?: number; height?: number};
+type KeplerColorDescriptor = {
+  data?: ArrayLike<number> | ExternalImage;
+  width?: number;
+  height?: number;
+};
 
 /** Structural view of the per-tile `images` object Kepler's `renderSubLayers` receives. */
 export type RasterWgslImages = Readonly<{
   imageBands?: readonly KeplerBandDescriptor[];
   imageMask?: KeplerBandDescriptor | null;
-  imageRgba?: KeplerBandDescriptor | null;
-  imageColormap?: unknown;
+  imageRgba?: KeplerColorDescriptor | null;
+  imageColormap?: KeplerColorDescriptor | null;
 }>;
 
 /** Resident texture pair for one band (see raster-band-gpu.ts). */
@@ -37,6 +59,8 @@ export type RasterWgslLayerProps = LayerProps & {
   bounds: readonly [number, number, number, number];
   images: RasterWgslImages;
   plan: RasterWgslRenderPlan;
+  mesh?: RasterTerrainMesh;
+  flatShading?: boolean;
   /** Source nodata sentinel written to the shader for the first band, when known. */
   nodataValue?: number | null;
   /**
@@ -75,7 +99,9 @@ type RasterWgslState = {
   model?: Model;
   positions?: Buffer;
   texCoords?: Buffer;
+  normals?: Buffer;
   expression?: string;
+  subdivisionStep?: number;
   dummies?: {value: Texture; validity: Texture; color: Texture};
   owned: OwnedTextures;
 };
@@ -91,9 +117,17 @@ export class RasterWgslLayer extends Layer<RasterWgslLayerProps> {
   declare state: RasterWgslState;
 
   override getShaders() {
+    const mesh = this.props.mesh;
+    // Native RasterMeshLayer enables face normals when quantized-mesh has no NORMAL attribute.
+    // Placeholder vertex normals keep the buffer layout stable, but must not flatten the lighting.
+    const hasNormals = Boolean(mesh?.attributes['NORMAL'] ?? mesh?.attributes['normals']);
     return super.getShaders({
-      source: buildRasterTileWgsl(this.props.plan.expression),
-      modules: [project32, color, rasterWgslModule]
+      source: buildRasterTileWgsl(
+        this.props.plan.expression,
+        Boolean(this.props.mesh),
+        this.props.flatShading || Boolean(mesh && !hasNormals)
+      ),
+      modules: [project32, color, rasterWgslModule, ...(this.props.mesh ? [phongMaterial] : [])]
     });
   }
 
@@ -132,7 +166,18 @@ export class RasterWgslLayer extends Layer<RasterWgslLayerProps> {
     this.state.model?.destroy();
     this.state.positions?.destroy();
     this.state.texCoords?.destroy();
-    const mesh = createRasterTileMesh(this.props.bounds);
+    this.state.normals?.destroy();
+    // Deck 10 resolution counts intervals around the earth. Keep planar raster rows for the
+    // Mercator UV mapping, and subdivide BOTH axes on a globe so low-zoom tiles follow its shell.
+    const subdivisionStep = this.getSubdivisionStep();
+    const [west, south, east, north] = this.props.bounds;
+    const mesh = this.props.mesh
+      ? createRasterTerrainMesh(this.props.mesh)
+      : createRasterTileMesh(
+          this.props.bounds,
+          Math.max(16, subdivisionStep ? Math.ceil((north - south) / subdivisionStep) : 1),
+          subdivisionStep ? Math.max(1, Math.ceil((east - west) / subdivisionStep)) : 1
+        );
     const positions = device.createBuffer({
       usage: Buffer.VERTEX | Buffer.COPY_DST,
       data: mesh.positions
@@ -141,13 +186,21 @@ export class RasterWgslLayer extends Layer<RasterWgslLayerProps> {
       usage: Buffer.VERTEX | Buffer.COPY_DST,
       data: mesh.texCoords
     });
+    const normals =
+      'normals' in mesh && mesh.normals instanceof Float32Array
+        ? device.createBuffer({
+            usage: Buffer.VERTEX | Buffer.COPY_DST,
+            data: mesh.normals
+          })
+        : undefined;
     const model = new Model(device, {
       ...this.getShaders(),
       id: this.props.id,
-      attributes: {positions, texCoords},
+      attributes: {positions, texCoords, ...(normals ? {normals} : {})},
       bufferLayout: [
         {name: 'positions', format: 'float32x3'},
-        {name: 'texCoords', format: 'float32x2'}
+        {name: 'texCoords', format: 'float32x2'},
+        ...(normals ? [{name: 'normals', format: 'float32x3' as const}] : [])
       ],
       shaderLayout: {
         attributes: [],
@@ -164,17 +217,24 @@ export class RasterWgslLayer extends Layer<RasterWgslLayerProps> {
       topology: 'triangle-list',
       vertexCount: mesh.vertexCount
     });
-    this.setState({model, positions, texCoords, expression: this.props.plan.expression});
+    this.setState({
+      model,
+      positions,
+      texCoords,
+      normals,
+      expression: this.props.plan.expression,
+      subdivisionStep
+    });
   }
 
-  override updateState({
-    props,
-    oldProps
-  }: {
-    props: RasterWgslLayerProps;
-    oldProps: RasterWgslLayerProps;
-  }): void {
-    if (props.bounds !== oldProps.bounds || props.plan.expression !== this.state.expression)
+  override updateState({props, oldProps}: UpdateParameters<this>): void {
+    if (
+      props.bounds !== oldProps.bounds ||
+      props.mesh !== oldProps.mesh ||
+      props.flatShading !== oldProps.flatShading ||
+      props.plan.expression !== this.state.expression ||
+      this.getSubdivisionStep() !== this.state.subdivisionStep
+    )
       this.createModel(this.context.device);
   }
 
@@ -183,10 +243,17 @@ export class RasterWgslLayer extends Layer<RasterWgslLayerProps> {
     this.state.model?.destroy();
     this.state.positions?.destroy();
     this.state.texCoords?.destroy();
+    this.state.normals?.destroy();
     this.destroyOwnedTextures();
     this.state.dummies?.value.destroy();
     this.state.dummies?.validity.destroy();
     this.state.dummies?.color.destroy();
+  }
+
+  override shouldUpdateState(
+    parameters: Parameters<Layer<RasterWgslLayerProps>['shouldUpdateState']>[0]
+  ): boolean {
+    return super.shouldUpdateState(parameters) || parameters.changeFlags.viewportChanged;
   }
 
   private destroyOwnedTextures(): void {
@@ -236,27 +303,31 @@ export class RasterWgslLayer extends Layer<RasterWgslLayerProps> {
         })
       };
     });
-    const rgba = images.imageRgba;
-    if (rgba?.data && rgba.width && rgba.height)
-      owned.rgba = device.createTexture({
-        format: 'rgba8unorm',
-        width: rgba.width,
-        height: rgba.height,
-        usage,
-        data: new Uint8Array(Uint8Array.from(rgba.data as ArrayLike<number>))
-      });
-    const colormap = images.imageColormap as
-      | {data?: ArrayLike<number>; width?: number; height?: number}
-      | undefined;
-    if (colormap?.data && colormap.width && colormap.height)
-      owned.colormap = device.createTexture({
-        format: 'rgba8unorm',
-        width: colormap.width,
-        height: colormap.height,
-        usage,
-        data: Uint8Array.from(colormap.data)
-      });
+    owned.rgba = this.createColorTexture(images.imageRgba);
+    owned.colormap = this.createColorTexture(images.imageColormap);
     return owned;
+  }
+
+  private createColorTexture(
+    descriptor: KeplerColorDescriptor | null | undefined
+  ): Texture | undefined {
+    if (!descriptor?.data) return undefined;
+    // Native loadImage returns {data: ImageBitmap}, without descriptor width/height. Treating it
+    // as an array left PMTiles imagery invisible and every continuous colormap solid white.
+    const external = isExternalImage(descriptor.data);
+    const {width, height} = external
+      ? getExternalImageSize(descriptor.data as ExternalImage)
+      : descriptor;
+    if (!width || !height) return undefined;
+    return this.context.device.createTexture({
+      format: 'rgba8unorm',
+      width,
+      height,
+      usage: Texture.SAMPLE | Texture.COPY_DST | Texture.RENDER,
+      data: external
+        ? (descriptor.data as ExternalImage)
+        : Uint8Array.from(descriptor.data as ArrayLike<number>)
+    });
   }
 
   override draw(): void {

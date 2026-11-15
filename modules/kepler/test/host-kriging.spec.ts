@@ -172,7 +172,7 @@ test('kriging publishes separate prediction and variance cells with exact hits, 
       .flatMap(name => dataset.value.columns[name].data)
       .entries())
       expect(chunk).toBe(sourceChunks[index]);
-    expect(dataset.value.columns.value.data.map(chunk => chunk.length)).toEqual([2, 3]);
+    expect(dataset.value.columns['value'].data.map(chunk => chunk.length)).toEqual([2, 3]);
     for (const write of sourceWrites) expect(write).not.toHaveBeenCalled();
   } finally {
     for (const exported of exportsToDestroy) exported.destroy();

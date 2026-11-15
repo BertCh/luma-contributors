@@ -7,7 +7,7 @@ import {WebMercatorViewport, Layer, type LayersList} from '@deck.gl/core';
 import {appState} from './app-state';
 import {withResidentResultEvents} from './resident-result-events';
 import {wrapTo, onLayerHover, layerSetIsValid} from '@kepler.gl/actions';
-import {FlowFieldBindings} from './flow-field-bindings';
+import {flowFieldBindings} from './flow-field-bindings';
 import {FlowH3Bindings} from './flow-h3-source';
 import {TripMarkerModelCache} from './trip-marker-model';
 import {createResidentLayerClasses} from './resident-layers';
@@ -56,7 +56,7 @@ export function getResidentAnalysisLayers(): Layer[] {
   );
 }
 
-export const flowFieldBindings = new FlowFieldBindings();
+export {flowFieldBindings};
 
 export const flowH3Bindings = new FlowH3Bindings();
 
@@ -125,6 +125,8 @@ const primitiveLayerClasses = createResidentLayerClasses({
       const published = activeRuntime?.publications.get(datasetId);
       const binding = published?.renderBinding;
       if (!activeRuntime || !published || !binding) return undefined;
+      // Hidden configurations stay inspectable without allocating styles they cannot render.
+      if (!layer.config.isVisible) return {...binding, enabled: false};
       const sourceMask = published.scopes.registeredLayerIds.includes(layer.id)
         ? published.scopes.getLayerMask(layer.id)
         : binding.selectionMask;
@@ -148,7 +150,7 @@ const primitiveLayerClasses = createResidentLayerClasses({
         'altitude' in layer.config.columns &&
         layer.config.columns.altitude?.value === altitude &&
         published.pointPositions?.positions3D;
-      const selectionMask = activeRuntime.pointAltitudes.resolve(
+      let selectionMask = activeRuntime.pointAltitudes.resolve(
         datasetId,
         layer.id,
         sourceMask,
@@ -176,7 +178,16 @@ const primitiveLayerClasses = createResidentLayerClasses({
               revision: published.dataset.revision,
               prepared: published.dataset.value.prepared
             },
-            binding.connections?.columns
+            binding.connections?.columns,
+            (validity, endpoint) => {
+              selectionMask = activeRuntime.pointAltitudes.resolve(
+                datasetId,
+                `${layer.id}\u0001${endpoint}`,
+                selectionMask,
+                validity
+              );
+              return selectionMask;
+            }
           ),
           ...makePointVariantBindingOverride(
             activeRuntime.pointPositionVariants,
@@ -203,7 +214,10 @@ const primitiveLayerClasses = createResidentLayerClasses({
               : undefined,
           h3MetadataRevision: published.scopes.currentRevision + 1,
           h3Viewport: getH3Viewport(activeRuntime),
-          // Deck's GlobeViewport carries `resolution`; its geometry unwraps, subdivides and cuts long edges.
+          // Globe mode is keyed on the host's native viewport (`makeNativeMapViewport` sets a nonzero
+          // `resolution` only when the globe is enabled). Deck 10's own GlobeViewport defaults to 0, so
+          // never read the resolution from a viewport Deck constructed. The globe geometry unwraps,
+          // subdivides and cuts long edges.
           geometry:
             ((appState.nativeMapViewport as {resolution?: number} | undefined)?.resolution
               ? published.getGlobeGeometry(appState.nativeMapZoom)

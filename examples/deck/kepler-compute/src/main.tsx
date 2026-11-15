@@ -6,8 +6,7 @@ import './label-format-host';
 import './native-utils-host';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
-import './path-layer-picking-patch';
-import './scenegraph-area-lighting-patch';
+import './scenegraph-shadow-install';
 import './app-services';
 import './split-view';
 import './publication';
@@ -34,10 +33,14 @@ import {App} from './app';
 import {effect} from './app-services';
 import {publicationsInProgress, publishSource} from './publication';
 import {getActiveRuntime} from './native-config';
+import {resolveHostRequiredLimits} from './device-limits';
 
 const rootElement = document.getElementById('root');
 
 if (!rootElement) throw new Error('Missing application root');
+
+// The device is created by the first render, so the adapter limits are read before it.
+await resolveHostRequiredLimits();
 
 createRoot(rootElement).render(
   <Provider store={store}>

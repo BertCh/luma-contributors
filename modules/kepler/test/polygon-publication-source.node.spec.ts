@@ -3,11 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test, vi} from 'vitest';
-import {prepareGeometrySource, MAXIMUM_POLYGON_CONTIGUITY_VERTICES} from '@luma.gl/engine/arrow';
+import {
+  prepareKeplerGeometrySource,
+  POLYGON_CONTIGUITY_MAXIMUM_VERTICES
+} from '../../../examples/deck/kepler-compute/src/geometry-preparation';
 import {getPolygonAnalysisSource} from '../../../examples/deck/kepler-compute/src/polygon-publication-source';
 
 function fixture() {
-  return prepareGeometrySource([
+  return prepareKeplerGeometrySource([
     {id: 'empty', rows: []},
     {
       id: 'original',
@@ -73,7 +76,7 @@ test('polygon analysis limits do not reject or mutate otherwise renderable geome
             ...batch,
             polygonOutlines: {
               ...batch.polygonOutlines,
-              positions: new Float32Array((MAXIMUM_POLYGON_CONTIGUITY_VERTICES + 1) * 3)
+              positions: new Float32Array((POLYGON_CONTIGUITY_MAXIMUM_VERTICES + 1) * 3)
             }
           }
         : batch
@@ -87,7 +90,7 @@ test('polygon analysis limits do not reject or mutate otherwise renderable geome
   expect(geometry.metadata.rowCount).toBe(2);
   expect(
     getPolygonAnalysisSource(
-      prepareGeometrySource([{id: 'points', rows: [{type: 'Point', coordinates: [0, 0]}]}]),
+      prepareKeplerGeometrySource([{id: 'points', rows: [{type: 'Point', coordinates: [0, 0]}]}]),
       'geometry'
     ).reason
   ).toContain('polygon geometry');

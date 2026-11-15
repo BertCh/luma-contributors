@@ -131,3 +131,12 @@ export function isDictionarySorted(values: readonly string[]): boolean {
 export function estimateWideSortBytes(rows: number, passes: 1 | 2): number {
   return rows * 4 * (passes === 1 ? 5 : 9) + 65536;
 }
+
+/**
+ * Publication ceiling for scalar and exact wide sorts. Two compiled stable word passes need
+ * about 124 bytes per source row at 300k rows, including keys and compiled scratch. Allow 128
+ * bytes per row plus 8 MiB of fixed overhead; measured compilation must still fit this ceiling.
+ */
+export function getPublishedTableSortMemoryBudgetBytes(rowCount: number): number {
+  return 8 * 1024 * 1024 + rowCount * 128;
+}

@@ -105,13 +105,15 @@ export class PointAltitudeBindingRuntime {
           output: graph.importGPUVector('output', output)
         })
       );
-      const plan = graph.planResources();
-      if (plan.stats.physicalTransientResourceBytes > 1024 * 1024)
+      // Published luma.gl has no pre-compile resource plan: compile, then admit the measured
+      // transient bytes. The catch below destroys the compiled graph if admission fails.
+      compiled = graph.compile();
+      const transientBytes = compiled.stats.physicalTransientResourceBytes;
+      if (transientBytes > 1024 * 1024)
         throw new KeplerAllocationError('memory-budget', {
           message: 'Point altitude mask exceeds admitted working memory'
         });
-      reservation.resize(outputBytes + plan.stats.physicalTransientResourceBytes);
-      compiled = graph.compile();
+      reservation.resize(outputBytes + transientBytes);
       this.entries.set(layerId, {
         datasetId,
         sourceMask,

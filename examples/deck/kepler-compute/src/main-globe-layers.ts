@@ -8,7 +8,7 @@ import {
   getGlobeTileParameters,
   insertGlobeDepthDisk,
   isGlobeTileLayer
-} from '@deck.gl-community/gpu-layers';
+} from '../gpu-layers/index';
 
 export function flattenDeckLayers(layers: unknown): Layer[] {
   return (Array.isArray(layers) ? layers.flat(Infinity) : layers ? [layers] : []).filter(
@@ -115,12 +115,26 @@ export function withoutGlobeViewClear(views: unknown, slot = 'primary'): unknown
     props?: Record<string, unknown>;
     constructor: new (props: object) => unknown;
   };
-  if (!view?.props || Array.isArray(views) || view.props['clearColor'] !== false) return views;
+  if (!view?.props || Array.isArray(views) || convertedGlobeViews.has(view)) return views;
+  const hasClearFlags = view.props['clearColor'] === false;
+  const degrees = view.props['resolution'];
+  const needsIntervals = typeof degrees === 'number' && degrees > 0;
+  if (!hasClearFlags && !needsIntervals) return views;
   if (lastGlobeViews[slot]?.source !== views) {
     const {clear: _clear, clearColor: _clearColor, ...props} = view.props;
-    lastGlobeViews[slot] = {source: views, stripped: new view.constructor(props)};
+    const rebuilt: Record<string, unknown> = hasClearFlags ? props : {...view.props};
+    if (needsIntervals) rebuilt['resolution'] = convertGlobeDegreesToIntervals(degrees);
+    const stripped = new view.constructor(rebuilt);
+    convertedGlobeViews.add(stripped as object);
+    lastGlobeViews[slot] = {source: views, stripped};
   }
   return lastGlobeViews[slot].stripped;
+}
+/** Views already rebuilt by the host, so a second pass cannot convert the resolution twice. */
+const convertedGlobeViews = new WeakSet<object>();
+/** Kepler passes the deck 9 globe `resolution` in degrees; deck 10 counts subdivision intervals around the earth. */
+export function convertGlobeDegreesToIntervals(degrees: number): number {
+  return Math.round(360 / degrees);
 }
 export function isGlslGlobeLayer(layer: unknown): boolean {
   return (

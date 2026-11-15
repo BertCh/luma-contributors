@@ -5,6 +5,7 @@
 import type {RestoredSandboxBundle} from './sandbox-bundle';
 import type {ResidentResultRecipe} from './resident-result-recipes';
 import {IncompleteSandboxPopulationError} from './sandbox-population';
+import {SampleMapCheckpointDeferredError} from './sample-map-lifecycle';
 
 /** CPU references only: no GPU buffers, IPC conversion, persistent storage or network transfer. */
 export type ResidentRecoverySnapshot = Readonly<{
@@ -111,9 +112,12 @@ export class ResidentDeviceRecovery<Runtime> {
       this.emit();
       return true;
     } catch (error) {
-      if (!(error instanceof IncompleteSandboxPopulationError)) this.checkpointValue = undefined;
+      const deferred =
+        error instanceof IncompleteSandboxPopulationError ||
+        error instanceof SampleMapCheckpointDeferredError;
+      if (!deferred) this.checkpointValue = undefined;
       this.reason =
-        error instanceof IncompleteSandboxPopulationError && this.checkpointValue
+        deferred && this.checkpointValue
           ? `${message(error)}; the last complete recovery checkpoint is retained`
           : message(error);
       this.emit();

@@ -239,14 +239,14 @@ test('native Group By adopts all-source aggregates with original dictionary code
       datasetId: plan.resultId,
       sourceRowIndex: 2
     });
-    expect(source.value.columns.amount.data.map(chunk => chunk.length)).toEqual([2, 3]);
-    expect(dataset.value.prepared.dictionaries.amount_sum.values).toEqual(labels);
-    const codesBuffer = dataset.value.columns.amount_sum.data[0].buffer;
+    expect(source.value.columns['amount'].data.map(chunk => chunk.length)).toEqual([2, 3]);
+    expect(dataset.value.prepared.dictionaries['amount_sum'].values).toEqual(labels);
+    const codesBuffer = dataset.value.columns['amount_sum'].data[0].buffer;
     const codesBytes = await codesBuffer.readAsync(0, 12);
     expect(Array.from(new Uint32Array(codesBytes.buffer, codesBytes.byteOffset, 3))).toEqual([
       1, 3, 0
     ]);
-    const measureValidity = dataset.value.analytics.validity.amount_sum_1!;
+    const measureValidity = dataset.value.analytics.validity['amount_sum_1']!;
     const validityBytes = await measureValidity.data[0].buffer.readAsync(0, 12);
     expect(Array.from(new Uint32Array(validityBytes.buffer, validityBytes.byteOffset, 3))).toEqual([
       1, 1, 0

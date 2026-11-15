@@ -4,26 +4,39 @@
 
 import {fileURLToPath} from 'node:url';
 import {createExampleViteConfig} from '../../vite.config.shared';
+import {createStandaloneViewerServePlugin} from './vite-inline-single-file-plugin';
 import {
+  createKeplerComputeDeckCompatPlugin,
   createKeplerComputeFilterPlugin,
-  patchKeplerComputeFilterSource
+  patchDeckCoordinateSystemImport,
+  patchEditablePathLayerSource,
+  patchKeplerGlobeBackfaceCullSource,
+  patchKeplerComputeFilterSource,
+  patchTiles3DRemovedExtensionsSource
 } from './kepler-compute-transform';
 
 const repositoryDirectory = fileURLToPath(new URL('../../../', import.meta.url));
 export default createExampleViteConfig({
   config: {
-    plugins: [createKeplerComputeFilterPlugin()],
+    plugins: [
+      createKeplerComputeFilterPlugin(),
+      createKeplerComputeDeckCompatPlugin(),
+      createStandaloneViewerServePlugin(
+        fileURLToPath(new URL('./dist/standalone-viewer.html', import.meta.url))
+      )
+    ],
     resolve: {
       alias: [
-        // Kepler's nested deck.gl 9 still imports the removed luma.gl 9 `webgl` package.
+        // Kepler 3.3 depends on deck.gl 9 and luma.gl 9 packages that luma.gl 10 folded into its
+        // public entry points. Resolve them to the one published luma.gl 10 copy.
         {
-          find: '@luma.gl/webgl/constants',
-          replacement: `${repositoryDirectory}modules/core/src/webgl-constants/index.ts`
+          find: /^@luma\.gl\/(webgl\/constants|constants)$/,
+          replacement: '@luma.gl/core/webgl-constants'
         },
-        {
-          find: '@luma.gl/webgl',
-          replacement: `${repositoryDirectory}modules/core/src/webgl/index.ts`
-        },
+        {find: /^@luma\.gl\/webgl$/, replacement: '@luma.gl/core/webgl'},
+        {find: /^@luma\.gl\/effects$/, replacement: '@luma.gl/engine/effects'},
+        {find: /^@luma\.gl\/gltf$/, replacement: '@luma.gl/engine/gltf'},
+        {find: /^@luma\.gl\/shadertools$/, replacement: '@luma.gl/shaders'},
         {
           find: /^@kepler.gl\/utils\/jenks$/,
           replacement: `${repositoryDirectory}node_modules/@kepler.gl/utils/dist/esm/jenks.js`
@@ -63,7 +76,12 @@ export default createExampleViteConfig({
           'mesh-layers',
           'mapbox',
           'widgets'
-        ].map(name => `@deck.gl/${name}`)
+        ].map(name => `@deck.gl/${name}`),
+        '@deck.gl-community/editable-layers',
+        '@luma.gl/core',
+        '@luma.gl/engine',
+        '@luma.gl/graph',
+        '@luma.gl/shaders'
       ]
     },
     optimizeDeps: {
@@ -71,10 +89,56 @@ export default createExampleViteConfig({
         '@kepler.gl/utils',
         'd3-dsv',
         'parquet-wasm/esm',
-        '@loaders.gl/arrow-geometry/geometry-codecs'
+        '@loaders.gl/core/arrow-geometry/geometry-codecs'
       ],
       rolldownOptions: {
         plugins: [
+          {
+            name: 'kepler-tiles3d-removed-extensions-optimizer',
+            transform(source, id) {
+              const normalized = id.replaceAll('\\', '/');
+              if (
+                !normalized.includes('/@loaders.gl/tiles-3d/') ||
+                !normalized.endsWith('/tiles-3d-source.js')
+              )
+                return null;
+              const patched = patchTiles3DRemovedExtensionsSource(source);
+              return patched === source ? null : {code: patched, map: null};
+            }
+          },
+          {
+            name: 'kepler-deck-10-coordinate-system-optimizer',
+            transform(source, id) {
+              const patched = patchDeckCoordinateSystemImport(source);
+              return patched === source ? null : {code: patched, map: null};
+            }
+          },
+          {
+            name: 'kepler-globe-label-cull-optimizer',
+            transform(source, id) {
+              if (
+                !id
+                  .replaceAll('\\', '/')
+                  .endsWith('/deckgl-layers/dist/esm/globe/globe-backface-cull.js')
+              )
+                return null;
+              const patched = patchKeplerGlobeBackfaceCullSource(source);
+              return patched === source ? null : {code: patched, map: null};
+            }
+          },
+          {
+            name: 'kepler-editable-path-anchor-optimizer',
+            transform(source, id) {
+              if (
+                !id
+                  .replaceAll('\\', '/')
+                  .endsWith('/editable-layers/dist/editable-layers/editable-path-layer.js')
+              )
+                return null;
+              const patched = patchEditablePathLayerSource(source);
+              return patched === source ? null : {code: patched, map: null};
+            }
+          },
           {
             name: 'kepler-resident-filter-plot-optimizer',
             transform(source, id) {

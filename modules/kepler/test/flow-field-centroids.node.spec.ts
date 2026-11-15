@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, test, vi} from 'vitest';
+import {afterAll, describe, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import * as arrow from 'apache-arrow';
 
 vi.mock('@kepler.gl/layers', () => ({parseGeoJsonRawFeature: () => null}));
@@ -104,4 +107,10 @@ describe('flow field centroids', () => {
     });
     expect(getFlowFieldPositionColumns({})).toEqual({});
   });
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@kepler.gl/layers');
+  vi.resetModules();
 });

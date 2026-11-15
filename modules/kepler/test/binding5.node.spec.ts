@@ -3,10 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {describe, expect, it} from 'vitest';
-import {OutOfMemoryError} from '@luma.gl/core';
 import {isKeplerAllocationError} from '../src/runtime/dataset-registry';
 import {preparePointLabelSource} from '../../../examples/deck/kepler-compute/src/label-source';
-import {runWithOutOfMemoryScope} from '../../../examples/deck/kepler-compute/src/binding5-device-oom-scope';
+import {KeplerDeviceOutOfMemoryError, runWithOutOfMemoryScope} from '@luma-contributors/kepler';
 import {
   listStyleFieldRequirements,
   requestStyleFieldPreparation
@@ -55,14 +54,13 @@ describe('runWithOutOfMemoryScope', () => {
     expect(device.calls).toEqual(['push:out-of-memory', 'pop']);
   });
 
-  // Skipped: needs OutOfMemoryError, which published @luma.gl/core 10.0.0-alpha.10 does not export.
-  it.skip('turns a reported device out-of-memory into a typed allocation error', async () => {
+  it('turns a reported device out-of-memory into a typed allocation error', async () => {
     const device = makeScopedDevice({message: 'buffer too large'});
     const error = await runWithOutOfMemoryScope(device, async () => 1).catch(
       (caught: unknown) => caught
     );
     expect(isKeplerAllocationError(error)).toBe(true);
-    expect((error as Error).cause).toBeInstanceOf(OutOfMemoryError);
+    expect((error as Error).cause).toBeInstanceOf(KeplerDeviceOutOfMemoryError);
     expect((error as Error).cause).toHaveProperty(
       'message',
       'Device out of memory: buffer too large'

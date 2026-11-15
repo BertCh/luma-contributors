@@ -15,20 +15,30 @@ import {
   type KeplerComputeFilter
 } from '../../../examples/deck/kepler-compute/src/kepler-table-bridge';
 
-test('native absolute time filters preserve exact64 instants and independent display/domain populations', async () => {
+test.each([
+  'microsecond',
+  'nanosecond'
+] as const)('native %s time filters preserve exact64 instants and independent display/domain populations', async unit => {
   const device = await getWebGPUTestDevice();
   if (!device) throw new Error('WebGPU is required for native timestamp integration');
   const epochMilliseconds = Date.UTC(2026, 0, 1);
-  const epochMicroseconds = BigInt(epochMilliseconds) * 1000n;
+  const ticksPerMillisecond = unit === 'microsecond' ? 1000n : 1_000_000n;
+  const epochTicks = BigInt(epochMilliseconds) * ticksPerMillisecond;
   const session = new KeplerComputeSession({device, memoryBudgetBytes: 40 * 1024 * 1024});
-  const source = makeBatch([epochMicroseconds, epochMicroseconds + 1n], [10, 20]).concat(
+  const source = makeBatch([epochTicks, epochTicks + 1n], [10, 20], unit).concat(
     makeBatch(
-      [epochMicroseconds + 1000n, epochMicroseconds + 2000n, epochMicroseconds + 3000n, null],
-      [30, 40, 50, 60]
+      [
+        epochTicks + ticksPerMillisecond,
+        epochTicks + 2n * ticksPerMillisecond,
+        epochTicks + 3n * ticksPerMillisecond,
+        null
+      ],
+      [30, 40, 50, 60],
+      unit
     )
   );
   const dataset = session.importArrowDataset({id: 'observations', table: source});
-  const sourceBuffers = dataset.value.timeColumns.timestamp.timestamps.data.map(
+  const sourceBuffers = dataset.value.timeColumns['timestamp'].timestamps.data.map(
     chunk => chunk.buffer
   );
   const sourceReads = sourceBuffers.map(buffer => vi.spyOn(buffer, 'readAsync'));
@@ -116,15 +126,15 @@ test('native absolute time filters preserve exact64 instants and independent dis
   async function execute(filters: readonly KeplerComputeFilter[]): Promise<number[]> {
     table.filterTable(filters, [{id: 'points', type: 'point', config: {dataId: dataset.id}}]);
     expect(table.lumaCompute.status).not.toBe('unsupported');
-    const encoder = device.createCommandEncoder();
+    const encoder = device!.createCommandEncoder();
     explorer.encode(encoder);
-    device.submit(encoder.finish());
+    device!.submit(encoder.finish());
     expect(await provider.readSummary()).toBe(true);
     const page = await explorer.readPage(0, 6, ['value']);
     return Array.from(page!.sourceRowIndices);
   }
   try {
-    expect(time.metadata.unit).toBe('microsecond');
+    expect(time.metadata.unit).toBe(unit);
     expect(time.metadata.timeZone).toBe('America/New_York');
     expect(time.domainMilliseconds).toEqual([epochMilliseconds, epochMilliseconds + 3]);
     expect(time.externalRange.displayDimension.mask.data.map(chunk => chunk.length)).toEqual([
@@ -137,7 +147,7 @@ test('native absolute time filters preserve exact64 instants and independent dis
     expect(status.domain).toMatchObject({complete: true, selectedCount: 5});
     expect(time.readbackByteLength).toBe(16);
 
-    // Adjacent source microseconds cannot collapse onto the same absolute Float32 epoch.
+    // Adjacent source ticks cannot collapse onto the same absolute Float32 epoch.
     expect(await execute([{...fixed, value: [epochMilliseconds, epochMilliseconds]}])).toEqual([0]);
     expect(
       await execute([
@@ -157,9 +167,9 @@ test('native absolute time filters preserve exact64 instants and independent dis
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatch(/integral milliseconds/);
     for (const read of sourceReads) expect(read).not.toHaveBeenCalled();
-    expect(dataset.value.timeColumns.timestamp.timestamps.data.map(chunk => chunk.buffer)).toEqual(
-      sourceBuffers
-    );
+    expect(
+      dataset.value.timeColumns['timestamp'].timestamps.data.map(chunk => chunk.buffer)
+    ).toEqual(sourceBuffers);
   } finally {
     sourceReads.forEach(read => read.mockRestore());
     const fence = device.createFence();
@@ -177,7 +187,11 @@ test('native absolute time filters preserve exact64 instants and independent dis
   }
 });
 
-function makeBatch(timestamps: readonly (bigint | null)[], values: number[]): arrow.Table {
+function makeBatch(
+  timestamps: readonly (bigint | null)[],
+  values: number[],
+  unit: 'microsecond' | 'nanosecond'
+): arrow.Table {
   const bitmap = new Uint8Array(Math.ceil(timestamps.length / 8));
   const words = new BigInt64Array(timestamps.length);
   let nullCount = 0;
@@ -192,7 +206,10 @@ function makeBatch(timestamps: readonly (bigint | null)[], values: number[]): ar
     value: arrow.makeVector(new Float32Array(values)),
     timestamp: arrow.makeVector(
       arrow.makeData({
-        type: new arrow.TimestampMicrosecond('America/New_York'),
+        type:
+          unit === 'microsecond'
+            ? new arrow.TimestampMicrosecond('America/New_York')
+            : new arrow.TimestampNanosecond('America/New_York'),
         data: words,
         length: words.length,
         nullCount,

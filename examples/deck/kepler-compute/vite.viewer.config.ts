@@ -13,9 +13,8 @@ import {createInlineSingleFilePlugin} from './vite-inline-single-file-plugin';
  * Documented exclusions: no basemap tiles, remote icons or fonts are bundled (system fonts only),
  * and no wasm or workers are used by this viewer.
  */
-export default mergeConfig(
-  baseConfig,
-  defineConfig({
+export default defineConfig(environment =>
+  mergeConfig(baseConfig(environment), {
     root: fileURLToPath(new URL('.', import.meta.url)),
     plugins: [createInlineSingleFilePlugin()],
     build: {

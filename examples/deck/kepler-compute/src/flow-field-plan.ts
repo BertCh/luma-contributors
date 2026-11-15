@@ -124,43 +124,6 @@ export function getFlowFieldPalette(
   return picked.map(([red, green, blue]) => [red / 255, green / 255, blue / 255]);
 }
 
-/**
- * Spawn rectangle for a viewport, normalized to the field bounds ([west, south, east, north] in
- * 0..1), padded by a tenth of the viewport. Undefined when the viewport covers the field, misses
- * it, or has no usable bounds: particles then spread over the whole field.
- */
-export function getFlowFieldSpawnRegion(
-  viewportBounds: readonly [number, number, number, number] | undefined,
-  fieldBounds: readonly [number, number, number, number]
-): [number, number, number, number] | undefined {
-  if (!viewportBounds || !viewportBounds.every(Number.isFinite)) return undefined;
-  let [west, south, east, north] = viewportBounds;
-  if (east - west >= 360) return undefined;
-  const padLongitude = (east - west) * 0.1;
-  const padLatitude = (north - south) * 0.1;
-  west -= padLongitude;
-  east += padLongitude;
-  south -= padLatitude;
-  north += padLatitude;
-  const [fieldWest, fieldSouth, fieldEast, fieldNorth] = fieldBounds;
-  for (const shift of [0, -360, 360]) {
-    const shiftedWest = west + shift;
-    const shiftedEast = east + shift;
-    if (shiftedEast < fieldWest || shiftedWest > fieldEast) continue;
-    const region: [number, number, number, number] = [
-      Math.max(0, (shiftedWest - fieldWest) / (fieldEast - fieldWest)),
-      Math.max(0, (south - fieldSouth) / (fieldNorth - fieldSouth)),
-      Math.min(1, (shiftedEast - fieldWest) / (fieldEast - fieldWest)),
-      Math.min(1, (north - fieldSouth) / (fieldNorth - fieldSouth))
-    ];
-    if (!(region[2] > region[0] && region[3] > region[1])) return undefined;
-    return region[0] <= 0 && region[1] <= 0 && region[2] >= 1 && region[3] >= 1
-      ? undefined
-      : region;
-  }
-  return undefined;
-}
-
 export function planFlowField(
   visConfig: FlowFieldVisConfig,
   field: {

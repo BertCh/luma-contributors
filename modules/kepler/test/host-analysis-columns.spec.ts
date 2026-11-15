@@ -28,7 +28,7 @@ test('published analysis computes global statistics across source batches and ch
     workingMemoryBudgetBytes: 8 * 1024 * 1024,
     dimensions: [{id: 'population', kind: 'range', column: 'population'}]
   });
-  const sourceChunks = [...dataset.value.columns.income.data];
+  const sourceChunks = [...dataset.value.columns['income'].data];
   const analysis = new AnalysisRuntime({session, explorer, requestUpdate: () => {}});
   const inspector = new GPUKeplerTableInspector({
     session,
@@ -79,7 +79,7 @@ test('published analysis computes global statistics across source batches and ch
     expect(analysis.summary?.breaks).toEqual([1, 2.5, 4]);
     expect(analysis.summary?.classCounts).toEqual([2, 2]);
     expect((await analysis.readRow(3))?.value).toBe(1);
-    expect(dataset.value.columns.income.data).toEqual(sourceChunks);
+    expect(dataset.value.columns['income'].data).toEqual(sourceChunks);
     expect(analysis.transferredReadbackBytes).toBeLessThan(1024);
   } finally {
     const fence = device.createFence();

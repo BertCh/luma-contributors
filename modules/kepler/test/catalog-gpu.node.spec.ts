@@ -8,6 +8,7 @@ import * as network from '@luma-contributors/analysis/gpu-network';
 import * as geometryContributors from '@luma-contributors/analysis/geospatial-analysis';
 import * as dataframeContributors from '@luma-contributors/analysis/dataframe-analysis';
 import * as rasterContributors from '@luma-contributors/analysis/raster-analysis';
+import * as pointCloudContributors from '@luma-contributors/analysis/pointcloud-analysis';
 import * as publishedRasterContributors from '@luma.gl/graph/gpu-raster';
 import {
   KEPLER_CATALOG_BINDINGS,
@@ -449,6 +450,7 @@ test('every GPU contributor a binding names exists as an export of the graph pac
     ...geometryContributors,
     ...publishedRasterContributors,
     ...rasterContributors,
+    ...pointCloudContributors,
     ...dataframeContributors
   } as Record<string, unknown>;
   const missing: string[] = [];

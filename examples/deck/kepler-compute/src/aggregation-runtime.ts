@@ -4,7 +4,7 @@
 
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import type {LayerProps} from '@deck.gl/core';
-import type {GPUSolidPolygonLayerProps} from '@deck.gl-community/gpu-layers';
+import type {GPUSolidPolygonLayerProps} from '../gpu-layers/index';
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector, type VertexList} from '@luma.gl/graph/gpu-data';
 import {
@@ -35,6 +35,10 @@ import {
 } from '@luma-contributors/kepler';
 import {getDistanceScales, lngLatToWorld, MAX_LATITUDE} from '@math.gl/web-mercator';
 import {AggregationStatistics} from './aggregation-statistics-gpu';
+import {
+  widenResidentChartMeasure,
+  type ResidentChartWidenedMeasure
+} from './resident-chart-measure-widening';
 import {getAggregateCountLabels, type AggregationCountLabel} from './aggregation-count-labels';
 import {getJenksBreaks, getOrdinalLookup} from './aggregation-scale-lookup';
 import {
@@ -347,6 +351,14 @@ export class AggregationRuntime {
   private readonly deviceLost: Promise<void>;
   private readonly maximumConcurrentReads: number;
   private readbackBytes = 0;
+  private readonly widenedColumns = new Map<
+    string,
+    {
+      pending?: Promise<void>;
+      value?: ResidentChartWidenedMeasure;
+      reason?: string;
+    }
+  >();
   constructor(
     private readonly props: {
       device: Device;
@@ -452,6 +464,16 @@ export class AggregationRuntime {
       )
         throw new Error('Aggregation selection revision must be a nonnegative integer.');
       const settings = getNativeAggregationSettings(layer);
+      const weightFormat = settings.weightColumn
+        ? this.props.columns?.[settings.weightColumn]?.values.format
+        : undefined;
+      if (!settings.advanced && (weightFormat === 'sint32' || weightFormat === 'uint32')) {
+        // GPUGroupStatistics avoids the density fast path's fixed-point atomic sum for integers.
+        // The shared widening below still certifies exact Float32 admission before any reduction.
+        settings.advanced = getAggregationStylePlan(layer);
+        settings.statistic = 'count';
+        settings.weightColumn = undefined;
+      }
       if (selectionMask.length !== this.positions.length)
         throw new Error('Aggregation layer selection does not match source rows.');
       const expected = this.props.coordinateColumns ?? {lat: 'latitude', lng: 'longitude'};
@@ -462,6 +484,8 @@ export class AggregationRuntime {
         throw new Error('Selected aggregation coordinate columns do not match uploaded positions.');
       if (settings.weightColumn && !this.props.columns?.[settings.weightColumn])
         throw new Error(`No resident Float32 weight column is bound for ${settings.weightColumn}.`);
+      const columns = this.getNumericColumns(settings);
+      if (!columns) return {};
       // Dictionary growth (streamed batches) changes the first-appearance remap size.
       const advancedChannels = [settings.advanced?.color, settings.advanced?.elevation];
       const key = `${JSON.stringify(settings)}${advancedChannels
@@ -478,7 +502,8 @@ export class AggregationRuntime {
           key,
           settings,
           selectionMask,
-          binOrderMask
+          binOrderMask,
+          columns
         );
         if (program) this.retire(program);
         this.programs.set(layer.id, replacement);
@@ -596,6 +621,15 @@ export class AggregationRuntime {
     return this.released
       ? 0
       : this.uploadBytes +
+          [...this.widenedColumns.values()].reduce(
+            (total, entry) =>
+              total +
+              (entry.value?.vector.data.reduce(
+                (bytes, chunk) => bytes + chunk.buffer.byteLength,
+                0
+              ) ?? 0),
+            0
+          ) +
           [...this.programs.values(), ...this.retiredPrograms].reduce(
             (total, program) =>
               total +
@@ -676,7 +710,10 @@ export class AggregationRuntime {
       Promise.allSettled([
         afterSubmittedWork ?? fence!.signaled,
         ...this.reads,
-        ...this.retirements
+        ...this.retirements,
+        ...[...this.widenedColumns.values()].flatMap(entry =>
+          entry.pending ? [entry.pending] : []
+        )
       ]),
       this.deviceLost
     ]).then(() => {
@@ -686,6 +723,8 @@ export class AggregationRuntime {
       this.programs.clear();
       this.retiredPrograms.clear();
       this.positions.destroy();
+      for (const entry of this.widenedColumns.values()) entry.value?.destroy();
+      this.widenedColumns.clear();
       for (const reservation of this.sourceReservations) reservation.release();
       this.released = true;
     });
@@ -706,12 +745,61 @@ export class AggregationRuntime {
       .finally(() => this.retirements.delete(pending));
     this.retirements.add(pending);
   }
+  /** Reuse the certified, registry-accounted public GPU cast used by chart measures. */
+  private getNumericColumns(settings: NativeAggregationSettings) {
+    const columns = {...this.props.columns};
+    const names = new Set([
+      settings.weightColumn,
+      ...[settings.advanced?.color, settings.advanced?.elevation].flatMap(channel =>
+        channel && !['count', 'mode', 'countUnique'].includes(channel.aggregation)
+          ? [channel.weightColumn]
+          : []
+      )
+    ]);
+    let pending = false;
+    for (const name of names) {
+      if (!name) continue;
+      const column = columns[name];
+      if (!column || (column.values.format !== 'sint32' && column.values.format !== 'uint32'))
+        continue;
+      let entry = this.widenedColumns.get(name);
+      if (!entry) {
+        if (!this.props.memoryRegistry)
+          throw new Error(
+            'Integer aggregation weights require a memory registry for exact widening.'
+          );
+        entry = {};
+        this.widenedColumns.set(name, entry);
+        const created = entry;
+        created.pending = widenResidentChartMeasure({
+          session: {device: this.props.device, registry: this.props.memoryRegistry},
+          vector: column.values as GPUVector<'sint32'> | GPUVector<'uint32'>
+        })
+          .then(value => {
+            if (this.destroyed) value.destroy();
+            else created.value = value;
+          })
+          .catch(error => {
+            created.reason = error instanceof Error ? error.message : String(error);
+          })
+          .finally(() => {
+            created.pending = undefined;
+            if (!this.destroyed) this.props.requestUpdate?.();
+          });
+      }
+      if (entry.reason) throw new Error(`${name}: ${entry.reason}`);
+      if (entry.value) columns[name] = {...column, values: entry.value.vector};
+      else pending = true;
+    }
+    return pending ? undefined : columns;
+  }
   private createProgram(
     id: string,
     key: string,
     settings: NativeAggregationSettings,
     sourceSelectionMask: GPUVector<'uint32'>,
-    sourceBinOrderMask?: GPUVector<'uint32'>
+    sourceBinOrderMask: GPUVector<'uint32'> | undefined,
+    columns: NonNullable<AggregationRuntime['props']['columns']>
   ): Program {
     const topology = getNativeAggregationTopology(this.projection, settings);
     const layout = getKeplerAggregationLayout(topology);
@@ -719,7 +807,7 @@ export class AggregationRuntime {
       throw new Error(
         'Requested aggregate size exceeds the configured cell budget. Increase cell size.'
       );
-    const weight = settings.weightColumn ? this.props.columns?.[settings.weightColumn] : undefined;
+    const weight = settings.weightColumn ? columns[settings.weightColumn] : undefined;
     // The advanced statistics pipeline converts integer and dictionary-code columns to Float32,
     // so mode/countUnique can aggregate categorical (dictionary-coded) fields; sum/mean paths need Float32.
     if (
@@ -809,7 +897,7 @@ export class AggregationRuntime {
           binOrderMask: sourceBinOrderMask,
           layout,
           counts: aggregation.counts.data[0],
-          columns: this.props.columns ?? {},
+          columns,
           plan: advanced,
           palette: settings.palette,
           categoryCounts: {

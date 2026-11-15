@@ -5,11 +5,12 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import * as arrow from 'apache-arrow';
 import type KeplerTable from '@kepler.gl/table';
-import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
+import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/analysis/analysis-core';
 import {SourcePreviewPanel} from './source-preview-panel';
 import {SampleGalleryPanel} from './sample-gallery-panel';
 import {RemoteSourceControl} from './remote-source-control';
 import {loadLocalSource, REMOTE_SOURCE_FILE_ACCEPT} from './remote-source-loader';
+import {restoreArrowSourceRoleColumns} from './source-type-routes';
 import {
   prepareSandboxTrips,
   readSandboxTripOptions,
@@ -29,6 +30,8 @@ import {
 
 export type SourceCandidate = {
   table: arrow.Table;
+  /** Decoded columns before scalar routing; explicit source roles retain these exact types. */
+  originalTable?: arrow.Table;
   label: string;
   isCurrent(): boolean;
   suggestedCoordinates?: CoordinateRoles;
@@ -75,6 +78,16 @@ export function SourceWorkspacePanel({
   const [h3Column, setH3Column] = useState('');
   const [cellFamily, setCellFamily] = useState<DGGSFamily | ''>('');
   const [cellColumn, setCellColumn] = useState('');
+  const roleSource = useMemo(
+    () =>
+      selected &&
+      restoreArrowSourceRoleColumns(
+        selected.table,
+        selected.originalTable,
+        [h3Column, cellColumn].filter(Boolean)
+      ),
+    [selected, h3Column, cellColumn]
+  );
   const [timedPaths, setTimedPaths] = useState(false);
   const [timestampEncoding, setTimestampEncoding] = useState('');
   const [timeOrigin, setTimeOrigin] = useState('');
@@ -105,20 +118,21 @@ export function SourceWorkspacePanel({
     timestamp: '',
     longitude: '',
     latitude: '',
-    altitude: ''
+    altitude: '',
+    part: ''
   });
   /** Grouped trips use the ID column as the layer's geometry-role column. */
   // Cell IDs are decoded once here; publication reuses this exact derived table.
   const dggs = useMemo<
     {table: arrow.Table; summary: DGGSFootprintSummary} | {error: string} | undefined
   >(() => {
-    if (!selected || !cellFamily || !cellColumn) return undefined;
+    if (!roleSource || !cellFamily || !cellColumn) return undefined;
     try {
-      return appendDGGSFootprintColumn(selected.table, cellColumn, cellFamily);
+      return appendDGGSFootprintColumn(roleSource, cellColumn, cellFamily);
     } catch (failure) {
       return {error: failure instanceof Error ? failure.message : String(failure)};
     }
-  }, [selected, cellFamily, cellColumn]);
+  }, [roleSource, cellFamily, cellColumn]);
   const dggsTable = dggs && 'table' in dggs ? dggs.table : undefined;
   const effectiveGeometryColumn = dggsTable
     ? DGGS_FOOTPRINT_COLUMN
@@ -140,13 +154,15 @@ export function SourceWorkspacePanel({
               timestampColumn: tripGroupColumns.timestamp,
               longitudeColumn: tripGroupColumns.longitude,
               latitudeColumn: tripGroupColumns.latitude,
-              ...(tripGroupColumns.altitude ? {altitudeColumn: tripGroupColumns.altitude} : {})
+              ...(tripGroupColumns.altitude ? {altitudeColumn: tripGroupColumns.altitude} : {}),
+              ...(tripGroupColumns.part ? {partColumn: tripGroupColumns.part} : {})
             }
           }
         : {})
     });
   };
   const [error, setError] = useState('');
+  const [preserveArrowTypes, setPreserveArrowTypes] = useState(false);
   const sourceReadGeneration = useRef(0);
   const selectSource = (source: SourceCandidate | null) => {
     setSelected(source);
@@ -168,7 +184,8 @@ export function SourceWorkspacePanel({
       timestamp: grouping?.timestampColumn ?? '',
       longitude: grouping?.longitudeColumn ?? '',
       latitude: grouping?.latitudeColumn ?? '',
-      altitude: grouping?.altitudeColumn ?? ''
+      altitude: grouping?.altitudeColumn ?? '',
+      part: grouping?.partColumn ?? ''
     });
     setGeometryColumn(
       source?.suggestedH3Column || grouping ? '' : (source?.suggestedGeometryColumn ?? '')
@@ -240,6 +257,23 @@ export function SourceWorkspacePanel({
         }}
       />
       <label>
+        <input
+          type="checkbox"
+          checked={preserveArrowTypes}
+          onChange={event => {
+            sourceReadGeneration.current++;
+            selectSource(null);
+            setPreserveArrowTypes(event.target.checked);
+          }}
+        />
+        Preserve original Arrow types
+      </label>
+      <p>
+        Applies to the next Arrow IPC file opened. Wide integers stay numeric and require an
+        explicit precision choice below; other unsupported types must be excluded. By default, wide
+        integers become exact decimal category labels.
+      </p>
+      <label>
         Open Arrow IPC file
         <input
           type="file"
@@ -252,7 +286,7 @@ export function SourceWorkspacePanel({
               setError('Arrow file exceeds the 128 MiB import limit.');
               return;
             }
-            void loadLocalSource(file)
+            void loadLocalSource(file, {preserveArrowTypes})
               .then(source => {
                 if (sourceReadGeneration.current !== generation) return;
                 selectSource(source);
@@ -489,7 +523,8 @@ export function SourceWorkspacePanel({
                       ['timestamp', 'Trip time column'],
                       ['longitude', 'Trip longitude column'],
                       ['latitude', 'Trip latitude column'],
-                      ['altitude', 'Trip altitude column']
+                      ['altitude', 'Trip altitude column'],
+                      ['part', 'Trip part column']
                     ] as const
                   ).map(([role, label]) => (
                     <label key={role}>
@@ -502,7 +537,11 @@ export function SourceWorkspacePanel({
                         }
                       >
                         <option value="">
-                          {role === 'altitude' ? 'No altitude' : 'Choose column'}
+                          {role === 'altitude'
+                            ? 'No altitude'
+                            : role === 'part'
+                              ? 'Single part'
+                              : 'Choose column'}
                         </option>
                         {selected.table.schema.fields.map(field => (
                           <option key={field.name} value={field.name}>
@@ -646,7 +685,7 @@ export function SourceWorkspacePanel({
               timeOrigin,
               timeError
             ])}
-            source={dggsTable ?? selected.table}
+            source={dggsTable ?? roleSource!}
             sourceOnlyColumns={[effectiveGeometryColumn, h3Column, cellColumn].filter(Boolean)}
             label={selected.label}
             validateSource={
@@ -658,7 +697,7 @@ export function SourceWorkspacePanel({
                   }
                 : h3Column
                   ? () => {
-                      const prepared = preparePublishedH3(selected.table, h3Column);
+                      const prepared = preparePublishedH3(roleSource!, h3Column);
                       return formatH3SourcePreview(prepared);
                     }
                   : timedPaths || groupedTrips
@@ -687,7 +726,7 @@ export function SourceWorkspacePanel({
                       table: dggsTable,
                       cellIndex: {family: cellFamily, column: cellColumn}
                     }
-                  : selected,
+                  : {...selected, table: roleSource!},
                 normalization,
                 longitude && latitude
                   ? {

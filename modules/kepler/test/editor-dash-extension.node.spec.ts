@@ -5,12 +5,10 @@
 import {createRequire} from 'node:module';
 import {readFileSync} from 'node:fs';
 import {dirname, join} from 'node:path';
+import {PathStyleExtension} from '@deck.gl/extensions';
 import {afterEach, expect, test} from 'vitest';
 import {
   disableEditorDashExtension,
-  EDITOR_DASH_WGSL_ANCHORS,
-  EDITOR_DASH_WGSL_INJECTIONS,
-  EditorWGSLDashExtension,
   getEditorDashStatus,
   makeEditorDashExtensions,
   resetEditorDashStatusForTest
@@ -26,30 +24,8 @@ import {
 
 afterEach(() => resetEditorDashStatusForTest());
 
-function readPathLayerWGSL(): string | null {
-  try {
-    const require = createRequire(import.meta.url);
-    const layersRoot = dirname(require.resolve('@deck.gl/layers/package.json'));
-    return readFileSync(join(layersRoot, 'src/path-layer/path-layer.wgsl.ts'), 'utf8');
-  } catch {
-    return null;
-  }
-}
-
-test('dash WGSL anchors occur exactly once in Deck path-layer WGSL', () => {
-  const source = readPathLayerWGSL();
-  if (!source) return; // Deck sources are not installed in this environment.
-  for (const anchor of EDITOR_DASH_WGSL_ANCHORS) {
-    expect(source.split(anchor).length - 1, anchor).toBe(1);
-    expect(EDITOR_DASH_WGSL_INJECTIONS[anchor]).toBeTypeOf('string');
-  }
-  // The fragment hook needs the fragment input named `varyings` and the path/picking uniforms.
-  expect(source).toContain('fn fragmentMain(varyings: Varyings)');
-  expect(source).toContain('path.capType');
-});
-
 test('dash extension can be disabled and falls back to solid strokes', () => {
-  expect(makeEditorDashExtensions()[0]).toBeInstanceOf(EditorWGSLDashExtension);
+  expect(makeEditorDashExtensions()[0]).toBeInstanceOf(PathStyleExtension);
   disableEditorDashExtension('shader failed');
   expect(getEditorDashStatus()).toEqual({enabled: false, reason: 'shader failed'});
   expect(makeEditorDashExtensions()).toEqual([]);

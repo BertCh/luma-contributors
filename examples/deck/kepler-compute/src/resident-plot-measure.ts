@@ -4,7 +4,6 @@
 
 import {Buffer} from '@luma.gl/core';
 import {GPUVector, type GPUData} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUDataFrame,
   column,
@@ -26,6 +25,7 @@ import {
   ResidentPlotMeasureWidening,
   isWidenableResidentPlotMeasure
 } from './resident-plot-measure-widening';
+import {MeteredCommandGraph} from '@luma-contributors/kepler';
 
 /** Native y-axis aggregations that a grouped GPU reduction represents exactly. */
 export const RESIDENT_PLOT_MEASURE_OPERATIONS = {
@@ -141,7 +141,7 @@ export class ResidentPlotMeasure {
         for (const field of schema.fields)
           field.nullable = field.name === 'value' && Boolean(validity.value);
       frame = new GPUDataFrame({table, validity});
-      const graph = new GPUCommandGraph<GPUDataFrameQueryParameters>(props.session.device, {
+      const graph = new MeteredCommandGraph<GPUDataFrameQueryParameters>(props.session.device, {
         id: 'kepler-plot-measure'
       });
       const result: GPUDataFrameAggregationValue<MeasureColumns, keyof MeasureColumns> =
@@ -173,7 +173,7 @@ export class ResidentPlotMeasure {
         if (vector) for (const data of vector.data) buffers.add(getBuffer(data));
       const accountedBytes =
         (widening?.byteLength ?? 0) +
-        query.compilationStats.physicalTransientResourceBytes +
+        graph.transientByteLength +
         [...buffers].reduce((total, buffer) => total + buffer.byteLength, 0);
       if (accountedBytes > estimatedBytes)
         throw new Error('Line-chart measure exceeds its reserved working memory');

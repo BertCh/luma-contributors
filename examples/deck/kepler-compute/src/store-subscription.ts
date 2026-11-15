@@ -31,13 +31,14 @@ import {
   styleDiagnostics
 } from './app-services';
 import {publicationsInProgress, isResidentDataset} from './publication';
+import {isSampleMapMutationPending} from './sample-map-lifecycle';
 
 store.subscribe(() => {
   // Attribution of the style Kepler currently shows (picker entry or native custom style).
   renderBasemapAttribution(
     getActiveBasemapAttributionSegments(store.getState().keplerGl['compute']?.mapStyle)
   );
-  nativeAutoPrepare.evaluate();
+  if (!isSampleMapMutationPending()) nativeAutoPrepare.evaluate();
   groupByRequests.reconcile();
   joinRequests.reconcile();
   suitabilityRequests.reconcile();
@@ -290,7 +291,10 @@ store.subscribe(() => {
       activeRuntime.styles.retainLayers(retainedLayerIds, fence.signaled);
       void activeRuntime.labels.retainLayers(retainedLayerIds, fence.signaled).catch(reportError);
       void activeRuntime.pointAltitudes
-        .retainLayers(retainedLayerIds, fence.signaled)
+        .retainLayers(
+          retainedLayerIds.flatMap(id => [id, `${id}\u0001source`, `${id}\u0001target`]),
+          fence.signaled
+        )
         .catch(reportError);
       void activeRuntime.pointPositionVariants
         .retainLayers(retainedLayerIds, fence.signaled)

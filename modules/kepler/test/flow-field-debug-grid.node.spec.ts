@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, test, vi} from 'vitest';
+import {afterAll, describe, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 
 vi.mock('@deck.gl/layers', () => ({
   PathLayer: class {
@@ -57,8 +60,8 @@ describe('flow field debug grid', () => {
   test('creates a path layer and a polygon layer', () => {
     const layers = buildFlowFieldDebugGridLayers(snapshot, {layerId: 'ff', elevationMultiplier: 1});
     const props = layers.map(layer => (layer as unknown as {props: Record<string, unknown>}).props);
-    expect(props.map(entry => entry.id)).toEqual(['ff-debug-grid', 'ff-debug-filled']);
-    expect(props[0].parameters).toEqual({depthTest: false});
+    expect(props.map(entry => entry['id'])).toEqual(['ff-debug-grid', 'ff-debug-filled']);
+    expect(props[0]['parameters']).toEqual({depthTest: false});
   });
 
   test('reads a GPU grid with validity as filled', async () => {
@@ -91,4 +94,11 @@ describe('flow field debug grid', () => {
     await vi.waitFor(() => expect(cache.debugReadCount).toBe(3));
     expect(runtime.stats.gridReadbackCount).toBe(0);
   });
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@deck.gl/layers');
+  vi.doUnmock('@luma.gl/graph/experimental/simulation');
+  vi.resetModules();
 });

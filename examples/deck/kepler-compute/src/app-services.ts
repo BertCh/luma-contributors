@@ -163,6 +163,8 @@ installBasemapStyleUrlInput({
 
 // Native vectorTile (MVT) layers: working-set admission, stable ids and resident tile batches.
 export const vectorTileResident = new VectorTileResidentRenderer({
+  getGlobeResolutionDegrees: () =>
+    store.getState().keplerGl?.['compute']?.mapState?.globe?.enabled ? 5 : undefined,
   getDevice: () =>
     appState.runtime && !appState.runtime.session.deviceLost ? appState.runtime.device : null,
   getReserveMemory: () =>

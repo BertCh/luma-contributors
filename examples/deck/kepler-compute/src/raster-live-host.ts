@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createRasterEmbeddingsHost} from './raster-embeddings-host';
+import type {FlowFieldAnalysisSnapshot} from './flow-field-grid';
 import type {Device} from '@luma.gl/core';
 import type {KeplerDatasetRegistry} from '@luma-contributors/kepler';
 import type * as arrow from 'apache-arrow';
@@ -21,6 +23,7 @@ import {
   type DerivedGridReader,
   type RasterTerrainHostOptions
 } from './analysis4-raster-terrain-host';
+import {createRasterTimeSeriesHost} from './raster-timeseries-host';
 import {WmsLiveController} from './wms-live-controller';
 
 type LayerLike = {id: string; type: string; config?: unknown};
@@ -28,6 +31,8 @@ type LayerLike = {id: string; type: string; config?: unknown};
 /** What the host application provides; everything else lives in the raster-live-* files. */
 export type RasterLiveHostOptions = {
   getLayers(): readonly LayerLike[];
+  listFlowGrids?(): readonly {id: string; label: string}[];
+  readFlowGrid?(layerId: string): Promise<FlowFieldAnalysisSnapshot>;
   getDevice(): Device | undefined;
   getMemoryRegistry?(): KeplerDatasetRegistry | undefined;
   getDeckLayers(): readonly unknown[];
@@ -45,6 +50,7 @@ export type RasterLiveHostOptions = {
     label: string;
     geometryColumn: string;
     normalization: typeof NORMALIZATION;
+    isCurrent?(): boolean;
   }): Promise<void>;
 };
 
@@ -107,6 +113,22 @@ export function createRasterLiveHost(hostOptions: RasterLiveHostOptions) {
     publishTable: ({table, label, geometryColumn}) =>
       options.publishTable({table, label, geometryColumn, normalization: NORMALIZATION}),
     publishResident: options.publishResidentTerrain
+  });
+
+  const embeddings = createRasterEmbeddingsHost({
+    getDevice: options.getDevice,
+    getSource: layerId => raster.getSource(layerId),
+    listFlowGrids: options.listFlowGrids,
+    readFlowGrid: options.readFlowGrid,
+    publishTable: request => options.publishTable({...request, normalization: NORMALIZATION})
+  });
+
+  const timeSeries = createRasterTimeSeriesHost({
+    getDevice: options.getDevice,
+    getSource: layerId => raster.getSource(layerId),
+    getPolygonSource: options.getPolygonSource,
+    publishTable: ({table, label, geometryColumn, isCurrent}) =>
+      options.publishTable({table, label, geometryColumn, normalization: NORMALIZATION, isCurrent})
   });
 
   /** Installs the native-tooltip and click patches once a layer of the type exists. */
@@ -256,6 +278,10 @@ export function createRasterLiveHost(hostOptions: RasterLiveHostOptions) {
 
   const testHooks = {
     getRasterToolsPanelModel: getPanelModel,
+    runRasterEmbeddingAction: embeddings.run,
+    runFlowLagrangianAction: embeddings.runFlow,
+    loadRasterEmbeddingGeoTiff: embeddings.loadGeoTiff,
+    getRasterEmbeddingTiles: embeddings.listTiles,
     describeRasterPolygonSource: (datasetId: string) => {
       const polygons = options.getPolygonSource(datasetId);
       const column = polygons?.table.getChild(polygons.geometryColumn);
@@ -286,6 +312,21 @@ export function createRasterLiveHost(hostOptions: RasterLiveHostOptions) {
       raster.identify(layerId, longitude, latitude) ?? null,
     runRasterZonalAction: runZonalAction,
     runRasterTerrainAction: terrain.runTerrainAction,
+    runRasterTimeSeriesAction: timeSeries.run,
+    getRasterTimeSeriesResult: () => {
+      const latest = timeSeries.getLatest();
+      return latest
+        ? {
+            contributors: latest.result.contributors,
+            columns: Object.fromEntries(
+              Object.entries(latest.result.columns).map(([name, column]) => [
+                name,
+                {...column, values: Array.from(column.values)}
+              ])
+            )
+          }
+        : null;
+    },
     exportRasterTerrainGeoTIFF: async () => {
       const {data, filename} = await terrain.exportTerrainGeoTIFF();
       return {filename, bytes: Array.from(data)};
@@ -308,11 +349,13 @@ export function createRasterLiveHost(hostOptions: RasterLiveHostOptions) {
 
   return {
     raster,
+    embeddings,
     wms,
     bitmap,
     syncLayers,
     runZonalAction,
     terrain,
+    timeSeries,
     getPanelModel,
     /** Replaces Kepler's GLSL raster tile sublayers with the WGSL draw; other layers pass through. */
     wrapLayer: <LayerType>(layer: LayerType): LayerType => rasterWgsl.wrapLayer(layer),

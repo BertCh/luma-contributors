@@ -10,6 +10,7 @@ import {
 } from './raster-band-math';
 
 import {clamp} from '@math.gl/core';
+import {GPU_GLOBE_WGSL} from '../gpu-layers/layers/gpu-globe';
 
 /** Texture slots of the raster tile shader: four value bands, four validity masks, colormap, RGBA. */
 export const RASTER_WGSL_BAND_SLOT_COUNT = 4;
@@ -355,7 +356,11 @@ export const RASTER_WGSL_UNFILTERABLE_TEXTURE_NAMES: readonly string[] = [
  * expression over `b1..b4`; the shader handles nodata (validity masks, the nodata sentinel and
  * non-finite results), the value filter, grayscale, colormap, three-band RGB and plain RGBA tiles.
  */
-export function buildRasterTileWgsl(expression = 'b1'): string {
+export function buildRasterTileWgsl(
+  expression = 'b1',
+  terrain = false,
+  flatShading = false
+): string {
   // Extended slots are only loaded when the expression reads them.
   const extendedBandLoads = [5, 6, 7, 8]
     .filter(bandIndex => new RegExp(`\\bb${bandIndex}\\b`).test(expression))
@@ -364,13 +369,17 @@ export function buildRasterTileWgsl(expression = 'b1'): string {
     )
     .join('\n');
   return /* wgsl */ `\
+${GPU_GLOBE_WGSL}
 struct RasterAttributes {
   @location(0) positions: vec3<f32>,
   @location(1) texCoords: vec2<f32>,
+  ${terrain ? '@location(2) normals: vec3<f32>,' : ''}
 };
 struct RasterVaryings {
   @builtin(position) position: vec4<f32>,
   @location(0) textureCoordinates: vec2<f32>,
+  @location(1) globePosition: vec3<f32>,
+  ${terrain ? '@location(2) normal: vec3<f32>,' : ''}
 };
 
 @vertex
@@ -379,7 +388,21 @@ fn vertexMain(attributes: RasterAttributes) -> RasterVaryings {
   let projected = project_position_to_clipspace_and_commonspace(attributes.positions, vec3<f32>(0.0), vec3<f32>(0.0));
   output.position = projected.clipPosition;
   output.textureCoordinates = attributes.texCoords;
+  output.globePosition = projected.commonPosition.xyz;
+  ${terrain ? 'output.normal = project_normal(attributes.normals);' : ''}
   return output;
+}
+
+fn shadeRasterColor(color: vec4<f32>, varyings: RasterVaryings) -> vec4<f32> {
+  ${
+    terrain
+      ? `
+  return deckgl_premultiplied_alpha(vec4<f32>(
+    lighting_getLightColor2(color.rgb, project.cameraPosition, varyings.globePosition, varyings.normal),
+    color.a * layer.opacity
+  ));`
+      : 'return deckgl_premultiplied_alpha(vec4<f32>(color.rgb, color.a * layer.opacity));'
+  }
 }
 
 fn getPixel(dimensions: vec2<u32>, textureCoordinates: vec2<f32>) -> vec2<i32> {
@@ -456,13 +479,16 @@ fn sampleColormap(value: f32) -> vec4<f32> {
 }
 
 @fragment
-fn fragmentMain(varyings: RasterVaryings) -> @location(0) vec4<f32> {
+fn fragmentMain(input: RasterVaryings) -> @location(0) vec4<f32> {
+  var varyings = input;
+  ${terrain && flatShading ? 'varyings.normal = normalize(cross(dpdy(input.globePosition), dpdx(input.globePosition)));' : ''}
+  if (gpuGlobeIsCommonHidden(varyings.globePosition)) { discard; }
   let mode = i32(rasterWgsl.settings.x);
   let uv = varyings.textureCoordinates;
   if (mode == 3) {
     let rgba = textureLoad(rgbaTexture, getPixel(textureDimensions(rgbaTexture), uv), 0);
     if (rgba.a <= 0.0) { discard; }
-    return deckgl_premultiplied_alpha(vec4<f32>(rgba.rgb, rgba.a * layer.opacity));
+    return shadeRasterColor(rgba, varyings);
   }
   if (isBandInvalid(1u, validityTexture1, uv) || isBandInvalid(2u, validityTexture2, uv) ||
       isBandInvalid(4u, validityTexture3, uv) || isBandInvalid(8u, validityTexture4, uv)) {
@@ -503,9 +529,45 @@ ${extendedBandLoads}
       color = vec4<f32>(t, t, t, 1.0);
     }
   }
-  return deckgl_premultiplied_alpha(vec4<f32>(color.rgb, alpha * layer.opacity));
+  return shadeRasterColor(vec4<f32>(color.rgb, alpha), varyings);
 }
 `;
+}
+
+/** The public loaders.gl terrain mesh shape Kepler passes to RasterMeshLayer. */
+export type RasterTerrainMesh = {
+  attributes: Record<string, {value: ArrayLike<number>}>;
+  indices?: {value: ArrayLike<number>};
+};
+
+/** Expand indexed terrain to the raster renderer's triangle-list layout, preserving terrain UVs. */
+export function createRasterTerrainMesh(
+  mesh: RasterTerrainMesh
+): RasterTileMesh & {normals: Float32Array} {
+  const positions = (mesh.attributes['POSITION'] ?? mesh.attributes['positions'])?.value;
+  const texCoords = (mesh.attributes['TEXCOORD_0'] ?? mesh.attributes['texCoords'])?.value;
+  const normals = (mesh.attributes['NORMAL'] ?? mesh.attributes['normals'])?.value;
+  if (!positions || !texCoords)
+    throw new Error('Kepler raster terrain requires positions and texCoords');
+  const indices = mesh.indices?.value;
+  const vertexCount = indices?.length ?? positions.length / 3;
+  const output = {
+    positions: new Float32Array(vertexCount * 3),
+    texCoords: new Float32Array(vertexCount * 2),
+    normals: new Float32Array(vertexCount * 3),
+    vertexCount
+  };
+  for (let vertex = 0; vertex < vertexCount; vertex++) {
+    const source = indices?.[vertex] ?? vertex;
+    for (let component = 0; component < 3; component++) {
+      output.positions[vertex * 3 + component] = positions[source * 3 + component];
+      output.normals[vertex * 3 + component] =
+        normals?.[source * 3 + component] ?? (component === 2 ? 1 : 0);
+    }
+    output.texCoords[vertex * 2] = texCoords[source * 2];
+    output.texCoords[vertex * 2 + 1] = texCoords[source * 2 + 1];
+  }
+  return output;
 }
 
 export type RasterTileMesh = Readonly<{
@@ -525,13 +587,15 @@ function getMercatorY(latitude: number): number {
  */
 export function createRasterTileMesh(
   bounds: readonly [number, number, number, number],
-  rowCount = 16
+  rowCount = 16,
+  columnCount = 1
 ): RasterTileMesh {
   const [west, south, east, north] = bounds;
   const northY = getMercatorY(north);
   const southY = getMercatorY(south);
   const rows = Math.max(1, rowCount);
-  const vertexCount = rows * 6;
+  const columns = Math.max(1, columnCount);
+  const vertexCount = rows * columns * 6;
   const positions = new Float32Array(vertexCount * 3);
   const texCoords = new Float32Array(vertexCount * 2);
   let output = 0;
@@ -544,12 +608,18 @@ export function createRasterTileMesh(
   for (let row = 0; row < rows; row++) {
     const upper = north - ((north - south) * row) / rows;
     const lower = north - ((north - south) * (row + 1)) / rows;
-    emit(west, upper, 0);
-    emit(west, lower, 0);
-    emit(east, lower, 1);
-    emit(west, upper, 0);
-    emit(east, lower, 1);
-    emit(east, upper, 1);
+    for (let column = 0; column < columns; column++) {
+      const left = column / columns;
+      const right = (column + 1) / columns;
+      const leftLongitude = west + (east - west) * left;
+      const rightLongitude = west + (east - west) * right;
+      emit(leftLongitude, upper, left);
+      emit(leftLongitude, lower, left);
+      emit(rightLongitude, lower, right);
+      emit(leftLongitude, upper, left);
+      emit(rightLongitude, lower, right);
+      emit(rightLongitude, upper, right);
+    }
   }
   return {positions, texCoords, vertexCount};
 }

@@ -3,13 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {HeatmapLayer} from '@deck.gl/aggregation-layers';
-import {
-  COORDINATE_SYSTEM,
-  type Layer,
-  type LayerContext,
-  type UpdateParameters,
-  type Viewport
-} from '@deck.gl/core';
+import {type Layer, type LayerContext, type UpdateParameters, type Viewport} from '@deck.gl/core';
 import {assert, type Device} from '@luma.gl/core';
 import {
   createGlobeHeatmapMesh,
@@ -296,7 +290,9 @@ export function makeResidentHeatmapLayer(nativeLayer: Layer, inputs: ResidentHea
         const {weightsTexture, maxWeightsTexture, colorTexture, colorDomain, worldBounds} =
           this.state;
         const {residentDensityViewport, residentCommonBounds} = this.state;
-        const resolution = this.context.viewport.resolution;
+        // Deck 10 viewports carry subdivision intervals around the earth; the mesh wants degrees.
+        const intervals = this.context.viewport.resolution;
+        const resolution = intervals ? 360 / intervals : 0;
         if (
           !weightsTexture ||
           !maxWeightsTexture ||
@@ -324,7 +320,7 @@ export function makeResidentHeatmapLayer(nativeLayer: Layer, inputs: ResidentHea
         return new ResidentGlobeHeatmapTriangleLayer(
           this.getSubLayerProps({id: 'globe-triangle-layer', updateTriggers}),
           {
-            coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+            coordinateSystem: 'lnglat',
             data: {length: 1},
             mesh: this.state.residentGlobeMesh,
             maxTexture: maxWeightsTexture,

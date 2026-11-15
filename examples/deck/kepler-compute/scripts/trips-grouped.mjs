@@ -13,6 +13,7 @@ import {pinViteModules} from './pin-vite-modules.mjs';
 const origin = Date.UTC(2026, 0, 1);
 const columns = (ids, seconds, longitudes, latitudes, measures) => ({
   trip: ids,
+  part: ids.map(() => 'leg-1'),
   time: new Float64Array(seconds.map(second => origin + second * 1000)),
   lon: new Float64Array(longitudes),
   lat: new Float64Array(latitudes),
@@ -20,7 +21,7 @@ const columns = (ids, seconds, longitudes, latitudes, measures) => ({
 });
 // Trip A = rows 0, 1, 3 and trip B = rows 2, 4, 5, deliberately interleaved across two batches.
 const source = arrow.tableFromArrays(columns(['A', 'A', 'B'], [0, 10, 0], [-74.03, -74, -74.03], [40.74, 40.74, 40.77], [0, 1, 0]))
-  .concat(arrow.tableFromArrays(columns(['A', 'B', 'B'], [20, 10, 20], [-73.97, -74, -73.97], [40.74, 40.77, 40.77], [1, 0, 0])));
+  .concat(arrow.tableFromArrays({...columns(['A', 'B', 'B', 'A', 'A'], [20, 10, 20, 0, 20], [-73.97, -74, -73.97, -74.03, -73.97], [40.74, 40.77, 40.77, 40.80, 40.80], [1, 0, 0, 0, 0]), part: ['leg-1', 'leg-1', 'leg-1', 'leg-2', 'leg-2']}));
 const browser = await chromium.launch(getPlaywrightLaunchOptions({headless: true, backend: 'webgpu-core'}));
 const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
 await pinViteModules(page);
@@ -34,6 +35,7 @@ try {
   await workspace.locator('input[type=file]').setInputFiles({name: 'grouped-trips.arrow', mimeType: 'application/vnd.apache.arrow.stream', buffer: Buffer.from(arrow.tableToIPC(source, 'stream'))});
   await workspace.getByLabel('Grouped timed rows (Trips)', {exact: true}).check();
   await workspace.getByLabel('Trip ID column', {exact: true}).selectOption('trip');
+  await workspace.getByLabel('Trip part column', {exact: true}).selectOption('part');
   await workspace.getByLabel('Trip time column', {exact: true}).selectOption('time');
   await workspace.getByLabel('Trip longitude column', {exact: true}).selectOption('lon');
   await workspace.getByLabel('Trip latitude column', {exact: true}).selectOption('lat');
@@ -42,12 +44,12 @@ try {
   // Float64 role columns stay in the retained source; exclude them from scalar upload like the UI directs.
   for (const field of ['time', 'lon', 'lat']) await workspace.getByLabel(`${field} (Float64)`, {exact: true}).uncheck();
   await workspace.getByRole('button', {name: 'Check schema and precision', exact: true}).click();
-  await workspace.getByText(/2 timed grouped trips, 6 vertices/).waitFor();
+  await workspace.getByText(/3 timed grouped trips, 8 vertices/).waitFor();
   await workspace.getByRole('button', {name: 'Publish selected fields', exact: true}).click();
-  await page.waitForFunction(() => window.__keplerComputeTest.getState().publications[0]?.trips?.tripCount === 2, undefined, {timeout: 45000});
+  await page.waitForFunction(() => window.__keplerComputeTest.getState().publications[0]?.trips?.tripCount === 3, undefined, {timeout: 45000});
   const initial = await page.evaluate(() => window.__keplerComputeTest.getState());
   const datasetId = initial.publications[0].id;
-  assert.deepEqual(initial.publications[0].sourceBatches, [3, 3]);
+  assert.deepEqual(initial.publications[0].sourceBatches, [3, 5]);
   assert.deepEqual(initial.publications[0].trips.domain, [origin, origin + 20000]);
   assert.equal(initial.publications[0].error, null);
   await page.waitForFunction(datasetId => {
@@ -74,9 +76,11 @@ try {
   assert.equal(await pick(-74.015, 40.74), null, 'Unselected first vertex is dropped from the path');
   assert.equal((await pick(-73.985, 40.74))?.sourceRowIndex, 0, 'Trip stays visible while any member row is selected');
   await page.evaluate(id => window.__keplerComputeTest.setPublishedRange(id, 'measure', 0, 0), datasetId);
-  await page.waitForFunction(() => window.__keplerComputeTest.getState().publications[0].selectedCount === 4);
+  await page.waitForFunction(() => window.__keplerComputeTest.getState().publications[0].selectedCount === 6);
   assert.equal(await pick(-74.015, 40.74), null, 'Trip A keeps one selected vertex, so it has no drawn segment');
   assert.equal((await pick(-74.015, 40.77))?.sourceRowIndex, 2, 'Trip B spans both source batches');
+  assert.equal((await pick(-74.015, 40.80))?.sourceRowIndex, 6, 'A second part of trip A remains disconnected and independently filtered');
+  assert.equal(await pick(-74.015, 40.76), null, 'There is no connector between parts');
   const final = await page.evaluate(() => window.__keplerComputeTest.getState());
   assert.equal(final.error, '');
   assert.equal(final.publications[0].trips.sourceUploadBytes, initial.publications[0].trips.sourceUploadBytes);
@@ -90,10 +94,10 @@ try {
   assert.equal(parameters.geometryColumn, 'trip');
   assert.deepEqual(parameters.tripOptions, {
     timestampEncoding: 'unix-millisecond', originMilliseconds: origin, maximumTimeErrorMilliseconds: 0,
-    grouping: {timestampColumn: 'time', longitudeColumn: 'lon', latitudeColumn: 'lat'}
+    grouping: {timestampColumn: 'time', longitudeColumn: 'lon', latitudeColumn: 'lat', partColumn: 'part'}
   });
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({passed: true, sourceBatches: [3, 3], checks: ['grouped UI roles', 'cross-batch grouping', 'any-row visibility', 'native per-vertex filtering', 'stable source allocations', 'saved grouping']}));
+  console.log(JSON.stringify({passed: true, sourceBatches: [3, 5], checks: ['grouped UI roles', 'cross-batch grouping', 'any-row visibility', 'native per-vertex filtering', 'stable source allocations', 'saved grouping']}));
 } catch (error) {
   console.error(await page.evaluate(() => window.__keplerComputeTest?.getState()));
   console.error(await page.locator('body').innerText());

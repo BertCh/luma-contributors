@@ -5,7 +5,10 @@
 import {expect, it, vi} from 'vitest';
 import {Buffer} from '@luma.gl/core';
 import {GPUVector} from '@luma.gl/graph/gpu-data';
-import {makeGeoJSONTripGPUVectors, prepareGeoJSONTrips} from '@luma.gl/engine/arrow';
+import {
+  makeKeplerGeoJSONTripGPUVectors,
+  prepareKeplerGeoJSONTrips
+} from '../../../examples/deck/kepler-compute/src/geometry-preparation';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {TripRuntime} from '../../../examples/deck/kepler-compute/src/trip-runtime';
@@ -29,7 +32,7 @@ it('real trip properties resolve mutable defaults on GPU before primitive gather
     properties,
     geometry: {type: 'LineString', coordinates: times.map((time, index) => [index, 2, 3, time])}
   });
-  const source = prepareGeoJSONTrips(
+  const source = prepareKeplerGeoJSONTrips(
     [
       {
         id: 'first',
@@ -44,7 +47,7 @@ it('real trip properties resolve mutable defaults on GPU before primitive gather
     ],
     {timestampEncoding: 'unix-millisecond'}
   );
-  const trips = makeGeoJSONTripGPUVectors(device, source);
+  const trips = makeKeplerGeoJSONTripGPUVectors(device, source);
   const colors = new GeoJSONPropertyRuntime(device, trips.properties!.lineColor!, [90, 80, 70]);
   const widths = new GeoJSONPropertyRuntime(device, trips.properties!.lineWidth!, 1);
   const selectionMask = new GPUVector({

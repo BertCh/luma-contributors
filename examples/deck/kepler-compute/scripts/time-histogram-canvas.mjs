@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import * as arrow from 'apache-arrow';
 import {chromium} from 'playwright';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
+import {getFixtureUrl} from './script-fixture-url.mjs';
 import {pinViteModules} from './pin-vite-modules.mjs';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
 
@@ -33,7 +34,9 @@ async function measureRender(label, readySelector) {
   // Day bins (about 250) fall under the canvas threshold: no canvas, and few SVG rects.
   await page.waitForFunction(() => {
     const root = document.querySelector('[aria-label="Chart category summary"]');
-    return Boolean(root) && !root.querySelector('canvas') && root.querySelectorAll('rect').length < 1000;
+    return (
+      Boolean(root) && !root.querySelector('canvas') && root.querySelectorAll('rect').length < 1000
+    );
   });
   const start = Date.now();
   await card.getByLabel('Calendar interval (UTC)', {exact: true}).selectOption('hour');
@@ -46,10 +49,7 @@ async function measureRender(label, readySelector) {
           .length >= 1000
     );
   } else await page.waitForSelector(readySelector);
-  const elapsed = await page.evaluate(
-    mark => performance.now() - mark,
-    startMark
-  );
+  const elapsed = await page.evaluate(mark => performance.now() - mark, startMark);
   const nodeCount = await plot.evaluate(element => element.querySelectorAll('*').length);
   console.log(
     `${label}: ready in ${elapsed.toFixed(0)} ms (wall ${Date.now() - start} ms), plot DOM nodes ${nodeCount}`
@@ -58,10 +58,14 @@ async function measureRender(label, readySelector) {
 }
 
 try {
-  await page.goto(process.argv[2] || 'http://127.0.0.1:5318/?rows=256', {
+  await page.goto(getFixtureUrl(process.argv[2], {rows: '256'}), {
     waitUntil: 'domcontentloaded'
   });
-  await page.waitForFunction(() => window.__keplerComputeTest?.getState().selectedCount === 256, undefined, {timeout: 60000});
+  await page.waitForFunction(
+    () => window.__keplerComputeTest?.getState().selectedCount === 256,
+    undefined,
+    {timeout: 60000}
+  );
   const source = new arrow.Table({
     time: arrow.vectorFromArray(
       Array.from({length: HOURS}, (_, index) => START + index * 3600000),
@@ -81,7 +85,9 @@ try {
     rows => window.__keplerComputeTest.getState().publications[0]?.selectedCount === rows,
     HOURS
   );
-  const publication = await page.evaluate(() => window.__keplerComputeTest.getState().publications[0]);
+  const publication = await page.evaluate(
+    () => window.__keplerComputeTest.getState().publications[0]
+  );
   await closeNativeDialog(page);
   await page.getByRole('button', {name: 'Toggle charts', exact: true}).click();
   // Kepler creates a chart card only after a chart type is chosen.
@@ -107,7 +113,10 @@ try {
     cssWidth: element.getBoundingClientRect().width,
     ratio: window.devicePixelRatio
   }));
-  assert(Math.abs(backing.width - Math.round(backing.cssWidth * backing.ratio)) <= 2, 'Canvas backing store must follow DPR');
+  assert(
+    Math.abs(backing.width - Math.round(backing.cssWidth * backing.ratio)) <= 2,
+    'Canvas backing store must follow DPR'
+  );
 
   await page.evaluate(() => {
     window.__residentChartForceSvgBars = true;

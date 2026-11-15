@@ -83,7 +83,7 @@ describe('validateDrawnPolygon', () => {
         [1, 1]
       ]
     } as const;
-    expect(codes(line)).toEqual(['unsupported-geometry']);
+    expect(codes(line as unknown as Parameters<typeof codes>[0])).toEqual(['unsupported-geometry']);
     expect(codes(null)).toEqual(['empty-geometry']);
     const collinear = square(0, 0);
     collinear.geometry.coordinates = [

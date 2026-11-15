@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {appState} from './app-state';
+import {cancelSampleMapLoads, whenSampleMapMutationsSettled} from './sample-map-lifecycle';
+import {SAMPLE_MAP_METADATA_KEY} from './sample-map-provenance';
 import {DATASET_ID, createSampleData} from './sample-data';
 import {
   readPublishedSandboxSource,
@@ -27,7 +29,7 @@ import {
   preflightRestoreReservation,
   describePreviousWorkspaceRestore
 } from './restore-transaction';
-import {runWithOutOfMemoryScope} from './binding5-device-oom-scope';
+import {runWithOutOfMemoryScope} from '@luma-contributors/kepler';
 import {describeRestoreAllocationFailure} from './binding3-restore-recovery';
 import {estimateRestoreBytes} from './retained-bytes-estimate';
 import {assertSingleViewConfiguration} from './resident-action-guards';
@@ -143,6 +145,7 @@ async function rebuildEvictedDatasetNow(datasetId: string): Promise<void> {
       normalization: descriptor.normalization,
       ...getStreamImportOptions(roles.stream),
       metadata: {
+        ...(roles.sampleMap ? {[SAMPLE_MAP_METADATA_KEY]: roles.sampleMap} : {}),
         ...getStreamImportOptions(roles.stream).metadata,
         ...(roles.cellIndex ? {[CELL_INDEX_METADATA_KEY]: roles.cellIndex} : {})
       }
@@ -290,6 +293,7 @@ async function populateBundleSources(
           // Restores recorded remote origin, partial population and cell index; no network request.
           ...getStreamImportOptions(roles.stream),
           metadata: {
+            ...(roles.sampleMap ? {[SAMPLE_MAP_METADATA_KEY]: roles.sampleMap} : {}),
             ...getStreamImportOptions(roles.stream).metadata,
             ...(roles.cellIndex ? {[CELL_INDEX_METADATA_KEY]: roles.cellIndex} : {})
           }
@@ -347,6 +351,8 @@ async function populateBundleSources(
 }
 
 export async function restoreBundle(bundle: RestoredSandboxBundle): Promise<ComputeRuntime> {
+  cancelSampleMapLoads();
+  await whenSampleMapMutationsSettled();
   assertSingleViewConfiguration(bundle.state.nativeConfig, SUPPORTED_VIEW_COUNT);
   // Queued replacements and removals settle first, so none races the workspace swap.
   await datasetOperations.whenIdle();
@@ -375,6 +381,8 @@ export async function restoreBundle(bundle: RestoredSandboxBundle): Promise<Comp
   try {
     previousSnapshot = captureResidentRecoverySnapshot({
       runtime: previous,
+      getNativeDatasets: () =>
+        Object.values(store.getState().keplerGl['compute']?.visState?.datasets ?? {}),
       getNativeConfig: () => KeplerGlSchema.getConfigToSave(store.getState().keplerGl['compute']),
       collectResultRecipes: residentResultIds => residentResultRecipes.collect(residentResultIds)
     });
@@ -447,6 +455,7 @@ export function scheduleRecoveryCheckpoint(): void {
 
 export function invalidateLostRuntime(previous: ComputeRuntime, reason: string): void {
   if (appState.runtime !== previous) return;
+  cancelSampleMapLoads(reason);
   effect.runtime = null;
   appState.latestSummary = null;
 
@@ -544,6 +553,8 @@ export function createDeviceRecovery(): ResidentDeviceRecovery<ComputeRuntime> {
     capture: activeRuntime =>
       captureResidentRecoverySnapshot({
         runtime: activeRuntime,
+        getNativeDatasets: () =>
+          Object.values(store.getState().keplerGl['compute']?.visState?.datasets ?? {}),
         getNativeConfig: () => KeplerGlSchema.getConfigToSave(store.getState().keplerGl['compute']),
         collectResultRecipes: residentResultIds => residentResultRecipes.collect(residentResultIds)
       }),

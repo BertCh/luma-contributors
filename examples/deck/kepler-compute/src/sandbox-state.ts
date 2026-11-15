@@ -4,6 +4,11 @@
 
 import {validateTabularPointPositions} from './point-position-source';
 import {
+  getSampleMapProvenance,
+  parseSampleMapProvenance,
+  type SampleMapProvenance
+} from './sample-map-provenance';
+import {
   assertKeplerSandboxSourceMatches,
   cloneKeplerJSON,
   materializeKeplerSelection,
@@ -20,11 +25,11 @@ import {
 import {
   prepareArrowTableForGPUAnalytics,
   type PrepareArrowTableForGPUAnalyticsOptions
-} from '@luma.gl/graph/arrow';
+} from '@luma-contributors/analysis/analysis-core';
 import {
-  preparePackedPolygonContiguityTopology,
+  preparePolygonContiguityTopology,
   POLYGON_CONTIGUITY_PREPARATION_BYTES
-} from '@luma.gl/engine/arrow';
+} from './geometry-preparation';
 import type {ComputeRuntime} from './compute-runtime';
 import type {PolygonAnalysisSource} from './analysis-polygon-weights-cache';
 import {assertSandboxSourcesCovered} from './sandbox-source-validation';
@@ -119,6 +124,13 @@ export function getSandboxSources(runtime: ComputeRuntime): KeplerSandboxSource[
         version: 1,
         parameters: {
           label: published.label,
+          ...(getSampleMapProvenance(published.dataset.source?.metadata)
+            ? {
+                sampleMap: cloneKeplerJSON(
+                  getSampleMapProvenance(published.dataset.source?.metadata)
+                )
+              }
+            : {}),
           coordinates: published.coordinates ? {...published.coordinates} : null,
           geometryColumn: published.geometryColumn ?? null,
           ...(published.h3Column ? {h3Column: published.h3Column} : {}),
@@ -211,6 +223,7 @@ export function readPublishedSandboxSource(source: KeplerSandboxSource): {
   suitability?: ResidentSuitabilityLineage;
   stream?: NativeStreamProvenance;
   cellIndex?: NativeCellIndex;
+  sampleMap?: SampleMapProvenance;
 } {
   const parameters = source.reference.parameters;
   if (
@@ -338,6 +351,9 @@ export function readPublishedSandboxSource(source: KeplerSandboxSource): {
     throw new Error('Saved Suitability requires its matching table-only result schema');
   return {
     label: parameters['label'],
+    ...(parameters['sampleMap'] === undefined
+      ? {}
+      : {sampleMap: parseSampleMapProvenance(parameters['sampleMap'])}),
     ...(groupBy ? {groupBy} : {}),
     ...(join ? {join} : {}),
     ...(suitability ? {suitability} : {}),
@@ -836,7 +852,7 @@ function validatePolygonReplay(
     'scratch'
   );
   try {
-    preparePackedPolygonContiguityTopology(source.source);
+    preparePolygonContiguityTopology(source.source);
   } finally {
     reservation.release();
   }

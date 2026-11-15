@@ -455,8 +455,10 @@ async function checkAnalysisExport() {
 }
 
 const summaries = [];
-const defaultUrl = 'http://127.0.0.1:5318/?rows=256';
-const automaticUrl = 'http://127.0.0.1:5318/?rows=256&automatic=all';
+// The origin follows the URL argument so the in-run reloads reach the same dev server.
+const appOrigin = new URL(process.argv[3] || 'http://127.0.0.1:5318/').origin;
+const defaultUrl = `${appOrigin}/?rows=256`;
+const automaticUrl = `${appOrigin}/?rows=256&automatic=all`;
 async function openApp(url) {
   await page.goto(url, {waitUntil: 'domcontentloaded'});
   await page.waitForFunction(() => window.__keplerComputeTest?.getState().selectedCount === 256, undefined, {timeout: 60000});
@@ -474,6 +476,12 @@ try {
   // The table check opens the last dataset's table, so it runs right after the Join it inspects.
   if (mode === 'all' || mode === 'table') summaries.push(await checkNativeTable());
   if (mode === 'all' || mode === 'suitability') summaries.push(await checkSuitability());
+  if (mode === 'all') {
+    // The four checks above leave 300k-row results resident; together with the export source they
+    // exceed the shared 512 MiB accounted budget ("Dataset memory budget exceeded" in Stream download).
+    for (const kind of Object.keys(recoveryTargets)) delete recoveryTargets[kind];
+    await openApp(defaultUrl);
+  }
   if (mode === 'all' || mode === 'exports') summaries.push(await checkResidentExports());
   if (mode === 'all') {
     // Resident datasets share a 512 MiB accounted budget; start analysis export from a clean page.
@@ -484,6 +492,10 @@ try {
   if (mode === 'all') {
     // Explicit recovery of all three results, then a fresh ?automatic=all page for automatic
     // recovery and eviction rebuilds (the device-loss checks run last: they replace the device).
+    // Fresh page first: the analysis-export results still count against the 512 MiB budget and the
+    // recovery checks rebuild their own over-cap targets.
+    for (const kind of Object.keys(recoveryTargets)) delete recoveryTargets[kind];
+    await openApp(defaultUrl);
     summaries.push(await checkRecovery(['join', 'spatial', 'suitability'], false));
     for (const kind of Object.keys(recoveryTargets)) delete recoveryTargets[kind];
     joinResultForTable = null;

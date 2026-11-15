@@ -96,6 +96,97 @@ export function getResidentSqlTableNames(datasetId: string): readonly string[] {
   return bare === datasetId ? [datasetId] : [datasetId, bare];
 }
 
+/** Statement planning over registered frames; the one method the runtime needs from GPUSQLContext. */
+export type ResidentSqlContext = Pick<GPUSQLContext, 'query'>;
+
+const GPU_SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Gives every dataset id that is not a bare identifier its own unique internal table name, so ids
+ * that sanitize alike (for example "a-b" and "a b") never share a table. Keys are lowercased ids.
+ */
+export function assignResidentSqlTableNames(names: readonly string[]): Map<string, string> {
+  const usedNames = new Set(
+    names.filter(name => GPU_SQL_IDENTIFIER.test(name)).map(name => name.toLowerCase())
+  );
+  const quotedToBare = new Map<string, string>();
+  for (const name of names) {
+    if (GPU_SQL_IDENTIFIER.test(name)) continue;
+    const sanitized = name.replace(/[^A-Za-z0-9_]/g, '_');
+    const base = GPU_SQL_IDENTIFIER.test(sanitized) ? sanitized : `table_${sanitized}`;
+    let bare = base;
+    for (let suffix = 2; usedNames.has(bare.toLowerCase()); suffix++) bare = `${base}_${suffix}`;
+    usedNames.add(bare.toLowerCase());
+    quotedToBare.set(name.toLowerCase(), bare);
+  }
+  return quotedToBare;
+}
+
+/**
+ * Published GPUSQLContext accepts only bare identifier table names, while resident datasets are
+ * named by their ids ("resident-observations"). Tables are registered under their bare identifier
+ * form, and double-quoted references to the original id in the statement text are rewritten to it.
+ */
+export function createResidentSqlContext(
+  tables: Readonly<Record<string, GPUDataFrame>>
+): ResidentSqlContext {
+  const registered: Record<string, GPUDataFrame> = Object.create(null);
+  const quotedToBare = assignResidentSqlTableNames(Object.keys(tables));
+  for (const [name, frame] of Object.entries(tables))
+    registered[GPU_SQL_IDENTIFIER.test(name) ? name : quotedToBare.get(name.toLowerCase())!] =
+      frame;
+  const context = new GPUSQLContext(registered);
+  if (!quotedToBare.size) return context;
+  return {
+    query: (sql, options) =>
+      context.query(rewriteQuotedResidentTableNames(sql, quotedToBare), options)
+  };
+}
+
+/**
+ * Rewrites double-quoted dataset ids to their internal names where they name a table: after FROM or
+ * JOIN, or as the qualifier of a column reference. Column identifiers, output aliases and string
+ * literals keep their text.
+ */
+export function rewriteQuotedResidentTableNames(
+  sql: string,
+  quotedToBare: ReadonlyMap<string, string>
+): string {
+  let tokens: ReturnType<typeof tokenizeResidentSql>;
+  try {
+    tokens = tokenizeResidentSql(sql);
+  } catch {
+    return sql;
+  }
+  const edits: {start: number; end: number; text: string}[] = [];
+  const rewritePart = (part: string, start: number) => {
+    if (!part.startsWith('"')) return;
+    const bare = quotedToBare.get(decodeResidentSqlIdentifier(part).toLowerCase());
+    if (bare) edits.push({start, end: start + part.length, text: bare});
+  };
+  tokens.forEach((token, index) => {
+    if (token.kind !== 'word') return;
+    const parts = token.text.match(/"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*/g) ?? [];
+    if (!parts.length) return;
+    const previous = tokens[index - 1];
+    const followsTableKeyword = previous?.kind === 'word' && /^(from|join)$/i.test(previous.text);
+    const [first, second] = parts;
+    if (second !== undefined) {
+      rewritePart(first!, token.start);
+      if (followsTableKeyword) rewritePart(second, token.end - second.length);
+    } else if (followsTableKeyword) {
+      rewritePart(first!, token.start);
+    }
+  });
+  let result = '';
+  let cursor = 0;
+  for (const edit of edits.sort((a, b) => a.start - b.start)) {
+    result += sql.slice(cursor, edit.start) + edit.text;
+    cursor = edit.end;
+  }
+  return result + sql.slice(cursor);
+}
+
 export type ResidentSqlRegistration = {
   /** Tables the planner can see right now, with the reason a dataset was left out. */
   readonly tables: readonly {name: string; datasetId: string; columnCount: number}[];
@@ -160,7 +251,7 @@ export type ResidentSqlQuery =
 
 /** Tables one statement is planned against: the registry, or a composed join's intermediate. */
 export type ResidentSqlScope = {
-  readonly context: GPUSQLContext;
+  readonly context: ResidentSqlContext;
   readonly tables: Readonly<Record<string, GPUDataFrame>>;
   /** Lower-case table name to its frame, row count and column info. */
   findEntry(
@@ -187,7 +278,7 @@ type Registered = {
  */
 export class ResidentSqlGpuRuntime {
   readonly session: KeplerComputeSession;
-  private context: GPUSQLContext | null = null;
+  private context: ResidentSqlContext | null = null;
   private registered: Registered[] = [];
   private signature = '';
   private registration: ResidentSqlRegistration = {tables: [], skipped: []};
@@ -415,7 +506,7 @@ export class ResidentSqlGpuRuntime {
       };
       const tables = {[composed.tableName]: frame};
       const outer = this.planDataframe(outerSql, outerSql, {
-        context: new GPUSQLContext(tables),
+        context: createResidentSqlContext(tables),
         tables,
         findEntry: name => (name === composed.tableName ? entry : undefined)
       });
@@ -543,7 +634,7 @@ export class ResidentSqlGpuRuntime {
       const frames = {...scope.tables};
       for (const [name, frame] of Object.entries(scope.tables))
         if (frame === entry.frame) frames[name] = derived.frame;
-      const query = new GPUSQLContext(frames).query(rewrite.sql);
+      const query = createResidentSqlContext(frames).query(rewrite.sql);
       const built = derived;
       let released = false;
       const release = () => {
@@ -614,7 +705,7 @@ export class ResidentSqlGpuRuntime {
     }
     this.registration = {tables: registeredTables, skipped};
     this.tables = tables;
-    this.context = registeredTables.length ? new GPUSQLContext(tables) : null;
+    this.context = registeredTables.length ? createResidentSqlContext(tables) : null;
   }
 
   /** Runs a planned statement and publishes its result as a resident dataset. */
@@ -742,7 +833,7 @@ export class ResidentSqlGpuRuntime {
       }
     };
     const planned = this.planDataframe(sql, text, {
-      context: new GPUSQLContext(tables),
+      context: createResidentSqlContext(tables),
       tables,
       findEntry: name =>
         name === key.tableName
@@ -806,7 +897,7 @@ export class ResidentSqlGpuRuntime {
       let outer: ResidentSqlQuery;
       try {
         outer = this.planDataframe(tailSql, tailSql, {
-          context: new GPUSQLContext(tables),
+          context: createResidentSqlContext(tables),
           tables,
           findEntry: name => (name === tableName ? entry : undefined)
         });

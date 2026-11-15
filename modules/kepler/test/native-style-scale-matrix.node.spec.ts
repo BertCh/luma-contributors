@@ -132,7 +132,9 @@ describe('scalar scale mode matrix', () => {
     for (const scale of NATIVE_SCALES) {
       test(`${testCase.name} with ${scale}`, () => {
         const numeric = createNativeStylePlan(makeLayer(testCase, scale, 'value'), context);
-        const channel = numeric.supported ? numeric.plan.channels[testCase.channel] : undefined;
+        const channel = numeric.supported
+          ? (numeric.plan.channels as Record<string, unknown>)[testCase.channel]
+          : undefined;
         if (NUMERIC_SUPPORTED.has(scale)) {
           expect(numeric.supported ? '' : numeric.reasons.join(' ')).toBe('');
           expect(channel).toMatchObject({kind: 'resident', plan: {scale}});
@@ -145,7 +147,9 @@ describe('scalar scale mode matrix', () => {
         if (scale === 'point') {
           expect(categorical.supported).toBe(true);
           if (categorical.supported)
-            expect(categorical.plan.channels[testCase.channel]).toMatchObject({
+            expect(
+              (categorical.plan.channels as Record<string, unknown>)[testCase.channel]
+            ).toMatchObject({
               kind: 'resident',
               plan: {scale: 'point'}
             });

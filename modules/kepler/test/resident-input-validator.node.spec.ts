@@ -25,7 +25,7 @@ function makeInput() {
       {name: 'timestamp', type: 'timestamp', format: 'x'},
       {name: 'label', type: 'string', format: ''}
     ],
-    cols: source.schema.fields.map(field => source.getChild(field.name)!),
+    cols: source.schema.fields.map(field => source.getChild(field.name as never)!),
     rows: []
   };
 }

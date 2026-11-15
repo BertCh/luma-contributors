@@ -1090,6 +1090,14 @@ function validateExplorerProps(props: GPUResidentExplorerProps): void {
   if (!columns.length && !props.sourceChunkLengths)
     throw new Error('Explorer requires source chunk lengths when no scalar columns are selected');
   if (props.device.type !== 'webgpu') throw new Error('Explorer requires WebGPU');
+  // The published crossfilter composes every selection with one GPUMask pass that binds each
+  // selection mask plus the output as storage buffers, and GPUMask does not split by device limit.
+  const composedSelectionCount = Math.max(1, props.dimensions.length + (props.liveMask ? 1 : 0));
+  const storageBufferLimit = props.device.limits.maxStorageBuffersPerShaderStage;
+  if (composedSelectionCount + 1 > storageBufferLimit)
+    throw new Error(
+      `Explorer dimensions: ${composedSelectionCount} selection masks need ${composedSelectionCount + 1} storage buffers per shader stage, but the device limit maxStorageBuffersPerShaderStage is ${storageBufferLimit}; request a higher limit when creating the device or use fewer dimensions`
+    );
   const lengths = props.sourceChunkLengths ?? columns[0].data.map(data => data.length);
   if (lengths.some(length => !Number.isSafeInteger(length) || length < 0))
     throw new Error('Source chunk lengths must be non-negative safe integers');

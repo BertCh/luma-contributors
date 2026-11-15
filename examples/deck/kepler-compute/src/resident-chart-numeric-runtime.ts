@@ -45,6 +45,7 @@ import {
 } from './resident-numeric-domain';
 
 import {ResidentIntegerChartDomain, INTEGER_DOMAIN_READ_BYTES} from './resident-integer-domain';
+import {MeteredCommandGraph} from '@luma-contributors/kepler';
 
 export type ResidentNumericChartResult = Omit<ResidentCategoryChartResult, 'kind'> & {
   kind: 'numeric';
@@ -211,7 +212,7 @@ export class ResidentNumericChartRuntime {
         if (field) field.nullable = true;
       }
       frame = new GPUDataFrame({table, validity: {ordered: finite}});
-      const graph = new GPUCommandGraph<GPUDataFrameQueryParameters>(this.device, {
+      const graph = new MeteredCommandGraph<GPUDataFrameQueryParameters>(this.device, {
         id: `numeric-chart-extent-${plan.chartId}`
       });
       extent = frame
@@ -232,7 +233,7 @@ export class ResidentNumericChartRuntime {
         if (vector) for (const data of vector.data) buffers.add(getBuffer(data));
       const accountedBytes =
         [...buffers].reduce((total, buffer) => total + buffer.byteLength, 0) +
-        extent.compilationStats.physicalTransientResourceBytes +
+        graph.transientByteLength +
         prepare.stats.physicalTransientResourceBytes +
         binning.stats.physicalTransientResourceBytes +
         (integerDomain?.byteLength ?? 0);

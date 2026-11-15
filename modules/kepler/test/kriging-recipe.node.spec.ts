@@ -82,6 +82,18 @@ test('ordinary kriging recipes normalize manual variogram units and preserve sou
     ).toThrow();
 });
 
+test('kriging settings accept every analysis variogram family and reject unknown ones', () => {
+  for (const model of ['spherical', 'exponential', 'gaussian', 'matern-3/2', 'matern-5/2'] as const)
+    expect(
+      parseKeplerKrigingSettings({...settings, variogram: {...settings.variogram, model}}).variogram
+        .model
+    ).toBe(model);
+  for (const model of ['matern-1/2', 'linear', 'Gaussian', undefined])
+    expect(() =>
+      parseKeplerKrigingSettings({...settings, variogram: {...settings.variogram, model}} as never)
+    ).toThrow();
+});
+
 test('kriging routing admits bounded geographic grids and requires explicit packed Float32 sources', () => {
   const request = {
     kind: 'analysis' as const,

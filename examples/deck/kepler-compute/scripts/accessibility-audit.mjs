@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {withSyntheticSample} from './native-navigation.mjs';
+
 // Accessibility audit of host-added surfaces: accessible names, text contrast, visible keyboard
 // focus, keyboard-only reachability and 390px / desktop map-control overlap.
 import assert from 'node:assert/strict';
@@ -86,7 +88,7 @@ async function auditViewport(label, viewport) {
   const page = await context.newPage();
   await pinViteModules(page);
   page.on('pageerror', error => failures.push(`${label}: ${error.message}`));
-  await page.goto(baseUrl);
+  await page.goto(withSyntheticSample(baseUrl));
   await page.locator('.maplibregl-canvas').waitFor();
   await page.waitForTimeout(2500);
   const findings = await page.evaluate(auditPage);

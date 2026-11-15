@@ -4,7 +4,10 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {makeTabularTripGPUVectors, prepareTabularTrips} from '@luma.gl/engine/arrow';
+import {
+  makeKeplerTabularTripGPUVectors,
+  prepareKeplerTabularTrips
+} from '../../../../examples/deck/kepler-compute/src/geometry-preparation';
 
 /** Rows 0-3 in batch 0 and rows 4-5 in batch 1: trip a = rows 0,4; trip b = rows 1,2,5. */
 export function createTabularTripRuntimeFixture(device: Device, mask: readonly number[]) {
@@ -13,9 +16,9 @@ export function createTabularTripRuntimeFixture(device: Device, mask: readonly n
     [row('a', 1000), row('b', 1000), row('b', 1100), row('c', 1)],
     [row('a', 1100), row('b', 1200)]
   ];
-  const trips = makeTabularTripGPUVectors(
+  const trips = makeKeplerTabularTripGPUVectors(
     device,
-    prepareTabularTrips(
+    prepareKeplerTabularTrips(
       rows.map((batchRows, index) => ({
         id: `batch-${index}`,
         tripIds: batchRows.map(value => value[0]),

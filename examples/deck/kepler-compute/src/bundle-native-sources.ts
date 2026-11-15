@@ -5,6 +5,12 @@
 import * as arrow from 'apache-arrow';
 import type {KeplerTable} from '@kepler.gl/table';
 import {makeArrowSourceFromNativeDataset} from './native-dataset-source';
+import {
+  getSampleMapProvenance,
+  parseSampleMapProvenance,
+  SAMPLE_MAP_METADATA_KEY,
+  type SampleMapProvenance
+} from './sample-map-provenance';
 
 /** Explicit, visible capacity for native-only originals embedded in a portable bundle. */
 export const NATIVE_ONLY_BUNDLE_LIMITS = Object.freeze({
@@ -25,6 +31,7 @@ export type NativeFieldMetadata = {name: string; type: string; format: string};
 
 /** JSON form stored in the bundle under `nativeOnlySources`. */
 export type EmbeddedNativeSource = {
+  sampleMap?: SampleMapProvenance;
   datasetId: string;
   label: string;
   rowCount: number;
@@ -37,6 +44,7 @@ export type EmbeddedNativeSource = {
 };
 
 export type RestoredNativeSource = {
+  sampleMap?: SampleMapProvenance;
   datasetId: string;
   label: string;
   table: arrow.Table;
@@ -45,6 +53,7 @@ export type RestoredNativeSource = {
 
 type RawEmbeddedField = {name?: unknown; type?: unknown; format?: unknown};
 type RawEmbeddedSource = {
+  sampleMap?: unknown;
   datasetId?: unknown;
   label?: unknown;
   encoding?: unknown;
@@ -115,6 +124,9 @@ async function tryEmbed(
   if (totalBytes + bytes.byteLength > limits.maximumTotalBytes)
     return `needs ${formatMebibytes(bytes.byteLength)} but only ${formatMebibytes(limits.maximumTotalBytes - totalBytes)} of the ${formatMebibytes(limits.maximumTotalBytes)} native-only budget remain`;
   output.push({
+    ...(getSampleMapProvenance(dataset.metadata)
+      ? {sampleMap: getSampleMapProvenance(dataset.metadata)}
+      : {}),
     datasetId: dataset.id,
     label: dataset.label,
     rowCount: table.numRows,
@@ -181,7 +193,15 @@ export async function readEmbeddedNativeSources(
       fields.some((field, index) => field.name !== table.schema.fields[index].name)
     )
       throw new Error('Native-only bundle fields do not match their Arrow schema');
-    restored.push({datasetId: entry.datasetId, label: entry.label, table, fields});
+    restored.push({
+      datasetId: entry.datasetId,
+      label: entry.label,
+      table,
+      fields,
+      ...(entry.sampleMap === undefined
+        ? {}
+        : {sampleMap: parseSampleMapProvenance(entry.sampleMap)})
+    });
   }
   if (new Set(restored.map(item => item.datasetId)).size !== restored.length)
     throw new Error('Native-only bundle sources must be unique');
@@ -224,9 +244,11 @@ export function stageNativeSources(sources: readonly RestoredNativeSource[]): vo
 export function getStagedNativeDatasets(): {
   info: {id: string; label: string};
   data: {fields: NativeFieldMetadata[]; rows: unknown[][]};
+  metadata?: {[SAMPLE_MAP_METADATA_KEY]: SampleMapProvenance};
 }[] {
   return stagedNativeSources.map(source => ({
     info: {id: source.datasetId, label: source.label},
+    ...(source.sampleMap ? {metadata: {[SAMPLE_MAP_METADATA_KEY]: source.sampleMap}} : {}),
     data: makeNativeDataFromSource(source)
   }));
 }

@@ -6,9 +6,13 @@ import {KeplerAllocationError} from '@luma-contributors/kepler';
 import type {KeplerDatasetRegistry, KeplerMemoryReservation} from '@luma-contributors/kepler';
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, type GPUVector} from '@luma.gl/graph/gpu-data';
-import {buildBitmapFontAtlas, buildSdfFontAtlas, GPUTextResources} from '@luma.gl/engine/text';
+import {buildBitmapFontAtlas, buildSdfFontAtlas} from '@luma.gl/engine/text';
+import {
+  KeplerMipmappedTextResources,
+  getKeplerMipChainByteLength
+} from './luma-gaps/mipmapped-text-resources';
 import type {FontAtlas} from '@luma.gl/engine/text';
-import type {GPUPointLabelBatch} from '@deck.gl-community/gpu-layers';
+import type {GPUPointLabelBatch} from '../gpu-layers/index';
 import {
   resolvePointLabelLayerProps,
   type PointLabelResolution,
@@ -74,7 +78,7 @@ export class StreamedPointLabelRuntime {
   private readonly reservations: KeplerMemoryReservation[] = [];
   private readonly boundsBuffers: Buffer[] = [];
   private readonly deviceLoss: Device['lost'];
-  private resources?: GPUTextResources;
+  private resources?: KeplerMipmappedTextResources;
   private fontAtlas?: FontAtlas;
   private collision?: GpuLabelCollision;
   private generations: Generation[] = [];
@@ -154,26 +158,19 @@ export class StreamedPointLabelRuntime {
     };
     const fontAtlas = props.sdf
       ? buildSdfFontAtlas(atlasSettings)
-      : buildBitmapFontAtlas({cache: false, ...atlasSettings});
+      : buildBitmapFontAtlas(atlasSettings);
     if (
       fontAtlas.width > this.device.limits.maxTextureDimension2D ||
       fontAtlas.height > this.device.limits.maxTextureDimension2D
     )
       throw new Error('Point label atlas exceeds device texture limits');
-    // Native TextLayer uses a full trilinear mip chain for bitmap minification.
-    let atlasBytes = 0;
-    for (let width = fontAtlas.width, height = fontAtlas.height; ; ) {
-      atlasBytes += width * height * 4 * fontAtlas.pages.length;
-      if (width === 1 && height === 1) break;
-      width = Math.max(1, Math.floor(width / 2));
-      height = Math.max(1, Math.floor(height / 2));
-    }
+    // Native TextLayer samples a trilinear mip chain for bitmap minification.
+    const atlasBytes = getKeplerMipChainByteLength(fontAtlas);
     if (registry) this.reservations.push(registry.reserveMemory(atlasBytes, 'gpu', 'source'));
     this.fontAtlas = fontAtlas;
     this.assertCurrent();
-    this.resources = new GPUTextResources(this.device, {
+    this.resources = new KeplerMipmappedTextResources(this.device, {
       fontAtlas,
-      mipmaps: true,
       id: `streamed-point-label-${props.fieldName}`
     });
     for (const chunk of props.chunks) {

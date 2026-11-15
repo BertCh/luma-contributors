@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
+import {isNativeGeoArrowEncoding} from './geometry-preparation/geometry-native-geoarrow';
 import {
   convertWKBToGeometry,
   convertWKTToGeometry
@@ -145,6 +146,7 @@ export function makeSourceTypeRoutes(
       arrow.DataType.isUtf8(type) ||
       (arrow.DataType.isDictionary(type) && arrow.DataType.isUtf8(type.dictionary));
     const existing = readFieldRoute(field);
+    const geometryEncoding = field.metadata.get('ARROW:extension:name');
     if (existing) {
       // Already routed: keep the earlier decision so routing is idempotent.
       routes.push({
@@ -156,6 +158,23 @@ export function makeSourceTypeRoutes(
         userAction: 'None',
         conversion: 'none'
       });
+    } else if (
+      isNativeGeoArrowEncoding(geometryEncoding) ||
+      geometryEncoding === 'geoarrow.wkb' ||
+      geometryEncoding === 'geoarrow.geometry'
+    ) {
+      // These nested/binary columns belong to geometry preparation, not scalar upload.
+      // Stringifying them loses extension metadata and turns valid polygons into invalid
+      // GeoJSON arrays. Keep their buffers, validity, offsets, CRS and encoding unchanged.
+      routes.push(
+        route(
+          'retained-original',
+          sourceType,
+          `${geometryEncoding} buffers are retained for native geometry preparation`,
+          'Choose this column as the geometry role',
+          'none'
+        )
+      );
     } else if (
       options.wkbGeometryColumns?.includes(field.name) &&
       (arrow.DataType.isBinary(type) || arrow.DataType.isLargeBinary(type))
@@ -606,4 +625,47 @@ export function routeArrowTable(
   options: SourceTypeRouteOptions = {}
 ): RoutedArrowTable {
   return makeRoutedArrowTable(table, makeSourceTypeRoutes(table, options));
+}
+
+/** Role columns bypass scalar conversions: H3/DGGS IDs must keep their original Arrow storage. */
+export function restoreArrowSourceRoleColumns(
+  routed: arrow.Table,
+  original: arrow.Table | undefined,
+  columns: readonly string[]
+): arrow.Table {
+  if (!original || !columns.length) return routed;
+  const replacements = new Set(columns.filter(name => original.getChild(name)));
+  if (!replacements.size) return routed;
+  const fields = routed.schema.fields.map(field =>
+    replacements.has(field.name)
+      ? original.schema.fields.find(candidate => candidate.name === field.name)!
+      : field
+  );
+  const schema = new arrow.Schema(fields, new Map(routed.schema.metadata));
+  // Routing preserves batch boundaries. Share the original buffers rather than decoding Uint64
+  // decimal labels back into integers (which would also lose the original metadata/validity).
+  if (
+    original.batches.length !== routed.batches.length ||
+    original.batches.some((batch, index) => batch.numRows !== routed.batches[index].numRows)
+  )
+    throw new Error('Source role restoration requires matching Arrow batch boundaries');
+  return new arrow.Table(
+    schema,
+    routed.batches.map(
+      (batch, index) =>
+        new arrow.RecordBatch(
+          schema,
+          arrow.makeData({
+            type: new arrow.Struct(fields),
+            length: batch.numRows,
+            children: fields.map(
+              field =>
+                (replacements.has(field.name) ? original.batches[index] : batch).getChild(
+                  field.name
+                )!.data[0]
+            )
+          })
+        )
+    )
+  );
 }

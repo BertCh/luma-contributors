@@ -37,7 +37,7 @@ test('excess risk recipes preserve both fields and reject invalid populations be
     });
     expect(getAnalysisRecipeColumns(JSON.parse(saved))).toEqual(['events', 'population']);
     expect(analysis.resultColumn).toBe('analysis_excess_risk');
-    expect(analysis.getTableColumns()?.columns.analysis_excess_risk.format).toBe('float32');
+    expect(analysis.getTableColumns()?.columns['analysis_excess_risk'].format).toBe('float32');
     analysis.setDenominatorColumn('events');
     expect(getAnalysisRecipeColumns(JSON.parse(analysis.serializeRecipe()))).toEqual(['events']);
     analysis.restoreRecipe(saved);

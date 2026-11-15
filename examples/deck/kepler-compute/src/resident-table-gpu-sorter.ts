@@ -28,6 +28,7 @@ import type {
 } from '@luma-contributors/kepler';
 import type * as arrow from 'apache-arrow';
 import type {OriginalSortDirection} from './original-table-sort';
+import {MeteredCommandGraph} from '@luma-contributors/kepler';
 import {chooseTableSortRoute, type TableOperationRoute} from './resident-table-population-routes';
 import {
   classifyTableSortType,
@@ -45,6 +46,7 @@ type PassColumns = {value: 'uint32'};
 type SortProgram = {
   key: string;
   revision: number;
+  accountedByteLength: number;
   /** Buffer holding the final sorted source row IDs (first `count` entries are meaningful). */
   rows: Buffer;
   rowsOffset: number;
@@ -195,15 +197,26 @@ export class ResidentTableGPUSorter {
     const orderKind = classifyTableSortType(field.type);
     const passes = orderKind === 'dictionary-string' ? 1 : 2;
     const estimatedBytes = estimateWideSortBytes(rowCount, passes);
-    if (estimatedBytes > this.props.memoryBudgetBytes)
+    const admissionBytes = Math.min(
+      this.props.memoryBudgetBytes,
+      this.props.session.registry.memoryUsage.availableBytes
+    );
+    if (estimatedBytes > admissionBytes)
       throw new Error('GPU table sort exceeds its working memory budget'); // sorting this many rows needs more GPU scratch memory
-    const reservation = this.props.session.registry.reserveMemory(estimatedBytes, 'gpu', 'scratch');
+    // Published luma exposes scratch sizes after compilation. Reserve the full admission ceiling
+    // first, then check the complete measured program before retaining it and shrinking the charge.
+    const reservation = this.props.session.registry.reserveMemory(admissionBytes, 'gpu', 'scratch');
     const owned: {destroy(): void}[] = [];
     try {
       const program =
         orderKind === 'dictionary-string'
           ? this.makeDictionaryProgram(key, request, reservation, owned)
           : this.makeWideProgram(key, request, orderKind as WideSortKind, reservation, owned);
+      if (program.accountedByteLength > admissionBytes)
+        throw new Error(
+          `GPU table sort needs ${program.accountedByteLength} bytes including compiled scratch, exceeding its working memory budget of ${admissionBytes} bytes`
+        );
+      reservation.resize(program.accountedByteLength);
       this.program = program;
       return program;
     } catch (error) {
@@ -243,7 +256,7 @@ export class ResidentTableGPUSorter {
     request: ResidentTableGPUSortRequest,
     selectedFilter: boolean,
     owned: {destroy(): void}[]
-  ): CompiledGPUDataFrameGlobalSort<Columns> {
+  ): CompiledGPUDataFrameGlobalSort<Columns> & {readonly transientByteLength: number} {
     const table = new GPUTable<Columns>({
       vectors: Object.fromEntries(
         Object.entries(vectors).map(([name, vector]) => [
@@ -267,9 +280,12 @@ export class ResidentTableGPUSorter {
       ...(validity ? {validity: {value: validity}} : {})
     } as never);
     try {
-      const graph = new GPUCommandGraph<GPUDataFrameQueryParameters>(this.props.session.device, {
-        id: `kepler-table-${id}`
-      });
+      const graph = new MeteredCommandGraph<GPUDataFrameQueryParameters>(
+        this.props.session.device,
+        {
+          id: `kepler-table-${id}`
+        }
+      );
       const filtered = frame.filter(
         selectedFilter ? column('selected' as never).equal(literal(1)) : literal(true)
       );
@@ -281,7 +297,7 @@ export class ResidentTableGPUSorter {
         .sortByGlobal('value', {direction: request.direction, nulls: 'last', nans: 'last'})
         .compile(graph) as CompiledGPUDataFrameGlobalSort<Columns>;
       owned.push(query);
-      return query;
+      return Object.assign(query, {transientByteLength: graph.transientByteLength});
     } finally {
       frame.destroy();
     }
@@ -345,13 +361,11 @@ export class ResidentTableGPUSorter {
       request.population === 'selected',
       owned
     );
-    reservation.resize(
-      reservation.byteLength + query.compilationStats.physicalTransientResourceBytes
-    );
     const indices = query.globalRowIndices.data[0];
     return {
       key,
       revision: -1,
+      accountedByteLength: estimateWideSortBytes(rowCount, 1) + query.transientByteLength,
       rows: getBuffer(indices),
       rowsOffset: indices.byteOffset,
       reservation,
@@ -418,14 +432,11 @@ export class ResidentTableGPUSorter {
       rowCount
     });
     owned.push(resolve);
-    reservation.resize(
-      reservation.byteLength +
-        first.compilationStats.physicalTransientResourceBytes +
-        second.compilationStats.physicalTransientResourceBytes
-    );
     return {
       key,
       revision: -1,
+      accountedByteLength:
+        estimateWideSortBytes(rowCount, 2) + first.transientByteLength + second.transientByteLength,
       rows: final.buffer,
       rowsOffset: 0,
       reservation,
@@ -463,7 +474,8 @@ export function readWideWords(
     fillWideSortKeys({
       kind,
       words: new Uint32Array(values.buffer, values.byteOffset, values.byteLength / 4),
-      firstRow: data.offset,
+      // Arrow already slices the numeric values view. Only the validity bitmap needs data.offset.
+      firstRow: 0,
       count: data.length,
       isPresent:
         data.nullCount && bitmap?.length

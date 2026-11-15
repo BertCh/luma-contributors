@@ -39,7 +39,7 @@ it('native time histogram preserves exact submillisecond boundaries, chunks, sel
     )
   );
   const dataset = session.importArrowDataset({id: 'time-histogram-source', table});
-  const source = dataset.value.timeColumns.time;
+  const source = dataset.value.timeColumns['time'];
   const selected = new GPUVector({
     name: 'selected',
     type: 'data',
@@ -121,6 +121,69 @@ it('native time histogram preserves exact submillisecond boundaries, chunks, sel
     expect(session.registry.memoryUsage.reservedBytes.gpu).toBe(0);
     spies.forEach(spy => spy.mockRestore());
     selected.destroy();
-    await session.destroy();
+    await session.destroy(Promise.resolve());
+  }
+});
+
+it('nanosecond extrema stay in their actual bins when enclosing edges exceed signed Int64', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const session = new KeplerComputeSession({device, memoryBudgetBytes: 16 * 1024 * 1024});
+  const minimum = -(1n << 63n);
+  const maximum = (1n << 63n) - 1n;
+  const ticks = [minimum, minimum + 1n, -1n, 0n, 1n, maximum - 1n, maximum];
+  const dataset = session.importArrowDataset({
+    id: 'int64-extreme-histogram',
+    table: new arrow.Table({
+      time: arrow.makeVector(
+        arrow.makeData({
+          type: new arrow.TimestampNanosecond(),
+          data: BigInt64Array.from(ticks),
+          length: ticks.length
+        })
+      )
+    })
+  });
+  const selected = new GPUVector({
+    name: 'extreme-selected',
+    type: 'data',
+    format: 'uint32',
+    ownsData: true,
+    data: [
+      new GPUData({
+        buffer: device.createBuffer({
+          data: new Uint32Array(ticks.length).fill(1),
+          usage: Buffer.STORAGE | Buffer.COPY_DST
+        }),
+        format: 'uint32',
+        length: ticks.length,
+        ownsBuffer: true
+      })
+    ]
+  });
+  const histogram = new ResidentTimeHistogram({
+    session,
+    datasetId: dataset.id,
+    field: 'time',
+    mask: selected,
+    plan: {
+      interval: '1-year',
+      thresholds: [-9_223_372_036_855, -9_223_372_036_854, 0, 9_223_372_036_854, 9_223_372_036_855]
+    },
+    workingMemoryBudgetBytes: 1024 * 1024
+  });
+  try {
+    const encoder = device.createCommandEncoder();
+    histogram.encode(encoder);
+    device.submit(encoder.finish());
+    expect([...(await histogram.readSummary())!.histograms['native-plot']]).toEqual([
+      2, 1, 2, 2, 0
+    ]);
+  } finally {
+    const fence = device.createFence();
+    await histogram.close(fence.signaled);
+    fence.destroy();
+    selected.destroy();
+    await session.destroy(Promise.resolve());
   }
 });

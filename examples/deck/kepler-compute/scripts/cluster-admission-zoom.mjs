@@ -59,12 +59,37 @@ async function waitForClusters(layerId, zoom) {
   }, {id: layerId, zoom}, {timeout: 120000, polling: 500});
 }
 
+// The binding is briefly absent while the index re-queries after a viewport or settle change (the
+// pre-port harness read it once and was racy about the same window); poll until it is present.
+const readClustersWhenPresent = async (memberLimit, timeout = 60000) => {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const read = await page.evaluate(limit => window.__keplerComputeTest.readClusters('cluster-admission', limit), memberLimit);
+    if (read) return read;
+    if (Date.now() > deadline) throw new Error('cluster binding did not become present');
+    await page.waitForTimeout(250);
+  }
+};
+
 const summary = {};
 const startedAt = Date.now();
 const stage = name => console.log(JSON.stringify({stage: name, seconds: Math.round((Date.now() - startedAt) / 1000)}));
 try {
-  await page.goto(`${baseUrl}?rows=${rowCount}`, {waitUntil: 'domcontentloaded'});
-  await page.waitForFunction(count => window.__keplerComputeTest?.getState().selectedCount === count, rowCount, {timeout: 180000});
+  // The driver may supply ?rows=256 (or a memory budget). Appending another '?' made
+  // rows='256?rows=1000000', which becomes NaN even in the pre-port example.
+  const targetUrl = new URL(baseUrl);
+  targetUrl.searchParams.set('rows', String(rowCount));
+  // Match acceptance.mjs (also present before the port): million-row fixtures exceed
+  // the default 512 MiB registry budget before cluster scratch is admitted. Honor overrides.
+  if (rowCount >= 1000000 && !targetUrl.searchParams.has('memoryBudgetMebibytes')) {
+    targetUrl.searchParams.set('memoryBudgetMebibytes', '32768');
+  }
+  await page.goto(targetUrl.href, {waitUntil: 'domcontentloaded'});
+  await page.waitForFunction(count => {
+    const state = window.__keplerComputeTest?.getState();
+    if (state?.error) throw new Error(state.error);
+    return state?.selectedCount === count;
+  }, rowCount, {timeout: 180000});
   stage('loaded');
   await page.getByTestId('memory-budget-panel').waitFor({timeout: 30000});
   const baseline = await readScratch();
@@ -87,7 +112,7 @@ try {
   assert(settled <= peak, `reservation must settle at or below its peak (${settled} vs ${peak})`);
   assert(settled > baseline, 'a built cluster layer keeps a measured footprint');
 
-  const initial = await page.evaluate(() => window.__keplerComputeTest.readClusters('cluster-admission', 3));
+  const initial = await readClustersWhenPresent(3);
   assert(initial.clusterCount > 0);
   const inspected = initial.clusters.find(cluster => cluster.total > 1) ?? initial.clusters[0];
   assert(inspected.rows.length > 0 && inspected.total >= inspected.rows.length, 'hover members are read from the index');
@@ -98,7 +123,7 @@ try {
   await page.evaluate(zoom => window.__keplerComputeTest.setMapViewport({zoom}), startZoom + 3);
   await waitForClusters('cluster-admission', startZoom + 3);
   await page.waitForTimeout(4000);
-  const zoomedIn = await page.evaluate(() => window.__keplerComputeTest.readClusters('cluster-admission', 1));
+  const zoomedIn = await readClustersWhenPresent(1);
   await page.evaluate(() => {
     window.__longTaskMax = 0;
     new PerformanceObserver(list => {
@@ -109,7 +134,7 @@ try {
   await page.evaluate(zoom => window.__keplerComputeTest.setMapViewport({zoom}), outZoom);
   await waitForClusters('cluster-admission', outZoom);
   await page.waitForTimeout(4000);
-  const zoomedOut = await page.evaluate(() => window.__keplerComputeTest.readClusters('cluster-admission', 1));
+  const zoomedOut = await readClustersWhenPresent(1);
   assert(zoomedOut.clusterCount !== zoomedIn.clusterCount || zoomedOut.view.zoom !== zoomedIn.view.zoom, 'zoom out requeries the index');
   const longTask = await page.evaluate(() => window.__longTaskMax);
   assert(longTask < 3000, `zooming out after a zoomed-in build must not stall the main thread (${longTask} ms)`);

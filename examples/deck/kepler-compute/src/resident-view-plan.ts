@@ -31,6 +31,32 @@ export type ResidentViewPlanInput = {
 
 const MAXIMUM_VIEW_COUNT = 2;
 
+/** Saved maps predating mapSplitMode still use isSplit; the installed reducer keeps both. */
+export function getResidentMapSplitMode(mapState: {
+  isSplit?: boolean;
+  mapSplitMode?: string | null;
+}): string {
+  return mapState.isSplit && (!mapState.mapSplitMode || mapState.mapSplitMode === 'SINGLE_MAP')
+    ? 'DUAL_MAP'
+    : (mapState.mapSplitMode ?? 'SINGLE_MAP');
+}
+
+/** One shared Deck instance must retain a visible instance from either native map. */
+export function mergeResidentViewLayers<Layer extends {id: string; props: {visible?: boolean}}>(
+  primary: readonly Layer[],
+  secondary: readonly Layer[]
+): Layer[] {
+  const merged = primary.map(layer =>
+    layer.props.visible === false
+      ? (secondary.find(
+          candidate => candidate.id === layer.id && candidate.props.visible !== false
+        ) ?? layer)
+      : layer
+  );
+  const known = new Set(merged.map(layer => layer.id));
+  return [...merged, ...secondary.filter(layer => !known.has(layer.id))];
+}
+
 /** Mirrors native `isLayerVisible`: a layer must be enabled and, in split mode, flagged for that map. */
 export function planResidentViews(
   input: ResidentViewPlanInput

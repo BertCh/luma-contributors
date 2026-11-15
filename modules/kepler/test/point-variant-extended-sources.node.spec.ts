@@ -189,3 +189,32 @@ describe('extended point position variants', () => {
     expect(state.reserved).toBe(0);
   });
 });
+
+test('line altitude changes create independent XYZ endpoint variants with stable cached storage', async () => {
+  const {session, state} = makeFakeSession();
+  const variants = new PointPositionVariantRuntime(session, () => undefined);
+  const layer = makeLayer('line-altitude', 'lng', 'lat', 'line');
+  layer.config.columns = {
+    lng0: {value: 'lng'},
+    lat0: {value: 'lat'},
+    lng1: {value: 'dropLng'},
+    lat1: {value: 'dropLat'},
+    alt0: {value: 'alt'},
+    alt1: {value: 'alt'}
+  };
+  const bound = {lng0: 'lng', lat0: 'lat', lng1: 'dropLng', lat1: 'dropLat'};
+  const first = makeConnectionVariantBinding(variants, layer, dataset, bound)!;
+  expect('unsupportedReason' in first).toBe(false);
+  if ('unsupportedReason' in first) throw new Error(first.unsupportedReason);
+  expect(first.sourcePositions.format).toBe('float32x3');
+  expect(first.targetPositions.format).toBe('float32x3');
+  expect(first.sourceAltitudeValidity?.length).toBe(3);
+  const next = makeConnectionVariantBinding(variants, layer, dataset, bound)!;
+  if ('unsupportedReason' in next) throw new Error(next.unsupportedReason);
+  expect(next.sourcePositions).toBe(first.sourcePositions);
+  expect(next.targetPositions).toBe(first.targetPositions);
+  await variants.destroy(Promise.resolve());
+  expect(state.reserved).toBe(0);
+  expect(state.buffersAlive).toBe(0);
+  expect(state.leasesAlive).toBe(0);
+});

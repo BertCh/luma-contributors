@@ -8,7 +8,6 @@ import {
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
   getBoundedInvocationIndexSource,
-  getGraphVectorData,
   getViewBinding,
   getViewElementOffset,
   type GPUCommandGraph,
@@ -16,6 +15,7 @@ import {
   type GraphDataView,
   type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
+import {getGraphViewChunks} from '@luma-contributors/analysis/analysis-core';
 
 const WORKGROUP_SIZE = 64;
 
@@ -50,13 +50,13 @@ export class TripMembershipFilter {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const offsets = getGraphVectorData(this.props.offsets);
-    const members = getGraphVectorData(this.props.memberValues);
-    const outputs = getGraphVectorData(this.props.output);
-    const positions = getGraphVectorData(this.props.positions);
-    const times = getGraphVectorData(this.props.times);
-    const filteredPositions = getGraphVectorData(this.props.filteredPositions);
-    const filteredTimes = getGraphVectorData(this.props.filteredTimes);
+    const offsets = getGraphViewChunks(this.props.offsets);
+    const members = getGraphViewChunks(this.props.memberValues);
+    const outputs = getGraphViewChunks(this.props.output);
+    const positions = getGraphViewChunks(this.props.positions);
+    const times = getGraphViewChunks(this.props.times);
+    const filteredPositions = getGraphViewChunks(this.props.filteredPositions);
+    const filteredTimes = getGraphViewChunks(this.props.filteredTimes);
     const nodes: GPUCommandNode<Parameters>[] = [];
     outputs.forEach((output, index) => {
       if (!output.length) return;

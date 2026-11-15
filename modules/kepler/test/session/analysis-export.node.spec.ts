@@ -38,8 +38,8 @@ function fixture() {
   };
   const snapshot = {
     revision: '2:4',
-    columns: {score: dataset.value.columns.value},
-    validity: {score: dataset.value.columns.value},
+    columns: {score: dataset.value.columns['value']},
+    validity: {score: dataset.value.columns['value']},
     isCurrent: () => state.current
   };
   const analysis = {

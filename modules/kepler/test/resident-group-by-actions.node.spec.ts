@@ -65,7 +65,7 @@ test('native Group By snapshots only its own resident configuration and retains 
     resident
   )!;
   aggregations.value = 'average';
-  expect(captured.aggregations.value).toBe('sum');
+  expect(captured.aggregations['value']).toBe('sum');
   expect(getResidentGroupByRequest(state, runGroupBy('ordinary'), resident)).toBeUndefined();
   expect(
     getResidentGroupByRequest(state, wrapTo('another', runGroupBy(request.id)), resident)

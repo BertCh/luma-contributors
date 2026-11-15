@@ -6,8 +6,8 @@ import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import * as arrow from 'apache-arrow';
 import {describeNumericNarrowingReport} from './analysis2-policy-binding';
-import type {WideNumericGpuFormat} from './wide-numeric-gpu-reference';
-import {scanWideNumericColumnOnGpu} from './wide-numeric-gpu-narrowing';
+import type {WideNumericGpuFormat} from '@luma-contributors/analysis/dataframe-analysis';
+import {scanWideNumericColumnOnGpu} from '@luma-contributors/analysis/dataframe-analysis';
 
 function getWideNumericGpuFormat(type: arrow.DataType): WideNumericGpuFormat | undefined {
   if (arrow.DataType.isFloat(type))
@@ -20,47 +20,58 @@ function getWideNumericGpuFormat(type: arrow.DataType): WideNumericGpuFormat | u
 export function makeWideNumericWordVectors(device: Device, column: arrow.Vector) {
   const wordData: GPUData<'uint32x2'>[] = [];
   const validityData: GPUData<'uint32'>[] = [];
+  const allocatedBuffers: Buffer[] = [];
   let hasNulls = false;
-  for (const chunk of column.data) {
-    const values = chunk.values as unknown as ArrayBufferView;
-    const words = new Uint32Array(
-      values.buffer,
-      values.byteOffset + chunk.offset * 8,
-      chunk.length * 2
-    );
-    wordData.push(
-      new GPUData({
-        format: 'uint32x2',
-        length: chunk.length,
-        ownsBuffer: true,
-        buffer: device.createBuffer({
-          data: words.length ? words : new Uint32Array(2),
-          usage: Buffer.STORAGE | Buffer.COPY_DST
+  try {
+    for (const chunk of column.data) {
+      const values = chunk.values as unknown as ArrayBufferView;
+      // Arrow has already sliced values; do not apply chunk.offset a second time.
+      const words = new Uint32Array(values.buffer, values.byteOffset, chunk.length * 2);
+      const wordBuffer = device.createBuffer({
+        data: words.length ? words : new Uint32Array(2),
+        usage: Buffer.STORAGE | Buffer.COPY_DST
+      });
+      allocatedBuffers.push(wordBuffer);
+      wordData.push(
+        new GPUData({
+          format: 'uint32x2',
+          length: chunk.length,
+          ownsBuffer: true,
+          buffer: wordBuffer
         })
-      })
-    );
-    const flags = new Uint32Array(Math.max(1, chunk.length)).fill(1);
-    if (chunk.nullCount > 0) {
-      hasNulls = true;
-      const vector = new arrow.Vector([chunk]);
-      for (let row = 0; row < chunk.length; row++) flags[row] = vector.get(row) === null ? 0 : 1;
+      );
+      const flags = new Uint32Array(Math.max(1, chunk.length)).fill(1);
+      if (chunk.nullCount > 0) {
+        hasNulls = true;
+        const vector = new arrow.Vector([chunk]);
+        for (let row = 0; row < chunk.length; row++) flags[row] = vector.get(row) === null ? 0 : 1;
+      }
+      const validityBuffer = device.createBuffer({
+        data: flags,
+        usage: Buffer.STORAGE | Buffer.COPY_DST
+      });
+      allocatedBuffers.push(validityBuffer);
+      validityData.push(
+        new GPUData({
+          format: 'uint32',
+          length: chunk.length,
+          ownsBuffer: true,
+          buffer: validityBuffer
+        })
+      );
     }
-    validityData.push(
-      new GPUData({
-        format: 'uint32',
-        length: chunk.length,
-        ownsBuffer: true,
-        buffer: device.createBuffer({data: flags, usage: Buffer.STORAGE | Buffer.COPY_DST})
-      })
-    );
+    const make = <Format extends 'uint32x2' | 'uint32'>(format: Format, data: GPUData<Format>[]) =>
+      new GPUVector({name: `narrowing-${format}`, type: 'data', format, ownsData: true, data});
+    return {
+      words: make('uint32x2', wordData),
+      validity: hasNulls ? make('uint32', validityData) : undefined,
+      unusedValidity: hasNulls ? undefined : make('uint32', validityData)
+    };
+  } catch (error) {
+    // A failed factory returns no owner, so release even buffers allocated before a constructor failed.
+    for (const buffer of allocatedBuffers) buffer.destroy();
+    throw error;
   }
-  const make = <Format extends 'uint32x2' | 'uint32'>(format: Format, data: GPUData<Format>[]) =>
-    new GPUVector({name: `narrowing-${format}`, type: 'data', format, ownsData: true, data});
-  return {
-    words: make('uint32x2', wordData),
-    validity: hasNulls ? make('uint32', validityData) : undefined,
-    unusedValidity: hasNulls ? undefined : make('uint32', validityData)
-  };
 }
 
 /**

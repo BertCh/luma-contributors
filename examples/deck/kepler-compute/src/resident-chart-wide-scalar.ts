@@ -4,8 +4,8 @@
 
 import type {Device} from '@luma.gl/core';
 import * as arrow from 'apache-arrow';
-import {aggregateInteger64OnGpu} from './wide-numeric-gpu-aggregate';
-import type {WideInteger64Summary} from './wide-numeric-gpu-reference';
+import {aggregateInteger64OnGpu} from '@luma-contributors/analysis/dataframe-analysis';
+import type {WideInteger64Summary} from '@luma-contributors/analysis/dataframe-analysis';
 import {makeWideNumericWordVectors} from './wide-numeric-gpu-summary';
 import type {ResidentChartPlan} from './resident-chart-plan';
 import type {ResidentScalarChartResult} from './resident-chart-runtime';

@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, test, vi} from 'vitest';
+import {afterAll, describe, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import {LayerClasses} from '@kepler.gl/layers';
+import {getGeographicViewportBounds} from '@luma-contributors/analysis/geospatial-analysis';
 import {GPUVector, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import type {Buffer} from '@luma.gl/core';
 import type {PickingInfo} from '@deck.gl/core';
-import {GPUScatterplotLayer} from '@deck.gl-community/gpu-layers';
+import {GPUScatterplotLayer} from '../../../examples/deck/kepler-compute/gpu-layers/index';
 import {
   createResidentLayerClasses,
   type ResidentDatasetBinding
@@ -199,6 +203,30 @@ function inaccessibleSource<Source extends object>(): Source {
 }
 
 describe('Kepler resident layer overrides', () => {
+  test('trip metadata retains the published all-part viewport bounds throughout native lifecycle', () => {
+    const {binding, classes} = setup();
+    binding.bounds = getGeographicViewportBounds([
+      Float32Array.from([-74.03, 40.74, 0, -73.97, 40.74, 0]),
+      Float32Array.from([
+        -74.03, 40.77, 0, -73.97, 40.77, 0, -74.03, 40.78, 100, -73.97, 40.78, 200
+      ])
+    ])!;
+    const layer = new classes.trip({id: 'multipart-trips', dataId: 'resident'});
+    const dataset = inaccessibleSource<Parameters<typeof layer.updateLayerMeta>[0]>();
+    layer.setInitialLayerConfig(dataset);
+    expect(layer.meta).toEqual(expect.objectContaining({bounds: binding.bounds}));
+    Reflect.deleteProperty(layer.meta, 'bounds');
+    layer.updateLayerMeta(dataset);
+    expect(layer.meta).toEqual(expect.objectContaining({bounds: binding.bounds}));
+    Reflect.deleteProperty(layer.meta, 'bounds');
+    layer.formatLayerData(
+      inaccessibleSource<Parameters<typeof layer.formatLayerData>[0]>(),
+      undefined
+    );
+    expect(layer.meta).toEqual(expect.objectContaining({bounds: binding.bounds}));
+    expect(binding.bounds[3]).toBeGreaterThan(40.78);
+  });
+
   test('point altitude requires matching XYZ and restores flat XY rendering when removed', () => {
     const {binding, classes, onUnsupported} = setup();
     const layer = new classes.point({id: 'altitude-points', dataId: 'resident'});
@@ -312,6 +340,23 @@ describe('Kepler resident layer overrides', () => {
     // Once prepared, the guard delegates to the renderer and clears its own diagnostic.
     expect(() => layer.renderLayer({})).toThrow('Unexpected native accessor render');
     expect(onPreparationRequired).toHaveBeenLastCalledWith('point', null);
+  });
+
+  test('remote tile datasets delegate to native streaming without a row preparation notice', () => {
+    const onPreparationRequired = vi.fn();
+    const classes = createPreparedLayerClasses(LayerClasses, {
+      isPrepared: () => false,
+      onPreparationRequired
+    });
+    const layer = new classes.point({id: 'remote', dataId: 'remote-id'});
+    for (const type of ['vector-tile', 'raster-tile', 'wms-tile', 'tile-3d', 'bitmap']) {
+      // The native test double throws when called, proving the guard delegates rather than
+      // returning an empty layer list. No native WebGL renderer is constructed in this test.
+      expect(() => layer.renderLayer({dataset: {type}} as never)).toThrow(
+        'Unexpected native accessor render'
+      );
+    }
+    expect(onPreparationRequired).not.toHaveBeenCalled();
   });
 
   test('H3 column branch preserves source identity and native scale controls', () => {
@@ -1044,4 +1089,11 @@ describe('Kepler resident layer overrides', () => {
       render.mockRestore();
     }
   });
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@kepler.gl/utils');
+  vi.doUnmock('@kepler.gl/layers');
+  vi.resetModules();
 });

@@ -620,7 +620,7 @@ export class KeplerComputeSession {
         explorer.accountedResidentByteLength + explorer.inspectionReservationByteLength;
       if (reservedMemoryByteLength > workingMemoryBudgetBytes) {
         throw new KeplerAllocationError('working-memory', {
-          message: 'Explorer storage and inspection capacity exceed working memory reservation'
+          message: `Explorer storage and inspection capacity exceed working memory reservation (${reservedMemoryByteLength} bytes needed, ${workingMemoryBudgetBytes} reserved)`
         });
       }
       // Compilation can allocate before reporting its plan, so admission retains the full cap

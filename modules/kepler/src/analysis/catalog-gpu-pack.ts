@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createGPULocalFrame} from '@luma-contributors/analysis/analysis-core';
-import type {GeoArrowColumn, GeoArrowGeometryValue} from '@math.gl/geospatial/geoarrow';
+import type {GeoArrowColumn, GeoArrowGeometryValue} from '@math.gl/arrow/geoarrow-utils';
 import {
   makeGeoArrowColumnFromCatalogGeometries,
   projectCatalogPosition,

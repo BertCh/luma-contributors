@@ -81,12 +81,14 @@ export class RasterLiveController {
     const signature = getKeplerTileSignature(loadedTiles);
     let entry = this.entries.get(layerId);
     if (entry && entry.signature === signature) return entry.source;
+    // The same tile coordinates may now hold replacement decoded samples or masks.
+    entry?.residency?.destroy();
     const source = createNumericSourceFromKeplerTiles(layerId, loadedTiles);
     entry = {
       signature,
       source,
-      residency: entry?.residency,
-      residencyDevice: entry?.residencyDevice,
+      residency: undefined,
+      residencyDevice: undefined,
       rebuildCount: (entry?.rebuildCount ?? 0) + 1
     };
     this.entries.set(layerId, entry);

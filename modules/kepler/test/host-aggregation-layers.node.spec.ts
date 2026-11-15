@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, test, vi} from 'vitest';
+import {afterAll, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import {createResidentAggregationLayerClasses} from '../../../examples/deck/kepler-compute/src/resident-aggregation-layers';
 
 // Exercise the adapter's native render gate without loading Kepler's WebGL bootstrap in Node.
@@ -62,4 +65,11 @@ test('native aggregate overrides admit only the resident sentinel and honor spli
     expect(layer.hasLayerData({data: [1]})).toBe(true);
     expect(layer.renderLayer()).toEqual(['native']);
   }
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@kepler.gl/utils');
+  vi.doUnmock('@kepler.gl/layers');
+  vi.resetModules();
 });

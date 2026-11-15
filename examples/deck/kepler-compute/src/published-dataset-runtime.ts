@@ -13,6 +13,8 @@ import {
 } from '@luma-contributors/kepler';
 import type {ResidentTableProvider} from './resident-data-table';
 import {withOriginalSourceTable} from './resident-table-provider';
+import {ResidentTableGPUSorter} from './resident-table-gpu-sorter';
+import {ResidentTableWideStatistics} from './resident-table-wide-statistics';
 
 /**
  * Attach an already-uploaded dataset without copying or renaming its columns. The host owns
@@ -22,6 +24,8 @@ export class PublishedDatasetRuntime {
   readonly explorer: KeplerSessionExplorer;
   readonly table: ResidentTableProvider;
   private readonly inspector: GPUKeplerTableInspector;
+  private readonly gpuSorter: ResidentTableGPUSorter;
+  private readonly wideStatistics: ResidentTableWideStatistics;
   private readonly session: KeplerComputeSession;
   private readonly requestUpdate: () => void;
   private readonly destroyDerived?: (completion: PromiseLike<unknown>) => Promise<void>;
@@ -46,6 +50,7 @@ export class PublishedDatasetRuntime {
     this.requestUpdate = props.requestUpdate;
     this.destroyDerived = props.destroyDerived;
     this.explorer = props.session.openExplorer(props.datasetId, props.explorer);
+    const constructed: {destroy(): Promise<void>}[] = [];
     try {
       this.inspector = new GPUKeplerTableInspector({
         session: props.session,
@@ -53,8 +58,22 @@ export class PublishedDatasetRuntime {
         sortMemoryBudgetBytes: props.sortMemoryBudgetBytes,
         getDerivedColumns: props.getDerivedColumns
       });
+      constructed.push(this.inspector);
+      this.gpuSorter = new ResidentTableGPUSorter({
+        session: props.session,
+        explorer: this.explorer,
+        memoryBudgetBytes: props.sortMemoryBudgetBytes
+      });
+      constructed.push(this.gpuSorter);
+      this.wideStatistics = new ResidentTableWideStatistics({
+        session: props.session,
+        explorer: this.explorer,
+        memoryBudgetBytes: props.sortMemoryBudgetBytes
+      });
     } catch (error) {
-      void this.explorer.close(Promise.resolve());
+      void Promise.allSettled(constructed.map(resource => resource.destroy())).then(() =>
+        this.explorer.close(Promise.resolve())
+      );
       throw error;
     }
     const dataset = this.explorer.dataset;
@@ -98,7 +117,13 @@ export class PublishedDatasetRuntime {
         !this.destroyed &&
         this.explorer.isCurrent &&
         this.session.registry.getDataset(dataset.id)?.revision === dataset.revision,
-      dataset.value.resident
+      dataset.value.resident,
+      {
+        plan: column => inspector.planColumnStatistics(column),
+        read: request => inspector.readColumnStatistics(request)
+      },
+      this.gpuSorter,
+      this.wideStatistics
     );
   }
 
@@ -185,7 +210,12 @@ export class PublishedDatasetRuntime {
     this.notify();
     this.listeners.clear();
     this.destruction = (async () => {
-      const outcomes = await Promise.allSettled([this.inspector.destroy(), this.summaryPending]);
+      const outcomes = await Promise.allSettled([
+        this.inspector.destroy(),
+        this.gpuSorter.destroy(),
+        this.wideStatistics.destroy(),
+        this.summaryPending
+      ]);
       const fence = this.session.device.isLost ? undefined : this.session.device.createFence();
       const completion = fence
         ? Promise.race([fence.signaled, this.session.device.lost])

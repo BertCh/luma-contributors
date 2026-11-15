@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
-import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
+import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/analysis/analysis-core';
 import {describeWideNumericNarrowing} from './analysis2-narrowing-summary';
 import {previewArrowSource} from './source-preview';
 import {readFieldRoute, routeArrowTable} from './source-type-routes';
@@ -196,7 +196,13 @@ export function inferTripTimestampEncoding(
       geometry && typeof geometry === 'object' && 'coordinates' in geometry
         ? (geometry as {coordinates: unknown}).coordinates
         : undefined;
-    const vertex = Array.isArray(coordinates) ? coordinates[0] : undefined;
+    const first = Array.isArray(coordinates) ? coordinates[0] : undefined;
+    const multipart =
+      geometry &&
+      typeof geometry === 'object' &&
+      'type' in geometry &&
+      geometry.type === 'MultiLineString';
+    const vertex = multipart && Array.isArray(first) ? first[0] : first;
     const time: unknown = Array.isArray(vertex) ? vertex[3] : undefined;
     if (typeof time === 'string') return 'iso8601';
     if (typeof time === 'number' && Number.isFinite(time))

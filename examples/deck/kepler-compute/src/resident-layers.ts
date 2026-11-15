@@ -26,13 +26,7 @@ import {
 } from './point-neighbor-hover';
 
 import {LayerClasses, type LayerClassesType, type Layer as KeplerLayer} from '@kepler.gl/layers';
-import {
-  COORDINATE_SYSTEM,
-  type Color,
-  type Layer,
-  type LayerProps,
-  type PickingInfo
-} from '@deck.gl/core';
+import {type Color, type Layer, type LayerProps, type PickingInfo} from '@deck.gl/core';
 import {
   GPUScatterplotLayer,
   GPUMeshIconLayer,
@@ -45,7 +39,7 @@ import {
   GPUSolidPolygonLayer,
   type GPUPathLayerProps,
   type GPUSolidPolygonLayerProps
-} from '@deck.gl-community/gpu-layers';
+} from '../gpu-layers/index';
 import type {GPUData, GPUVector, GPUVectorFormat, VertexList} from '@luma.gl/graph/gpu-data';
 import type {NativeStylePlan} from './native-style-plan';
 import {planKeplerTripAnimation} from '@luma-contributors/kepler';
@@ -501,7 +495,7 @@ export function createResidentLayerClasses(options: ResidentLayerOptions): Layer
       nativeLayerId: layer.id,
       nativeSourceRowIndex: primitive?.resolveSourceRow ?? binding.resolveSourceRow,
       visible: layer.config.isVisible && renderOptions.visible !== false,
-      coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+      coordinateSystem: 'lnglat',
       parameters: {
         depthCompare: 'less-equal',
         depthWriteEnabled: Boolean(renderOptions.mapState?.dragRotate),
@@ -811,7 +805,7 @@ export function createResidentLayerClasses(options: ResidentLayerOptions): Layer
             pickable: false,
             wrapLongitude: false,
             visible: layer.config.isVisible && renderOptions.visible !== false,
-            coordinateSystem: COORDINATE_SYSTEM.LNGLAT
+            coordinateSystem: 'lnglat'
           })
         : undefined;
     if (geometry.branch === 'columns' && geometry.columns) {

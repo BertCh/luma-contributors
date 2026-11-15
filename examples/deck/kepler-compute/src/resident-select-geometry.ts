@@ -9,8 +9,8 @@ import {
   getGeoArrowRowViewFromArrowVector,
   makeArrowVectorFromGeoArrowColumn
 } from '@luma.gl/graph/arrow';
-import type {GeoArrowEncoding} from '@math.gl/geospatial/geoarrow';
-import {parseWKB, visitWKB} from '@math.gl/geospatial';
+import type {GeoArrowEncoding} from '@math.gl/arrow/geoarrow-utils';
+import {parseWKB, visitWKB} from '@math.gl/arrow/wkb';
 import {cellToBoundary} from 'h3-js';
 import {prepareH3Source, type H3SourceAccessor} from './h3-source';
 

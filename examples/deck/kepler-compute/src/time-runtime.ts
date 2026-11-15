@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {CommandEncoder} from '@luma.gl/core';
-import type {PreparedArrowAnalyticsTimeColumn} from '@luma.gl/graph/arrow';
+import type {PreparedArrowAnalyticsTimeColumn} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUKeplerTimeSelection,
   convertKeplerTimeInstant,
@@ -25,9 +25,15 @@ import {
 
 /** Native Kepler Date controls use integral epoch milliseconds inside JavaScript's Date range. */
 const MAXIMUM_DATE_MILLISECONDS = 8_640_000_000_000_000;
+const MINIMUM_SOURCE_TIME = -(1n << 63n);
+const MAXIMUM_SOURCE_TIME = (1n << 63n) - 1n;
 export const SAMPLE_TIMESTAMP_EPOCH_MILLISECONDS = Date.UTC(2026, 0, 1);
 
-/** Pure validation used by the native table planner before changing any active GPU selections. */
+/**
+ * Native inclusive predicates intersect the selected millisecond range with the source Int64
+ * range. Enclosing slider endpoints can lie just outside that range for sub-ms extrema.
+ * An entirely disjoint window uses the selection runtime's reversed-range sentinel.
+ */
 export function prepareKeplerTimeRangeMilliseconds(
   minimum: number,
   maximum: number,
@@ -35,6 +41,18 @@ export function prepareKeplerTimeRangeMilliseconds(
 ): GPUKeplerTimeWindow {
   for (const endpoint of [minimum, maximum]) validateNativeMilliseconds(endpoint);
   if (minimum > maximum) throw new Error('Native time range endpoints must be ordered');
+  if (sourceUnit === 'microsecond' || sourceUnit === 'nanosecond') {
+    const ticksPerMillisecond = sourceUnit === 'microsecond' ? 1000n : 1_000_000n;
+    const start = BigInt(minimum) * ticksPerMillisecond;
+    const end = BigInt(maximum) * ticksPerMillisecond;
+    if (start > MAXIMUM_SOURCE_TIME || end < MINIMUM_SOURCE_TIME)
+      return {start: 1n, end: 0n, unit: sourceUnit};
+    return {
+      start: start < MINIMUM_SOURCE_TIME ? MINIMUM_SOURCE_TIME : start,
+      end: end > MAXIMUM_SOURCE_TIME ? MAXIMUM_SOURCE_TIME : end,
+      unit: sourceUnit
+    };
+  }
   return {
     start: convertKeplerTimeInstant(minimum, 'millisecond', sourceUnit),
     end: convertKeplerTimeInstant(maximum, 'millisecond', sourceUnit),
@@ -45,7 +63,8 @@ export function prepareKeplerTimeRangeMilliseconds(
 /**
  * Scans retained CPU time words once at import, never during interaction or from GPU readback.
  * Sub-millisecond extrema produce enclosing integer-ms slider bounds (floor min, ceil max),
- * using bigint division. Source ticks stay unchanged; each chosen filter endpoint converts exactly.
+ * using bigint division. Source ticks stay unchanged; filter predicates intersect exact converted
+ * endpoints with the representable source range, saturating enclosing Int64 boundary crossings.
  * Empty/all-null columns return null; callers can disable their native slider explicitly.
  */
 export function getPreparedTimeDomainMilliseconds(

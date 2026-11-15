@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {DatasetOpsTable, GroupByDatasetConfig} from '@kepler.gl/table';
-import {expect, test, vi} from 'vitest';
+import {afterAll, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import {
   createResidentGroupByPlan,
   parseResidentGroupByProvenance,
@@ -177,4 +180,10 @@ test('saved provenance is detached, preserves source revision and rejects policy
       aggregations: [{column: 'amount', technique: 'sum', name: 'amount_sum'}]
     })
   ).toThrow(/names/);
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@kepler.gl/utils');
+  vi.resetModules();
 });

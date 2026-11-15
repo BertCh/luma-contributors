@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import assert from 'node:assert/strict';
-import {pinViteModules} from './pin-vite-modules.mjs';
+import {pinViteModules, openKeplerComputePage, discardStaleImportErrors} from './pin-vite-modules.mjs';
 import {chromium} from 'playwright';
 import {PNG} from 'pngjs';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
@@ -20,8 +20,14 @@ page.on('console', message => {
 });
 const results = [];
 try {
-  await page.goto(process.argv[2] || 'http://127.0.0.1:5318/?rows=4096');
-  await page.waitForFunction(() => { const api = window.__keplerComputeTest; return api && api.getState().selectedCount === api.source().length; });
+  const failuresBeforeBoot = failures.length;
+  await openKeplerComputePage(page, process.argv[2] || 'http://127.0.0.1:5318/?rows=4096', {
+    timeout: 30000,
+    // Discard only identified stale imports; genuine failures from every attempt survive.
+    onAbandonedAttempt: ({staleImportErrors}) => {
+      discardStaleImportErrors(failures, failuresBeforeBoot, staleImportErrors);
+    }
+  });
   const original = await page.evaluate(() => window.__keplerComputeTest.saveNativeConfig());
   const sourceCount = await page.evaluate(() => window.__keplerComputeTest.source().length);
   const filteredCount = await page.evaluate(() => window.__keplerComputeTest.source().filter(row => row[2] >= 40 && row[2] <= 75).length);

@@ -6,7 +6,7 @@
  * GPU residency of one decoded vector tile.
  *
  * Geometry goes through the same one-time preparation and upload as resident GeoJSON sources
- * (`prepareGeometrySource` + `makeGeometryGPUVectors`). A filter + style compute kernel then writes
+ * (`prepareKeplerGeometrySource` + `makeKeplerGeometryGPUVectors`). A filter + style compute kernel then writes
  * one packed mask word and one packed RGBA8 color per source feature, and the host's
  * `GeometryRuntime` gathers those into the point, path, polygon and polygon-outline primitive
  * spaces. The GPU layers read the gathered masks on every draw, so filtering is a GPU write of
@@ -16,7 +16,7 @@
 import {Buffer, type Device} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {prepareGeometrySource, makeGeometryGPUVectors} from '@luma.gl/engine/arrow';
+import {prepareKeplerGeometrySource, makeKeplerGeometryGPUVectors} from './geometry-preparation';
 import {GeometryRuntime} from './geometry-runtime';
 import type {ResidentDatasetBinding} from './resident-layers';
 import type {DecodedTileFeature, DecodedTileFilter} from './vector-tile-decoded-batch';
@@ -45,10 +45,12 @@ export type VectorTileResidentTileOptions = {
    * listed here is uploaded as its code (NaN when the label has no code) instead of a numeric value.
    */
   categories?: ReadonlyMap<string, ReadonlyMap<string | number, number>>;
+  globeResolutionDegrees?: number;
 };
 
 export class VectorTileResidentTile {
   readonly tileKey: string;
+  readonly globeResolutionDegrees: number | undefined;
   readonly rowCount: number;
   readonly fieldNames: readonly string[];
   readonly binding: NonNullable<ResidentDatasetBinding['geojson']>;
@@ -79,14 +81,22 @@ export class VectorTileResidentTile {
     const {device, features} = options;
     this.device = device;
     this.tileKey = options.tileKey;
+    this.globeResolutionDegrees = options.globeResolutionDegrees;
     this.rowCount = features.length;
     this.fieldNames = options.fieldNames;
     this.fieldIndexByName = new Map(options.fieldNames.map((name, index) => [name, index]));
     const id = `kepler-vector-tile-${options.tileKey}`;
-    const prepared = prepareGeometrySource([
-      {id, rows: features.map(feature => feature.geometry ?? null)}
-    ]);
-    const geometry = makeGeometryGPUVectors(device, prepared);
+    const prepared = prepareKeplerGeometrySource(
+      [{id, rows: features.map(feature => feature.geometry ?? null)}],
+      options.globeResolutionDegrees === undefined
+        ? {}
+        : {
+            // Tile-local edges must not take the shortest antimeridian route. In a z0 tile the
+            // water polygon can span all 360 degrees; unwrapping would collapse it to a meridian.
+            globe: {resolutionDegrees: options.globeResolutionDegrees, unwrapLongitude: false}
+          }
+    );
+    const geometry = makeKeplerGeometryGPUVectors(device, prepared);
     this.featureTypes = prepared.metadata.featureTypes;
     this.invalidRowCount = prepared.metadata.invalidRows.length;
     try {

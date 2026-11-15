@@ -6,7 +6,7 @@ import {
   listStyleFieldRequirements,
   requestStyleFieldPreparation
 } from '../../../examples/deck/kepler-compute/src/binding4-style-field-preparation';
-import {OutOfMemoryError} from '@luma.gl/core';
+import {KeplerDeviceOutOfMemoryError} from '@luma-contributors/kepler';
 import {KeplerAllocationError} from '../src/runtime/dataset-registry';
 import {describe, expect, it} from 'vitest';
 import {
@@ -220,13 +220,14 @@ describe('BINDING3 coordinate role sets', () => {
 });
 
 describe('BINDING3 restore allocation recovery', () => {
-  // Skipped: needs OutOfMemoryError, which published @luma.gl/core 10.0.0-alpha.10 does not export.
-  it.skip('recognizes allocation failures only', () => {
+  it('recognizes allocation failures only', () => {
     expect(isAllocationFailure(new KeplerAllocationError('memory-budget'))).toBe(true);
     expect(
       isAllocationFailure(new Error('x', {cause: new KeplerAllocationError('reservation')}))
     ).toBe(true);
-    expect(isAllocationFailure(new OutOfMemoryError('buffer out of memory'))).toBe(true);
+    expect(isAllocationFailure(new KeplerDeviceOutOfMemoryError('buffer out of memory'))).toBe(
+      true
+    );
     expect(isAllocationFailure(new Error('Memory budget exceeded for tier gpu'))).toBe(false);
     expect(isAllocationFailure(new Error('Injected restore failure'))).toBe(false);
   });

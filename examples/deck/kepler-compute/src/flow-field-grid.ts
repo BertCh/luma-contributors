@@ -49,6 +49,9 @@ export type FlowFieldGrid = {
   altitude?: Float32Array;
 };
 
+/** Analysis snapshots retain the source mode: elevation gradients are slopes, not m/s. */
+export type FlowFieldAnalysisSnapshot = FlowFieldGrid & {mode: FlowFieldColumnMode};
+
 /** Validity-aware box blur of a scalar grid where NaN marks cells without a value. */
 export function smoothFlowFieldScalarGrid(
   values: Float32Array,

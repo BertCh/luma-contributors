@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, test, vi} from 'vitest';
+import {afterAll, describe, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {createResidentHeatmapLayerClasses} from '../../../examples/deck/kepler-compute/src/resident-heatmap-layers';
 import {makeResidentHeatmapLayer} from '../../../examples/deck/kepler-compute/src/resident-heatmap-layer';
@@ -130,4 +133,11 @@ describe('resident heatmap native boundary', () => {
     expect(rendered.props.onError?.(error)).toBe(true);
     expect(onRenderError).toHaveBeenCalledWith(layer, error);
   });
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/resident-heatmap-layer');
+  vi.doUnmock('@kepler.gl/layers');
+  vi.resetModules();
 });

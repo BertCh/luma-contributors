@@ -7,6 +7,7 @@ import {openNativeData, closeNativeDialog, openNativeExport} from './native-navi
 import * as arrow from 'apache-arrow';
 import {cellToLatLng, latLngToCell} from 'h3-js';
 import {chromium} from 'playwright';
+import {getSourceCheckUrl} from './source-check-utils.mjs';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
 import {pinViteModules} from './pin-vite-modules.mjs';
 
@@ -200,7 +201,7 @@ async function download(button) {
 }
 
 try {
-  await page.goto(process.argv[2] || 'http://127.0.0.1:5318/?rows=256', {
+  await page.goto(getSourceCheckUrl(process.argv[2], {rows: 256}), {
     waitUntil: 'domcontentloaded'
   });
   await waitApplication();
@@ -228,10 +229,38 @@ try {
     originalValues.map(value => (value === null ? 'null' : String(value)))
   );
   assert.equal(await table.locator('thead button').count(), 1);
-  assert.equal(
-    await table.locator('thead button').first().isDisabled(),
-    true,
-    'Exact H3 sorting has no resident scalar permutation'
+  // At e0ed33791, resident-table-provider.ts:158-159 enables ordered originals when readRows
+  // exists, and published-dataset-runtime.ts:92 supplies it even without scalars. The old
+  // disabled-header assertion contradicted those branches. Keep and verify the exact sort.
+  const originalHeader = table.locator('thead button').first();
+  assert.equal(await originalHeader.isEnabled(), true);
+  await originalHeader.click();
+  const sortedRows = originalValues
+    .map((value, index) => ({value, index}))
+    .sort((left, right) => {
+      if (left.value === null || right.value === null)
+        return left.value === right.value ? left.index - right.index : left.value === null ? 1 : -1;
+      return left.value < right.value
+        ? -1
+        : left.value > right.value
+          ? 1
+          : left.index - right.index;
+    })
+    .map(row => row.index);
+  await page.waitForFunction(expected => {
+    const table = document.querySelector('.resident-table-scroll');
+    return (
+      table?.getAttribute('aria-busy') === 'false' &&
+      JSON.stringify(
+        Array.from(table.querySelectorAll('tbody tr th'), cell => Number(cell.textContent))
+      ) === JSON.stringify(expected)
+    );
+  }, sortedRows);
+  assert.deepEqual(
+    await table.locator('tbody td').allTextContents(),
+    sortedRows.map(index =>
+      originalValues[index] === null ? 'null' : String(originalValues[index])
+    )
   );
   await page.screenshot({path: '/tmp/kepler-source-only-table.png'});
   await page.keyboard.press('Escape');

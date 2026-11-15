@@ -4,7 +4,7 @@
 
 import type {Buffer} from '@luma.gl/core';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
-import type {PreparedArrowAnalyticsTable} from '@luma.gl/graph/arrow';
+import type {PreparedArrowAnalyticsTable} from '@luma-contributors/analysis/analysis-core';
 
 type PreparedTimeColumn = PreparedArrowAnalyticsTable['timeColumns'][string];
 

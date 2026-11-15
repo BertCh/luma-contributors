@@ -6,7 +6,7 @@ import * as arrow from 'apache-arrow';
 import {
   prepareArrowTableForGPUAnalytics,
   type PrepareArrowTableForGPUAnalyticsOptions
-} from '@luma.gl/graph/arrow';
+} from '@luma-contributors/analysis/analysis-core';
 import {isExcludedRoute, readFieldRoute} from './source-type-routes';
 
 export type SourceFieldPreview = {

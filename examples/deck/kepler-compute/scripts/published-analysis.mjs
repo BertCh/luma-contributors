@@ -4,7 +4,9 @@
 
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import tiffDecoder from 'three/examples/jsm/libs/utif.module.js';
+// The old fork obtained UTIF accidentally through three's hoisted dependencies.
+// Declare the standalone decoder so this check also runs in the published-package workspace.
+import tiffDecoder from 'utif';
 import * as arrow from 'apache-arrow';
 import {chromium} from 'playwright';
 import {PNG} from 'pngjs';

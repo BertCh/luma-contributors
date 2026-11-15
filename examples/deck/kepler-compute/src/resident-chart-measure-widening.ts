@@ -18,7 +18,7 @@ export type ResidentChartWidenedMeasure = {
  * value lies outside ±2^24, where the conversion would round. Float32 columns need no widening.
  */
 export async function widenResidentChartMeasure(props: {
-  session: KeplerComputeSession;
+  session: Pick<KeplerComputeSession, 'device' | 'registry'>;
   vector: GPUVector<'sint32'> | GPUVector<'uint32'>;
 }): Promise<ResidentChartWidenedMeasure> {
   const {session, vector} = props;

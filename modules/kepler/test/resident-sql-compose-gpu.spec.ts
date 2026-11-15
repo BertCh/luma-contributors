@@ -151,8 +151,8 @@ test('a composed join runs WHERE, GROUP BY, expressions and ORDER BY/LIMIT on th
   expect(
     new Map(
       grouped.result.map(row => [
-        row.region as string,
-        {n: Number(row.n), total: Number(row.total)}
+        row['region'] as string,
+        {n: Number(row['n']), total: Number(row['total'])}
       ])
     )
   ).toEqual(expectedGroups);
@@ -167,7 +167,7 @@ test('a composed join runs WHERE, GROUP BY, expressions and ORDER BY/LIMIT on th
     .sort((a, b) => b.customer!.score - a.customer!.score)
     .slice(0, 3)
     .map(({order, customer}) => ({order_id: order.order_id, score: customer!.score}));
-  expect(ordered.result.map(row => ({order_id: row.order_id, score: row.score}))).toEqual(
+  expect(ordered.result.map(row => ({order_id: row['order_id'], score: row['score']}))).toEqual(
     expectedOrdered
   );
   expect(ordered.execution.materialization).toBe('resident');
@@ -333,8 +333,10 @@ test('an ANTI join can select right columns, which are NULL on every kept row', 
   const kept = orderRows.filter(
     order => !customerRows.some(customer => sameString(order.customer, customer.customer))
   );
-  expect(result.result.map(row => row.order_id)).toEqual(kept.map(order => order.order_id));
-  expect(result.result.every(row => row.score === null || row.score === undefined)).toBe(true);
+  expect(result.result.map(row => row['order_id'])).toEqual(kept.map(order => order.order_id));
+  expect(result.result.every(row => row['score'] === null || row['score'] === undefined)).toBe(
+    true
+  );
 });
 
 test('SEMI and ANTI joins keep left rows only, with DuckDB NULL semantics', async () => {
@@ -366,7 +368,9 @@ test('SEMI and ANTI joins keep left rows only, with DuckDB NULL semantics', asyn
     )
   );
   // The NULL-customer orders are kept by ANTI.
-  expect(anti.result.some(row => row.customer === null || row.customer === undefined)).toBe(true);
+  expect(anti.result.some(row => row['customer'] === null || row['customer'] === undefined)).toBe(
+    true
+  );
   const hasPairMatch = (order: OrderRow) =>
     customerRows.some(
       customer =>
@@ -377,7 +381,7 @@ test('SEMI and ANTI joins keep left rows only, with DuckDB NULL semantics', asyn
     session,
     'SELECT order_id FROM orders ANTI JOIN customers ON orders.customer = customers.customer AND orders.region = customers.region ORDER BY order_id LIMIT 5'
   );
-  expect(antiPair.result.map(row => row.order_id)).toEqual(
+  expect(antiPair.result.map(row => row['order_id'])).toEqual(
     orderRows
       .filter(order => !hasPairMatch(order))
       .map(order => order.order_id)
@@ -388,7 +392,7 @@ test('SEMI and ANTI joins keep left rows only, with DuckDB NULL semantics', asyn
     session,
     'SELECT COUNT(*) AS n FROM orders SEMI JOIN customers ON orders.customer = customers.customer AND orders.region = customers.region'
   );
-  expect(Number(semiPair.result[0].n)).toBe(orderRows.filter(hasPairMatch).length);
+  expect(Number(semiPair.result[0]['n'])).toBe(orderRows.filter(hasPairMatch).length);
 });
 
 test('unsupported composed forms refuse at plan time with a reason', async () => {

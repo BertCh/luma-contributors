@@ -7,8 +7,7 @@ import type {AutomaticRecoveryPolicy} from './automatic-recovery-policy';
 import type {ComputeRuntime, ExplorerSummary} from './compute-runtime';
 import type {ResidentDeviceRecovery} from './device-recovery';
 import {createSampleData} from './sample-data';
-
-const requestedRows = Number(new URLSearchParams(location.search).get('rows') ?? 100000);
+import {parseStartupSample} from './sample-map-catalog';
 
 export type SubmittedPerformanceFrame = {
   timestamp: number;
@@ -29,10 +28,7 @@ export type SecondaryViewCapture = {
  * without importing `main.tsx`.
  */
 class AppState {
-  rowCount =
-    Number.isSafeInteger(requestedRows) && requestedRows > 0 && requestedRows <= 10000000
-      ? requestedRows
-      : 100000;
+  rowCount = parseStartupSample(location.search).rowCount;
   source = createSampleData(this.rowCount);
   runtime: ComputeRuntime | null = null;
   submittedPerformanceFrames:

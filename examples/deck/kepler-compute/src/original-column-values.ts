@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
+import {
+  formatTimestampTicks,
+  getTimestampPresentationMilliseconds
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 /** Native Kepler field type name (ALL_FIELD_TYPES) for an Arrow type; `other` has no statistics. */
 export function getOriginalFieldType(type: arrow.DataType): string {
@@ -35,6 +39,13 @@ export function readOriginalColumnValues(
       values[index] = null;
       continue;
     }
+    if (arrow.DataType.isTimestamp(vector.type)) {
+      const ticks = readOriginalTimestampTicks(vector, row);
+      values[index] = exact
+        ? formatTimestampTicks(ticks, vector.type.unit)
+        : getTimestampPresentationMilliseconds(ticks, vector.type.unit);
+      continue;
+    }
     const value: unknown = vector.get(row);
     if (typeof value === 'bigint') values[index] = exact ? value : Number(value);
     else if (value instanceof Date) values[index] = exact ? value.toISOString() : value.getTime();
@@ -42,4 +53,19 @@ export function readOriginalColumnValues(
     else values[index] = value;
   }
   return values;
+}
+
+/** Read retained ticks directly; Arrow's Timestamp getter first narrows them to Number. */
+export function readOriginalTimestampTicks(vector: arrow.Vector, row: number): bigint {
+  let localRow = row;
+  for (const chunk of vector.data) {
+    if (localRow >= chunk.length) {
+      localRow -= chunk.length;
+      continue;
+    }
+    const value: unknown = chunk.values[localRow];
+    if (typeof value !== 'bigint') throw new Error('Timestamp requires exact 64-bit Arrow storage');
+    return value;
+  }
+  throw new Error('Timestamp source row is outside retained Arrow data');
 }

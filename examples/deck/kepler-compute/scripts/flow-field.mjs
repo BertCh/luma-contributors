@@ -68,9 +68,14 @@ try {
   const physical = await page.evaluate(() => window.__keplerComputeTest.getFlowFieldStats()['resident-flow-field-physical']);
   assert.equal(physical.velocityScale, 1, 'physical policy must not rescale field units');
   await page.evaluate(() => window.__keplerComputeTest.setFlowFieldUnitPolicy('visual'));
-  // Unsupported options surface a specific reason while the layer still renders.
+  // The old unsupported-options assertion was stale: the pre-port runtime already implemented
+  // speed color/debug grid. Require successful rendering here; flow-field-style checks pixels.
   await applyLayer('resident-flow-field-limits', 'flowField', {columns: columnsFor('UV'), color: [186, 233, 223], mapState}, {colorBySpeed: true, debugGrid: true, gridResolution: 24}, 'UV');
-  await page.waitForFunction(() => /Color by speed/.test(window.__keplerComputeTest.getState().error ?? ''), undefined, {timeout: 30000});
+  await page.waitForFunction(() => {
+    const api = window.__keplerComputeTest;
+    if (api.getState().error) throw new Error(api.getState().error);
+    return api.renderedLayers().some(layer => layer.id === 'resident-flow-field-limits-resident-flow-field' && layer.visible && layer.loaded);
+  }, undefined, {timeout: 30000});
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({results}, null, 2));
 } finally {

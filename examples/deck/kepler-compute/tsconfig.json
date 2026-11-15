@@ -7,5 +7,5 @@
     "types": ["@webgpu/types", "vite/client"],
     "plugins": []
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "gpu-layers", "vite.config.ts"]
 }

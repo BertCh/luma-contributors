@@ -8,6 +8,7 @@ import type KeplerTable from '@kepler.gl/table';
 import type {Device} from '@luma.gl/core';
 import {
   KEPLER_CATALOG_BINDINGS,
+  completeNetworkCategoricalCatalogEntries,
   getCatalogBinding,
   getCatalogDefaultParameters,
   listCatalogEntries,
@@ -25,7 +26,17 @@ import {
   type CatalogParameterSpec,
   type CatalogRunResult
 } from '@luma-contributors/kepler';
+import {includeSpacetimeCatalogEntries} from './analysis-catalog-spacetime';
 import {makeArrowTableFromCatalogTable} from './analysis-catalog-table';
+import {
+  TRAJECTORY_POINT_FIELD,
+  isTrajectoryCatalogOperation,
+  makeCatalogTrajectoryNativeSource,
+  getCatalogTrajectoryTripOptions,
+  type CatalogTrajectorySource
+} from './analysis-catalog-trajectory';
+import {readCatalogNativeInput} from './analysis-catalog-native-input';
+import type {SandboxTripOptions} from './trip-source-options';
 import {
   AnalysisCatalogLensMapping,
   EMPTY_LENS_MAPPING,
@@ -40,9 +51,17 @@ import {
 } from './catalog-invocation-store';
 import {
   findNativeGeometryFields,
-  getCatalogSampleInputs,
-  readCatalogFeaturesFromNativeDataset
+  makeCatalogPointColumns,
+  readCatalogPointColumns,
+  getCatalogSampleInputs
 } from './analysis-catalog-input';
+
+import {
+  getCatalogResidentDatasetLabel,
+  getCatalogResidentFields,
+  getCatalogResidentGeometryFields,
+  type CatalogResidentDataset
+} from './analysis-catalog-resident-input';
 
 type InputDraft = {
   mode: 'sample' | 'text' | 'native';
@@ -54,21 +73,36 @@ type InputDraft = {
 /** Catalog discovery plus the typed run form for operations that have executable bindings. */
 export function AnalysisCatalogPanel({
   datasets,
+  residentDatasets = [],
+  trajectorySources = [],
   device,
   onPublish
 }: {
   datasets: readonly KeplerTable[];
+  residentDatasets?: readonly CatalogResidentDataset[];
+  trajectorySources?: readonly CatalogTrajectorySource[];
   /** GPU device of the compute runtime. Without it only operations with a CPU engine run. */
   device?: Device | null;
   /** The host stages the table in the Sources workflow; nothing is uploaded here. */
-  onPublish(table: arrow.Table, label: string, geometryColumn?: string): void;
+  onPublish(
+    table: arrow.Table,
+    label: string,
+    geometryColumn?: string,
+    tripOptions?: SandboxTripOptions
+  ): void;
 }) {
   const [lensScenarios, setLensScenarios] = useState<CatalogLensScenario[]>([]);
   const [lensScenarioId, setLensScenarioId] = useState('');
   const [lensMapping, setLensMapping] = useState<LensMappingDraft>(EMPTY_LENS_MAPPING);
   const [engineChoice, setEngineChoice] = useState<'auto' | 'cpu'>('auto');
   const [running, setRunning] = useState(false);
-  const entries = useMemo(() => listCatalogEntries({lensScenarios}), [lensScenarios]);
+  const entries = useMemo(
+    () =>
+      completeNetworkCategoricalCatalogEntries(
+        includeSpacetimeCatalogEntries(listCatalogEntries({lensScenarios}))
+      ),
+    [lensScenarios]
+  );
   const [operationId, setOperationId] = useState(KEPLER_CATALOG_BINDINGS[0].id);
   const binding = getCatalogBinding(operationId) as CatalogOperationBinding;
   const [parameters, setParameters] = useState<Record<string, unknown>>(
@@ -82,10 +116,31 @@ export function AnalysisCatalogPanel({
   const lastInputs = useRef<Record<string, CatalogFeatureCollection>>({});
   const runnableCount = entries.filter(entry => entry.runnable !== 'no').length;
   const blocked = entries.filter(entry => entry.runnable === 'no');
-  const geometryDatasets = datasets.map(dataset => ({
-    dataset,
-    fields: findNativeGeometryFields(dataset as never)
-  }));
+  const isTrajectory = isTrajectoryCatalogOperation(operationId);
+  const inputDatasets = isTrajectory
+    ? [...datasets, ...trajectorySources.map(makeCatalogTrajectoryNativeSource)]
+    : datasets;
+  const geometryDatasets = [
+    ...inputDatasets.map(dataset => ({
+      dataset,
+      fields: [
+        ...findNativeGeometryFields(dataset as never),
+        // Manual point mapping is a UI choice, not a discovered geometry field.
+        ...(dataset.fields.filter(field => field.name.trim()).length >= 2
+          ? [makeCatalogPointColumns('', '')]
+          : []),
+        ...(isTrajectory ? [TRAJECTORY_POINT_FIELD] : [])
+      ]
+    })),
+    ...residentDatasets.map(resident => ({
+      dataset: {
+        id: resident.id,
+        label: getCatalogResidentDatasetLabel(resident),
+        fields: getCatalogResidentFields(resident)
+      },
+      fields: getCatalogResidentGeometryFields(resident)
+    }))
+  ];
 
   const [savedInvocations, setSavedInvocations] = useState(listCatalogInvocations());
   useEffect(
@@ -129,7 +184,7 @@ export function AnalysisCatalogPanel({
     setResult(null);
     setError('');
   };
-  const readInputs = (): Record<string, CatalogFeatureCollection> => {
+  const readInputs = async (): Promise<Record<string, CatalogFeatureCollection>> => {
     const samples = getCatalogSampleInputs(binding.id);
     const inputs: Record<string, CatalogFeatureCollection> = {};
     for (const spec of binding.inputs) {
@@ -138,17 +193,23 @@ export function AnalysisCatalogPanel({
         inputs[spec.name] = parseCatalogFeatureCollection(samples[spec.name]);
       else if (draft.mode === 'text') inputs[spec.name] = parseCatalogFeatureCollection(draft.text);
       else {
-        const source = datasets.find(dataset => dataset.id === draft.datasetId);
-        // A native dataset and geometry field must be chosen explicitly.
-        if (!source || !draft.field) throw new Error('Choose a dataset and geometry field');
-        inputs[spec.name] = readCatalogFeaturesFromNativeDataset(source as never, draft.field);
+        const resident = residentDatasets.find(dataset => dataset.id === draft.datasetId);
+        const source = inputDatasets.find(dataset => dataset.id === draft.datasetId);
+        inputs[spec.name] = await readCatalogNativeInput({
+          resident,
+          source,
+          field: draft.field,
+          isTrajectory,
+          parameters,
+          maximumFeatures: spec.maximumFeatures
+        });
       }
     }
     return inputs;
   };
-  const invoke = (action: () => void) => {
+  const invoke = async (action: () => void | Promise<void>) => {
     try {
-      action();
+      await action();
       setError('');
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
@@ -157,7 +218,7 @@ export function AnalysisCatalogPanel({
   const run = async () => {
     setRunning(true);
     try {
-      const inputs = readInputs();
+      const inputs = await readInputs();
       lastInputs.current = inputs;
       // Saved with the workspace: normalized parameters, input hashes and where each input came from.
       recordCatalogInvocation({
@@ -234,8 +295,8 @@ export function AnalysisCatalogPanel({
     }
   };
   const serialize = () =>
-    invoke(() => {
-      const inputs = readInputs();
+    invoke(async () => {
+      const inputs = await readInputs();
       lastInputs.current = inputs;
       setInvocationText(serializeCatalogInvocation(binding, parameters, inputs));
     });
@@ -250,7 +311,12 @@ export function AnalysisCatalogPanel({
     });
   const publish = (table: CatalogOutputTable) =>
     invoke(() =>
-      onPublish(makeArrowTableFromCatalogTable(table), table.label, table.geometryColumn)
+      onPublish(
+        makeArrowTableFromCatalogTable(table),
+        table.label,
+        table.geometryColumn,
+        getCatalogTrajectoryTripOptions(table)
+      )
     );
 
   return (
@@ -364,6 +430,9 @@ export function AnalysisCatalogPanel({
         ))}
       </select>
       <p className="hint">{binding.summary}</p>
+      <p className="hint" data-testid="catalog-limits">
+        Limits: {binding.limitation}
+      </p>
       <details>
         <summary>Contract</summary>
         <ul style={{fontSize: 12}}>
@@ -443,17 +512,44 @@ export function AnalysisCatalogPanel({
                 </select>
                 <select
                   aria-label={`${spec.label} geometry field`}
-                  value={draft.field}
+                  value={
+                    readCatalogPointColumns(draft.field)
+                      ? makeCatalogPointColumns('', '')
+                      : draft.field
+                  }
                   onChange={event => setDraft(spec.name, {field: event.target.value})}
                   style={{width: '100%'}}
                 >
                   <option value="">Choose geometry field</option>
                   {(selectedDataset?.fields ?? []).map(field => (
                     <option key={field} value={field}>
-                      {field}
+                      {readCatalogPointColumns(field) ? 'Point from numeric columns' : field}
                     </option>
                   ))}
                 </select>
+                {readCatalogPointColumns(draft.field) &&
+                  ([0, 1] as const).map(axis => (
+                    <label key={axis}>
+                      {axis === 0 ? 'X / longitude column' : 'Y / latitude column'}
+                      <select
+                        aria-label={`${spec.label} ${axis === 0 ? 'X / longitude' : 'Y / latitude'} column`}
+                        value={readCatalogPointColumns(draft.field)![axis]}
+                        onChange={event => {
+                          const columns = readCatalogPointColumns(draft.field)!;
+                          columns[axis] = event.target.value;
+                          setDraft(spec.name, {field: makeCatalogPointColumns(...columns)});
+                        }}
+                        style={{width: '100%'}}
+                      >
+                        <option value="">Choose numeric column</option>
+                        {selectedDataset?.dataset.fields.map(field => (
+                          <option key={field.name} value={field.name}>
+                            {field.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
               </>
             )}
           </fieldset>
@@ -560,20 +656,23 @@ function TablePreview({table}: {table: CatalogOutputTable}) {
           </tr>
         </thead>
         <tbody>
-          {Array.from({length: Math.min(8, table.rowCount)}, (_, row) => (
-            <tr key={row}>
-              {names.map(name => {
-                const value = table.columns[name][row];
-                return (
-                  <td key={name}>
-                    {typeof value === 'number' && !Number.isInteger(value)
-                      ? value.toFixed(3)
-                      : String(value ?? '')}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
+          {Array.from(
+            {length: Math.min(table.id.endsWith('-diagnostics') ? 64 : 8, table.rowCount)},
+            (_, row) => (
+              <tr key={row}>
+                {names.map(name => {
+                  const value = table.columns[name][row];
+                  return (
+                    <td key={name}>
+                      {typeof value === 'number' && !Number.isInteger(value)
+                        ? value.toFixed(3)
+                        : String(value ?? '')}
+                    </td>
+                  );
+                })}
+              </tr>
+            )
+          )}
         </tbody>
       </table>
     </div>
@@ -628,10 +727,19 @@ function ParameterField({
       <label htmlFor={id}>{label}</label>
       <input
         id={id}
+        type={spec.kind === 'number' || spec.kind === 'integer' ? 'number' : 'text'}
+        min={spec.minimum}
+        max={spec.maximum}
+        step={spec.kind === 'integer' ? 1 : 'any'}
         value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
         onChange={event => onChange(event.target.value)}
         style={{width: '100%', boxSizing: 'border-box'}}
       />
+      {spec.minimum !== undefined && (
+        <small>
+          Range: {spec.minimum} to {spec.maximum}
+        </small>
+      )}
     </>
   );
 }

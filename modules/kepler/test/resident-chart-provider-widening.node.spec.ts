@@ -49,6 +49,8 @@ const makeChart = (id: string, field: string, aggregation: string): NativeChartC
   title: id,
   dataId: 'source',
   applyFilters: true,
+  display: {},
+  chartDisplay: {},
   axis: {field: {name: field, type: 'integer'}, aggregation}
 });
 

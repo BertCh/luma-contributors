@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {afterEach, expect, test, vi} from 'vitest';
+import {afterAll, afterEach, expect, test, vi} from 'vitest';
+
 import type {CommandEncoder} from '@luma.gl/core';
-import type {PreparedGeometryGPUVectors} from '@luma.gl/engine/arrow';
+import type {PreparedKeplerGeometryGPUVectors} from '../../../examples/deck/kepler-compute/src/geometry-preparation';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerComputeSession} from '../src/session/compute-session';
 import type {NativeStyleLayer} from '../../../examples/deck/kepler-compute/src/native-style-plan';
@@ -76,7 +77,7 @@ function setup() {
     },
     properties: {fillColor: {values, validity}},
     buffers: []
-  } as unknown as PreparedGeometryGPUVectors;
+  } as unknown as PreparedKeplerGeometryGPUVectors;
   const reservations: {release: ReturnType<typeof vi.fn>}[] = [];
   let fence: Promise<void> = Promise.resolve();
   const session = {
@@ -316,4 +317,11 @@ test('vertical source diagnostics follow actual polygon channel use', async () =
     context.runtime.resolve(context.layer, context.binding, options).unsupportedReason
   ).toContain('Offset exceeds Float32');
   await context.runtime.destroy(Promise.resolve());
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/geojson-property-runtime');
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/geometry-runtime');
+  vi.resetModules();
 });

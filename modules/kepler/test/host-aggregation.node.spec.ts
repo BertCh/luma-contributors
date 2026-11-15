@@ -6,6 +6,7 @@ import {describe, expect, test, vi} from 'vitest';
 import {Buffer} from '@luma.gl/core';
 import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {NullDevice} from '@luma.gl/core/test-utils';
+import * as measureWidening from '../../../examples/deck/kepler-compute/src/resident-chart-measure-widening';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import {getKeplerAggregationLayout} from '../src/aggregation';
 import {
@@ -39,6 +40,15 @@ function layer(
 }
 
 describe('native Kepler aggregation controls and projection', () => {
+  test('a small radius over distant valid-coordinate outliers requires a dense lattice beyond the cap', () => {
+    const projection = prepareAggregationProjection([-139, -122], [37, 47]);
+    const layout = getKeplerAggregationLayout(
+      getNativeAggregationTopology(projection, {kind: 'hexagon', sizeMeters: 50})
+    );
+    expect(layout.cellCount).toBeGreaterThan(65536);
+    // Native sparse occupied-bin aggregation would need at most these two occupied cells.
+    expect(layout.cellCount).toBeGreaterThan(projection.positions.length / 2);
+  });
   test('converts native kilometers to metric cell size and maps count, sum and average', () => {
     const grid = layer({worldUnitSize: 0.25});
     expect(getNativeAggregationSettings(grid)).toMatchObject({sizeMeters: 250, statistic: 'count'});
@@ -123,6 +133,62 @@ describe('native Kepler aggregation controls and projection', () => {
       25, 50, 0, 1, 75, 50, 0, 1, 75, 150, 0, 1, 25, 150, 0, 1
     ]);
   });
+});
+
+test('integer aggregates await the existing exact cast, reuse it, and release it after retirement', async () => {
+  const device = new NullDevice({});
+  const makeVector = <Format extends 'uint32' | 'float32'>(
+    format: Format,
+    data: Uint32Array | Float32Array
+  ) =>
+    new GPUVector({
+      type: 'buffer',
+      name: format,
+      format,
+      length: 2,
+      ownsBuffer: true,
+      buffer: device.createBuffer({data, usage: Buffer.STORAGE})
+    });
+  const source = makeVector('uint32', new Uint32Array([1980, 2000]));
+  const mask = makeVector('uint32', new Uint32Array([1, 1]));
+  const widened = makeVector('float32', new Float32Array([1980, 2000]));
+  const destroy = vi.fn(() => widened.destroy());
+  const cast = vi
+    .spyOn(measureWidening, 'widenResidentChartMeasure')
+    .mockResolvedValue({vector: widened, destroy});
+  const registry = new KeplerDatasetRegistry({memoryBudgetBytes: 1024});
+  const runtime = new AggregationRuntime({
+    device,
+    longitude: [-74, -74],
+    latitude: [40.7, 40.7],
+    selectionMask: mask,
+    columns: {yearbuilt: {values: source}},
+    memoryRegistry: registry
+  });
+  const aggregate = layer();
+  aggregate.config.colorField = {name: 'yearbuilt'};
+  try {
+    expect(runtime.resolve(aggregate)).toEqual({});
+    await vi.waitFor(() => {
+      // A tiny registry deliberately refuses the program after its input has passed admission.
+      // This checks the asynchronous boundary without launching a GPU or allocating a large program.
+      expect(runtime.resolve(aggregate).reason).toMatch(/budget/i);
+    });
+    runtime.resolve(aggregate);
+    expect(cast).toHaveBeenCalledOnce();
+    expect(cast.mock.calls[0]?.[0].vector).toBe(source);
+    expect(runtime.accountedResidentByteLength).toBe(runtime.uploadBytes + 8);
+    await runtime.destroy(Promise.resolve());
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(source.data[0].buffer.destroyed).toBe(false);
+    expect(registry.memoryUsage.totalBytes).toBe(0);
+  } finally {
+    cast.mockRestore();
+    await runtime.destroy(Promise.resolve());
+    source.destroy();
+    mask.destroy();
+    device.destroy();
+  }
 });
 
 test('published aggregation preserves nullable source slots and empty upload batches behind a shared fence', async () => {

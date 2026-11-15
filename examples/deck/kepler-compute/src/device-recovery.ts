@@ -7,6 +7,7 @@ import type {ComputeRuntime} from './compute-runtime';
 import type {ResidentRecoverySnapshot} from './resident-device-recovery';
 import type {ResidentResultRecipe} from './resident-result-recipes';
 import {getSandboxBundleSources, replaySandboxBundle, saveSandbox} from './sandbox-state';
+import {assertSampleMapCheckpointSupported} from './sample-map-lifecycle';
 
 export {ResidentDeviceRecovery} from './resident-device-recovery';
 export type {
@@ -20,10 +21,13 @@ export type {
 export function captureResidentRecoverySnapshot(props: {
   runtime: ComputeRuntime;
   getNativeConfig(): unknown;
+  getNativeDatasets?(): readonly {type?: string}[];
   /** Lineage for exactly the given resident result IDs, ordered by dependency. */
   collectResultRecipes?(residentResultIds: readonly string[]): readonly ResidentResultRecipe[];
 }): ResidentRecoverySnapshot {
   assertHealthyRuntime(props.runtime);
+  const nativeConfig = props.getNativeConfig();
+  assertSampleMapCheckpointSupported(nativeConfig, props.getNativeDatasets?.());
   const residentResultIds = Array.from(props.runtime.publications?.values() ?? [])
     .filter(published => published.dataset.value.resident)
     .map(published => published.dataset.id);
@@ -35,6 +39,7 @@ export function captureResidentRecoverySnapshot(props: {
     JSON.parse(
       saveSandbox({
         ...props,
+        getNativeConfig: () => nativeConfig,
         // Saving never invokes this replay callback.
         applyNativeConfig() {}
       })

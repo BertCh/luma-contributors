@@ -4,7 +4,8 @@
 
 import {useEffect, useState} from 'react';
 import type {ComputeRuntime} from './compute-runtime';
-import {listTrackedOperations, subscribeOperations} from './operation-tracker';
+import {listTrackedOperations} from './operation-tracker';
+import {subscribeMemoryBudgetUpdates} from './memory-budget-updates';
 
 const CATEGORY_LABELS = [
   ['source', 'Source reservations'],
@@ -28,15 +29,10 @@ function formatBytes(byteLength: number): string {
 export function MemoryBudgetPanel({runtime}: {runtime: ComputeRuntime | null}) {
   const [, setVersion] = useState(0);
   const registry = runtime?.session.registry;
-  useEffect(() => {
-    const refresh = () => setVersion(value => value + 1);
-    const stopOperations = subscribeOperations(refresh);
-    const stopRegistry = registry?.subscribeMemory(refresh);
-    return () => {
-      stopOperations();
-      stopRegistry?.();
-    };
-  }, [registry]);
+  useEffect(
+    () => subscribeMemoryBudgetUpdates(registry, () => setVersion(value => value + 1)),
+    [registry]
+  );
   if (!registry) return null;
   const usage = registry.memoryUsage;
   const breakdown = registry.getReservationBreakdown();

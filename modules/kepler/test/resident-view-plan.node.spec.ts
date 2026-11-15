@@ -3,10 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
+import {Layer, WebMercatorViewport, type Deck} from '@deck.gl/core';
+import {getRenderedViewLayerInfo} from '../../../examples/deck/kepler-compute/src/main-layer-info';
 import {
   createResidentViewLayerFilter,
   getResidentSubViewProjection,
-  planResidentViews
+  planResidentViews,
+  getResidentMapSplitMode,
+  mergeResidentViewLayers
 } from '../../../examples/deck/kepler-compute/src/resident-view-plan';
 
 const layers = [
@@ -14,6 +18,60 @@ const layers = [
   {id: 'b', isVisible: true},
   {id: 'c', isVisible: false}
 ];
+
+test('legacy split maps select dual mode and retain the secondary visible instance', () => {
+  expect(getResidentMapSplitMode({isSplit: true, mapSplitMode: 'SINGLE_MAP'})).toBe('DUAL_MAP');
+  expect(getResidentMapSplitMode({isSplit: true})).toBe('DUAL_MAP');
+  expect(getResidentMapSplitMode({isSplit: true, mapSplitMode: 'SWIPE_COMPARE'})).toBe(
+    'SWIPE_COMPARE'
+  );
+  expect(getResidentMapSplitMode({isSplit: false})).toBe('SINGLE_MAP');
+  const primary = [
+    {id: 'j0guklb-fill', props: {visible: true}},
+    {id: 'vtwrd0n-fill', props: {visible: false}},
+    {id: '122g90r-sample-locations-points', props: {visible: false}},
+    {id: '122g90r-points', props: {visible: false}}
+  ];
+  const secondary = primary.map(layer => ({
+    ...layer,
+    props: {visible: layer.id !== 'j0guklb-fill' && layer.id !== '122g90r-points'}
+  }));
+  const merged = mergeResidentViewLayers(primary, secondary);
+  expect(merged).toHaveLength(4);
+  expect(merged[0]).toBe(primary[0]);
+  expect(merged[1]).toBe(secondary[1]);
+  expect(merged[2]).toBe(secondary[2]);
+  expect(merged[3]?.props.visible).toBe(false);
+});
+
+test('render diagnostics apply the actual shared Deck filter to each viewport', () => {
+  class ProbeLayer extends Layer<{nativeLayerId: string}> {
+    static override layerName = 'ProbeLayer';
+    override initializeState(): void {
+      // This CPU probe reads Deck props only and creates no GPU models.
+    }
+  }
+  const primary = new ProbeLayer({id: 'vtwrd0n-fill', nativeLayerId: 'vtwrd0n', visible: false});
+  const secondary = new ProbeLayer({id: 'vtwrd0n-fill', nativeLayerId: 'vtwrd0n', visible: true});
+  const shared = mergeResidentViewLayers([primary], [secondary]);
+  const filter = createResidentViewLayerFilter(
+    [
+      {index: 0, visibleLayerIds: ['j0guklb']},
+      {index: 1, visibleLayerIds: ['vtwrd0n']}
+    ],
+    id => id.replace(/-fill$/, '')
+  );
+  const deck = {
+    props: {layers: shared, layerFilter: filter},
+    getViewports: () =>
+      ['view-0', 'view-1'].map(id => new WebMercatorViewport({id, width: 100, height: 100}))
+  } as unknown as Pick<Deck, 'props' | 'getViewports'>;
+  const views = getRenderedViewLayerInfo(deck);
+  expect(views.map(view => [view.id, view.layers[0]?.id, view.layers[0]?.visible])).toEqual([
+    ['view-0', 'vtwrd0n', false],
+    ['view-1', 'vtwrd0n', true]
+  ]);
+});
 
 test('single view lists enabled layers and refuses unsupported split requests', () => {
   expect(planResidentViews({layers})).toEqual({

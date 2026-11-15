@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, test, vi} from 'vitest';
+import {afterAll, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import * as arrow from 'apache-arrow';
 import {
   aggregateResidentSpatialJoinValues,
@@ -45,7 +48,6 @@ const {aggregateValues: aggregateNativeValues} = await vi.importActual<{
   ).pathname
 );
 const {RowDataContainer} = await import(
-  // @ts-expect-error Direct implementation file has no declaration entry.
   new URL('../../../node_modules/@kepler.gl/utils/dist/esm/row-data-container.js', import.meta.url)
     .pathname
 );
@@ -335,4 +337,10 @@ test('declared EPSG:4326 and EPSG:3857 sides plan a GPU point transform into the
   expect(() => crs('EPSG:4326', 'EPSG:2154')).toThrow(
     /Spatial Join runs on EPSG:4326, EPSG:3857, UTM/
   );
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@kepler.gl/utils');
+  vi.resetModules();
 });

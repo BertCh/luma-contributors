@@ -4,7 +4,7 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUPointLabelLayer} from '@deck.gl-community/gpu-layers';
+import {GPUPointLabelLayer} from '../gpu-layers/index';
 import type {Layer} from '@deck.gl/core';
 import type {LayersData} from '@flowmap.gl/data';
 import {makePointLabelRuntime, type PointLabelRuntime} from './label-runtime';

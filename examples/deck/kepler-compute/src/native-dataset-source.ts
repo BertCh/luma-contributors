@@ -56,8 +56,34 @@ export function makeArrowSourceFromNativeDataset(
       JSON.stringify(nativeTable.schema.fields.map(field => field.name)) !== fieldNames
     )
       throw new Error('Native Arrow schema is not synchronized with its visible fields');
+    // Kepler's initial ArrowDataContainer is reconstructed from cols, which loses schema
+    // extension metadata. Its processed field descriptors still retain that metadata. Restore
+    // it onto a new schema sharing the original buffers before routing/preparing geometry.
+    let restoresMetadata = false;
+    const fields = nativeTable.schema.fields.map((field, index) => {
+      const metadata = dataset.fields[index]?.metadata;
+      if (
+        !(metadata instanceof Map) ||
+        ![...metadata].some(([key, value]) => field.metadata.get(key) !== value)
+      )
+        return field;
+      restoresMetadata = true;
+      return new arrow.Field(
+        field.name,
+        field.type,
+        field.nullable,
+        new Map([...field.metadata, ...metadata])
+      );
+    });
+    const schema = new arrow.Schema(fields, new Map(nativeTable.schema.metadata));
+    const retainedTable = restoresMetadata
+      ? new arrow.Table(
+          schema,
+          nativeTable.batches.map(batch => new arrow.RecordBatch(schema, batch.data))
+        )
+      : nativeTable;
     return {
-      table: nativeTable,
+      table: retainedTable,
       sourceId: dataset.id,
       sourceRevision,
       label: dataset.label,

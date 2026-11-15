@@ -131,7 +131,9 @@ export function createColumnStatisticsReader(props: {
         wideReason: widePlan?.reason
       });
       if (route.route === 'refused') throw new Error(route.reason);
-      if (route.route === 'gpu' && widePlan?.supported && !gpuPlan?.supported) {
+      // A prepared Float32 copy can be profileable even when the original Int64/Float64 source
+      // needs relative-to-minimum profiling. Route on the original source eligibility above.
+      if (route.route === 'gpu' && widePlan?.supported) {
         const profile: ResidentWideColumnStatistics | null = await props.wide!.read(request);
         if (!profile || provider.getRevision() !== revision || !props.isCurrent()) return null;
         return {

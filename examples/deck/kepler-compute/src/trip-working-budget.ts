@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
-import type {GeoJSONTripGPUVectors} from '@luma.gl/engine/arrow';
+import type {KeplerGeoJSONTripGPUVectors} from './geometry-preparation';
 
 import {clamp} from '@math.gl/core';
 
@@ -21,7 +21,7 @@ export type TripOutputChannels = {
  * channel (colors plus every configured orientation field).
  */
 export function estimateTripOutputBytes(
-  trips: GeoJSONTripGPUVectors,
+  trips: KeplerGeoJSONTripGPUVectors,
   channels: TripOutputChannels
 ): number {
   const {getPath, sourceRowIds, membership} = trips;

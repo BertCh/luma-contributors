@@ -9,7 +9,6 @@ import {
   GPUCommandGraph,
   GPUReduction,
   GPUSort,
-  alignGraphVectorViews,
   createGPUComputeCommandNode,
   createTransientView,
   getBoundedDispatchLayout,
@@ -20,6 +19,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {alignKeplerGraphVectorViews} from './luma-gaps/graph-vector-chunks';
 import {
   GPUColumnQuantiles,
   GPUGroupStatistics,
@@ -54,8 +54,8 @@ fn getNaN() -> f32 {
   return bitcast<f32>(bits);
 }`;
 const SHADER_TYPES = {float32: 'f32', sint32: 'i32', uint32: 'u32'} as const;
-/** Heterogeneous alignment: operands are validated by alignGraphVectorViews at runtime. */
-const alignViews = alignGraphVectorViews as unknown as (
+/** Heterogeneous alignment: operands are validated by alignKeplerGraphVectorViews at runtime. */
+const alignViews = alignKeplerGraphVectorViews as unknown as (
   graph: GPUCommandGraph,
   vectors: readonly unknown[]
 ) => readonly (readonly GraphDataView[])[];

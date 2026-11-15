@@ -11,18 +11,15 @@ import {
   Layer
 } from '@deck.gl/core';
 import {appState, type SecondaryViewCapture} from './app-state';
-import {
-  withExactGlobeControllers,
-  withTouchRotate,
-  syncTopLevelController,
-  applyExactGlobeController
-} from './globe-wheel-controller';
+import {buildResidentSplitDeckProps} from './split-deck-props';
 import React from 'react';
 import {MapContainerFactory} from '@kepler.gl/components';
 import {
   getResidentSubViewProjection,
   planResidentViews,
-  createResidentViewLayerFilter
+  createResidentViewLayerFilter,
+  getResidentMapSplitMode,
+  mergeResidentViewLayers
 } from './resident-view-plan';
 import {
   flattenDeckLayers,
@@ -53,8 +50,6 @@ export const VIEWS_ENABLED =
 
 export const SUPPORTED_VIEW_COUNT = VIEWS_ENABLED ? 2 : 1;
 
-type DeckEventHandler = (...parameters: never[]) => unknown;
-
 /**
  * Kepler assembles the shared Deck's `viewState`, `onViewStateChange`, `onHover` and `onClick` for
  * map 0 after the host can intercept them. While split, give each view its own view-state and send
@@ -62,42 +57,12 @@ type DeckEventHandler = (...parameters: never[]) => unknown;
  */
 class ResidentSplitDeck extends Deck {
   override setProps(props: DeckProps): void {
-    const viewStates = appState.splitViewStates;
-    if (!viewStates) {
-      super.setProps(withExactGlobeControllers(withTouchRotate(props)));
-      return;
-    }
-    props = withTouchRotate(props);
-    const primary = props as unknown as Record<string, DeckEventHandler | undefined>;
-    const route =
-      (name: string, viewIdOf: (parameters: never) => unknown) =>
-      (...parameters: never[]) => {
-        const secondaryHandler = (
-          appState.secondaryDeck?.props as unknown as Record<string, DeckEventHandler> | null
-        )?.[name];
-        const handler = viewIdOf(parameters[0]) === 'view-1' ? secondaryHandler : primary[name];
-        return handler?.(...parameters);
-      };
     super.setProps(
-      syncTopLevelController({
-        ...props,
-        viewState: viewStates,
-        // Deck applies a top-level controller to one view only; every split view needs its own.
-        views: ([props.views].flat() as (MapView | undefined)[])
-          .map(view =>
-            view && !view.props.controller ? view.clone({controller: props.controller}) : view
-          )
-
-          .map(view =>
-            view ? (applyExactGlobeController(view, props.controller) as MapView) : view
-          ),
-        onViewStateChange: route(
-          'onViewStateChange',
-          (parameters: {viewId?: string}) => parameters.viewId
-        ),
-        onHover: route('onHover', (info: {viewport?: {id: string}}) => info?.viewport?.id),
-        onClick: route('onClick', (info: {viewport?: {id: string}}) => info?.viewport?.id)
-      } as unknown as DeckProps)
+      buildResidentSplitDeckProps(
+        props,
+        appState.splitViewStates,
+        () => appState.secondaryDeck?.props
+      ) as DeckProps
     );
   }
 }
@@ -168,7 +133,7 @@ export function applySecondaryView<Properties extends Record<string, unknown>>(
   internalViewStates: readonly [unknown, unknown]
 ): Properties {
   const secondary = appState.secondaryView;
-  const splitMode = props.mapState.mapSplitMode;
+  const splitMode = getResidentMapSplitMode(props.mapState);
   appState.splitViewStates = null;
   if (!VIEWS_ENABLED) return result;
   // The host always creates its Deck as the routing subclass; it is inert outside Dual and Swipe.
@@ -186,7 +151,7 @@ export function applySecondaryView<Properties extends Record<string, unknown>>(
       isVisible: Boolean(layer.config.isVisible)
     })),
     splitMaps: props.visState.splitMaps,
-    mapSplitMode: props.mapState.mapSplitMode,
+    mapSplitMode: splitMode,
     supportedViewCount: SUPPORTED_VIEW_COUNT
   });
   if (!plan.supported) return withDeckClass;
@@ -198,14 +163,10 @@ export function applySecondaryView<Properties extends Record<string, unknown>>(
   const baseView = ([result['views']].flat()[0] as SplitBaseView | undefined) ?? new MapView({});
   // Native hides a layer in the map that excludes it; the layer filter now owns per-view
   // visibility, so a layer hidden only in the primary map is drawn from the secondary instance.
-  const primaryLayers = flattenDeckLayers(result['layers']).map(layer =>
-    layer.props.visible === false
-      ? (secondaryLayers.find(
-          candidate => candidate.id === layer.id && candidate.props.visible !== false
-        ) ?? layer)
-      : layer
+  const mergedLayers = mergeResidentViewLayers(
+    flattenDeckLayers(result['layers']),
+    secondaryLayers
   );
-  const known = new Set(primaryLayers.map(layer => layer.id));
   // Kepler derives Deck layer ids from its layer id (`<layerId>-<suffix>`); match the longest owner.
   const keplerLayerIds = props.visState.layers.map(layer => layer.id);
   const filter = createResidentViewLayerFilter(
@@ -221,10 +182,7 @@ export function applySecondaryView<Properties extends Record<string, unknown>>(
   return {
     ...withDeckClass,
     // Each resident layer is rendered once; layerFilter admits it in every view where it is visible.
-    layers: orderGlobeDepthDisk(
-      [...primaryLayers, ...secondaryLayers.filter(l => !known.has(l.id))],
-      result['views']
-    ),
+    layers: orderGlobeDepthDisk(mergedLayers, result['views']),
     ...(splitMode === 'SWIPE_COMPARE'
       ? getSwipeViews(props, viewStates, baseView)
       : {

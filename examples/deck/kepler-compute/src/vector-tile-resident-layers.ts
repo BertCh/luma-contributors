@@ -17,12 +17,8 @@
  * feature (vector-tile-picking.ts) and are reported through `onPick`, not into Kepler's hover state.
  */
 
-import {COORDINATE_SYSTEM, type Color, type Layer, type PickingInfo} from '@deck.gl/core';
-import {
-  GPUPathLayer,
-  GPUScatterplotLayer,
-  GPUSolidPolygonLayer
-} from '@deck.gl-community/gpu-layers';
+import {type Color, type Layer, type PickingInfo} from '@deck.gl/core';
+import {GPUPathLayer, GPUScatterplotLayer, GPUSolidPolygonLayer} from '../gpu-layers/index';
 import type {Device} from '@luma.gl/core';
 import type {DecodedTileFeature, DecodedTileFilter} from './vector-tile-decoded-batch';
 import type {NativeStyleLayer} from './native-style-plan';
@@ -59,6 +55,8 @@ type MemoryReservation = {release: () => void};
 
 export type VectorTileResidentRendererOptions = {
   getDevice: () => Device | null;
+  /** Native Kepler globe step in degrees; undefined selects the planar geometry. */
+  getGlobeResolutionDegrees?: () => number | undefined;
   getReserveMemory: () =>
     | ((byteLength: number, memoryKind: 'cpu' | 'gpu', category?: 'source') => MemoryReservation)
     | null;
@@ -81,6 +79,7 @@ type TileEntry = {
   tile: VectorTileResidentTile | null;
   reservation: MemoryReservation | null;
   rejectedReason: string | null;
+  globeResolutionDegrees?: number;
 };
 
 type LayerEntry = {
@@ -106,6 +105,8 @@ type LayerEntry = {
   opacity: number;
   zoom: number;
   styleRevision: number;
+  /** Null supports standalone decoded-tile callers; a native owner supplies exact refinement visibility. */
+  visibleTileKeys: ReadonlySet<string> | null;
 };
 
 function unpackColor(packed: number, alpha?: number): Color {
@@ -133,6 +134,18 @@ export class VectorTileResidentRenderer {
 
   setZoom(layerId: string, zoom: number): void {
     this.getEntry(layerId).zoom = zoom;
+  }
+
+  setVisibleTileKeys(layerId: string, tileKeys: readonly string[]): void {
+    const entry = this.getEntry(layerId);
+    const visible = new Set(tileKeys);
+    if (
+      entry.visibleTileKeys?.size === visible.size &&
+      [...visible].every(key => entry.visibleTileKeys!.has(key))
+    )
+      return;
+    entry.visibleTileKeys = visible;
+    this.options.onChange?.();
   }
 
   admitTile(
@@ -268,6 +281,7 @@ export class VectorTileResidentRenderer {
         : null,
       filters: entry.filters,
       visible: entry.visible,
+      visibleTileKeys: entry.visibleTileKeys ? [...entry.visibleTileKeys] : null,
       opacity: entry.opacity,
       pendingTileKeys: [...entry.tiles]
         .filter(([, tileEntry]) => !tileEntry.tile && !tileEntry.rejectedReason)
@@ -293,12 +307,23 @@ export class VectorTileResidentRenderer {
       this.device = device;
     }
     if (!device) return [];
+    const globeResolutionDegrees = this.options.getGlobeResolutionDegrees?.();
     const layers: Layer[] = [];
     for (const entry of this.layers.values()) {
       if (entry.styleDirty && entry.nativeLayer) this.planAndApplyStyle(entry);
       let uploadCount = 0;
       let hasPending = false;
       for (const [tileKey, tileEntry] of entry.tiles) {
+        // Keep hidden cache entries, but do not upload, rebuild globe variants or draw them.
+        if (entry.visibleTileKeys && !entry.visibleTileKeys.has(tileKey)) continue;
+        if (tileEntry.globeResolutionDegrees !== globeResolutionDegrees) {
+          tileEntry.tile?.destroy();
+          tileEntry.tile = null;
+          tileEntry.reservation?.release();
+          tileEntry.reservation = null;
+          tileEntry.rejectedReason = null;
+          tileEntry.globeResolutionDegrees = globeResolutionDegrees;
+        }
         if (!tileEntry.tile && !tileEntry.rejectedReason) {
           if (uploadCount >= MAXIMUM_TILE_UPLOADS_PER_FRAME) {
             hasPending = true;
@@ -341,7 +366,8 @@ export class VectorTileResidentRenderer {
         visible: true,
         opacity: 0.8,
         zoom: 0,
-        styleRevision: 0
+        styleRevision: 0,
+        visibleTileKeys: null
       };
       this.layers.set(layerId, entry);
     }
@@ -363,7 +389,8 @@ export class VectorTileResidentRenderer {
         filters: entry.filters,
         style: entry.style,
         channels: entry.channels,
-        categories: this.getCategoryCodes(entry)
+        categories: this.getCategoryCodes(entry),
+        globeResolutionDegrees: tileEntry.globeResolutionDegrees
       });
       if (!tile) {
         tileEntry.rejectedReason = 'empty tile';
@@ -545,7 +572,7 @@ export class VectorTileResidentRenderer {
     const shared = {
       visible: entry.visible,
       pickable: draw?.pickable ?? true,
-      coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+      coordinateSystem: 'lnglat',
       // Tiles are flat map content: painter order, no depth interaction.
       parameters: {depthCompare: 'always' as const, depthWriteEnabled: false}
     };

@@ -27,14 +27,12 @@ import {
 
 // Load the pinned native CPU implementation without its unrelated rendering barrels.
 const {suitabilityDataset} = await import(
-  // @ts-expect-error Direct implementation file has no declaration entry.
   new URL(
     '../../../node_modules/@kepler.gl/table/dist/esm/dataset-ops/suitability.js',
     import.meta.url
   ).pathname
 );
 const {RowDataContainer} = await import(
-  // @ts-expect-error Direct implementation file has no declaration entry.
   new URL('../../../node_modules/@kepler.gl/utils/dist/esm/row-data-container.js', import.meta.url)
     .pathname
 );

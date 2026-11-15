@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+// SPDX-FileCopyrightText: Copyright contributors to the kepler.gl project
 
 import type {Plugin} from 'vite';
 
@@ -133,6 +134,134 @@ export function patchKeplerComputeFilterSource(source: string): string {
   const result =
     patched.slice(0, categoryInsertion) + categoryHook + patched.slice(categoryInsertion);
   return importAlias ? result.replace(PLOT_IMPORT, importAlias) : result;
+}
+
+const DECK_CORE_IMPORT = /import\s*\{([^}]*)\}\s*from\s*(['"])@deck\.gl\/core\2;?/g;
+const COORDINATE_SYSTEM_VALUES =
+  "Object.freeze({DEFAULT: 'default', LNGLAT: 'lnglat', METER_OFFSETS: 'meter-offsets', " +
+  "LNGLAT_OFFSETS: 'lnglat-offsets', CARTESIAN: 'cartesian'})";
+
+/**
+ * Kepler 3.3 and its dependencies import `COORDINATE_SYSTEM` from `@deck.gl/core`; deck.gl 10 removed
+ * that export and takes the coordinate system as a string. Drop the named import and declare the
+ * constant locally with the same member names and the string values deck.gl 10 accepts. A bundler
+ * alias would create a second `@deck.gl/core` instance next to the pre-bundled one, so this rewrites
+ * the importing module instead (it runs both in the Vite dev optimizer and in `vite build`).
+ */
+export function patchDeckCoordinateSystemImport(source: string): string {
+  if (!source.includes('COORDINATE_SYSTEM')) return source;
+  return source.replace(DECK_CORE_IMPORT, (statement, specifierList: string, quote: string) => {
+    const specifiers = specifierList
+      .split(',')
+      .map(specifier => specifier.trim())
+      .filter(Boolean);
+    const coordinateSystem = specifiers.find(
+      specifier => specifier === 'COORDINATE_SYSTEM' || specifier.startsWith('COORDINATE_SYSTEM ')
+    );
+    if (!coordinateSystem) return statement;
+    const localName = coordinateSystem.split(/\s+as\s+/)[1] ?? 'COORDINATE_SYSTEM';
+    const remaining = specifiers.filter(specifier => specifier !== coordinateSystem);
+    const declaration = `const ${localName} = ${COORDINATE_SYSTEM_VALUES};`;
+    return remaining.length
+      ? `import { ${remaining.join(', ')} } from ${quote}@deck.gl/core${quote}; ${declaration}`
+      : declaration;
+  });
+}
+
+const EDITABLE_PATH_ANCHOR = "'if (path.billboard != 0.0) {'";
+const EDITABLE_PATH_ANCHOR_IN_VERTEX_MAIN = "'if (path.billboard != 0.0) {\\n#ifdef DASH_ENABLED'";
+
+/**
+ * `@deck.gl-community/editable-layers` 10.0.0-alpha.1 widens picking strokes by inserting WGSL
+ * before the first `if (path.billboard != 0.0) {` of deck.gl 10.0.0-alpha.1's `path.wgsl`. That
+ * text first occurs inside `getLineJoinOffset`, where `widthPixels` does not exist, so every
+ * editor path shader fails to compile. The vertex entry point's occurrence is the only one
+ * followed by `#ifdef DASH_ENABLED`; anchor on that one.
+ */
+export function patchEditablePathLayerSource(source: string): string {
+  return source.includes(EDITABLE_PATH_ANCHOR)
+    ? source.replace(EDITABLE_PATH_ANCHOR, EDITABLE_PATH_ANCHOR_IN_VERTEX_MAIN)
+    : source;
+}
+
+const GLOBE_LABEL_CULL_WGSL = /* wgsl */ `
+  if (project.projectionMode == PROJECTION_MODE_GLOBE) {
+    let anchorCommon = geometry.position.xyz;
+    let radius = length(anchorCommon);
+    let cameraDistance = length(project.cameraPosition);
+    if (radius > 0.0 && cameraDistance > radius) {
+      let cosineSurface = dot(anchorCommon / radius, project.cameraPosition / cameraDistance);
+      let cosineHorizon = radius / cameraDistance + 0.02;
+      if (cosineSurface < cosineHorizon) {
+        *position = vec4<f32>(0.0, 0.0, 2.0, 1.0);
+      }
+    }
+  }
+`;
+
+/** Kepler's glyph/background helper injects GLSL into deck 10's WGSL as well as its GLSL. */
+export function patchKeplerGlobeBackfaceCullSource(source: string): string {
+  if (source.includes('kepler-globe-label-horizon')) return source;
+  const declaration = /export function injectGlobeBackfaceCull\(shaders\) \{[^]*?\n\}/;
+  if (!declaration.test(source) || !source.includes('var BACKFACE_CULL_INJECT ='))
+    throw new Error('Pinned Kepler globe backface cull helper changed; audit the shader hook');
+  // Public luma ShaderPlugin injections select the language at assembly time. Keep all existing
+  // base injections/plugins, the original GLSL and the exact original horizon margin/guard.
+  // Move the inherited position hook into the appended plugin, retaining its order. Assembly
+  // collects plugins before legacy inject maps, so order Infinity alone would still put culling
+  // before an inherited Infinity hook. With both in the plugin, stable ties keep culling last.
+  return source.replace(
+    declaration,
+    `export function injectGlobeBackfaceCull(shaders) {
+  var positionHook = (shaders.inject || {})['vs:DECKGL_FILTER_GL_POSITION'];
+  var inheritedPosition = typeof positionHook === 'string' ? positionHook : (positionHook && positionHook.injection) || '';
+  var remainingInject = {...(shaders.inject || {})};
+  delete remainingInject['vs:DECKGL_FILTER_GL_POSITION'];
+  return {...shaders, inject: remainingInject, plugins: [...(shaders.plugins || []), {
+    name: 'kepler-globe-label-horizon',
+    injections: [...(inheritedPosition ? [{stage: 'vertex', target: 'DECKGL_FILTER_GL_POSITION',
+      glsl: inheritedPosition, wgsl: inheritedPosition,
+      order: typeof positionHook === 'object' ? (positionHook.order ?? 0) : 0}] : []),
+      {stage: 'vertex', target: 'DECKGL_FILTER_GL_POSITION', order: Number.POSITIVE_INFINITY,
+      glsl: BACKFACE_CULL_INJECT, wgsl: ${JSON.stringify(GLOBE_LABEL_CULL_WGSL)}}]
+  }]};
+}`
+  );
+}
+
+/**
+ * loaders.gl's 3D tiles source assumes raw glTF {json}; deck also accepts postprocessed glTF.
+ * Read both metadata shapes without rejecting a successfully loaded flat GLB during onTileLoaded.
+ */
+export function patchTiles3DRemovedExtensionsSource(source: string): string {
+  return source.replaceAll(
+    'content?.gltf?.json.extensionsRemoved',
+    '(content?.gltf?.json?.extensionsRemoved ?? content?.gltf?.extensionsRemoved)'
+  );
+}
+
+export function createKeplerComputeDeckCompatPlugin(): Plugin {
+  return {
+    name: 'kepler-deck-10-coordinate-system',
+    enforce: 'pre',
+    transform(source, id) {
+      const normalized = id.replaceAll('\\', '/').split('?')[0];
+      if (!normalized.includes('/node_modules/') || !/\.(?:m?js)$/.test(normalized)) return null;
+      const compatible = normalized.endsWith('/deckgl-layers/dist/esm/globe/globe-backface-cull.js')
+        ? patchKeplerGlobeBackfaceCullSource(source)
+        : source;
+      const patchedConsumer = patchDeckCoordinateSystemImport(
+        normalized.endsWith('/editable-layers/dist/editable-layers/editable-path-layer.js')
+          ? patchEditablePathLayerSource(source)
+          : compatible
+      );
+      const patched =
+        normalized.includes('/@loaders.gl/tiles-3d/') && normalized.endsWith('/tiles-3d-source.js')
+          ? patchTiles3DRemovedExtensionsSource(patchedConsumer)
+          : patchedConsumer;
+      return patched === source ? null : {code: patched, map: null};
+    }
+  };
 }
 
 export function createKeplerComputeFilterPlugin(): Plugin {

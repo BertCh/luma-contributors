@@ -5,7 +5,10 @@
 import {expect, test, vi} from 'vitest';
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {makeGeometryGPUVectors, prepareGeometrySource} from '@luma.gl/engine/arrow';
+import {
+  makeKeplerGeometryGPUVectors,
+  prepareKeplerGeometrySource
+} from '../../../examples/deck/kepler-compute/src/geometry-preparation';
 import {GeometryRuntime} from '../../../examples/deck/kepler-compute/src/geometry-runtime';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
@@ -145,12 +148,12 @@ test('prepared polygon vertical properties preserve zero offsets, native height 
       ]
     }
   });
-  const source = prepareGeometrySource([
+  const source = prepareKeplerGeometrySource([
     {id: 'first', rows: [polygon(0, 0), polygon(-3, -2)]},
     {id: 'empty', rows: []},
     {id: 'last', rows: [polygon(null, null), polygon(9, 4)]}
   ]);
-  const geometry = makeGeometryGPUVectors(device, source);
+  const geometry = makeKeplerGeometryGPUVectors(device, source);
   const height = new GeoJSONPropertyRuntime(device, geometry.properties!.elevation!, 500);
   const offset = new GeoJSONPropertyRuntime(device, geometry.properties!.elevationOffset!, 50);
   // Different mask chunking must not change polygon source-row alignment.

@@ -62,6 +62,7 @@ const source = arrow
   .tableFromArrays({
     geometry: geometry.slice(0, 3),
     sourceId: new Float32Array([0, 1, 2]),
+    baseAltitude: arrow.vectorFromArray([null, 6000, 0], new arrow.Float32()),
     heightMetric: new Float32Array([0, 100, 300]),
     widthMetric: new Float32Array([0, 2, 8])
   })
@@ -69,6 +70,7 @@ const source = arrow
     arrow.tableFromArrays({
       geometry: geometry.slice(3),
       sourceId: new Float32Array([3, 4, 5]),
+      baseAltitude: arrow.vectorFromArray([0, -1000, null], new arrow.Float32()),
       heightMetric: new Float32Array([200, 400, 500]),
       widthMetric: new Float32Array([3, 4, 6])
     })
@@ -161,12 +163,12 @@ async function waitScalarBinding(channel, scale) {
       if (api.getState().error) throw new Error(api.getState().error);
       // Linear/identity scalar styles intentionally do not trigger legend readback.
       const native = api.saveNativeConfig().config.visState.layers.find(layer => layer.id === id);
-      const fixed = channel === 'height' && native.config.visConfig.fixedHeight;
+      const fixed = (channel === 'height' && native.config.visConfig.fixedHeight) || (channel === 'elevationOffset' && native.config.visConfig.fixedElevation);
       const actualScale = fixed ? 'identity' : native.visualChannels[`${channel}Scale`];
       const rendered = api
         .renderedLayers()
-        .find(layer => layer.renderId === `${id}-${channel === 'height' ? 'fill' : 'paths'}`);
-      const value = channel === 'height' ? rendered?.getElevation : rendered?.getWidth;
+        .find(layer => layer.renderId === `${id}-${channel === 'height' || channel === 'elevationOffset' ? 'fill' : 'paths'}`);
+      const value = channel === 'height' ? rendered?.getElevation : channel === 'elevationOffset' ? rendered?.getElevationOffset : rendered?.getWidth;
       return (
         current?.expected.revision > 0 &&
         !current.reason &&
@@ -240,11 +242,11 @@ function vectorProperty(property, name) {
   );
   return property;
 }
-async function pick(longitude, latitude) {
+async function pick(longitude, latitude, altitude = 0) {
   return page.evaluate(
-    ({id, longitude, latitude}) =>
-      window.__keplerComputeTest.pickPublishedPosition(id, longitude, latitude),
-    {id: datasetId, longitude, latitude}
+    ({id, longitude, latitude, altitude}) =>
+      window.__keplerComputeTest.pickPublishedPosition(id, longitude, latitude, altitude),
+    {id: datasetId, longitude, latitude, altitude}
   );
 }
 async function selectNativeField(label, field) {
@@ -443,6 +445,28 @@ try {
   checks.push(
     'positive uniform offset activates flat raised surfaces with resident zero/negative source overrides'
   );
+
+  stage('tabular polygon base altitude through native fixed Elevation Offset');
+  await changeVisConfig(
+    {fixedElevation: true, elevationScale: 20},
+    {elevationOffsetField: {name: 'baseAltitude', type: 'real'}, elevationOffsetScale: 'linear'}
+  );
+  await waitScalarBinding('elevationOffset', 'identity');
+  const elevatedPolygon = renderedLayer(await layerProperties(), 'fill');
+  vectorProperty(elevatedPolygon.getElevationOffset, 'fixed table-column base altitude');
+  assert.equal(elevatedPolygon.getElevation, 0, 'Base altitude must not create extrusion height');
+  assert.equal((await pick(-74.023, 40.737, 6000))?.sourceRowIndex, 1, 'Fixed altitude reads metres directly, independently of elevationScale');
+  assert.notEqual((await pick(-74.023, 40.737, 0))?.sourceRowIndex, 1, 'Raised polygon must not remain at its ground projection');
+  assert.equal((await pick(-73.985, 40.745, -950))?.sourceRowIndex, 4, 'Negative base altitude adds to the polygon geometry Z=50');
+  assert.equal((await pick(-73.995, 40.778, 10))?.sourceRowIndex, 5, 'Null table altitude defaults to zero without dropping geometry Z=10');
+  const altitudeConfig = await nativeConfig();
+  assert.equal(nativeLayer(altitudeConfig).visualChannels.elevationOffsetField.name, 'baseAltitude');
+  assert.equal(nativeLayer(altitudeConfig).config.visConfig.fixedElevation, true);
+  await apply(altitudeConfig);
+  await waitScalarBinding('elevationOffset', 'identity');
+  assert.equal((await pick(-74.023, 40.737, 6000))?.sourceRowIndex, 1, 'Native config replay retains fixed polygon base altitude');
+  checks.push('tabular polygon base altitude: fixed native role, negative/null values, independent geometry Z/height scale, source picking and config replay');
+  await changeVisConfig({fixedElevation: false, elevationScale: 1}, {elevationOffsetField: null});
 
   stage('filled versus wireframe pixels');
   await changeVisConfig({enable3d: true, filled: true, wireframe: false, elevationOffset: 0});

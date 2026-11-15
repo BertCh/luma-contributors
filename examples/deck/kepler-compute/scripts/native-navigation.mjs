@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+/** Existing acceptance flows require the deterministic fixture, including with a supplied base URL. */
+export function withSyntheticSample(address) {
+  const url = new URL(address);
+  if (!url.searchParams.has('rows')) url.searchParams.set('sample', 'synthetic');
+  return url.href;
+}
+
 export async function closeNativeDialog(page) {
   if (await page.locator('.ReactModal__Overlay').count()) {
     await page.keyboard.press('Escape');

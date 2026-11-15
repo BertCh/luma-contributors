@@ -9,9 +9,13 @@ import {runInNewContext} from 'node:vm';
 import {expect, test} from 'vitest';
 import {
   makeResidentTimeHistogramPlan,
+  makeTimeHistogramEdgePlan,
   makeTimeHistogramWordEdges
 } from '../../../examples/deck/kepler-compute/src/resident-time-histogram';
-import {installKeplerComputeTableBridge} from '../../../examples/deck/kepler-compute/src/kepler-table-bridge';
+import {
+  installKeplerComputeTableBridge,
+  type KeplerComputeFilter
+} from '../../../examples/deck/kepler-compute/src/kepler-table-bridge';
 
 const require = createRequire(import.meta.url);
 const nativeRequire = createRequire(require.resolve('@kepler.gl/utils'));
@@ -118,7 +122,12 @@ test('native bridge advertises certified defaults and never reuses counts across
       filteredIndex: [],
       filteredIndexForDomain: [],
       filteredIndexByLayer: {},
-      filterTable() {}
+      filterTable(_filters: readonly KeplerComputeFilter[]) {},
+      getColumnFilterProps(
+        _field: string
+      ): {plotType?: {type: string; interval: string}} | undefined {
+        return undefined;
+      }
     },
     {
       fields: {time: {kind: 'time', dimension: 'time', domain: [0, 1000]}},
@@ -137,7 +146,10 @@ test('native bridge advertises certified defaults and never reuses counts across
     type: 'histogram',
     interval: '1-month'
   });
-  const filter = {
+  const filter: KeplerComputeFilter & {
+    lumaComputePlot?: {status: string};
+    timeBins?: Record<string, Record<string, unknown>>;
+  } = {
     id: 'time-filter',
     fixedDomain: true,
     dataId: ['source'],
@@ -160,7 +172,7 @@ test('native bridge advertises certified defaults and never reuses counts across
     plotType: {type: 'histogram', interval}
   });
   expect(next.lumaComputePlot?.status).toBe('pending');
-  expect(next.timeBins?.source?.[interval]).toBeUndefined();
+  expect(next.timeBins?.['source']?.[interval]).toBeUndefined();
   const bad = table.lumaCompute.updateFilterPlot({
     ...filter,
     plotType: {type: 'histogram', interval: 'invalid'}
@@ -184,4 +196,41 @@ test('second sources use directed edges without rounding an instant into the wro
     2000n,
     2000n
   ]);
+});
+
+test('nanosecond histogram edges retain out-of-range ordering at both Int64 boundaries', () => {
+  const minimum = -(1n << 63n);
+  const maximum = (1n << 63n) - 1n;
+  const thresholds = [
+    -9_223_372_036_856, -9_223_372_036_855, -9_223_372_036_854, 0, 9_223_372_036_854,
+    9_223_372_036_855, 9_223_372_036_856
+  ];
+  const plan = makeTimeHistogramEdgePlan(thresholds, 'nanosecond');
+  expect([...plan.words]).toEqual([
+    minimum,
+    minimum,
+    -9_223_372_036_854_000_000n,
+    0n,
+    9_223_372_036_854_000_000n,
+    maximum,
+    maximum,
+    maximum
+  ]);
+  expect(plan.orders).toEqual([-1, -1, 0, 0, 0, 1, 1, 1]);
+  expect(plan.firstNotBelow).toBe(2);
+  expect(plan.firstAbove).toBe(5);
+  // Compare every clipped boundary against an unbounded BigInt oracle, including equality at MIN/MAX.
+  const edges = [...thresholds, thresholds[thresholds.length - 1]].map(
+    value => BigInt(value) * 1_000_000n
+  );
+  for (const tick of [minimum, minimum + 1n, -1n, 0n, 1n, maximum - 1n, maximum]) {
+    for (const [index, edge] of edges.entries()) {
+      const greaterOrEqual =
+        plan.orders[index] < 0 || (plan.orders[index] === 0 && tick >= plan.words[index]);
+      const lessOrEqual =
+        plan.orders[index] > 0 || (plan.orders[index] === 0 && tick <= plan.words[index]);
+      expect(greaterOrEqual).toBe(tick >= edge);
+      expect(lessOrEqual).toBe(tick <= edge);
+    }
+  }
 });

@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, test, vi} from 'vitest';
+import {afterAll, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import type {FontAtlas} from '@luma.gl/engine/text';
@@ -22,25 +25,33 @@ vi.mock('@luma.gl/engine/text', async importOriginal => {
   const actual = await importOriginal<typeof import('@luma.gl/engine/text')>();
   return {
     ...actual,
-    buildBitmapFontAtlas: vi.fn(() => makeAtlas()),
-    GPUTextResources: class {
-      readonly atlasTexture = {ready: Promise.resolve(), isReady: true};
-      readonly fontAtlas: FontAtlas;
-      constructor(
-        readonly device: Device,
-        props: {fontAtlas: FontAtlas}
-      ) {
-        this.fontAtlas = props.fontAtlas;
-      }
-      destroy = vi.fn();
-    }
+    buildBitmapFontAtlas: vi.fn(() => makeAtlas())
   };
 });
-// Node workers share a module graph; reload so label-runtime binds to the text mock above.
-vi.resetModules();
-const {makePointLabelRuntime} = await import(
-  '../../../examples/deck/kepler-compute/src/label-runtime'
+vi.mock(
+  '../../../examples/deck/kepler-compute/src/luma-gaps/mipmapped-text-resources',
+  async importOriginal => {
+    const actual =
+      await importOriginal<
+        typeof import('../../../examples/deck/kepler-compute/src/luma-gaps/mipmapped-text-resources')
+      >();
+    return {
+      ...actual,
+      KeplerMipmappedTextResources: class {
+        readonly atlasTexture = {ready: Promise.resolve(), isReady: true};
+        readonly fontAtlas: FontAtlas;
+        constructor(
+          readonly device: Device,
+          props: {fontAtlas: FontAtlas}
+        ) {
+          this.fontAtlas = props.fontAtlas;
+        }
+        destroy = vi.fn();
+      }
+    };
+  }
 );
+import {makePointLabelRuntime} from '../../../examples/deck/kepler-compute/src/label-runtime';
 
 function makeAtlas(): FontAtlas {
   return {
@@ -205,4 +216,11 @@ test('point label runtime applies CPU collision only with anchors and a viewport
   positions.destroy();
   mask.destroy();
   device.destroy();
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@luma.gl/engine/text');
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/luma-gaps/mipmapped-text-resources');
+  vi.resetModules();
 });

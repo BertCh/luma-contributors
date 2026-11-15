@@ -8,7 +8,7 @@ import {getResidentHoverIdentity} from './resident-hover-identity';
 import {LayerClasses, type LayerClassesType, type Layer as KeplerLayer} from '@kepler.gl/layers';
 import type {Layer, PickingInfo} from '@deck.gl/core';
 import {PathLayer} from '@deck.gl/layers';
-import {GPUScatterplotLayer, GPUSolidPolygonLayer} from '@deck.gl-community/gpu-layers';
+import {GPUScatterplotLayer, GPUSolidPolygonLayer} from '../gpu-layers/index';
 import {
   getAggregateCellOutline,
   getAggregationHighlightProps,
@@ -121,7 +121,7 @@ export function createResidentAggregationLayerClasses(
     // Native grid, hexagon and cluster layers ignore the hover brush, so it needs no refusal.
     const {binding, reason} = options.resolveAggregation(layer.config.dataId!, layer);
     if (!binding) {
-      report(layer, reason ?? 'Resident aggregation is not ready.');
+      report(layer, reason ?? null);
       return [];
     }
     report(layer, null);

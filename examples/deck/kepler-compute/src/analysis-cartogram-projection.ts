@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {COORDINATE_SYSTEM, WebMercatorViewport, type Viewport} from '@deck.gl/core';
-import type {GPUScatterplotLayerProps} from '@deck.gl-community/gpu-layers';
+import {WebMercatorViewport, type Viewport} from '@deck.gl/core';
+import type {GPUScatterplotLayerProps} from '../gpu-layers/index';
 
 /** EPSG:3857 plane units to Deck's 512-unit common world; not ground-meter distances. */
 export const CARTOGRAM_MERCATOR_COMMON_SCALE = 512 / (2 * Math.PI * 6378137);
@@ -28,7 +28,7 @@ export type CartogramMercatorLayerProps = Pick<
 export function getCartogramMercatorLayerProps(): CartogramMercatorLayerProps {
   const scale = CARTOGRAM_MERCATOR_COMMON_SCALE;
   return {
-    coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+    coordinateSystem: 'cartesian',
     coordinateOrigin: [256, 256, 0],
     modelMatrix: [scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, 1],
     radiusUnits: 'common',

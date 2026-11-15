@@ -23,10 +23,10 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  prepareGeometrySource,
-  makeGeometryGPUVectors,
-  type PreparedGeometryGPUVectors
-} from '@luma.gl/engine/arrow';
+  prepareKeplerGeometrySource,
+  makeKeplerGeometryGPUVectors,
+  type PreparedKeplerGeometryGPUVectors
+} from './geometry-preparation';
 import type {KeplerDatasetRegistry, KeplerMemoryReservation} from '@luma-contributors/kepler';
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import {getH3Boundary, type PreparedH3Source, type PreparedH3ViewportMesh} from './h3-source';
@@ -48,7 +48,7 @@ export type H3GPUVectors = {
   pentagons: GPUVector<'uint32'>;
   primitiveSourceRows: GPUVector<'uint32'>;
   outlineVertexRows: GPUVector<'uint32'>;
-  geometry: PreparedGeometryGPUVectors;
+  geometry: PreparedKeplerGeometryGPUVectors;
   gpuByteLength: number;
   typedStorageByteLength: number;
   isCurrent(): boolean;
@@ -68,7 +68,7 @@ export function makeH3GPUVectors(
   const requiresFp64 = source.precision.collapsedRows.length > 0;
   const buffers: Buffer[] = [];
   const reservations: KeplerMemoryReservation[] = [];
-  let geometry: PreparedGeometryGPUVectors | undefined;
+  let geometry: PreparedKeplerGeometryGPUVectors | undefined;
   try {
     if (
       !Number.isSafeInteger(options.workingMemoryBudgetBytes) ||
@@ -160,7 +160,7 @@ export function makeH3GPUVectors(
       'uint32',
       source.batches.map(batch => batch.primitiveSourceRows)
     );
-    const prepared = prepareGeometrySource(
+    const prepared = prepareKeplerGeometrySource(
       source.batches.map(batch => ({
         id: batch.id,
         rows: Array.from({length: batch.rowCount}, (_, row) => {
@@ -181,7 +181,7 @@ export function makeH3GPUVectors(
       // Cells that collapse in Float32 keep a low vertex stream for every render branch.
       {fp64: requiresFp64}
     );
-    geometry = makeGeometryGPUVectors(device, prepared);
+    geometry = makeKeplerGeometryGPUVectors(device, prepared);
     const outlineRows = geometry.polygonOutlines.getPath.data.map((chunk, index) => {
       const rows = new Uint32Array(chunk.valueLength);
       const offsets = chunk.valueOffsets;

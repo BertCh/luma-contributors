@@ -22,7 +22,7 @@ test('analysis selects published Float32 fields and preserves multi-batch source
     category: ['c', 'd']
   });
   const dataset = session.importArrowDataset({id: 'published', table: first.concat(second)});
-  const sourceChunks = [...dataset.value.columns.income.data];
+  const sourceChunks = [...dataset.value.columns['income'].data];
   const explorer = {
     dataset,
     isCurrent: true,
@@ -47,8 +47,8 @@ test('analysis selects published Float32 fields and preserves multi-batch source
     invalid.operation.column = 'missing';
     expect(() => analysis.restoreRecipe(JSON.stringify(invalid))).toThrow('Float32');
     expect(analysis.settings.column).toBe('population');
-    expect(dataset.value.columns.income.data).toEqual(sourceChunks);
-    expect(dataset.value.columns.income.data.map(chunk => chunk.length)).toEqual([2, 2]);
+    expect(dataset.value.columns['income'].data).toEqual(sourceChunks);
+    expect(dataset.value.columns['income'].data.map(chunk => chunk.length)).toEqual([2, 2]);
     await analysis.destroy(Promise.resolve());
     expect(sourceChunks.every(chunk => !chunk.buffer.destroyed)).toBe(true);
   } finally {

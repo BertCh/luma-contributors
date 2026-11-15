@@ -95,3 +95,39 @@ it('trip rendering inputs gather source masks/styles on GPU across unequal chunk
     fixture.destroy();
   }
 });
+
+it('multipart trips gather one source mask and style into every disconnected primitive', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createTripRuntimeFixture(device, true);
+  const runtime = new TripRuntime({
+    device,
+    column: 'route',
+    ...fixture,
+    workingMemoryBudgetBytes: 1024 * 1024
+  });
+  try {
+    const encoder = device.createCommandEncoder();
+    runtime.encode(encoder);
+    device.submit(encoder.finish());
+    expect(await readWords(runtime.binding.selectionMask)).toEqual([0, 0, 1]);
+    expect(await readWords(runtime.binding.getWidth!)).toEqual(
+      Array.from(new Uint32Array(new Float32Array([20, 20, 30]).buffer))
+    );
+    expect([0, 1, 2].map(index => runtime.binding.resolveSourceRow(index))).toEqual([1, 1, 2]);
+    fixture.selectionMask.data[1].buffer.write(new Uint32Array([1, 0, 0]));
+    const next = device.createCommandEncoder();
+    runtime.encode(next);
+    device.submit(next.finish());
+    expect(await readWords(runtime.binding.selectionMask)).toEqual([1, 1, 0]);
+    expect(runtime.readbackByteLength).toBe(0);
+  } finally {
+    const fence = device.createFence();
+    try {
+      await runtime.destroy(fence.signaled);
+    } finally {
+      fence.destroy();
+      fixture.destroy();
+    }
+  }
+});

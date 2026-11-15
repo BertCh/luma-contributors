@@ -7,17 +7,20 @@ import {getVitestConfig} from '@vis.gl/dev-tools';
 // Kepler specs that exercise examples/deck/kepler-compute run against the example sources in
 // place. Those whose imports reach deck.gl, other undeclared packages or luma.gl APIs that are
 // not published stay out of the runs; the JSON gives each one's reason.
-const keplerComputeExampleSpecs: string[] = Object.keys(
-  JSON.parse(
-    readFileSync(new URL('./test/kepler-compute-example-specs.json', import.meta.url), 'utf8')
-  ).excludedFromRuns
-);
+// LUMA_CONTRIBUTORS_RUN_EXCLUDED_SPECS=true lifts the exclusion so the listed specs can be
+// retried (for example after an example change) without editing the JSON.
+const keplerComputeExampleSpecs: string[] =
+  process.env.LUMA_CONTRIBUTORS_RUN_EXCLUDED_SPECS === 'true'
+    ? []
+    : Object.keys(
+        JSON.parse(
+          readFileSync(new URL('./test/kepler-compute-example-specs.json', import.meta.url), 'utf8')
+        ).excludedFromRuns
+      );
 
 const excludePatterns = [
   '**/*.disabled.*',
-  ...keplerComputeExampleSpecs,
-  // Uses engine/arrow geometry APIs (makeGeometryGPUVectors) that published luma.gl lacks.
-  'modules/kepler/test/host-wkb-selection.spec.ts'
+  ...keplerComputeExampleSpecs
 ];
 
 // Benchmarks stay out of correctness runs; LUMA_CONTRIBUTORS_BENCHMARKS=true runs only these.
@@ -69,6 +72,9 @@ const launchArguments = [
 ];
 
 const browserProject = {
+  // Declared up front so the first run that reaches DuckDB does not make Vite re-optimise
+  // dependencies and reload mid-test, which can leave two apache-arrow module instances.
+  optimizeDeps: {include: ['@duckdb/duckdb-wasm', 'apache-arrow']},
   test: {
     environment: 'node',
     // Concurrent pages contend for one GPU; match CI locally.

@@ -122,15 +122,17 @@ export type ConnectionVariantColumns = {
 };
 
 export type ConnectionVariantBinding = {
-  sourcePositions: GPUVector<'float32x2'>;
-  targetPositions: GPUVector<'float32x2'>;
+  sourcePositions: GPUVector<'float32x2'> | GPUVector<'float32x3'>;
+  targetPositions: GPUVector<'float32x2'> | GPUVector<'float32x3'>;
+  sourceAltitudeValidity?: GPUVector<'uint32'>;
+  targetAltitudeValidity?: GPUVector<'uint32'>;
   columns: ConnectionVariantColumns;
 };
 
 /**
  * Arc and line layers whose endpoint columns differ from the bound connection geometry: each
- * endpoint pair becomes a shared 2D position variant (keyed `<layerId>\u0001source|target`).
- * Altitude endpoints are not supported and keep the original geometry (and its mismatch reason).
+ * endpoint pair becomes a shared XY or XYZ position variant (keyed `<layerId>\u0001source|target`).
+ * Native lines use alt0/alt1 independently; arcs retain their native zero-height endpoints.
  */
 export function makeConnectionVariantBinding(
   variants: PointPositionVariantRuntime,
@@ -144,18 +146,23 @@ export function makeConnectionVariantBinding(
   const lng1 = columns['lng1']?.value;
   const lat1 = columns['lat1']?.value;
   if (!lng0 || !lat0 || !lng1 || !lat1) return undefined;
+  const alt0 = layer.type === 'line' ? columns['alt0']?.value || undefined : undefined;
+  const alt1 = layer.type === 'line' ? columns['alt1']?.value || undefined : undefined;
   if (
+    !alt0 &&
+    !alt1 &&
     bound &&
     bound.lng0 === lng0 &&
     bound.lat0 === lat0 &&
     bound.lng1 === lng1 &&
-    bound.lat1 === lat1
+    bound.lat1 === lat1 &&
+    bound.alt0 === alt0 &&
+    bound.alt1 === alt1
   ) {
     variants.releaseLayer(`${layer.id}\u0001source`);
     variants.releaseLayer(`${layer.id}\u0001target`);
     return undefined;
   }
-  if (columns['alt0']?.value || columns['alt1']?.value) return undefined;
   const request = {
     datasetId: dataset.id,
     datasetRevision: dataset.revision,
@@ -164,19 +171,23 @@ export function makeConnectionVariantBinding(
   const source = variants.resolve(`${layer.id}\u0001source`, {
     ...request,
     longitude: lng0,
-    latitude: lat0
+    latitude: lat0,
+    altitude: alt0
   });
   if (source.status === 'unavailable') return {unsupportedReason: source.reason};
   const target = variants.resolve(`${layer.id}\u0001target`, {
     ...request,
     longitude: lng1,
-    latitude: lat1
+    latitude: lat1,
+    altitude: alt1
   });
   if (target.status === 'unavailable') return {unsupportedReason: target.reason};
   return {
-    sourcePositions: source.variant.vectors.positions,
-    targetPositions: target.variant.vectors.positions,
-    columns: {lat0, lng0, lat1, lng1}
+    sourcePositions: source.variant.vectors.positions3D ?? source.variant.vectors.positions,
+    targetPositions: target.variant.vectors.positions3D ?? target.variant.vectors.positions,
+    sourceAltitudeValidity: source.variant.vectors.altitudeValidity,
+    targetAltitudeValidity: target.variant.vectors.altitudeValidity,
+    columns: {lat0, lng0, lat1, lng1, ...(alt0 ? {alt0} : {}), ...(alt1 ? {alt1} : {})}
   };
 }
 
@@ -185,12 +196,27 @@ export function makeConnectionVariantOverride(
   variants: PointPositionVariantRuntime,
   layer: PointSelectorLayer,
   dataset: PointVariantDataset,
-  bound: ConnectionVariantColumns | undefined
-): {connections?: ConnectionVariantBinding; unsupportedReason?: string} {
+  bound: ConnectionVariantColumns | undefined,
+  resolveAltitudeMask?: (
+    validity: GPUVector<'uint32'> | undefined,
+    endpoint: 'source' | 'target'
+  ) => GPUVector<'uint32'>
+): {
+  selectionMask?: GPUVector<'uint32'>;
+  connections?: ConnectionVariantBinding;
+  unsupportedReason?: string;
+} {
   if (layer.type !== 'arc' && layer.type !== 'line') return {};
   const binding = makeConnectionVariantBinding(variants, layer, dataset, bound);
-  if (!binding) return {};
-  return 'unsupportedReason' in binding
-    ? {unsupportedReason: binding.unsupportedReason}
-    : {connections: binding};
+  if (!binding || 'unsupportedReason' in binding) {
+    resolveAltitudeMask?.(undefined, 'source');
+    resolveAltitudeMask?.(undefined, 'target');
+    return binding && 'unsupportedReason' in binding
+      ? {unsupportedReason: binding.unsupportedReason}
+      : {};
+  }
+  let selectionMask: GPUVector<'uint32'> | undefined;
+  selectionMask = resolveAltitudeMask?.(binding.sourceAltitudeValidity, 'source');
+  selectionMask = resolveAltitudeMask?.(binding.targetAltitudeValidity, 'target') ?? selectionMask;
+  return {connections: binding, ...(selectionMask ? {selectionMask} : {})};
 }

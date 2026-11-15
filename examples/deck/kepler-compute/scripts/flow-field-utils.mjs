@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
-import {pinViteModules} from './pin-vite-modules.mjs';
+import {pinViteModules, openKeplerComputePage, discardStaleImportErrors} from './pin-vite-modules.mjs';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
 
 /** Opens the sandbox, uploads an Arrow IPC table and publishes it. Returns page helpers. */
@@ -15,12 +15,31 @@ export async function openPublishedTable({table, fileName, url, selectColumns}) 
   const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
   await pinViteModules(page);
   const errors = [];
+  const diagnostics = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => {
-    if (message.type() === 'error' && /WGSL|Invalid.*(?:Pipeline|Buffer)|validation error/i.test(message.text())) errors.push(message.text());
+    if (message.type() === 'error') diagnostics.push(message.text());
+    // Attachment mismatches and Deck draw errors can precede invalid-command-buffer messages;
+    // collect the root error too, so every flow script fails on this class of rendering regression.
+    if (message.type() === 'error' && /WGSL|Invalid.*(?:Pipeline|Buffer)|validation error|is not compatible with|An error in deck\.gl/i.test(message.text())) errors.push(message.text());
   });
-  await page.goto(url || 'http://127.0.0.1:5318/?rows=256', {waitUntil: 'domcontentloaded'});
-  await page.waitForFunction(() => window.__keplerComputeTest?.getState().selectedCount === 256, undefined, {timeout: 60000});
+  const errorsBeforeBoot = errors.length;
+  try {
+    await openKeplerComputePage(page, url || 'http://127.0.0.1:5318/?rows=256', {
+      // Diagnostics retain all attempts; asserted errors retain earlier work and the final boot.
+      onAbandonedAttempt: ({staleImportErrors}) => {
+      discardStaleImportErrors(errors, errorsBeforeBoot, staleImportErrors);
+    }
+    });
+  } catch (error) {
+    console.error(JSON.stringify({url: page.url(), diagnostics, errors, boot: await page.evaluate(() => ({
+      state: window.__keplerComputeTest?.getState(),
+      sourceCount: window.__keplerComputeTest?.source().length,
+      overlay: document.querySelector('vite-error-overlay')?.shadowRoot?.textContent
+    })).catch(() => null)}, null, 2));
+    await browser.close();
+    throw error;
+  }
   await openNativeData(page, 'Prepare data');
   const workspace = page.getByRole('region', {name: 'Resident datasets', exact: true});
   await workspace.locator('input[type=file]').setInputFiles({name: fileName, mimeType: 'application/vnd.apache.arrow.stream', buffer: Buffer.from(arrow.tableToIPC(table, 'stream'))});

@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {KeplerAllocationError} from '@luma-contributors/kepler';
-import {walkTextGlyphs, type FontAtlas} from '@luma.gl/engine/text';
+import type {FontAtlas} from '@luma.gl/engine/text';
+import {walkKeplerLabelGlyphs} from './luma-gaps/text-glyph-walk';
 
 const LINE_FEED = 10;
 
@@ -137,7 +138,7 @@ export function preparePointLabelLayout(
         if (lineEnd < rowEnd && chunk.codePoints[lineEnd] !== LINE_FEED) continue;
         let glyphIndex = lineStart;
         const lineOffsetY = lineIndex * fontAtlas.lineHeight;
-        const metrics = walkTextGlyphs(
+        const metrics = walkKeplerLabelGlyphs(
           visit => {
             for (let index = lineStart; index < lineEnd; index++) visit(chunk.codePoints[index]);
           },

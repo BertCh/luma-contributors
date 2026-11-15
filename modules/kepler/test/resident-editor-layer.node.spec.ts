@@ -6,7 +6,7 @@ import type {Layer} from '@deck.gl/core';
 import {expect, test, vi} from 'vitest';
 import {makeResidentEditorLayer} from '../../../examples/deck/kepler-compute/src/resident-editor-layer';
 
-type Event = {
+type GestureEvent = {
   type: string;
   offsetCenter: {x: number; y: number};
   srcEvent: object;
@@ -18,7 +18,10 @@ function fixture(cancelPan = false) {
   let current: NativeEditor;
   const calls: {type: string; pointer: Pointer | null; pointerDown: unknown}[] = [];
   const propagated: string[] = [];
+  const mapGuards: string[] = [];
   const errors: Error[] = [];
+  const deckClicks: Promise<unknown>[] = [];
+  const deckClickHandlers = new Set<(event: GestureEvent) => void>();
   let resolvePick: ((value: {result: {index: number}[]}) => void) | undefined;
   let delay = false;
   const viewport = {
@@ -31,7 +34,7 @@ function fixture(cancelPan = false) {
       return this.revision === other.revision;
     }
   };
-  const pick = vi.fn(async () =>
+  const pick = vi.fn(async (_method: string, _statistics: string, _options: {x: number}) =>
     delay
       ? new Promise<{result: {index: number}[]}>(resolve => {
           resolvePick = resolve;
@@ -41,15 +44,31 @@ function fixture(cancelPan = false) {
   const pickTerrain = vi.fn(async () => ({coordinate: [12, 34, 56]}));
   const terrainLayers: {id: string; props: {pickable: string}}[] = [];
   const manager = {
-    emit(event: Event) {
+    on(_type: string, handler: (event: GestureEvent) => void) {
+      deckClickHandlers.add(handler);
+    },
+    off(_type: string, handler: (event: GestureEvent) => void) {
+      deckClickHandlers.delete(handler);
+    },
+    emit(event: GestureEvent) {
       let stopped = false;
-      current._forwardEventToCurrentLayer({
+      const dispatched = {
         ...event,
         stopImmediatePropagation: () => {
           stopped = true;
         }
-      });
-      if (!stopped) propagated.push(event.type);
+      };
+      if (event.type === 'click') {
+        for (const handler of deckClickHandlers) handler(dispatched);
+      }
+      if (!stopped) current._forwardEventToCurrentLayer(dispatched);
+      if (!stopped) {
+        propagated.push(event.type);
+        if (event.type === 'click') {
+          const selected = Reflect.get(context.deck, '_lastPointerDownInfoPromise');
+          if (selected) deckClicks.push(selected);
+        }
+      }
     }
   };
   const context: {deck: object; viewport: typeof viewport; layerManager: object} = {
@@ -57,7 +76,8 @@ function fixture(cancelPan = false) {
       eventManager: manager,
       _pickAsync: pick,
       pickObjectAsync: pickTerrain,
-      getViewports: () => [context.viewport]
+      getViewports: () => [context.viewport],
+      _lastPointerDownInfoPromise: Promise.resolve({index: -1, layer: null})
     },
     viewport,
     layerManager: {getLayers: () => terrainLayers}
@@ -74,8 +94,8 @@ function fixture(cancelPan = false) {
     };
     id: string;
     state: {
-      _editableLayerState?: {pointerDownPicks: unknown};
-      residentEditorQueue?: {events: Event[]};
+      _editableLayerState?: {pointerDownPicks: unknown; pressScreenCoords?: number[]};
+      residentEditorQueue?: {events: (GestureEvent | MouseEvent)[]};
     } = {};
     context = context;
     finalized = false;
@@ -112,16 +132,49 @@ function fixture(cancelPan = false) {
     clone(properties: object) {
       return new NativeEditor(this.props, properties);
     }
-    getPicks() {
+    getPicks(): {index: number}[] {
       throw new Error('Synchronous editor picking must not run');
     }
-    toBasePointerEvent(_event: Event): Pointer | null {
+    getScreenCoords(event: MouseEvent) {
+      return [event.clientX - 100, event.clientY - 200];
+    }
+    getMapCoords(_position: number[]): number[] | null {
+      throw new Error('Synchronous terrain picking must not run');
+    }
+    toBasePointerEvent(_event: GestureEvent | MouseEvent): Pointer | null {
       return {picks: this.getPicks(), screenCoords: [], mapCoords: []};
     }
-    _forwardEventToCurrentLayer(event: Event) {
+    _ownsPointerDown(event: MouseEvent): boolean {
+      // The v10 ownership hook calls pointer conversion outside recognized event dispatch.
+      return Boolean(current.toBasePointerEvent(event));
+    }
+    _onNativeMapInteraction(event: MouseEvent) {
+      if (event.type === 'mousedown') current._ownsPointerDown(event);
+      mapGuards.push(event.type);
+    }
+    _forwardEventToCurrentLayer(event: GestureEvent | MouseEvent) {
+      // Match editable-layers 10: native clicks are not subscribed through Mjolnir, and
+      // DOM event fields live on the prototype. Pointer-down/map guards run immediately.
+      if (!('srcEvent' in event)) {
+        if (event.type === 'pointerdown') {
+          current.state._editableLayerState!.pressScreenCoords = this.getScreenCoords(event);
+          return;
+        }
+        if (event.type === 'mousedown') {
+          current._onNativeMapInteraction(event);
+          return;
+        }
+        if (event.type !== 'click' && event.type !== 'dblclick') return;
+        if (event.button !== 0 || (event.type === 'click' && event.detail > 1)) return;
+      }
       const pointer = event.type === 'keyup' ? null : current.toBasePointerEvent(event);
-      if (event.type === 'panstart' && pointer)
-        current.state._editableLayerState!.pointerDownPicks = pointer.picks;
+      if (event.type === 'panstart' && pointer) {
+        // v10 resolves press picks/coordinates separately from the moved pointer.
+        current.getMapCoords(
+          current.state._editableLayerState!.pressScreenCoords ?? pointer.screenCoords
+        );
+        current.state._editableLayerState!.pointerDownPicks = current.getPicks();
+      }
       calls.push({
         type: event.type,
         pointer,
@@ -140,6 +193,10 @@ function fixture(cancelPan = false) {
     layer: current,
     calls,
     propagated,
+    mapGuards,
+    deckClicks,
+    deckClickHandlers,
+    context,
     errors,
     pick,
     pickTerrain,
@@ -150,6 +207,35 @@ function fixture(cancelPan = false) {
       const event = {type, offsetCenter: {x, y: 20}, srcEvent: {}, stopImmediatePropagation: stop};
       current._forwardEventToCurrentLayer(event);
       expect(stop).toHaveBeenCalledOnce();
+    },
+    recognizedClick() {
+      manager.emit({
+        type: 'click',
+        offsetCenter: {x: 10, y: 20},
+        srcEvent: {},
+        stopImmediatePropagation() {}
+      });
+    },
+    nativeEvent(type: string, button = 0, detail = 1, x = 110) {
+      const event = Object.create({
+        get type() {
+          return type;
+        },
+        get clientX() {
+          return x;
+        },
+        get clientY() {
+          return 220;
+        },
+        get button() {
+          return button;
+        },
+        get detail() {
+          return detail;
+        }
+      }) as MouseEvent;
+      current._forwardEventToCurrentLayer(event);
+      return event;
     },
     delay() {
       delay = true;
@@ -181,10 +267,10 @@ test('native editor keeps constructor and props, resolves all depth hits, and ne
   expect(context.layer).toBeInstanceOf(context.original.constructor);
   expect(context.layer.props.mode).toBe(context.original.props.mode);
   expect(context.layer.props.data).toBe(context.original.props.data);
-  // The GLSL-only native dash is replaced by the WGSL-capable editor dash extension.
-  expect(context.layer.props.extensions.map(extension => extension.constructor.name)).toEqual([
-    'EditorWGSLDashExtension'
-  ]);
+  // deck.gl 10 ships WGSL for PathStyleExtension, so the editor dash is that extension as is.
+  expect(
+    context.layer.props.extensions.map(extension => (extension as object).constructor.name)
+  ).toEqual(['PathStyleExtension', 'ResidentEditorPickingExtension']);
   context.event('click');
   expect(context.calls).toEqual([]);
   expect(context.propagated).toEqual([]);
@@ -329,4 +415,76 @@ test('queue overflow retains bounded terminal drag cleanup without a final pick 
   expect(context.layer.state._editableLayerState!.pointerDownPicks).toBeNull();
   expect(context.propagated.at(-1)).toBe('panend');
   expect(context.pick).toHaveBeenCalledTimes(65);
+});
+
+test('v10 DOM clicks retain prototype coordinates and dispatch through native handlers exactly once', async () => {
+  const context = fixture();
+  context.nativeEvent('pointerdown');
+  expect(context.layer.state._editableLayerState!.pressScreenCoords).toEqual([10, 20]);
+  context.nativeEvent('mousedown');
+  expect(context.pick).not.toHaveBeenCalled();
+  context.nativeEvent('click');
+  await settled();
+  expect(context.calls).toHaveLength(1);
+  expect(context.calls[0]).toMatchObject({
+    type: 'click',
+    pointer: {screenCoords: [10, 20], mapCoords: [1, 2]}
+  });
+  expect(context.propagated).toEqual([]);
+  context.nativeEvent('click', 0, 2);
+  context.nativeEvent('dblclick', 0, 2);
+  expect(context.mapGuards).toEqual(['mousedown', 'dblclick']);
+  context.nativeEvent('click', 2);
+  await settled();
+  expect(context.calls.map(call => call.type)).toEqual(['click', 'dblclick']);
+  expect(context.errors).toEqual([]);
+});
+
+test('v10 panstart uses async picks at the original native press rather than a synchronous picker', async () => {
+  const context = fixture();
+  context.nativeEvent('pointerdown', 0, 1, 105);
+  context.event('panstart', 30);
+  await settled();
+  expect(context.pick.mock.calls.map(call => call[2].x)).toEqual([30, 5]);
+  expect(context.calls[0]).toMatchObject({
+    type: 'panstart',
+    pointer: {screenCoords: [30, 20]},
+    pointerDown: [{index: 8}, {index: 3}]
+  });
+  expect(context.errors).toEqual([]);
+});
+
+test('native mousedown ownership avoids synchronous pointer conversion, while async pan ownership still reaches Deck', async () => {
+  for (const ownsPan of [true, false]) {
+    const context = fixture(ownsPan);
+    expect(() => context.nativeEvent('mousedown')).not.toThrow();
+    expect(context.mapGuards).toEqual(['mousedown']);
+    expect(context.pick).not.toHaveBeenCalled();
+    context.nativeEvent('pointerdown');
+    context.event('panstart');
+    await settled();
+    expect(context.propagated).toEqual(ownsPan ? [] : ['panstart']);
+    expect(context.errors).toEqual([]);
+  }
+});
+
+test('recognized selection clicks use the editor multi-pick, skip duplicate native edits, and remove their listener on finalize', async () => {
+  const context = fixture();
+  const editorPick = {index: 0, layer: {id: 'kepler_editor_layer'}, object: {id: 'polygon'}};
+  context.pick.mockResolvedValue({result: [editorPick]});
+  const originalPromise = Reflect.get(context.context.deck, '_lastPointerDownInfoPromise');
+  context.recognizedClick();
+  expect(context.deckClicks).toEqual([]);
+  await settled();
+  expect(context.deckClicks).toHaveLength(1);
+  expect(await context.deckClicks[0]).toEqual(editorPick);
+  expect(Reflect.get(context.context.deck, '_lastPointerDownInfoPromise')).toBe(originalPromise);
+  expect(context.calls).toEqual([]);
+  expect(context.deckClickHandlers.size).toBe(1);
+  context.nativeEvent('click');
+  await settled();
+  expect(context.calls.map(call => call.type)).toEqual(['click']);
+  context.layer.finalizeState();
+  expect(context.deckClickHandlers.size).toBe(0);
+  expect(context.errors).toEqual([]);
 });

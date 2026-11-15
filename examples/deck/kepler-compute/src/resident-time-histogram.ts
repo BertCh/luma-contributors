@@ -146,17 +146,40 @@ export function makeTimeHistogramWordEdges(
   thresholds: readonly number[],
   unit: GPUKeplerTimeUnit
 ): BigInt64Array {
+  return makeTimeHistogramEdgePlan(thresholds, unit).words;
+}
+
+/**
+ * Calendar edges can exceed the source Int64 range. Keep their order relative to that range
+ * separately from saturated upload words: an edge above MAX must not steal MAX into a later bin.
+ */
+export function makeTimeHistogramEdgePlan(thresholds: readonly number[], unit: GPUKeplerTimeUnit) {
+  const minimum = -(1n << 63n);
+  const maximum = (1n << 63n) - 1n;
   const convert = (value: number, ceiling: boolean): bigint => {
+    if (unit === 'microsecond') return BigInt(value) * 1000n;
+    if (unit === 'nanosecond') return BigInt(value) * 1_000_000n;
     if (unit !== 'second') return convertKeplerTimeInstant(value, 'millisecond', unit);
     const milliseconds = BigInt(value);
     const quotient = milliseconds / 1000n;
     const remainder = milliseconds % 1000n;
     return quotient + (ceiling && remainder > 0n ? 1n : !ceiling && remainder < 0n ? -1n : 0n);
   };
-  return BigInt64Array.from([
+  const converted = [
     ...thresholds.map(value => convert(value, true)),
     convert(thresholds[thresholds.length - 1], false)
-  ]);
+  ];
+  const orders = converted.map(value => (value < minimum ? -1 : value > maximum ? 1 : 0));
+  const firstNotBelow = orders.slice(0, thresholds.length).findIndex(order => order !== -1);
+  const firstAbove = orders.slice(0, thresholds.length).findIndex(order => order === 1);
+  return {
+    words: BigInt64Array.from(converted, value =>
+      value < minimum ? minimum : value > maximum ? maximum : value
+    ),
+    orders,
+    firstNotBelow: firstNotBelow < 0 ? thresholds.length : firstNotBelow,
+    firstAbove: firstAbove < 0 ? thresholds.length : firstAbove
+  };
 }
 
 /** Exact word-time classification followed by the shared histogram contributor. */
@@ -215,7 +238,16 @@ export class ResidentTimeHistogram {
         )
       )
         throw new Error('Time histogram thresholds must be strictly increasing');
-      const times = makeTimeHistogramWordEdges(thresholds, source.metadata.unit);
+      const edgePlan = makeTimeHistogramEdgePlan(thresholds, source.metadata.unit);
+      const times = edgePlan.words;
+      const minimumPredicate =
+        edgePlan.orders[0] === 0
+          ? 'timeWordsCompare(instant,edges[0])>=0i'
+          : String(edgePlan.orders[0] < 0);
+      const maximumPredicate =
+        edgePlan.orders[times.length - 1] === 0
+          ? `timeWordsCompare(instant,edges[${times.length - 1}u])<=0i`
+          : String(edgePlan.orders[times.length - 1] > 0);
       const requiredBytes =
         65536 +
         source.timestamps.length * 8 +
@@ -302,10 +334,10 @@ if (index >= ${sourceChunk.length}u) {return;}
 // Pinned native d3 histogram comparisons coerce null mapped timestamps to epoch zero.
 let instant = select(vec2<u32>(0u),times[${sourceChunk.byteOffset / 8}u+index],validity[${valid.byteOffset / 4}u+index]!=0u);
 var bucket = 0xffffffffu;
-if (timeWordsCompare(instant,edges[0])>=0i && timeWordsCompare(instant,edges[${times.length - 1}u])<=0i) {
+if (${minimumPredicate} && ${maximumPredicate}) {
   var lower=0u; var upper=${thresholds.length}u;
   loop {if(lower>=upper){break;} let middle=lower+(upper-lower)/2u;
-    if(timeWordsCompare(instant,edges[middle])>=0i){lower=middle+1u;}else{upper=middle;}}
+    if(middle<${edgePlan.firstNotBelow}u || (middle<${edgePlan.firstAbove}u && timeWordsCompare(instant,edges[middle])>=0i)){lower=middle+1u;}else{upper=middle;}}
   bucket=lower-1u;
 }
 keys[${output.byteOffset / 4}u+index]=bucket;

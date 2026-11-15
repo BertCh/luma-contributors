@@ -23,7 +23,7 @@ import {
   packGPUColor,
   type GPUVariableStandardizationMethod
 } from '@luma-contributors/analysis/dataframe-analysis';
-import {GPUParameterBuffer} from '@luma.gl/graph/gpu-dataframe';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   addKeplerAnalysisRecipe,
   parseKeplerIDWSettings,
@@ -961,6 +961,7 @@ export class AnalysisRuntime {
     const {columns} = this.lease.dataset.value;
     return suggestKrigingVariogram(
       {
+        device: this.session.device,
         longitude: borrowFloat32Column(columns[kriging.longitudeColumn]),
         latitude: borrowFloat32Column(columns[kriging.latitudeColumn]),
         values: this.value

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {withSyntheticSample} from './native-navigation.mjs';
+
 // Select-by-click of an existing native editor feature in Single, Dual and Swipe maps.
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
@@ -52,7 +54,7 @@ try {
     DualRight: [900, 790, 1200, 900]
   };
   for (const title of ['Single', 'Swipe', 'Dual', 'DualRight']) {
-    await page.goto(baseUrl);
+    await page.goto(withSyntheticSample(baseUrl));
     await page.locator('.maplibregl-canvas').waitFor();
     await page.waitForTimeout(2000);
     if (title !== 'Single') await chooseSplitMode(title === 'DualRight' ? 'Dual' : title);

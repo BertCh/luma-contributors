@@ -3,9 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
-import type {PreparedGeometryGPUVectors} from '@luma.gl/engine/arrow';
+import type {PreparedKeplerGeometryGPUVectors} from './geometry-preparation';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
-import {makeGeometryGPUVectors} from '@luma.gl/engine/arrow';
+import {makeKeplerGeometryGPUVectors} from './geometry-preparation';
 import type {
   KeplerArrowDataset,
   KeplerComputeSession,
@@ -26,7 +26,7 @@ export type GeometryVariantPrimary = {
   geometryColumn?: string;
   h3Column?: string;
   cellIndex?: NativeCellIndex;
-  /** True when the geometry role is a timed trip column (no polygon geometry is resident). */
+  /** True when the geometry role also has timed trip paths. */
   isTrip: boolean;
   /** True when a planar polygon geometry (or its released summary) is published. */
   hasGeometry: boolean;
@@ -56,7 +56,7 @@ export type GeometryColumnVariant = {
   column: string;
   /** Column the style host reads geometry from (the derived footprint for cell tokens). */
   geometryColumn?: string;
-  geometry?: PreparedGeometryGPUVectors;
+  geometry?: PreparedKeplerGeometryGPUVectors;
   h3?: H3GPUVectors;
   bounds?: [number, number, number, number];
   gpuByteLength: number;
@@ -157,7 +157,7 @@ export class GeometryColumnVariantRuntime {
     if (failure) return {status: 'unavailable', reason: failure};
     const reservations: KeplerMemoryReservation[] = [];
     let lease: KeplerDatasetLease | undefined;
-    let geometry: PreparedGeometryGPUVectors | undefined;
+    let geometry: PreparedKeplerGeometryGPUVectors | undefined;
     let h3: H3GPUVectors | undefined;
     try {
       lease = this.session.registry.acquireDataset(request.dataset.id);
@@ -225,7 +225,7 @@ export class GeometryColumnVariantRuntime {
         );
         const budget = 8 * 1024 * 1024 + sourceBytes * 64 + request.dataset.rowCount * 128;
         reservations.push(this.session.registry.reserveMemory(budget, 'gpu', 'source'));
-        geometry = makeGeometryGPUVectors(this.session.device, prepared);
+        geometry = makeKeplerGeometryGPUVectors(this.session.device, prepared);
         // Mapping bytes are CPU-resident index structures retained with the GPU vectors.
         reservations.push(
           this.session.registry.reserveMemory(
@@ -335,10 +335,7 @@ export function getGeometryVariantRequest(
   if (layer.type === 'geojson') {
     const column = columns['geojson']?.value;
     const isPrimary =
-      primary.hasGeometry &&
-      !primary.isTrip &&
-      !primary.cellIndex &&
-      primary.geometryColumn === column;
+      primary.hasGeometry && !primary.cellIndex && primary.geometryColumn === column;
     return column && !isPrimary ? {kind: 'geojson', column, dataset} : undefined;
   }
   if (isCellLayerType(layer.type)) {
@@ -385,7 +382,7 @@ export function makeGeometryVariantOverrides(
 ): {
   binding: {bounds?: [number, number, number, number]; cellColumn?: string};
   options: {
-    geometry?: PreparedGeometryGPUVectors;
+    geometry?: PreparedKeplerGeometryGPUVectors;
     geometryColumn?: string;
     h3?: H3GPUVectors;
     h3Column?: string;

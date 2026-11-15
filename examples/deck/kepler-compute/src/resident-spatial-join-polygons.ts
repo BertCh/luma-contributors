@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {DataType, Vector} from 'apache-arrow';
-import type {PreparedPolygonTopologySource} from '@luma.gl/engine/arrow';
+import type {PreparedKeplerPolygonTopologySource} from './geometry-preparation';
 
 export type PackedSpatialJoinPolygons = {
   /** Original XY rounded to Float32; rings close implicitly. */
@@ -21,7 +21,7 @@ export type PackedSpatialJoinPolygons = {
  * (non-polygons become centroid points; invalid values become empty).
  */
 export function packSpatialJoinPolygons(
-  source: PreparedPolygonTopologySource
+  source: PreparedKeplerPolygonTopologySource
 ): PackedSpatialJoinPolygons {
   const {metadata} = source;
   const rowCount = metadata.rowCount;

@@ -19,6 +19,7 @@ import {validateInputData, initApplicationConfig} from '@kepler.gl/utils';
 import {store} from './app-store';
 import {isResidentDataset, publicationsInProgress, publishSource} from './publication';
 import {notify, residentEviction} from './app-services';
+import {getSampleMapProvenance} from './sample-map-provenance';
 
 registerSourceLinkHost({
   loadFiles: files => void store.dispatch(wrapTo('compute', loadFiles(files)))
@@ -67,7 +68,12 @@ export const nativeAutoPrepare = new NativeAutoPrepare(
         datasetId
       );
       const color = store.getState().keplerGl['compute']?.visState?.datasets[datasetId]?.color;
-      return captured && color ? {...captured, datasetColor: color} : captured;
+      const sampleMap = getSampleMapProvenance(
+        store.getState().keplerGl['compute']?.visState?.datasets[datasetId]?.metadata
+      );
+      return captured
+        ? {...captured, ...(color ? {datasetColor: color} : {}), ...(sampleMap ? {sampleMap} : {})}
+        : captured;
     },
     publish: request =>
       publishSource(

@@ -9,6 +9,7 @@ import styled from 'styled-components';
 export const NATIVE_WORKFLOW_MESSAGES = {
   en: {
     'nativeWorkflows.prepareData': 'Prepare data',
+    'nativeWorkflows.sampleMaps': 'Sample maps',
     'nativeWorkflows.queryData': 'SQL'
   }
 };
@@ -17,6 +18,7 @@ export const NATIVE_WORKFLOW_MESSAGES = {
 export const NativeWorkflows = createContext<{
   analysis?: ReactNode;
   sources?: ReactNode;
+  samples?: ReactNode;
   sql?: ReactNode;
   status?: ReactNode;
   /** Compact memory summary for the side panel and the full manager for its modal. */
@@ -107,6 +109,15 @@ function QueryData() {
   );
 }
 
+function SampleMaps() {
+  const workflows = useContext(NativeWorkflows);
+  return (
+    <NativeWorkflow>
+      <fieldset disabled={workflows.unavailable}>{workflows.samples}</fieldset>
+    </NativeWorkflow>
+  );
+}
+
 export function NativeLoadDataModalFactory(
   ...dependencies: Parameters<typeof LoadDataModalFactory>
 ) {
@@ -122,6 +133,7 @@ export function NativeLoadDataModalFactory(
             ? loadingMethods
             : [
                 ...loadingMethods,
+                {id: 'sample-maps', label: 'nativeWorkflows.sampleMaps', elementType: SampleMaps},
                 {
                   id: 'prepare-data',
                   label: 'nativeWorkflows.prepareData',
@@ -138,6 +150,15 @@ export function NativeLoadDataModalFactory(
 }
 NativeLoadDataModalFactory.deps = LoadDataModalFactory.deps;
 
+// Status grows after dataset operations (policy controls and result notices). Keep it scrollable
+// so the native dataset-operation panel retains a usable body instead of collapsing to zero height.
+const NativeWorkflowStatus = styled(NativeWorkflow)`
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+`;
+
 export function NativePanelHeaderFactory(...dependencies: Parameters<typeof PanelHeaderFactory>) {
   const PanelHeader = PanelHeaderFactory(...dependencies);
   return function NativePanelHeader(props: ComponentProps<typeof PanelHeader>) {
@@ -145,7 +166,7 @@ export function NativePanelHeaderFactory(...dependencies: Parameters<typeof Pane
     return (
       <>
         <PanelHeader {...props} />
-        <NativeWorkflow>{workflows.status}</NativeWorkflow>
+        <NativeWorkflowStatus>{workflows.status}</NativeWorkflowStatus>
       </>
     );
   };

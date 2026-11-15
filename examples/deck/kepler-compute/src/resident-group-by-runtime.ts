@@ -9,7 +9,7 @@ import {
   type CompiledGPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {prepareArrowTableForGPUAnalytics} from '@luma.gl/graph/arrow';
+import {prepareArrowTableForGPUAnalytics} from '@luma-contributors/analysis/analysis-core';
 import {
   addKeplerGroupBy,
   getKeplerGroupByMemoryEstimate,
@@ -291,11 +291,13 @@ export async function executeResidentGroupBy(props: {
         }
       });
       const ownedBytes = passBuffers.reduce((bytes, buffer) => bytes + buffer.byteLength, 0);
-      const plannedBytes = graph.planResources().stats.physicalTransientResourceBytes + ownedBytes;
+      // Published luma.gl has no pre-compile resource plan: compile, then admit the measured
+      // transient bytes. The compiled graph is destroyed by the cleanup if admission fails.
+      compiled = graph.compile();
+      const plannedBytes = compiled.stats.physicalTransientResourceBytes + ownedBytes;
       if (plannedBytes > estimate.totalByteLength)
         throw new Error('Group By exceeds admitted GPU working memory');
       if (!multiPass) gpuReservation.resize(plannedBytes);
-      compiled = graph.compile();
       assertCurrent();
       encoder = device.createCommandEncoder();
       compiled.encode(encoder, {parameters: undefined});

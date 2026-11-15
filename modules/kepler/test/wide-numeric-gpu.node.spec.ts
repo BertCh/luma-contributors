@@ -28,7 +28,7 @@ import {
   summarizeInteger64Reference,
   summarizeNarrowingReference,
   type WordPair
-} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-reference';
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 import {MASK64, makeWideNumericTestValues} from './wide-numeric-test-values';
 
@@ -145,7 +145,7 @@ describe('wide numeric narrowing classification', () => {
             classification.errorTopWord
           );
           expect(decoded).toBeLessThanOrEqual(reference.maximumAbsoluteError);
-          expect(decoded).toBeGreaterThan(reference.maximumAbsoluteError * (1 - 1e-8));
+          expect(decoded).toBeGreaterThan(Number(reference.maximumAbsoluteError) * (1 - 1e-8));
         }
       }
   });
@@ -217,10 +217,10 @@ describe('wide numeric narrowing classification', () => {
           classification.errorTopWord
         );
         expect(decoded, String(value)).toBeLessThanOrEqual(
-          reference.maximumAbsoluteError * (1 + 1e-12)
+          Number(reference.maximumAbsoluteError) * (1 + 1e-12)
         );
         expect(decoded, String(value)).toBeGreaterThanOrEqual(
-          reference.maximumAbsoluteError * (1 - 1e-8)
+          Number(reference.maximumAbsoluteError) * (1 - 1e-8)
         );
       }
     }

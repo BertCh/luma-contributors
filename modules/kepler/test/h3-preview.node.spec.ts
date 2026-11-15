@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
-import {expect, test, vi} from 'vitest';
+import {afterAll, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 
 // This pure preview check does not ingest Kepler CPU datasets or load its browser-only utility stack.
 vi.mock('../../../examples/deck/kepler-compute/src/native-dataset-source', () => ({
@@ -40,4 +43,10 @@ test('valid H3 IDs with collapsed Float32 boundaries are admitted for the fp64 c
   });
   const prepared = preparePublishedH3(source, 'cell');
   expect(prepared.precision.collapsedRows).toHaveLength(1);
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/native-dataset-source');
+  vi.resetModules();
 });

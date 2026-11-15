@@ -4,7 +4,10 @@
 
 import {isPolygonFootprintLayerType} from './cell-layer-types';
 import {assert, type CommandEncoder} from '@luma.gl/core';
-import type {GeoJSONTripGPUVectors, PreparedGeometryGPUVectors} from '@luma.gl/engine/arrow';
+import type {
+  KeplerGeoJSONTripGPUVectors,
+  PreparedKeplerGeometryGPUVectors
+} from './geometry-preparation';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerArrowDataset, KeplerComputeSession} from '@luma-contributors/kepler';
 import {KeplerResidentStyleCache} from '@luma-contributors/kepler';
@@ -38,6 +41,7 @@ import {fieldPreparationCoordinator} from './binding3-field-preparation';
 import {requestStyleFieldPreparation} from './binding4-style-field-preparation';
 import {
   createNativeStylePlan,
+  getNativeGeometryStyleProperties,
   type NativeStyleChannel,
   type NativeStyleLayer,
   type NativeJenksThresholds,
@@ -56,9 +60,9 @@ export type NativeStyleResolveOptions = {
   geojsonProperties?: NativeStylePlanContext['geojsonProperties'];
   tripProperties?: NativeStylePlanContext['tripProperties'];
   geojsonFixedRadius?: boolean;
-  geometry?: PreparedGeometryGPUVectors;
+  geometry?: PreparedKeplerGeometryGPUVectors;
   geometryColumn?: string;
-  trips?: GeoJSONTripGPUVectors;
+  trips?: KeplerGeoJSONTripGPUVectors;
   tripColumn?: string;
   h3?: H3GPUVectors;
   h3Column?: string;
@@ -367,39 +371,19 @@ export class NativeStyleRuntime {
       }
       const properties = options.geometry
         ? {
-            fillColor: options.geometry.metadata.sourceStyleProperties.includes('fillColor')
-              ? undefined
-              : ('absent' as const),
-            lineColor: options.geometry.metadata.sourceStyleProperties.includes('lineColor')
-              ? undefined
-              : ('absent' as const),
-            lineWidth: options.geometry.metadata.sourceStyleProperties.includes('lineWidth')
-              ? undefined
-              : ('absent' as const),
-            radius: options.geometry.metadata.sourceStyleProperties.includes('radius')
-              ? undefined
-              : ('absent' as const),
-            elevation: options.geometry.metadata.sourceStyleProperties.includes('elevation')
-              ? undefined
-              : ('absent' as const),
-            elevationOffset: options.geometry.metadata.sourceStyleProperties.includes(
-              'elevationOffset'
-            )
-              ? undefined
-              : ('absent' as const),
-            ...options.geometry.properties,
+            ...getNativeGeometryStyleProperties(
+              options.geometry.metadata.sourceStyleProperties,
+              options.geometry.properties
+            ),
             ...options.geojsonProperties
           }
         : options.geojsonProperties;
       const tripProperties = options.trips
         ? {
-            lineColor: options.trips.source.sourceStyleProperties.includes('lineColor')
-              ? undefined
-              : ('absent' as const),
-            lineWidth: options.trips.source.sourceStyleProperties.includes('lineWidth')
-              ? undefined
-              : ('absent' as const),
-            ...options.trips.properties,
+            ...getNativeGeometryStyleProperties(
+              options.trips.source.sourceStyleProperties,
+              options.trips.properties
+            ),
             ...options.tripProperties
           }
         : options.tripProperties;

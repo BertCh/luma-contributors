@@ -4,8 +4,11 @@
 
 import {expect, it} from 'vitest';
 import * as arrow from 'apache-arrow';
-import {writeWKB} from '@math.gl/geospatial';
-import {makeGeometryGPUVectors, prepareGeometrySourceFromArrow} from '@luma.gl/engine/arrow';
+import {writeWKB} from '@math.gl/arrow/wkb';
+import {
+  makeKeplerGeometryGPUVectors,
+  prepareKeplerGeometrySourceFromArrow
+} from '../../../examples/deck/kepler-compute/src/geometry-preparation';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
@@ -39,11 +42,11 @@ it('raw WKB resident selection preserves chunks and nulls while applying its dis
   const first = arrow.vectorFromArray([null, polygon], new arrow.Binary());
   const empty = arrow.vectorFromArray([], new arrow.Binary());
   const last = arrow.vectorFromArray([point, new Uint8Array([1, 2])], new arrow.Binary());
-  const source = prepareGeometrySourceFromArrow(
+  const source = prepareKeplerGeometrySourceFromArrow(
     new arrow.Vector([...first.data, ...empty.data, ...last.data]),
     {encoding: 'geoarrow.wkb'}
   );
-  const geometry = makeGeometryGPUVectors(device, source);
+  const geometry = makeKeplerGeometryGPUVectors(device, source);
   const representative = geometry.representative!;
   expect(representative.recipe).toBe('wkb-vertex-mean');
   expect(representative.positions.data.map(chunk => chunk.length)).toEqual([2, 0, 2]);

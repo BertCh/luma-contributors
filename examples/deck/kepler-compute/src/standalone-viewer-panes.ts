@@ -137,7 +137,7 @@ export function createViewerPanes(options: ViewerPanesOptions): ViewerPanes {
       ...options.deckProps,
       parent: deckElement,
       views: options.isGlobe
-        ? new GlobeView({id: 'globe'})
+        ? new GlobeView({id: 'globe', resolution: 36})
         : new MapView({id: 'map', repeat: true}),
       viewState,
       controller: true,

@@ -9,8 +9,8 @@ import {safeMod} from '@math.gl/core';
 /**
  * Animation and video capture of the live WebGPU map canvas.
  *
- * Encoding uses MediaRecorder on a 2D canvas stream (WebM/MP4 as the browser provides). WebCodecs
- * VideoEncoder is detected and reported, but no muxer is bundled, so it is not used to write files.
+ * This fallback uses MediaRecorder on a 2D canvas stream (WebM/MP4 as the browser provides).
+ * native-webcodecs-capture handles offline encoding with the MP4/WebM muxers in video-muxers.
  * Frames are stepped deterministically (view state or animation time), then paced in real time because
  * MediaRecorder timestamps frames by wall clock. Capture therefore takes about as long as the video.
  */

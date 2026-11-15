@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
-import {expect, test, vi} from 'vitest';
+import {afterAll, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import {
   getFlowLocationLabelSignature,
   selectFlowLocationLabels
@@ -17,7 +20,9 @@ vi.mock('@flowmap.gl/data', () => ({
 vi.mock('../../../examples/deck/kepler-compute/src/label-runtime', () => ({
   makePointLabelRuntime: () => undefined
 }));
-vi.mock('@deck.gl-community/gpu-layers', () => ({GPUPointLabelLayer: class {}}));
+vi.mock('../../../examples/deck/kepler-compute/gpu-layers/index', () => ({
+  GPUPointLabelLayer: class {}
+}));
 
 function makeLayersData(names: string[], radii: number[], positions: number[][]) {
   const position = new Float64Array(positions.flatMap(([lon, lat]) => [lon, lat, 0]));
@@ -155,4 +160,12 @@ test('collision avoidance honors the label limit after placement', () => {
   );
   const placed = selectFlowLocationLabels(layersData, viewport, 2, {labelSize: 4});
   expect(placed.names).toEqual(['L4', 'L5']);
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@flowmap.gl/data');
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/label-runtime');
+  vi.doUnmock('../../../examples/deck/kepler-compute/gpu-layers/index');
+  vi.resetModules();
 });

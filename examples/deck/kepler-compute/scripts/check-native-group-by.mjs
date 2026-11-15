@@ -22,13 +22,16 @@ const category = arrow.makeVector(arrow.makeData({
 const original = new arrow.Table({
   category,
   counted: arrow.vectorFromArray([null, 1, 2, null, null, null, 6, null], new arrow.Float32()),
-  amount: arrow.vectorFromArray([2, null, 3, 7, null, 5, null, null], new arrow.Float32())
+  amount: arrow.vectorFromArray([2, null, 3, 7, null, 5, null, null], new arrow.Float32()),
+  low: arrow.vectorFromArray([2, null, 3, 7, null, 5, null, null], new arrow.Float32()),
+  high: arrow.vectorFromArray([2, null, 3, 7, null, 5, null, null], new arrow.Float32()),
+  mean: arrow.vectorFromArray([2, null, 3, 7, null, 5, null, null], new arrow.Float32())
 });
 const source = original.slice(0, 3).concat(original.slice(3));
 const sourceLabel = 'native-group-by.arrow';
 const resultLabel = 'Native GPU group result';
 const expectedKeys = ['b', 'a', null, 'empty'];
-const expectedFields = ['category', 'counted_count', 'amount_sum'];
+const expectedFields = ['category', 'counted_count', 'amount_sum', 'low_minimum', 'high_maximum', 'mean_average'];
 const browser = await chromium.launch(getPlaywrightLaunchOptions({headless: true, backend: 'webgpu-core'}));
 const page = await browser.newPage({viewport: {width: 1440, height: 1000}, acceptDownloads: true});
 const errors = [];
@@ -87,7 +90,7 @@ async function inspectResult(resultId) {
   await page.waitForFunction(() => document.querySelectorAll('.resident-table-scroll tbody tr').length === 4);
   const result = await page.locator('.resident-table-scroll').evaluate(table => {
     const headers = [...table.querySelectorAll('thead th')].map(header => header.textContent);
-    const names = ['category', 'counted_count', 'amount_sum'];
+    const names = ['category', 'counted_count', 'amount_sum', 'low_minimum', 'high_maximum', 'mean_average'];
     const indexes = names.map(name => headers.findIndex(header => header.includes(name)));
     return {indexes, rows: [...table.querySelectorAll('tbody tr')].map(row => ({
       sourceRow: row.querySelector('th')?.textContent,
@@ -97,7 +100,7 @@ async function inspectResult(resultId) {
   assert(result.indexes.every(index => index >= 0), 'Native result table must expose exact output field names');
   assert.deepEqual(result.rows.map(row => row.sourceRow), ['0', '1', '2', '3']);
   assert.deepEqual(result.rows.map(row => row.values), [
-    ['b', '2', '5'], ['a', '2', '5'], ['null', '2', '7'], ['empty', '2', 'null']
+    ['b', '2', '5', '2', '3', '2.5'], ['a', '2', '5', '5', '5', '5'], ['null', '2', '7', '7', '7', '7'], ['empty', '2', 'null', 'null', 'null', 'null']
   ]);
   await page.keyboard.press('Escape');
   await page.locator('.resident-table-modal').waitFor({state: 'hidden'});
@@ -112,6 +115,9 @@ async function exportResult(resultId) {
   // Native count counts every row, including a null named measure; sum ignores nulls.
   assert.deepEqual([...table.getChild('counted_count')], [2, 2, 2, 2]);
   assert.deepEqual([...table.getChild('amount_sum')], [5, 5, 7, null]);
+  assert.deepEqual([...table.getChild('low_minimum')], [2, 5, 7, null]);
+  assert.deepEqual([...table.getChild('high_maximum')], [3, 5, 7, null]);
+  assert.deepEqual([...table.getChild('mean_average')], [2.5, 5, 7, null]);
   assert.deepEqual([...table.getChild('__luma_source_row_index')], [0, 1, 2, 3]);
   const provenance = JSON.parse(table.schema.metadata.get('luma.gl.groupBy'));
   assert.equal(provenance.kind, 'group-by');
@@ -123,10 +129,13 @@ async function exportResult(resultId) {
   assert.equal(provenance.keyColumn, 'category');
   assert.deepEqual(provenance.aggregations, [
     {column: 'counted', technique: 'count', name: 'counted_count'},
-    {column: 'amount', technique: 'sum', name: 'amount_sum'}
+    {column: 'amount', technique: 'sum', name: 'amount_sum'},
+    {column: 'low', technique: 'minimum', name: 'low_minimum'},
+    {column: 'high', technique: 'maximum', name: 'high_maximum'},
+    {column: 'mean', technique: 'average', name: 'mean_average'}
   ]);
   assert.deepEqual(provenance.fields.map(field => [field.name, field.type]), [
-    ['category', 'string'], ['counted_count', 'integer'], ['amount_sum', 'real']
+    ['category', 'string'], ['counted_count', 'integer'], ['amount_sum', 'real'], ['low_minimum', 'real'], ['high_maximum', 'real'], ['mean_average', 'real']
   ]);
   await closeNativeDialog(page);
   return provenance;
@@ -179,6 +188,9 @@ try {
   assert(await panel.getByRole('button', {name: 'Run', exact: true}).isEnabled());
   assert.equal(await page.evaluate(() => window.__keplerComputeTest.getState().publications.length), 1);
   await selectAggregation(panel, 'amount', 'sum');
+  await selectAggregation(panel, 'low', 'minimum');
+  await selectAggregation(panel, 'high', 'maximum');
+  await selectAggregation(panel, 'mean', 'average');
   stage('run GPU Group By and inspect source-order keys and native count/sum null semantics');
   await panel.getByRole('button', {name: 'Run', exact: true}).click();
   await page.waitForFunction(id => window.__keplerComputeTest.getState().publications.some(source => source.id !== id && source.rowCount === 4), sourceId, {timeout: 30000});

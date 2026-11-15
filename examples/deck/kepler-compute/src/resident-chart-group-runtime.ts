@@ -39,6 +39,7 @@ import type {ResidentCategorySummary} from './resident-chart-bins';
 import {ResidentSeriesKeys} from './resident-series-keys';
 import {foldResidentChartSeries} from './resident-chart-series';
 import type {ResidentScopeBinding} from './resident-scope-binding';
+import {MeteredCommandGraph} from '@luma-contributors/kepler';
 
 export type ResidentChartSelection = Pick<
   ResidentScopeBinding,
@@ -241,7 +242,7 @@ export class ResidentCategoryChartRuntime {
               ? Boolean(validity.category)
               : field.name === 'value' && Boolean(validity.value);
       frame = new GPUDataFrame({table, validity});
-      const graph = new GPUCommandGraph<GPUDataFrameQueryParameters>(this.device, {
+      const graph = new MeteredCommandGraph<GPUDataFrameQueryParameters>(this.device, {
         id: `kepler-category-${props.plan.chartId}`
       });
       const result: GPUDataFrameAggregationValue<GroupColumns, keyof GroupColumns> =
@@ -303,7 +304,7 @@ export class ResidentCategoryChartRuntime {
         if (vector) for (const data of vector.data) buffers.add(getBuffer(data));
       const accountedBytes =
         (seriesKeys?.byteLength ?? 0) +
-        query.compilationStats.physicalTransientResourceBytes +
+        graph.transientByteLength +
         orderGraph.stats.physicalTransientResourceBytes +
         [...buffers].reduce((total, buffer) => total + buffer.byteLength, 0);
       if (accountedBytes > estimatedBytes)

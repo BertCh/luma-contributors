@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {chromium} from 'playwright';
+import {getSourceCheckUrl} from './source-check-utils.mjs';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
 import {pinViteModules} from './pin-vite-modules.mjs';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
@@ -20,7 +21,10 @@ const lastModified = 'Tue, 01 Jan 2030 00:00:00 GMT';
 const rowCount = 40;
 const text =
   'id,note,value\n' +
-  Array.from({length: rowCount}, (_, index) => `${index},"line ${index}\nsecond, line",${index * 2}`).join('\n') +
+  Array.from(
+    {length: rowCount},
+    (_, index) => `${index},"line ${index}\nsecond, line",${index * 2}`
+  ).join('\n') +
   '\n';
 const bytes = Buffer.from(text);
 const cutOffset = text.indexOf('second', Math.floor(text.length / 2)) + 3;
@@ -34,7 +38,10 @@ const server = http.createServer((request, response) => {
   if (request.method === 'OPTIONS')
     return void response.writeHead(mode === 'preflight' ? 403 : 204, cors).end();
   const range = /bytes=(\d+)-/.exec(request.headers.range ?? '')?.[1];
-  requests.push({range: request.headers.range ?? null, ifRange: request.headers['if-range'] ?? null});
+  requests.push({
+    range: request.headers.range ?? null,
+    ifRange: request.headers['if-range'] ?? null
+  });
   const first = requests.length === 1;
   const start = range ? Number(range) : 0;
   const body = bytes.subarray(start);
@@ -54,28 +61,45 @@ const server = http.createServer((request, response) => {
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const csvUrl = `http://127.0.0.1:${server.address().port}/resume.csv`;
 
-const browser = await chromium.launch(getPlaywrightLaunchOptions({headless: true, backend: 'webgpu-core'}));
+const browser = await chromium.launch(
+  getPlaywrightLaunchOptions({headless: true, backend: 'webgpu-core'})
+);
 const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
 page.setDefaultTimeout(30000);
-const watchdog = setTimeout(() => { console.error('Cross-origin resume check exceeded 140 seconds'); void browser.close(); server.close(); process.exit(1); }, 140000);
+const watchdog = setTimeout(() => {
+  console.error('Cross-origin resume check exceeded 140 seconds');
+  void browser.close();
+  server.close();
+  process.exit(1);
+}, 140000);
 await pinViteModules(page);
 const failures = [];
 page.on('pageerror', error => failures.push(error.message));
 try {
-  const given = process.argv[2]?.startsWith('http') ? process.argv[2] : 'http://127.0.0.1:5318/?rows=256';
-  const base = given.includes('automatic=') ? given : `${given}${given.includes('?') ? '&' : '?'}automatic=retry`;
+  const base = getSourceCheckUrl(process.argv[2], {rows: 256, retry: true});
   await page.goto(base, {waitUntil: 'domcontentloaded'});
-  await page.waitForFunction(() => window.__keplerComputeTest?.getState().selectedCount === 256, undefined, {timeout: 60000});
+  await page.waitForFunction(
+    () => window.__keplerComputeTest?.getState().selectedCount === 256,
+    undefined,
+    {timeout: 60000}
+  );
   await openNativeData(page);
   const control = page.getByTestId('remote-source-control');
   await control.getByLabel('Source URL').fill(csvUrl);
   await control.getByRole('button', {name: 'Open URL'}).click();
-  await page.getByTestId('remote-source-status').filter({hasText: `${rowCount} rows`}).waitFor({timeout: 30000});
+  await page
+    .getByTestId('remote-source-status')
+    .filter({hasText: `${rowCount} rows`})
+    .waitFor({timeout: 30000});
   assert(requests.length >= 2, 'the cut body must trigger a second request');
   if (mode === 'hidden') {
     assert(requests[1].range?.startsWith('bytes='), 'second request must use Range');
     assert.equal(requests[1].ifRange, lastModified, 'If-Range must carry Last-Modified');
-  } else assert(requests.at(-1).range === null, 'after a rejected preflight the importer restarts without Range');
+  } else
+    assert(
+      requests.at(-1).range === null,
+      'after a rejected preflight the importer restarts without Range'
+    );
   await closeNativeDialog(page);
   assert.deepEqual(failures, []);
   console.log(JSON.stringify({passed: true, mode, rowCount, requests}));

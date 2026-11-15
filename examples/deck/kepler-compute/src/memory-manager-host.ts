@@ -133,13 +133,23 @@ export function createMemoryManagerHost(props: MemoryManagerHostProps): MemoryMa
         budgetBytes: registry?.memoryBudgetBytes ?? 0
       };
     },
-    emit: props.emitNotice
+    // Hysteresis/accounting stay immediate; a pressure crossing during layer preparation
+    // must not dispatch into Kepler's Redux store until the current render has returned.
+    emit: notice => queueMicrotask(() => props.emitNotice(notice))
   });
   const reportBudgetFailure = (message: string | null) => {
     if (message) props.emitNotice({key: 'memory-budget-not-applied', type: 'warning', message});
   };
+  let refreshPending = false;
   const refresh = () => {
-    for (const listener of listeners) listener();
+    if (refreshPending) return;
+    refreshPending = true;
+    // Render-time layer preparation can reserve memory. Notify React after that render
+    // completes, and coalesce its reservations into one panel update.
+    queueMicrotask(() => {
+      refreshPending = false;
+      for (const listener of listeners) listener();
+    });
   };
   // The host lives for the page; operation changes re-render the manager.
   subscribeOperations(refresh);

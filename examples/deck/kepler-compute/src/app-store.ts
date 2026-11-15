@@ -21,6 +21,7 @@ import {residentLayerClasses} from './layers';
 import {isResidentDataset} from './publication';
 import {SUPPORTED_VIEW_COUNT} from './split-view';
 import {notify} from './app-services';
+import {sampleMapNativeMiddleware} from './sample-map-native-transaction';
 import {
   residentGroupByMiddleware,
   residentJoinMiddleware,
@@ -148,6 +149,7 @@ const residentReducer: typeof reducer = (state, action) => {
 export const store = createStore(
   combineReducers({keplerGl: residentReducer}),
   applyMiddleware(
+    sampleMapNativeMiddleware,
     residentGroupByMiddleware,
     residentJoinMiddleware,
     residentSuitabilityMiddleware,

@@ -4,7 +4,7 @@
 
 import {ResidentSpatialJoinPointReprojector} from './resident-spatial-join-reproject';
 import {Buffer, type CommandEncoder, type Fence} from '@luma.gl/core';
-import type {PreparedPolygonTopologySource} from '@luma.gl/engine/arrow';
+import type {PreparedKeplerPolygonTopologySource} from './geometry-preparation';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   GPUCommandGraph,
@@ -109,7 +109,7 @@ export async function executeResidentSpatialJoin(props: {
   positions: GPUVector<'float32x2'>;
   polygons: PackedSpatialJoinPolygons;
   /** Retained polygon rows; required only when the plan merges the polygon geometry. */
-  mergeSource?: PreparedPolygonTopologySource;
+  mergeSource?: PreparedKeplerPolygonTopologySource;
   signal?: AbortSignal;
   isCurrent(): boolean;
 }): Promise<ResidentSpatialJoinResult> {
@@ -352,9 +352,11 @@ export async function executeResidentSpatialJoin(props: {
         (total, buffer) => total + buffer.byteLength,
         0
       );
-      resizeGpu(graph.planResources().stats.physicalTransientResourceBytes + ownedBytes + 65536);
+      // Published luma.gl has no pre-compile resource plan: compile, then reserve the measured
+      // transient bytes. The cleanup destroys the compiled graph if the reservation fails.
       const leftCompiled = graph.compile();
       compiled = leftCompiled;
+      resizeGpu(leftCompiled.stats.physicalTransientResourceBytes + ownedBytes + 65536);
       encoder = device.createCommandEncoder();
       // Packing right-hand values is a GPU buffer copy per source chunk.
       for (const [name, source] of sources) {
@@ -576,9 +578,28 @@ export async function executeResidentSpatialJoin(props: {
           );
           return {values, validity};
         });
-        const attemptBytes =
-          graph.planResources().stats.physicalTransientResourceBytes +
-          attemptScratch.reduce((total, buffer) => total + buffer.byteLength, 0);
+        // Published luma.gl has no pre-compile resource plan, and compile allocates the transient
+        // buffers. So the reservation is raised to the attempt's working-set cap BEFORE compiling
+        // (the registry budget rejects an oversized attempt before any scratch exists), the compile
+        // failing on device memory halves the chunk like an over-cap measurement, and the measured
+        // bytes shrink the reservation after compile. A rejected attempt is destroyed by the
+        // finally block before the retry.
+        resizeGpu(baseBytes + RESIDENT_SPATIAL_JOIN_WORKING_BYTES + 65536);
+        try {
+          attemptCompiled = graph.compile();
+        } catch (error) {
+          if (
+            !/out of memory|OutOfMemory/i.test(
+              `${(error as Error)?.name} ${(error as Error)?.message}`
+            )
+          )
+            throw error;
+          attemptCompiled = undefined;
+        }
+        const attemptBytes = attemptCompiled
+          ? attemptCompiled.stats.physicalTransientResourceBytes +
+            attemptScratch.reduce((total, buffer) => total + buffer.byteLength, 0)
+          : Infinity;
         if (attemptBytes > RESIDENT_SPATIAL_JOIN_WORKING_BYTES) {
           // The estimate under-reported the primitives' scratch: halve the chunk and retry.
           if (capacities.chunkRowCount === 1)
@@ -596,7 +617,7 @@ export async function executeResidentSpatialJoin(props: {
           continue;
         }
         resizeGpu(baseBytes + attemptBytes + 65536);
-        attemptCompiled = graph.compile();
+        if (!attemptCompiled) throw new Error('Spatial Join compile produced no graph.');
         for (let start = doneRows; start < rowCount; start += chunkRowCount) {
           assertCurrent();
           const validRows = Math.min(chunkRowCount, rowCount - start);

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {withSyntheticSample} from './native-navigation.mjs';
+
 // Default single-Deck two-viewport Dual and Swipe maps, driven through Kepler's split-map control.
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
@@ -90,13 +92,13 @@ async function expectPixels(label, checks) {
 
 try {
   // `?views=1` forces single view: split stays rejected exactly as before.
-  await page.goto(`${baseUrl}?views=1`);
+  await page.goto(withSyntheticSample(`${baseUrl}?views=1`));
   await page.locator('canvas').first().waitFor();
   await chooseSplitMode('Dual');
   await page.getByText(/supports one map view/i).first().waitFor({timeout: 10_000});
 
   // Default: Dual opens two viewports in one Deck on one device (no additional visible Deck canvas).
-  await page.goto(baseUrl);
+  await page.goto(withSyntheticSample(baseUrl));
   await page.locator('.maplibregl-canvas').waitFor();
   await page.waitForTimeout(2000);
   const canvasesBefore = await canvasCount();
@@ -403,7 +405,7 @@ try {
     await waitForMode('SINGLE_MAP');
   }
   const failuresBefore = failures.length;
-  await page.goto(baseUrl);
+  await page.goto(withSyntheticSample(baseUrl));
   await page.locator('.maplibregl-canvas').waitFor();
   await page.waitForTimeout(2000);
   const swipePoints = [['swipe view 0', 'view-0', 500, 700], ['swipe view 1', 'view-1', 1000, 300], ['swipe view 1 near divider', 'view-1', 780, 800]];
@@ -437,7 +439,7 @@ try {
   await leaveSplit();
 
   // Globe: Swipe shows one seamless globe; Dual shows one globe per view; no GPU validation errors.
-  await page.goto(baseUrl);
+  await page.goto(withSyntheticSample(baseUrl));
   await page.locator('.maplibregl-canvas').waitFor();
   await page.waitForTimeout(2000);
   const globeConfig = await page.evaluate(() => window.__keplerComputeTest.saveNativeConfig());
@@ -491,7 +493,7 @@ try {
   assert.deepEqual(failures.slice(failuresBefore), [], 'split 3D and globe raise no GPU errors');
 
   // Touch: one-finger pan and two-finger pinch on view 1 match the single-view behavior.
-  await page.goto(baseUrl);
+  await page.goto(withSyntheticSample(baseUrl));
   await page.locator('.maplibregl-canvas').waitFor();
   await page.waitForTimeout(2000);
   const devtools = await context.newCDPSession(page);
@@ -522,7 +524,7 @@ try {
   const singlePan = await touchPan(null, 1000, 500);
   const singlePinch = await touchPinch(null, 1000, 500);
   assert.ok(singlePan > 20 && singlePinch.zoomDelta > 0.5, `single-view touch baseline ${singlePan} ${singlePinch}`);
-  await page.goto(baseUrl);
+  await page.goto(withSyntheticSample(baseUrl));
   await page.locator('.maplibregl-canvas').waitFor();
   await page.waitForTimeout(2000);
   for (const title of ['Swipe', 'Dual']) {
@@ -576,7 +578,7 @@ try {
     Dual: {'view-0': [350, 790, 650, 900], 'view-1': [950, 790, 1150, 900]}
   };
   for (const title of ['Swipe', 'Dual']) {
-    await page.goto(baseUrl);
+    await page.goto(withSyntheticSample(baseUrl));
     await page.locator('.maplibregl-canvas').waitFor();
     await page.waitForTimeout(2000);
     await enterSplit(title);

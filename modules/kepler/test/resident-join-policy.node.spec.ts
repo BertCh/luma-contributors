@@ -143,7 +143,7 @@ test('spatial join plans refuse unsupported declared coordinate systems', async 
     resultLabel: 'Result',
     leftCrs: 'EPSG:3857',
     rightCrs: 'EPSG:4326'
-  };
+  } as unknown as Parameters<typeof createResidentSpatialJoinPlan>[0];
   const metadata = (datasetId: string) =>
     ({
       datasetId,

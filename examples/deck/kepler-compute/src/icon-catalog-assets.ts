@@ -34,6 +34,28 @@ export function makeIconCatalogDocument(
   definitions: readonly NativeIconDefinition[],
   limits = DEFAULT_ICON_CATALOG_LIMITS
 ): IconCatalogDocument {
+  for (const definition of definitions) {
+    const id = definition?.id;
+    if (
+      typeof id !== 'string' ||
+      !id ||
+      !Array.isArray(definition?.mesh?.positions) ||
+      !Array.isArray(definition?.mesh?.cells)
+    )
+      throw new Error(`Invalid custom icon mesh: ${String(id)}`);
+    // JSON serialization would silently replace nonfinite unused coordinates with null. Validate
+    // every retained position, including vertices not referenced by the rendered triangles.
+    for (const position of definition.mesh.positions)
+      if (
+        !Array.isArray(position) ||
+        position.length !== 3 ||
+        position.some(value => typeof value !== 'number' || !Number.isFinite(Math.fround(value)))
+      )
+        throw new Error(`Custom icon ${id} has invalid coordinates`);
+    for (const cell of definition.mesh.cells)
+      if (!Array.isArray(cell) || cell.length !== 3)
+        throw new Error(`Custom icon ${id} must contain triangles`);
+  }
   // Reuses the renderer validation (triangles, finite Float32 coordinates, count limits).
   prepareNativeIconCatalog([], definitions, limits);
   const unique = new Map<string, NativeIconDefinition>();

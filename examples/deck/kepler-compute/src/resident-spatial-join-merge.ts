@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {DataType, Vector} from 'apache-arrow';
-import type {PreparedPolygonTopologySource} from '@luma.gl/engine/arrow';
+import type {PreparedKeplerPolygonTopologySource} from './geometry-preparation';
 
 type Position = number[];
 type PolygonCoordinates = Position[][];
@@ -19,7 +19,7 @@ export const MAXIMUM_RESIDENT_SPATIAL_JOIN_MERGE_LABEL_LENGTH = 33554432;
  * are Polygons and rows with several parts are MultiPolygons; ring longitude and latitude are copied unchanged.
  */
 export function readSpatialJoinPolygonGeometry(
-  source: PreparedPolygonTopologySource,
+  source: PreparedKeplerPolygonTopologySource,
   rowIndex: number
 ): SpatialJoinPolygonGeometry {
   const batch = source.batches.find(

@@ -4,7 +4,7 @@
 
 import type {Device} from '@luma.gl/core';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
-import {runWideNumericKernel} from './wide-numeric-gpu-runner';
+import {runWideNumericKernel} from '@luma-contributors/analysis/dataframe-analysis';
 
 export const WIDE_NUMERIC_PROBE_SLOT_WORDS = 32;
 

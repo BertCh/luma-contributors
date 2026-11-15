@@ -5,7 +5,6 @@
 import type {Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import {
-  alignGraphVectorViews,
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
   getBoundedInvocationIndexSource,
@@ -16,6 +15,7 @@ import {
   type GraphDataView,
   type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
+import {alignKeplerGraphVectorViews} from './luma-gaps/graph-vector-chunks';
 import type {ResidentSuitabilityColumnFormat} from './resident-suitability-plan';
 
 const WORKGROUP_SIZE = 256;
@@ -139,8 +139,8 @@ export function createSuitabilityPrepareNodes<Parameters>(
 ): GPUCommandNode<Parameters>[] {
   const type = SHADER_TYPES[props.format];
   const spans = props.validity
-    ? alignGraphVectorViews(graph, [props.source, props.validity, props.clean, props.defined])
-    : alignGraphVectorViews(graph, [props.source, props.clean, props.defined]);
+    ? alignKeplerGraphVectorViews(graph, [props.source, props.validity, props.clean, props.defined])
+    : alignKeplerGraphVectorViews(graph, [props.source, props.clean, props.defined]);
   return spans.map((span, spanIndex) => {
     const [source, validity, clean, defined] =
       span.length === 4
@@ -184,8 +184,8 @@ export function createSuitabilityReclassifyNodes<Parameters>(
   }
 ): GPUCommandNode<Parameters>[] {
   const spans = props.validity
-    ? alignGraphVectorViews(graph, [props.source, props.validity, props.clean, props.defined])
-    : alignGraphVectorViews(graph, [props.source, props.clean, props.defined]);
+    ? alignKeplerGraphVectorViews(graph, [props.source, props.validity, props.clean, props.defined])
+    : alignKeplerGraphVectorViews(graph, [props.source, props.clean, props.defined]);
   return spans.map((span, spanIndex) => {
     const [source, validity, clean, defined] =
       span.length === 4
@@ -295,7 +295,7 @@ export function createSuitabilityFinishNodes<Parameters>(
   }
 ): GPUCommandNode<Parameters>[] {
   const renormalize = props.missingValues === 'renormalize' && props.weightSum !== undefined;
-  return alignGraphVectorViews(graph, [
+  return alignKeplerGraphVectorViews(graph, [
     ...(renormalize ? [props.weightSum!] : []),
     props.score,
     props.definedCount,

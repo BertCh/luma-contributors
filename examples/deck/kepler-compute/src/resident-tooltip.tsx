@@ -98,7 +98,12 @@ export function ResidentTooltip({
         )
       : null;
   return (
-    <section aria-label="Data inspection" data-resident-tooltip>
+    <section
+      aria-label="Data inspection"
+      data-resident-tooltip
+      data-resident-tooltip-row={sourceRowIndex}
+      data-resident-tooltip-compare-row={compare?.sourceRowIndex}
+    >
       {state === null ? (
         <p role="status" data-resident-consumer-state="pending">
           Reading selected row…

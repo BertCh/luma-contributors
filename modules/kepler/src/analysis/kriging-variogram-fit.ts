@@ -4,8 +4,10 @@
 
 import {
   fitVariogramModel,
+  getVariogramModelShape,
   type VariogramModelType
 } from '@luma-contributors/analysis/dataframe-analysis';
+export {fitKeplerVecchiaVariogram} from './kriging-vecchia-fit';
 import {toDegrees, toRadians} from '@math.gl/core';
 import {EARTH_RADIUS_METERS, getHaversineDistanceMeters} from './catalog-geodesy';
 
@@ -228,16 +230,19 @@ export type KeplerVariogramCandidate = {
   nugget: number;
   sill: number;
   rangeMeters: number;
-  /** Weighted sum of squares with the common weights `N_h / gamma_h^2` (comparable across models). */
+  /** Minimized criterion: common-weight residual squares for WLS, negative conditional log-likelihood for Vecchia. Compare only within one fitting method. */
   criterion: number;
 };
 
 export type KeplerVariogramFit = KeplerVariogramCandidate & {
-  method: 'weighted-least-squares';
-  weighting: 'cressie';
+  method: 'weighted-least-squares' | 'vecchia-likelihood' | 'vecchia-fisher';
+  weighting: 'cressie' | 'conditional-likelihood';
+  diagnostics?: Readonly<Record<string, number>>;
   /** Every attempted family, ranked best first. */
   candidates: KeplerVariogramCandidate[];
+  /** Zero for Vecchia fits, which do not bin empirical pairs. */
   binCount: number;
+  /** Empirical pair count for WLS, conditioning-entry count for Vecchia. */
   pairCount: number;
 };
 
@@ -250,7 +255,13 @@ export type KeplerVariogramFit = KeplerVariogramCandidate & {
  */
 export function fitKeplerVariogram(
   empirical: Pick<KeplerEmpiricalVariogram, 'distances' | 'semivariances' | 'pairCounts'>,
-  models: readonly VariogramModelType[] = ['spherical', 'exponential', 'gaussian']
+  models: readonly VariogramModelType[] = [
+    'spherical',
+    'exponential',
+    'gaussian',
+    'matern-3/2',
+    'matern-5/2'
+  ]
 ): KeplerVariogramFit {
   const candidates: KeplerVariogramCandidate[] = [];
   for (const model of models) {
@@ -311,14 +322,7 @@ function getCommonCriterion(
     const count = empirical.pairCounts[bin];
     if (!(count > 0) || !(gamma > 0) || !(distance > 0)) continue;
     const scaled = distance / model.range;
-    const shape =
-      model.model === 'spherical'
-        ? scaled >= 1
-          ? 1
-          : 1.5 * scaled - 0.5 * scaled ** 3
-        : model.model === 'exponential'
-          ? 1 - Math.exp(-3 * scaled)
-          : 1 - Math.exp(-3 * scaled * scaled);
+    const shape = getVariogramModelShape(model.model, scaled);
     const predicted = model.nugget + model.sill * shape;
     total += (count * (gamma - predicted) ** 2) / (gamma * gamma);
   }

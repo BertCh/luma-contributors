@@ -8,7 +8,7 @@ import type {
   KeplerComputeSession,
   KeplerDatasetSnapshot
 } from '@luma-contributors/kepler';
-import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
+import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/analysis/analysis-core';
 import {
   ArrowStreamController,
   type ArrowStreamPreview,

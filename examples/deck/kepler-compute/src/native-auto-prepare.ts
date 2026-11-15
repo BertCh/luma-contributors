@@ -158,6 +158,52 @@ export class NativeAutoPrepare {
   }
 
   private readonly forced = new Set<string>();
+  private readonly signals = new Map<string, AbortSignal>();
+  private readonly requestGenerations = new Map<string, number>();
+
+  /** Explicit sample reloads must await the queued GPU replacement, including preparation failure. */
+  republish(datasetId: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    if (!this.enabled) return Promise.reject(new Error('Automatic preparation is disabled.'));
+    if (!this.host.getDatasets()?.[datasetId])
+      return Promise.reject(new Error(`Native dataset ${datasetId} is unavailable.`));
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        unsubscribe();
+        signal.removeEventListener('abort', abort);
+      };
+      const abort = () => {
+        cleanup();
+        if (this.signals.get(datasetId) === signal) {
+          const queuedIndex = this.queue.indexOf(datasetId);
+          if (queuedIndex >= 0) {
+            this.queue.splice(queuedIndex, 1);
+            this.forced.delete(datasetId);
+            this.signals.delete(datasetId);
+            this.update(datasetId, {state: 'failed', error: 'Sample preparation was cancelled.'});
+            if (!this.queue.length && this.retry) {
+              clearTimeout(this.retry);
+              this.retry = null;
+            }
+          }
+        }
+        reject(signal.reason);
+      };
+      const unsubscribe = this.subscribe(() => {
+        const report = this.reports.get(datasetId);
+        if (report?.state === 'ready') {
+          cleanup();
+          resolve();
+        } else if (report?.state === 'failed') {
+          cleanup();
+          reject(new Error(report.error));
+        }
+      });
+      signal.addEventListener('abort', abort, {once: true});
+      this.signals.set(datasetId, signal);
+      this.requestRepublish(datasetId);
+    });
+  }
 
   /**
    * Re-prepares an already resident dataset from its (edited) Kepler dataset under the same id,
@@ -165,7 +211,9 @@ export class NativeAutoPrepare {
    */
   requestRepublish(datasetId: string): void {
     const dataset = this.host.getDatasets()?.[datasetId];
-    if (!this.enabled || !dataset || this.queue.includes(datasetId)) return;
+    if (!this.enabled || !dataset) return;
+    const alreadyQueued = this.queue.includes(datasetId);
+    this.requestGenerations.set(datasetId, (this.requestGenerations.get(datasetId) ?? 0) + 1);
     this.forced.add(datasetId);
     this.seen.set(datasetId, dataset.dataRevision);
     this.reports.set(datasetId, {
@@ -179,6 +227,10 @@ export class NativeAutoPrepare {
       warnings: [],
       columnNotes: []
     });
+    if (alreadyQueued) {
+      this.notify();
+      return;
+    }
     if (!this.queue.length && !this.running)
       this.layerOrderBeforeBatch = this.host.getLayerOrder?.() ?? null;
     this.queue.push(datasetId);
@@ -280,6 +332,11 @@ export class NativeAutoPrepare {
   }
 
   private async prepareDataset(datasetId: string): Promise<void> {
+    const generation = this.requestGenerations.get(datasetId);
+    const signal = this.signals.get(datasetId);
+    const update = (patch: Partial<AutoPrepareReport>) => {
+      if (this.requestGenerations.get(datasetId) === generation) this.update(datasetId, patch);
+    };
     const dataset = this.host.getDatasets()?.[datasetId];
     const forced = this.forced.delete(datasetId);
     if (!dataset || (this.host.isResidentDataset(datasetId) && !forced)) {
@@ -287,8 +344,9 @@ export class NativeAutoPrepare {
       this.notify();
       return;
     }
-    this.update(datasetId, {state: 'preparing', label: dataset.label});
+    update({state: 'preparing', label: dataset.label});
     try {
+      signal?.throwIfAborted();
       const source = makeArrowSourceFromNativeDataset(dataset, AUTO_PREPARE_LIMITS);
       const nativeLayers = this.host
         .getLayers()
@@ -333,7 +391,7 @@ export class NativeAutoPrepare {
       const columnNotes = Object.entries(source.columnRoutes).flatMap(([name, route]) =>
         route.note ? [`${name}: ${route.note}`] : []
       );
-      this.update(datasetId, {
+      update({
         roleSummary: plan.roleSummary,
         policySummary: plan.policySummary,
         excluded: plan.excluded,
@@ -343,9 +401,13 @@ export class NativeAutoPrepare {
       const candidate: SourceCandidate = {
         table: plan.table,
         label: dataset.label,
-        isCurrent: () => this.host.getDatasets()?.[datasetId] === dataset && source.isCurrent(),
+        isCurrent: () =>
+          !signal?.aborted &&
+          this.host.getDatasets()?.[datasetId] === dataset &&
+          source.isCurrent(),
         ...(plan.cellIndex ? {cellIndex: plan.cellIndex} : {})
       };
+      signal?.throwIfAborted();
       await this.host.publish({
         datasetId,
         candidate,
@@ -355,12 +417,14 @@ export class NativeAutoPrepare {
           plan.unpreparedLayerIds
         )
       });
-      this.update(datasetId, {state: 'ready'});
+      update({state: 'ready'});
     } catch (failure) {
-      this.update(datasetId, {
+      update({
         state: 'failed',
         error: failure instanceof Error ? failure.message : String(failure)
       });
+    } finally {
+      if (this.signals.get(datasetId) === signal) this.signals.delete(datasetId);
     }
   }
 }

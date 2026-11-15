@@ -79,7 +79,7 @@ test('OLS fits complete source rows, gates failed models, refits selections and 
     });
   const context = await createFixture(batch(0, 3).concat(batch(3, 8)));
   const {analysis, inspector, explorer, dataset} = context;
-  const sourceChunks = [...dataset.value.columns.predictor.data];
+  const sourceChunks = [...dataset.value.columns['predictor'].data];
   try {
     analysis.configureOLS(settings);
     expect(analysis.active).toBe(false);
@@ -185,7 +185,7 @@ test('OLS fits complete source rows, gates failed models, refits selections and 
     expect(analysis.settings.ols).toEqual(settings);
     expect(analysis.settings.population).toBe('all');
     expect(analysis.summary!.ols!.coefficients[1].estimate).toBeCloseTo(2, 5);
-    expect(dataset.value.columns.predictor.data).toEqual(sourceChunks);
+    expect(dataset.value.columns['predictor'].data).toEqual(sourceChunks);
     expect(sourceChunks.map(chunk => chunk.length)).toEqual([3, 5]);
   } finally {
     await context.destroy();

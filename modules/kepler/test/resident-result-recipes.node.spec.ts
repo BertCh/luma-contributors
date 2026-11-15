@@ -54,7 +54,8 @@ describe('ResidentResultRecipes', () => {
     const recipes = new ResidentResultRecipes();
     const recipe = createRecipe('result', ['input']);
     recipes.record(recipe);
-    if (recipe.operation.kind === 'suitability') recipe.operation.request.weights['cost'] = 99;
+    if (recipe.operation.kind === 'suitability')
+      (recipe.operation.request.weights as Record<string, number>)['cost'] = 99;
     const stored = recipes.get('result')?.operation;
     expect(stored?.kind === 'suitability' && stored.request.weights['cost']).toBe(1);
     recipes.record({...createRecipe('result', ['input']), rowCount: 5});

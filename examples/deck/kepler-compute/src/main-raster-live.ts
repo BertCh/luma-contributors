@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createRasterLiveHost} from './raster-live-host';
+import {flowFieldBindings} from './flow-field-bindings';
 import {appState} from './app-state';
 import {getDeckLayers} from './deck-internals';
 import {executeTerrainResidentPublication} from './terrain-resident-publication';
@@ -17,6 +18,11 @@ export const rasterLiveHost = createRasterLiveHost({
       type: string;
     }[],
   getDevice: () => appState.runtime?.device,
+  listFlowGrids: () =>
+    Object.entries(flowFieldBindings.getStats())
+      .filter(([, stats]) => stats.mode === 'UV' || stats.mode === 'SPEED_DIR')
+      .map(([id]) => ({id, label: id})),
+  readFlowGrid: layerId => flowFieldBindings.readGridForAnalysis(layerId),
   getMemoryRegistry: () => appState.runtime?.session.registry,
   getDeckLayers: () => getDeckLayers(appState.runtime?.deck),
   listPolygonDatasets: () =>
@@ -49,10 +55,10 @@ export const rasterLiveHost = createRasterLiveHost({
         }
       : undefined;
   },
-  publishTable: async ({table, label, geometryColumn, normalization}) => {
+  publishTable: async ({table, label, geometryColumn, normalization, isCurrent}) => {
     const owner = getActiveRuntime();
     await publishSource(
-      {table, label, isCurrent: () => appState.runtime === owner},
+      {table, label, isCurrent: () => appState.runtime === owner && (isCurrent?.() ?? true)},
       normalization,
       undefined,
       geometryColumn

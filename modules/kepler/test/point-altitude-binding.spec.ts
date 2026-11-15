@@ -114,3 +114,55 @@ async function readMask(vector: GPUVector<'uint32'>): Promise<number[]> {
     }
   return values;
 }
+
+test('connection endpoint altitude masks intersect independently and clear behind the completion fence', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const session = new KeplerComputeSession({device, memoryBudgetBytes: 16 * 1024 * 1024});
+  const dataset = session.importArrowDataset({
+    id: 'connection-altitude',
+    table: arrow.tableFromArrays({value: new Float32Array([1, 2, 3, 4])})
+  });
+  const vectors: GPUVector<'uint32'>[] = [];
+  const makeVector = (values: number[]) => {
+    const buffer = device.createBuffer({
+      data: new Uint32Array(values),
+      usage: Buffer.STORAGE | Buffer.COPY_SRC | Buffer.COPY_DST
+    });
+    const vector = new GPUVector({
+      name: 'connection-mask',
+      type: 'data',
+      format: 'uint32',
+      ownsData: true,
+      data: [new GPUData({format: 'uint32', length: values.length, buffer, ownsBuffer: true})]
+    });
+    vectors.push(vector);
+    return vector;
+  };
+  const selection = makeVector([1, 1, 1, 0]);
+  const sourceValidity = makeVector([1, 0, 1, 1]);
+  const targetValidity = makeVector([0, 1, 1, 1]);
+  const runtime = new PointAltitudeBindingRuntime(session, () => undefined);
+  try {
+    const sourceMask = runtime.resolve(dataset.id, 'line\u0001source', selection, sourceValidity);
+    const output = runtime.resolve(dataset.id, 'line\u0001target', sourceMask, targetValidity);
+    const encoder = device.createCommandEncoder();
+    runtime.encode(encoder);
+    device.submit(encoder.finish());
+    expect(await readMask(output)).toEqual([0, 0, 1, 0]);
+    expect(await readMask(selection)).toEqual([1, 1, 1, 0]);
+    expect(runtime.resolve(dataset.id, 'line\u0001source', selection, undefined)).toBe(selection);
+    expect(runtime.resolve(dataset.id, 'line\u0001target', selection, undefined)).toBe(selection);
+    const fence = device.createFence();
+    try {
+      await runtime.retainLayers([], fence.signaled);
+    } finally {
+      fence.destroy();
+    }
+    expect(output.data.every(chunk => chunk.buffer.destroyed)).toBe(true);
+  } finally {
+    await runtime.destroy(Promise.resolve());
+    for (const vector of vectors) vector.destroy();
+    await session.destroy(Promise.resolve());
+  }
+});

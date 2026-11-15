@@ -4,6 +4,8 @@
 
 import {installAcceptanceInstrumentation} from './acceptance-instrumentation';
 import {appState} from './app-state';
+import {Layer} from '@deck.gl/core';
+import type {EventManager} from 'mjolnir.js';
 import {VectorTileResidentRenderer} from './vector-tile-resident-layers';
 import {VectorTileLiveController} from './vector-tile-live-controller';
 import {BASEMAP_ATTRIBUTION_ELEMENT_ID} from './basemap-attribution';
@@ -42,9 +44,14 @@ import {
 import {getFlowmapStats} from './flowmap-gpu-layer';
 import {categoryCoverageRegistry} from './binding3-filter-runtime';
 import {fieldPreparationCoordinator} from './binding3-field-preparation';
-import {getPointLabelResourceEntries, getRenderedLayerInfo} from './main-layer-info';
+import {
+  getPointLabelResourceEntries,
+  getRenderedLayerInfo,
+  getRenderedViewLayerInfo
+} from './main-layer-info';
 import {DATASET_ID} from './sample-data';
 import KeplerGlSchema from '@kepler.gl/schemas';
+import {createSampleMapReference} from './sample-map-config-expectation';
 import {toNativeFeature} from './main-native-feature';
 import {peekGeometryColumnVariantRuntime} from './geometry-column-variants';
 import {
@@ -71,9 +78,23 @@ import {
 import {flowFieldBindings, flowH3Bindings} from './layers';
 import {getEvictionRebuildSource} from './recovery';
 import {setTimestampRange} from './device-init';
+import {sampleMapStatus} from './sample-map-host';
+import {nativeAutoPrepare} from './native-hosts';
 import {readNativeTooltip, pickPublishedPosition} from './selection';
 
 if (import.meta.env.DEV) {
+  const originalLayerHover = Layer.prototype.onHover;
+  const layerHoverEvents: {
+    layerId: string;
+    index: number;
+    picked: boolean;
+    x: number;
+    y: number;
+  }[] = [];
+  let hoverEventRoot: HTMLElement | null = null;
+  let nativeLeaveCount = 0;
+  let recognizedLeaveCount = 0;
+  let stopHoverProbe = () => {};
   installAcceptanceInstrumentation(() => {
     const owner = getActiveRuntime();
     return {
@@ -85,6 +106,11 @@ if (import.meta.env.DEV) {
   });
   Object.assign(window, {
     __keplerComputeTest: {
+      getSampleMapState: () => ({
+        ...sampleMapStatus,
+        reports: [...nativeAutoPrepare.reports.values()],
+        datasetIds: Object.keys(store.getState().keplerGl['compute']?.visState?.datasets ?? {})
+      }),
       ...rasterLiveHost.testHooks,
       reserveTaggedMemory: (
         byteLength: number,
@@ -356,6 +382,9 @@ if (import.meta.env.DEV) {
           error: published.error,
           geometry: published.geometry
             ? {
+                column: published.geometryColumn,
+                featureTypes: published.geometry.geometry.metadata.featureTypes,
+                invalidRowCount: published.geometry.geometry.metadata.invalidRows.length,
                 sourceUploadBytes: published.geometry.geometry.gpuByteLength,
                 sourceBufferIds: published.geometry.geometry.buffers.map(buffer => buffer.id),
                 sourceBatches: published.dataset.batches.map(batch => batch.rowCount)
@@ -664,6 +693,61 @@ if (import.meta.env.DEV) {
         store.dispatch(wrapTo('compute', toggleSplitMap(mapIndex))),
       toggleSplitMapViewport: (payload: Parameters<typeof toggleSplitMapViewport>[0]) =>
         store.dispatch(wrapTo('compute', toggleSplitMapViewport(payload))),
+      // Observe the layer callback itself: Deck's global onHover can clear Kepler even if
+      // DeckPicker fails to notify the previously hovered layer on its no-viewport path.
+      startLayerHoverProbe: (layerId: string) => {
+        stopHoverProbe();
+        layerHoverEvents.length = 0;
+        nativeLeaveCount = 0;
+        recognizedLeaveCount = 0;
+        const manager = Reflect.get(getActiveRuntime().deck, 'eventManager') as EventManager;
+        hoverEventRoot = manager.getElement();
+        const recordNativeLeave = () => {
+          nativeLeaveCount++;
+        };
+        const recordRecognizedLeave = () => {
+          recognizedLeaveCount++;
+        };
+        hoverEventRoot?.addEventListener('mouseleave', recordNativeLeave);
+        manager.watch('pointerleave', recordRecognizedLeave, {priority: 200});
+        stopHoverProbe = () => {
+          hoverEventRoot?.removeEventListener('mouseleave', recordNativeLeave);
+          manager.off('pointerleave', recordRecognizedLeave);
+          Layer.prototype.onHover = originalLayerHover;
+        };
+        Layer.prototype.onHover = function (...parameters: Parameters<Layer['onHover']>) {
+          const information = parameters[0];
+          if (this.id === layerId || this.id.startsWith(`${layerId}-`)) {
+            layerHoverEvents.push({
+              layerId: this.id,
+              index: information.index,
+              picked: information.picked,
+              x: information.x,
+              y: information.y
+            });
+            if (layerHoverEvents.length > 64) layerHoverEvents.shift();
+          }
+          return originalLayerHover.apply(this, parameters);
+        };
+      },
+      readLayerHoverProbe: () => [...layerHoverEvents],
+      readHoverEventRoot: () => {
+        const rectangle = hoverEventRoot?.getBoundingClientRect();
+        return {
+          className: hoverEventRoot?.className,
+          bounds: rectangle
+            ? {
+                left: rectangle.left,
+                top: rectangle.top,
+                right: rectangle.right,
+                bottom: rectangle.bottom
+              }
+            : null,
+          nativeLeaveCount,
+          recognizedLeaveCount
+        };
+      },
+      stopLayerHoverProbe: () => stopHoverProbe(),
       clearHoverInfo: () => store.dispatch(wrapTo('compute', onLayerHover(null, 0))),
       getHoverInfo: () => {
         const info = store.getState().keplerGl['compute']?.visState?.hoverInfo;
@@ -712,9 +796,19 @@ if (import.meta.env.DEV) {
           | 'elevationOffset'
       ) => appState.runtime?.styles.getLegend(layerId, channel),
       saveNativeConfig: () => KeplerGlSchema.getConfigToSave(store.getState().keplerGl['compute']),
+      createSampleMapReference: (
+        original: Parameters<typeof createSampleMapReference>[0],
+        label?: string
+      ) =>
+        createSampleMapReference(
+          original,
+          store.getState().keplerGl['compute']?.visState?.datasets ?? {},
+          label
+        ),
       applyNativeConfig,
       reimportSource,
       renderedLayers: () => getRenderedLayerInfo(appState.runtime?.deck.props.layers),
+      renderedViews: () => getRenderedViewLayerInfo(appState.runtime?.deck),
       getHeatmapState: (layerId: string) => appState.runtime?.heatmaps.getDiagnostics(layerId),
       projectPosition: (longitude: number, latitude: number) =>
         appState.runtime?.deck.getViewports()[0]?.project([longitude, latitude, 0]),

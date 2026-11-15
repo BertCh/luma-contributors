@@ -4,7 +4,6 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUVector, type GPUData} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUDataFrame,
   column,
@@ -25,6 +24,7 @@ import type {
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import {isResidentChartOrderOperation, type ResidentScalarChartPlan} from './resident-chart-plan';
 import {ResidentPlotOrderMeasure} from './resident-plot-order-measure';
+import {MeteredCommandGraph} from '@luma-contributors/kepler';
 
 type ChartColumns = {value: GPUResidentScalarFormat; selected: 'uint32'};
 export type ResidentScalarChartResult = {
@@ -131,7 +131,7 @@ export class ResidentScalarChartRuntime {
         if (field) field.nullable = Boolean(validity);
       }
       frame = new GPUDataFrame({table, ...(validity ? {validity: {value: validity}} : {})});
-      const graph = new GPUCommandGraph<GPUDataFrameQueryParameters>(this.device, {
+      const graph = new MeteredCommandGraph<GPUDataFrameQueryParameters>(this.device, {
         id: `kepler-chart-${this.plan.chartId}`
       });
       const definitions: {
@@ -166,7 +166,7 @@ export class ResidentScalarChartRuntime {
         if (vector) for (const data of vector.data) buffers.add(getBuffer(data));
       }
       const accountedBytes =
-        query.compilationStats.physicalTransientResourceBytes +
+        graph.transientByteLength +
         [...buffers].reduce((total, buffer) => total + buffer.byteLength, 0);
       if (accountedBytes > reservation.byteLength)
         throw new KeplerAllocationError('working-memory', {

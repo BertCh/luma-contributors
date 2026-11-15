@@ -47,7 +47,7 @@ export function createOriginalRichSorter(props: {
     revision: string
   ): Promise<Uint32Array | null> => {
     const identityColumn = provider.fields.find(field => !field.derived)?.name;
-    if (population === 'all' || !identityColumn) {
+    if (population === 'all') {
       if (source.numRows > MAXIMUM_ORIGINAL_SORT_ROWS)
         throw new Error(describeLargePopulation(source.numRows)); // narrow the selection
       return Uint32Array.from({length: source.numRows}, (_, index) => index);
@@ -60,7 +60,8 @@ export function createOriginalRichSorter(props: {
         offset: filled,
         limit: provider.maximumPageSize,
         population,
-        columns: [identityColumn],
+        // A role-only dataset has no scalar key; its selected row identities are still paged.
+        columns: identityColumn ? [identityColumn] : [],
         view: 'prepared'
       });
       if (!page || provider.getRevision() !== revision || !props.isCurrent()) return null;

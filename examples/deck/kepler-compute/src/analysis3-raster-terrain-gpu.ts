@@ -6,7 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {computeTerrainGridOnGpu} from '@luma-contributors/kepler';
 import {
   RASTER_TERRAIN_NODATA,
-  createTerrainRasterSource,
+  computeRasterTerrainGrid,
   type RasterTerrainGrid,
   type RasterTerrainOptions
 } from './analysis2-raster-terrain';
@@ -175,17 +175,42 @@ export async function createTerrainRasterSourceAsync(
   runOptions: RasterTerrainRunOptions = {}
 ): Promise<RasterTerrainRunResult> {
   const label = `Terrain ${options.operation}`;
+  const bandIndex = options.bandIndex ?? 1;
+  const useNeighborHalo = runOptions.useNeighborHalo ?? true;
   const makeCpuResult = (reason: string | undefined): RasterTerrainRunResult => ({
-    // The per-row WGS84 model matches the GPU contributors, so the fallback agrees with them.
-    source: createTerrainRasterSource(source, {...options, groundModel: 'wgs84-per-row'}),
+    // Use the same neighbor halo AND per-row ground spacing as the GPU. The old fallback
+    // invalidated every tile seam, changing zonal populations when GPU execution was unavailable.
+    source: makeTerrainSource(
+      source,
+      options,
+      source.tiles.map(tile => {
+        const padded = useNeighborHalo
+          ? padRasterTileWithHalo(source.tiles, tile, bandIndex)
+          : undefined;
+        const input = padded
+          ? {
+              ...tile,
+              width: padded.width,
+              height: padded.height,
+              extent: padded.extent,
+              bands: tile.bands
+                .filter(band => band.index === bandIndex)
+                .map(band => ({...band, values: padded.elevation, validity: padded.validity}))
+            }
+          : tile;
+        const grid = computeRasterTerrainGrid(input, source.crs, {
+          ...options,
+          groundModel: 'wgs84-per-row'
+        });
+        return padded ? cropPaddedGrid(grid, tile.width, tile.height) : grid;
+      })
+    ),
     engine: 'cpu-reference',
     engineNote: reason ? `${label}: CPU reference (${reason})` : `${label}: CPU reference`,
     fallbackReason: reason
   });
   if (runOptions.engine === 'cpu') return makeCpuResult(undefined);
   if (!runOptions.device) return makeCpuResult('no GPU device');
-  const bandIndex = options.bandIndex ?? 1;
-  const useNeighborHalo = runOptions.useNeighborHalo ?? true;
   try {
     const grids: RasterTerrainGrid[] = [];
     for (const tile of source.tiles) {

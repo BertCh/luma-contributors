@@ -5,7 +5,7 @@
 import {expect, test, vi} from 'vitest';
 import * as arrow from 'apache-arrow';
 import {cellToBoundary} from 'h3-js';
-import {writeWKB} from '@math.gl/geospatial';
+import {writeWKB} from '@math.gl/arrow/wkb';
 import {convertGeoArrowVectorToDenseUnion} from '@luma.gl/graph/arrow';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import {

@@ -8,11 +8,10 @@
  * What is packaged: the complete bundle JSON (state plus base64 Arrow IPC sources, with their sha256
  * digests) embedded in an inert JSON script element, and a small inline loader that checks the
  * format, verifies each source digest, lists the contents and offers the bundle for download.
- * What is NOT packaged: the luma.gl / Kepler WebGPU runtime. No standalone runtime artifact exists
- * in this repository, so the page does not draw the map by itself. If `runtimeModuleUrl` (for example a
- * version-pinned CDN URL for a runtime exposing `mountLumaKeplerBundle(element, bundle)`) is supplied, the
- * loader imports it and calls it; otherwise the page says the runtime is absent. Restore the downloaded
- * bundle in the kepler-compute app with "Load portable bundle" for the full map.
+ * buildStandaloneHtmlWithViewer embeds the single-file deck.gl viewer built by `yarn build:viewer`.
+ * buildStandaloneHtml is the bundle-only fallback when that artifact is unavailable: it does not
+ * draw the map unless `runtimeModuleUrl` supplies a module exposing mountLumaKeplerBundle(element,
+ * bundle). Restore the downloaded bundle in the kepler-compute app for the full resident runtime.
  */
 export const MAXIMUM_STANDALONE_HTML_BYTES = 128 * 1024 * 1024;
 

@@ -4,9 +4,12 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {makeGeoJSONTripGPUVectors, prepareGeoJSONTrips} from '@luma.gl/engine/arrow';
+import {
+  makeKeplerGeoJSONTripGPUVectors,
+  prepareKeplerGeoJSONTrips
+} from '../../../../examples/deck/kepler-compute/src/geometry-preparation';
 
-export function createTripRuntimeFixture(device: Device) {
+export function createTripRuntimeFixture(device: Device, multipart = false) {
   const trip = {
     type: 'LineString',
     coordinates: [
@@ -14,11 +17,25 @@ export function createTripRuntimeFixture(device: Device) {
       [-73, 41, 1, 1100]
     ]
   };
-  const trips = makeGeoJSONTripGPUVectors(
+  const trips = makeKeplerGeoJSONTripGPUVectors(
     device,
-    prepareGeoJSONTrips(
+    prepareKeplerGeoJSONTrips(
       [
-        {id: 'left', rows: [null, trip]},
+        {
+          id: 'left',
+          rows: [
+            null,
+            multipart
+              ? {
+                  type: 'MultiLineString',
+                  coordinates: [
+                    trip.coordinates,
+                    trip.coordinates.map(vertex => [vertex[0] + 10, ...vertex.slice(1)])
+                  ]
+                }
+              : trip
+          ]
+        },
         {id: 'empty', rows: []},
         {id: 'right', rows: [trip, null]}
       ],

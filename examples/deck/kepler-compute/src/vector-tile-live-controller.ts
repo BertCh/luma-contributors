@@ -32,6 +32,9 @@ import {
   type VectorTileAnalysisScope
 } from './vector-tile-analysis-scope';
 import type {VectorTileResidentRenderer} from './vector-tile-resident-layers';
+import {Tileset2D} from '@deck.gl/geo-layers';
+import {createVectorTileVisibilityTilesetClass} from './vector-tile-visibility';
+import {isGlobeBasemapVectorTile, renderGlobeBasemapTile} from './globe-basemap-tiles';
 import {computeVectorTileCacheSize} from './vector-tile-cache-budget';
 import {
   collectVectorTileStyleFields,
@@ -107,6 +110,9 @@ type LayerState = {
   gpuByteLength: number;
   /** Signature of the Deck props the current derived style and filters came from. */
   styleSignature: string | null;
+  sourceTilesetClass?: typeof Tileset2D;
+  visibilityTilesetClass?: typeof Tileset2D;
+  hasNativeVisibility?: boolean;
 };
 
 type TileLike = {
@@ -177,6 +183,11 @@ export class VectorTileLiveController {
   /** Returns the layer unchanged unless it is a Deck MVT layer; MVT layers are cloned with hooks. */
   wrapLayer<LayerType>(layer: LayerType): LayerType {
     if (!isVectorTileDeckLayer(layer)) return layer;
+    // Basemap accessors and tile-local positions belong to deck's MVT draw path, not the resident
+    // lng/lat analysis population. Let MVT retain its own selected/cached tile visibility too.
+    if (isGlobeBasemapVectorTile(layer)) {
+      return layer.clone({renderSubLayers: renderGlobeBasemapTile}) as LayerType;
+    }
     const original = layer.props;
     if ((original['onTileLoad'] as {[WRAPPED_MARK]?: boolean} | undefined)?.[WRAPPED_MARK])
       return layer;
@@ -191,6 +202,20 @@ export class VectorTileLiveController {
       return wrapped;
     };
     const renderer = this.options.residentRenderer;
+    if (renderer) {
+      const sourceTilesetClass =
+        (original['TilesetClass'] as typeof Tileset2D | undefined) ?? Tileset2D;
+      if (state.sourceTilesetClass !== sourceTilesetClass) {
+        state.sourceTilesetClass = sourceTilesetClass;
+        state.visibilityTilesetClass = createVectorTileVisibilityTilesetClass(
+          sourceTilesetClass,
+          tileKeys => {
+            state.hasNativeVisibility = true;
+            renderer.setVisibleTileKeys?.(layerId, tileKeys);
+          }
+        );
+      }
+    }
     renderer?.syncLayer(layerId, original as {visible?: boolean; opacity?: number});
     if (renderer && this.options.autoStyle !== false) this.syncDerivedStyle(state, original);
     const handlers = {
@@ -207,7 +232,7 @@ export class VectorTileLiveController {
             })
           }),
       // Deck keeps fetching, decoding and caching tiles; only its per-tile sublayer drawing is off.
-      ...(renderer ? {renderSubLayers: () => []} : {}),
+      ...(renderer ? {renderSubLayers: () => [], TilesetClass: state.visibilityTilesetClass} : {}),
       onTileLoad: chain('onTileLoad', (tile: TileLike) => this.loadTile(state, tile)),
       onTileUnload: chain('onTileUnload', (tile: TileLike) => this.unloadTile(state, tile)),
       onViewportLoad: chain('onViewportLoad', (tiles: TileLike[] | null) =>
@@ -381,6 +406,10 @@ export class VectorTileLiveController {
 
   private updateViewport(state: LayerState, tiles: readonly TileLike[]): void {
     state.visibleTileKeys = tiles.map(getTileKey);
+    // Controllers without a live native traversal (e.g. externally supplied decoded tiles) use
+    // the declared viewport. Native traversal reports refinement visibility, which takes precedence.
+    if (!state.hasNativeVisibility)
+      this.options.residentRenderer?.setVisibleTileKeys?.(state.layerId, state.visibleTileKeys);
     state.zoom = tiles[0]?.index?.z ?? state.zoom;
     this.options.residentRenderer?.setZoom(state.layerId, state.zoom);
     // Domains follow the loaded values, so a field-driven style is re-planned once the viewport settles.

@@ -76,7 +76,7 @@ it('native numeric histogram classifies native edges for every format, null as z
       )
     );
     const dataset = session.importArrowDataset({id: `numeric-${kind}`, table});
-    const column = dataset.value.columns.x;
+    const column = dataset.value.columns['x'];
     expect(column.data.map(chunk => chunk.length)).toEqual(lengths);
     const selectedFlags = parts.map((part, index) =>
       part.map((_, row) => (index === 0 && row === 3 ? 0 : (row + index) % 5 === 4 ? 0 : 1))
@@ -208,7 +208,7 @@ it('native numeric histogram median and deviation stay exact and within the decl
     type: 'data',
     format: 'uint32',
     ownsData: true,
-    data: dataset.value.columns.x.data.map(
+    data: dataset.value.columns['x'].data.map(
       chunk =>
         new GPUData({
           format: 'uint32',
@@ -296,8 +296,8 @@ it('native grouped line series rank labels by first (bin, row), merge Others, an
     type: 'data',
     format: 'uint32',
     ownsData: true,
-    data: dataset.value.columns.x.data.map((chunk, index) => {
-      const start = dataset.value.columns.x.data
+    data: dataset.value.columns['x'].data.map((chunk, index) => {
+      const start = dataset.value.columns['x'].data
         .slice(0, index)
         .reduce((total, other) => total + other.length, 0);
       return new GPUData({

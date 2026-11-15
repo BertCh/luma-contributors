@@ -8,8 +8,8 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {describe, expect, it} from 'vitest';
 import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {diagnoseFloat32Narrowing} from '../../../examples/deck/kepler-compute/src/analysis-numeric-diagnostics';
-import {aggregateInteger64OnGpu} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-aggregate';
-import {scanWideNumericColumnOnGpu} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-narrowing';
+import {aggregateInteger64OnGpu} from '@luma-contributors/analysis/dataframe-analysis';
+import {scanWideNumericColumnOnGpu} from '@luma-contributors/analysis/dataframe-analysis';
 import {probeWideNumericHelpersOnGpu} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-probe';
 import {
   addWords,
@@ -29,7 +29,7 @@ import {
   subtractWords,
   summarizeInteger64Reference,
   summarizeNarrowingReference
-} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-reference';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {makeWideNumericTestValues} from './wide-numeric-test-values';
 
 function makeWordVector(device: Device, chunks: readonly (readonly number[][])[]) {
@@ -221,10 +221,7 @@ describe('wide numeric GPU kernels', () => {
           nonFiniteCount: 0,
           verdict: expected.verdict
         });
-        expect(actual.maximumAbsoluteError).toBeLessThanOrEqual(expected.maximumAbsoluteError);
-        expect(actual.maximumAbsoluteError).toBeGreaterThan(
-          expected.maximumAbsoluteError * (1 - 1e-8)
-        );
+        expect(actual.maximumAbsoluteError).toBe(expected.maximumAbsoluteError);
       } finally {
         words.destroy();
         validity.destroy();
@@ -284,10 +281,10 @@ describe('wide numeric GPU kernels', () => {
         verdict: expected.verdict
       });
       expect(actual.maximumAbsoluteError).toBeLessThanOrEqual(
-        expected.maximumAbsoluteError * (1 + 1e-12)
+        Number(expected.maximumAbsoluteError) * (1 + 1e-12)
       );
       expect(actual.maximumAbsoluteError).toBeGreaterThan(
-        expected.maximumAbsoluteError * (1 - 1e-8)
+        Number(expected.maximumAbsoluteError) * (1 - 1e-8)
       );
       // A clean column reports exact.
       const clean = makeWordVector(device, [[0, 1, 0.5, 2 ** 24, -3].map(splitDoubleToWords)]);

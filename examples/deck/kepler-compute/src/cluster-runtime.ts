@@ -16,13 +16,9 @@ import {
   createKeplerInlineClusterEngine,
   type KeplerClusterEngine
 } from '@luma-contributors/kepler';
-import type {KeplerClusterRanges} from '@luma-contributors/kepler';
+import {KEPLER_CLUSTER_BUDGET_MESSAGE, type KeplerClusterRanges} from '@luma-contributors/kepler';
 
 import {clamp} from '@math.gl/core';
-
-// Mirrors KEPLER_CLUSTER_BUDGET_MESSAGE in modules/kepler/src/cluster/kepler-compact-cluster.ts,
-// which is not yet exported from the @luma.gl/kepler package entry point.
-const KEPLER_CLUSTER_BUDGET_MESSAGE = 'The cluster hierarchy exceeds its memory budget.';
 
 /** Native cluster controls that this adapter interprets. */
 export type ResidentClusterSettings = {

@@ -32,7 +32,7 @@ const retry = {
  * headers (Content-Length, Last-Modified) are readable; ETag, Accept-Ranges and Content-Range are hidden.
  */
 function createCrossOriginServer(
-  mode: 'range' | 'preflight-blocked' | 'wrong-offset',
+  mode: 'range' | 'preflight-blocked' | 'wrong-offset' | 'no-ranges',
   failAfter: number
 ) {
   let requests = 0;
@@ -67,7 +67,10 @@ function createCrossOriginServer(
       status: start ? 206 : 200,
       headers: {
         'content-length': String(slice.length),
-        'last-modified': 'Tue, 01 Jan 2030 00:00:00 GMT'
+        'last-modified': 'Tue, 01 Jan 2030 00:00:00 GMT',
+        // The norange browser fixture exposes an explicit refusal. A missing header instead
+        // means hidden/unknown to a cross-origin client, which optimistically tries Range.
+        ...(mode === 'no-ranges' ? {'accept-ranges': 'none'} : {})
       }
     });
   }) as typeof fetch;
@@ -112,6 +115,17 @@ describe('cross-origin resumable streams', () => {
     const server = createCrossOriginServer('preflight-blocked', 400);
     const events: ResumeEvent[] = [];
     expect(await readAll(await open(server, events))).toEqual(payload);
+    expect(events.at(-1)?.phase).toBe('restarted');
+  });
+
+  it('restarts without Range when the cross-origin server explicitly advertises none', async () => {
+    const server = createCrossOriginServer('no-ranges', 400);
+    const events: ResumeEvent[] = [];
+    expect(await readAll(await open(server, events))).toEqual(payload);
+    expect(server.seen).toEqual([
+      {range: null, ifRange: null},
+      {range: null, ifRange: null}
+    ]);
     expect(events.at(-1)?.phase).toBe('restarted');
   });
 

@@ -72,7 +72,9 @@ function isRecord(value: unknown): value is SavedRecord {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Saved layer columns are plain field names (kepler.gl's saved form) or `{value}` objects (its runtime form). */
 function readColumnName(column: unknown): string | null {
+  if (typeof column === 'string') return column;
   return isRecord(column) && typeof column['value'] === 'string' ? column['value'] : null;
 }
 

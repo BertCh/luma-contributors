@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, test, vi} from 'vitest';
+import {afterAll, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import {
   captureCanvas,
   validateImageDimensions
@@ -51,4 +54,10 @@ test('browser empty canvas output is rejected rather than published as an image'
   expect(() => captureCanvas({width: 10, height: 10, toDataURL: () => 'data:,'})).toThrow(
     'could not capture'
   );
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@kepler.gl/utils');
+  vi.resetModules();
 });

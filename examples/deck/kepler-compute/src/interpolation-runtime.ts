@@ -4,7 +4,6 @@
 
 import {Buffer, Texture, type CommandEncoder} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
-import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import {BitmapLayer} from '@deck.gl/layers';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import {
@@ -22,7 +21,7 @@ import {
   getGPUColorScaleParameterValues,
   packGPUColor
 } from '@luma-contributors/analysis/dataframe-analysis';
-import {GPUParameterBuffer} from '@luma.gl/graph/gpu-dataframe';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   addKeplerAnalysisRecipe,
   getKrigingConfidenceInterval,
@@ -373,7 +372,7 @@ export class InterpolationRuntime {
       id: `resident-${program.recipe.operation.kind}-${program.recipe.source.datasetId}`,
       image: program.texture,
       bounds: [...program.recipe.operation.grid.bounds],
-      _imageCoordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+      _imageCoordinateSystem: 'lnglat',
       textureParameters: {
         minFilter: 'nearest',
         magFilter: 'nearest',
@@ -944,18 +943,19 @@ export class InterpolationRuntime {
       });
       if (!('parameterByteLength' in result))
         throw new Error('Interpolation result must declare its parameter allocation');
-      const plan = graph.planResources();
+      // Published luma.gl has no pre-compile resource plan: compile, then admit the measured
+      // transient bytes. The catch below destroys the compiled graph if admission fails.
+      compiled = graph.compile();
       const ownedBytes =
         buffers.reduce((total, buffer) => total + buffer.byteLength, 0) +
         cellCount * 4 +
         colorParameters.buffer.byteLength +
         result.parameterByteLength;
-      const plannedBytes = plan.stats.physicalTransientResourceBytes + ownedBytes;
+      const plannedBytes = compiled.stats.physicalTransientResourceBytes + ownedBytes;
       if (plannedBytes > reservation.byteLength)
         throw new Error('Interpolation exceeds its working-memory reservation');
-      // Admit graph scratch before compilation allocates it; driver-private shader memory is not measured.
+      // Driver-private shader memory is not measured.
       reservation.resize(plannedBytes);
-      compiled = graph.compile();
       const ownedCompiled = compiled;
       const ownedResult = result;
       const ownedTexture = texture;

@@ -165,12 +165,30 @@ export async function loadNumericGeoTiffFromUrl(
   return result.source;
 }
 
-/** Cheap change signature: tile ids plus band counts, so rebuilds only happen when tiles change. */
+const rasterObjectIdentities = new WeakMap<object, number>();
+let nextRasterObjectIdentity = 0;
+function getRasterObjectIdentity(value: object | null | undefined): number {
+  if (!value) return 0;
+  let identity = rasterObjectIdentities.get(value);
+  if (identity === undefined) {
+    identity = ++nextRasterObjectIdentity;
+    rasterObjectIdentities.set(value, identity);
+  }
+  return identity;
+}
+
+/** Replacement generations include decoded payloads, band/mask buffers and dimensions, independent of tile order. */
 export function getKeplerTileSignature(
   loadedTiles: readonly (KeplerLoadedRasterTile | null | undefined)[]
 ): string {
+  const bandSignature = (band: KeplerTileBand | null | undefined) =>
+    `${getRasterObjectIdentity(band?.data)}:${band?.width}:${band?.height}`;
   return loadedTiles
-    .map(tile => (tile?.index ? `${tile.index.z}/${tile.index.x}/${tile.index.y}` : '-'))
+    .map(tile => {
+      if (!tile?.index) return '-';
+      const images = tile.data?.images;
+      return `${tile.index.z}/${tile.index.x}/${tile.index.y}:${getRasterObjectIdentity(tile.data)}:${images?.imageBands?.map(bandSignature).join(',')}:${bandSignature(images?.imageMask)}:${bandSignature(images?.imageRgba)}:${bandSignature(tile.data?.image)}`;
+    })
     .sort()
     .join('|');
 }

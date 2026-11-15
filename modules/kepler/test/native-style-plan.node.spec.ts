@@ -8,6 +8,7 @@ import {packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
 import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   createNativeStylePlan,
+  getNativeGeometryStyleProperties,
   type NativeStyleLayer,
   type NativeStylePlanContext,
   type NativeStyleChannel,
@@ -15,6 +16,19 @@ import {
 } from '../../../examples/deck/kepler-compute/src/native-style-plan';
 
 const source = {datasetId: 'sample', revision: 3};
+
+test('undefined upload slots do not erase known absence of other embedded geometry styles', () => {
+  const color = {values: {} as GPUVector<'unorm8x4'>, validity: {} as GPUVector<'uint32'>};
+  const properties = getNativeGeometryStyleProperties(['fillColor'], {
+    fillColor: color,
+    lineColor: undefined,
+    lineWidth: undefined
+  });
+  expect(properties.fillColor).toBe(color);
+  expect(properties.lineWidth).toBe('absent');
+  expect(properties.lineColor).toBe('absent');
+  expect(getNativeGeometryStyleProperties(['lineWidth'], {}).lineWidth).toBeUndefined();
+});
 const context: NativeStylePlanContext = {
   source,
   columns: {
@@ -1096,5 +1110,30 @@ describe('native GeoJSON height and independent elevation offset', () => {
       supported: false,
       reasons: [expect.stringContaining('height:'), expect.stringContaining('elevationOffset:')]
     });
+  });
+});
+
+test('a polygon base-altitude table column uses the native fixed Elevation Offset role without scaling extrusion height', () => {
+  const native = layer('geojson');
+  native.config.elevationOffsetField = {name: 'value'};
+  native.config.elevationOffsetScale = 'linear';
+  native.config.elevationOffsetDomain = [-100, 500];
+  native.config.visConfig.fixedElevation = true;
+  native.config.visConfig.enable3d = false;
+  // These controls must not rescale a fixed base altitude or introduce an extrusion height.
+  native.config.visConfig.elevationScale = 20;
+  native.config.visConfig.elevationOffsetRange = [1000, 9000];
+  const translated = plan(native, {...polygonContext, zoom: context.zoom});
+  expect(resident(translated, 'elevationOffset')).toMatchObject({
+    column: 'value',
+    kind: 'scalar',
+    scale: 'identity',
+    nullValue: 0
+  });
+  expect(translated.channels.height).toEqual({kind: 'constant', value: 0});
+  expect(translated.render).toMatchObject({
+    elevationOffsetActive: true,
+    extruded: true,
+    elevationScale: 20
   });
 });

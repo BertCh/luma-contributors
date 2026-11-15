@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUScatterplotLayer, type GPUScatterplotLayerProps} from '@deck.gl-community/gpu-layers';
+import {GPUScatterplotLayer, type GPUScatterplotLayerProps} from '../gpu-layers/index';
 import {
   getDeclaredProjectedCartogramLayerProps,
   planDeclaredProjectedCartogram,

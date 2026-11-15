@@ -2,7 +2,22 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getCatalogValidationSampleInputs} from './analysis-catalog-validation';
+import {
+  findPointCloudCatalogFields,
+  readPointCloudCatalogDataset,
+  getPointCloudCatalogSamples
+} from './analysis-catalog-pointcloud';
 import type {CatalogFeature, CatalogFeatureCollection} from '@luma-contributors/kepler';
+import * as arrow from 'apache-arrow';
+import {getNetworkCategoricalSampleInputs} from './analysis-catalog-network-categorical-samples';
+
+import {getSpacetimeCatalogSample} from './analysis-catalog-spacetime';
+import {
+  getCatalogTrajectorySampleInputs,
+  normalizeCatalogTrajectoryProperties
+} from './analysis-catalog-trajectory';
+import {validateCapacity} from '@luma-contributors/analysis/analysis-core';
 
 export const MAXIMUM_CATALOG_NATIVE_ROWS = 20000;
 
@@ -20,18 +35,36 @@ function readGeometry(value: unknown): CatalogFeature['geometry'] {
   return typeof candidate.type === 'string' ? (candidate as CatalogFeature['geometry']) : null;
 }
 
+export const CATALOG_POINT_COLUMNS_PREFIX = '@point:';
+
+export function readCatalogPointColumns(field: string): [string, string] | null {
+  if (!field.startsWith(CATALOG_POINT_COLUMNS_PREFIX)) return null;
+  const fields: unknown = JSON.parse(field.slice(CATALOG_POINT_COLUMNS_PREFIX.length));
+  if (
+    !Array.isArray(fields) ||
+    fields.length !== 2 ||
+    !fields.every(value => typeof value === 'string')
+  )
+    throw new Error('Invalid point column mapping');
+  return fields as [string, string];
+}
+
+export function makeCatalogPointColumns(horizontal: string, vertical: string): string {
+  return CATALOG_POINT_COLUMNS_PREFIX + JSON.stringify([horizontal, vertical]);
+}
+
 /** Candidate geometry fields: those whose first non-null value reads as GeoJSON. */
 export function findNativeGeometryFields(dataset: NativeDatasetLike): string[] {
   const rowCount = dataset.dataContainer.numRows();
-  const names: string[] = [];
+  const names: string[] = [...findPointCloudCatalogFields(dataset)];
   dataset.fields.forEach((field, columnIndex) => {
     for (let rowIndex = 0; rowIndex < Math.min(rowCount, 16); rowIndex++) {
-      const value = dataset.dataContainer.valueAt(rowIndex, columnIndex);
-      if (value === null || value === undefined) continue;
       try {
+        const value = dataset.dataContainer.valueAt(rowIndex, columnIndex);
+        if (value === null || value === undefined) continue;
         if (readGeometry(value)) names.push(field.name);
       } catch {
-        // Not JSON text; this field is not a GeoJSON geometry column.
+        // Unreadable or not GeoJSON; discovery must not interrupt catalog rendering.
       }
       return;
     }
@@ -39,33 +72,118 @@ export function findNativeGeometryFields(dataset: NativeDatasetLike): string[] {
   return names;
 }
 
-/** Explicit, capacity-bounded read of a native dataset's GeoJSON column; other columns become properties. */
+type NativeProperty = string | number | boolean | null | NativeProperty[];
+
+/** Iterate Arrow vectors instead of toArray(), which can erase nulls in numeric child vectors. */
+function readNativeProperty(value: unknown, depth = 0): NativeProperty | undefined {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  )
+    return value;
+  if (typeof value === 'bigint') {
+    const numericValue = Number(value);
+    return Number.isSafeInteger(numericValue) ? numericValue : String(value);
+  }
+  if (
+    Array.isArray(value) ||
+    value instanceof arrow.Vector ||
+    (ArrayBuffer.isView(value) && !(value instanceof DataView))
+  ) {
+    // Bounds nesting and also rejects cyclic JS arrays from a native data container.
+    if (depth >= 8)
+      throw new Error('Native catalog list properties exceed maximum nesting depth 8');
+    return Array.from(value as Iterable<unknown>, item => {
+      const property = readNativeProperty(item, depth + 1);
+      if (property === undefined)
+        throw new Error('Native catalog list properties must contain scalar or list values');
+      return property;
+    });
+  }
+  return undefined;
+}
+
+/** Explicit, capacity-bounded GeoJSON read; scalar and list columns become plain JSON properties. */
 export function readCatalogFeaturesFromNativeDataset(
   dataset: NativeDatasetLike,
-  geometryField: string
+  geometryField: string,
+  normalizeProperties?: (properties: Record<string, unknown>) => Record<string, unknown>
 ): CatalogFeatureCollection {
+  const pointCloud = readPointCloudCatalogDataset(dataset, geometryField);
+  if (pointCloud) return pointCloud;
   const rowCount = dataset.dataContainer.numRows();
   // Row capacity exceeded; filter or sample the dataset before analysis.
   if (rowCount > MAXIMUM_CATALOG_NATIVE_ROWS)
     throw new Error('Native dataset exceeds catalog capacity');
+  const pointColumns = readCatalogPointColumns(geometryField);
+  const horizontalIndex = pointColumns
+    ? dataset.fields.findIndex(field => field.name === pointColumns[0])
+    : -1;
+  const verticalIndex = pointColumns
+    ? dataset.fields.findIndex(field => field.name === pointColumns[1])
+    : -1;
+  if (
+    pointColumns &&
+    (!pointColumns.every(column => column.trim().length > 0) ||
+      horizontalIndex < 0 ||
+      verticalIndex < 0)
+  )
+    throw new Error('Choose both numeric point columns');
   const geometryIndex = dataset.fields.findIndex(field => field.name === geometryField);
-  if (geometryIndex < 0) throw new Error('Geometry field not found');
+  if (!pointColumns && geometryIndex < 0) throw new Error('Geometry field not found');
   const features: CatalogFeature[] = [];
   for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
     const properties: Record<string, unknown> = {};
     dataset.fields.forEach((field, columnIndex) => {
       if (columnIndex === geometryIndex) return;
-      const value = dataset.dataContainer.valueAt(rowIndex, columnIndex);
-      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
-        properties[field.name] = value;
+      const raw = dataset.dataContainer.valueAt(rowIndex, columnIndex);
+      // Trajectory normalization needs the raw cell (Arrow List time arrays); others read plain JSON.
+      const value = normalizeProperties ? raw : readNativeProperty(raw);
+      if (value !== undefined) properties[field.name] = value;
     });
     features.push({
       id: rowIndex,
-      geometry: readGeometry(dataset.dataContainer.valueAt(rowIndex, geometryIndex)),
-      properties
+      geometry: pointColumns
+        ? readPointGeometry(
+            dataset.dataContainer.valueAt(rowIndex, horizontalIndex),
+            dataset.dataContainer.valueAt(rowIndex, verticalIndex)
+          )
+        : readGeometry(dataset.dataContainer.valueAt(rowIndex, geometryIndex)),
+      properties: normalizeProperties ? normalizeProperties(properties) : properties
     });
   }
   return {type: 'FeatureCollection', features};
+}
+
+function readPointGeometry(horizontal: unknown, vertical: unknown): CatalogFeature['geometry'] {
+  if (
+    typeof horizontal !== 'number' ||
+    typeof vertical !== 'number' ||
+    !Number.isFinite(horizontal) ||
+    !Number.isFinite(vertical)
+  )
+    throw new Error('Point columns must contain finite numbers');
+  return {type: 'Point', coordinates: [horizontal, vertical]};
+}
+
+/** Explicit trajectory ingestion preserves the selected time array, including Arrow List cells. */
+export function readCatalogTrajectoryFeaturesFromNativeDataset(
+  dataset: NativeDatasetLike,
+  geometryField: string,
+  parameters: Readonly<Record<string, unknown>> = {}
+): CatalogFeatureCollection {
+  validateCapacity(
+    'catalog-trajectory-native',
+    'rowCount',
+    dataset.dataContainer.numRows(),
+    0,
+    2048
+  );
+  return readCatalogFeaturesFromNativeDataset(dataset, geometryField, properties =>
+    normalizeCatalogTrajectoryProperties(properties, parameters)
+  );
 }
 
 function lines(
@@ -204,6 +322,14 @@ const SAMPLE_NETWORK = lines([
 
 /** Sample GeoJSON text per operation input name, small and planar-friendly. */
 export function getCatalogSampleInputs(operationId: string): Record<string, string> {
+  const spacetime = getSpacetimeCatalogSample(operationId);
+  if (spacetime) return {points: spacetime};
+  const networkCategorical = getNetworkCategoricalSampleInputs(operationId);
+  if (networkCategorical) return networkCategorical;
+  const trajectory = getCatalogTrajectorySampleInputs(operationId);
+  if (trajectory) return trajectory;
+  const validationSample = getCatalogValidationSampleInputs(operationId);
+  if (validationSample) return validationSample;
   switch (operationId) {
     case 'geometry-validity':
       return {
@@ -305,6 +431,6 @@ export function getCatalogSampleInputs(operationId: string): Record<string, stri
     case 'network-isochrone-polygons':
       return {lines: CITY_GRID_NETWORK, origins: points([CITY(0.005, 0.005)])};
     default:
-      return {};
+      return getPointCloudCatalogSamples(operationId);
   }
 }

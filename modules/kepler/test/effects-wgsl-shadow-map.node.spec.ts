@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {AmbientLight, DirectionalLight, LightingEffect} from '@deck.gl/core';
-import {WGSLShadowLightingEffect} from '@deck.gl-community/gpu-layers';
+import {WGSLShadowLightingEffect} from '../../../examples/deck/kepler-compute/gpu-layers/index';
 import {expect, test} from 'vitest';
 import {
   createWebGPUEffectsPipeline,

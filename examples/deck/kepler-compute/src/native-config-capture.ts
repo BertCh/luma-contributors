@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /** Saved-format Kepler visState slice that survives replacing a native dataset in place. */
+import type {SampleMapProvenance} from './sample-map-provenance';
+
 export type NativeDatasetConfig = {
+  sampleMap?: SampleMapProvenance;
   /** Original dataset color, kept so the replaced dataset looks the same in Kepler's dataset list. */
   datasetColor?: readonly number[];
   /** True when at least one saved layer targets the dataset; false means generate a default layer. */
@@ -14,6 +17,7 @@ export type NativeDatasetConfig = {
       visState: {
         layers: readonly unknown[];
         filters: readonly unknown[];
+        splitMaps?: readonly unknown[];
         interactionConfig?: Record<string, unknown>;
       };
     };
@@ -64,6 +68,9 @@ export function selectNativeDatasetConfig(
         visState: {
           layers,
           filters,
+          // Removing a table also removes its layer IDs from every map panel. Without
+          // these masks, re-registration adds each visible layer to every panel.
+          ...(Array.isArray(visState['splitMaps']) ? {splitMaps: visState['splitMaps']} : {}),
           ...(isRecord(tooltip) && datasetFields
             ? {
                 interactionConfig: {

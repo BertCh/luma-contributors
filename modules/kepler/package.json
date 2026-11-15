@@ -25,8 +25,9 @@
     "@luma-contributors/analysis": "0.1.0-alpha.0",
     "@luma-contributors/lenses": "0.1.0-alpha.0",
     "@mapbox/geo-viewport": "^0.4.1",
-    "@math.gl/core": "~5.0.0-beta.4",
-    "@math.gl/geospatial": "~5.0.0-beta.4",
+    "@math.gl/arrow": "5.0.0-beta.8",
+    "@math.gl/core": "5.0.0-beta.8",
+    "@math.gl/geospatial": "5.0.0-beta.8",
     "d3-scale": "^4.0.2",
     "supercluster": "^7.1.5"
   },
@@ -36,9 +37,9 @@
     "apache-arrow": "^17.0.0"
   },
   "peerDependencies": {
-    "@luma.gl/core": "~10.0.0-alpha.13",
-    "@luma.gl/graph": "~10.0.0-alpha.13",
-    "@luma.gl/shaders": "~10.0.0-alpha.13",
+    "@luma.gl/core": "~10.0.0-alpha.14",
+    "@luma.gl/graph": "~10.0.0-alpha.14",
+    "@luma.gl/shaders": "~10.0.0-alpha.14",
     "apache-arrow": ">=17.0.0"
   },
   "repository": {

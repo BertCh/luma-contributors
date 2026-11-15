@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {afterEach, expect, test, vi} from 'vitest';
+import {afterAll, afterEach, expect, test, vi} from 'vitest';
+
 import type {CommandEncoder} from '@luma.gl/core';
-import type {GeoJSONTripGPUVectors} from '@luma.gl/engine/arrow';
+import type {KeplerGeoJSONTripGPUVectors} from '../../../examples/deck/kepler-compute/src/geometry-preparation';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerComputeSession} from '../src/session/compute-session';
 import type {KeplerResidentStyle} from '../src/styles/resident-style';
@@ -133,7 +134,7 @@ function setup() {
     getTimestamps: {},
     sourceRowIds: {},
     source: {sourceStyleProperties: [], invalidStyleProperties: []}
-  } as unknown as GeoJSONTripGPUVectors;
+  } as unknown as KeplerGeoJSONTripGPUVectors;
   return {runtime, layer, mask, colors, widths, trips, set, session};
 }
 
@@ -278,4 +279,11 @@ test('deleting a Trip publication waits for earlier replaced gather fences', asy
   await pending;
   expect(state.released).toEqual(['route', 'route']);
   await context.runtime.destroy(Promise.resolve());
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/trip-runtime');
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/geojson-property-runtime');
+  vi.resetModules();
 });

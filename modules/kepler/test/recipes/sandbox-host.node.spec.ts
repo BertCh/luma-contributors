@@ -747,7 +747,7 @@ test('polygon replay accepts retained geometry roles independently of Float32 an
   try {
     const publication = addPolygonPublication(context);
     expect(publication.table.getChild('geometry')?.type.toString()).toBe('Utf8');
-    expect(publication.explorer.dataset.value.columns.geometry).toBeUndefined();
+    expect(publication.explorer.dataset.value.columns['geometry']).toBeUndefined();
     for (const operation of polygonOperations) {
       const bundle = createBundle(context);
       bundle.state.analyses[1].operation = operation;

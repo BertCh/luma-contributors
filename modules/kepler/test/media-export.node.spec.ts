@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
+import {readFile} from 'node:fs/promises';
+import type {IncomingMessage, ServerResponse} from 'node:http';
+import {fileURLToPath} from 'node:url';
+import type {Connect, ViteDevServer} from 'vite';
+import {createStandaloneViewerServePlugin} from '../../../examples/deck/kepler-compute/vite-inline-single-file-plugin';
 import {
   getTileViewState,
   planImageTiles,
@@ -82,4 +87,56 @@ test('viewer injection replaces the placeholder safely and falls back when absen
   const fallback = await buildStandaloneHtmlWithViewer(json, {fetchViewer: async () => '<html/>'});
   expect(fallback.usedViewer).toBe(false);
   expect(fallback.html).toContain('runtime not included');
+});
+
+test('development viewer requests serve the artifact verbatim and missing builds fall through', async () => {
+  const viewerPath = fileURLToPath(
+    new URL('../../../examples/deck/kepler-compute/standalone-viewer.html', import.meta.url)
+  );
+  const readViewer = async (path: string, url: string) => {
+    let middleware: Connect.NextHandleFunction | undefined;
+    const plugin = createStandaloneViewerServePlugin(path);
+    if (typeof plugin.configureServer !== 'function') throw new Error('Missing viewer middleware');
+    const configureServer: OmitThisParameter<typeof plugin.configureServer> =
+      plugin.configureServer;
+    configureServer({
+      config: {base: '/kepler/'},
+      middlewares: {
+        use: (handler: Connect.NextHandleFunction) => {
+          middleware = handler;
+        }
+      }
+    } as unknown as ViteDevServer);
+    if (!middleware) throw new Error('Viewer middleware was not registered');
+    let body: string | undefined;
+    let passedThrough = false;
+    const headers: Record<string, string> = {};
+    await middleware(
+      {url} as IncomingMessage,
+      {
+        setHeader: (name: string, value: string) => {
+          headers[name] = value;
+        },
+        end: (html: string) => {
+          body = html;
+        }
+      } as unknown as ServerResponse,
+      error => {
+        if (error) throw error;
+        passedThrough = true;
+      }
+    );
+    return {body, headers, passedThrough};
+  };
+  const served = await readViewer(viewerPath, '/kepler/standalone-viewer.html?download=1');
+  expect(served.body).toBe(await readFile(viewerPath, 'utf8'));
+  expect(served.headers['Content-Type']).toBe('text/html; charset=utf-8');
+  expect(served.passedThrough).toBe(false);
+  expect(await readViewer(viewerPath, '/kepler/other.html')).toMatchObject({passedThrough: true});
+  expect(await readViewer(`${viewerPath}.missing`, '/kepler/standalone-viewer.html')).toMatchObject(
+    {
+      body: undefined,
+      passedThrough: true
+    }
+  );
 });

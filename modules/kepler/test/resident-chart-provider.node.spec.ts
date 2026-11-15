@@ -39,6 +39,8 @@ const chart: NativeChartConfiguration = {
   title: 'Count',
   dataId: 'source',
   applyFilters: true,
+  display: {},
+  chartDisplay: {},
   axis: {field: null, aggregation: 'count'}
 };
 function fixture() {

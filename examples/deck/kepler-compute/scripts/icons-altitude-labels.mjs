@@ -7,28 +7,33 @@ import assert from 'node:assert/strict';
 import * as arrow from 'apache-arrow';
 import {chromium} from 'playwright';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
-import {pinViteModules} from './pin-vite-modules.mjs';
-import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
+import {pinViteModules, openKeplerComputePage, discardStaleImportErrors} from './pin-vite-modules.mjs';
+import {openNativeData, closeNativeDialog, openNativeExport} from './native-navigation.mjs';
+import {ICON_ALTITUDE_ROWS, CUSTOM_ICON_DEFINITIONS, makeIconAltitudeTable} from './icons-altitude-labels-fixture.mjs';
 
-const rows = [[-73.995, 40.735, 0], [-73.965, 40.735, 6000], [-73.995, 40.765, -1000], [-73.965, 40.765, null], [-73.98, 40.75, NaN]];
-const table = new arrow.Table({
-  east: arrow.vectorFromArray(rows.map(row => Math.fround(row[0])), new arrow.Float32()),
-  north: arrow.vectorFromArray(rows.map(row => Math.fround(row[1])), new arrow.Float32()),
-  height: arrow.vectorFromArray(rows.map(row => row[2] === null ? null : Math.fround(row[2])), new arrow.Float32()),
-  symbol: arrow.vectorFromArray(rows.map(() => 'diamond')),
-  name: arrow.vectorFromArray(rows.map((_, index) => `row ${index}`))
-});
-const svgIcons = [{id: 'diamond', mesh: {positions: [[0,-1,0],[1,0,0],[0,1,0],[-1,0,0]], cells: [[0,1,2],[0,2,3]]}}];
+const rows = ICON_ALTITUDE_ROWS;
+const table = makeIconAltitudeTable();
+const svgIcons = CUSTOM_ICON_DEFINITIONS;
 const browser = await chromium.launch(getPlaywrightLaunchOptions({headless: true, backend: 'webgpu-core'}));
-const page = await browser.newPage({viewport: {width: 1440, height: 1000}, acceptDownloads: true});
+let page = await browser.newPage({viewport: {width: 1440, height: 1000}, acceptDownloads: true});
 page.setDefaultTimeout(30000);
 await pinViteModules(page);
-await page.route('**/icons/svg-icons.json', route => route.fulfill({json: {svgIcons}}));
+let defaultIcons = svgIcons;
+await page.route('**/icons/svg-icons.json', route => route.fulfill({json: {svgIcons: defaultIcons}}));
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
+async function openPage(address) {
+  const errorsBeforeBoot = errors.length;
+  await openKeplerComputePage(page, address, {
+    // The second boot must preserve genuine failures from the preceding icon/bundle checks.
+    onAbandonedAttempt: ({staleImportErrors}) => {
+      discardStaleImportErrors(errors, errorsBeforeBoot, staleImportErrors);
+    }
+  });
+}
 try {
-  await page.goto(process.argv[2] || 'http://127.0.0.1:5318/?rows=256', {waitUntil: 'domcontentloaded'});
-  await page.waitForFunction(() => window.__keplerComputeTest?.getState().selectedCount === 256, undefined, {timeout: 60000});
+  const address = process.argv[2] || 'http://127.0.0.1:5318/?rows=256';
+  await openPage(address);
   await openNativeData(page);
   const workspace = page.getByRole('region', {name: 'Resident datasets', exact: true});
   await workspace.locator('input[type=file]').setInputFiles({name: 'icon-altitude.arrow', mimeType: 'application/vnd.apache.arrow.stream', buffer: Buffer.from(arrow.tableToIPC(table, 'stream'))});
@@ -51,7 +56,7 @@ try {
   layer.config.visConfig = {...layer.config.visConfig, radius: 200, fixedRadius: false, billboard: false, opacity: 1};
   configuration.config.mapState = {...configuration.config.mapState, longitude: -73.98, latitude: 40.75, zoom: 12, pitch: 50, bearing: 0};
   await page.evaluate(config => window.__keplerComputeTest.applyNativeConfig(config), configuration);
-  await page.waitForFunction(id => window.__keplerComputeTest.renderedLayers().some(value => value.id === id && value.visible && value.loaded && value.positionFormat === 'float32x3' || value.getPosition?.format === 'float32x3'), layer.id, {timeout: 45000});
+  await page.waitForFunction(id => window.__keplerComputeTest.renderedLayers().some(value => value.id === id && value.visible && value.loaded && (value.positionFormat === 'float32x3' || value.getPosition?.format === 'float32x3')), layer.id, {timeout: 45000});
   const pick = (row, altitude = rows[row][2] ?? 0) => page.evaluate(({datasetId, longitude, latitude, altitude}) => window.__keplerComputeTest.pickPublishedPosition(datasetId, longitude, latitude, altitude), {datasetId, longitude: rows[row][0], latitude: rows[row][1], altitude});
   assert.equal((await pick(1))?.sourceRowIndex, 1, 'raised icon picks at its elevated projection');
   assert.notEqual((await pick(1, 0))?.sourceRowIndex, 1, 'raised icon must not pick at ground');
@@ -59,15 +64,49 @@ try {
   assert.equal(await pick(4, 0), null, 'nonfinite altitude icon is hidden');
   const labelLayers = await page.evaluate(id => window.__keplerComputeTest.renderedLayers().filter(value => value.id === id && /Label/.test(value.layerClass ?? '')).length, layer.id);
   assert(labelLayers >= 1, 'icon text label layer must be rendered');
-  // Portable custom catalog: embed, save, drop and restore through the bundle panel.
-  const bundleText = await page.evaluate(async () => window.__keplerComputeTest.serializeBundleWithIconCatalog?.([{id: 'custom-square', mesh: {positions: [[-1,-1,0],[1,-1,0],[1,1,0],[-1,1,0]], cells: [[0,1,2],[0,2,3]]}}]));
-  if (bundleText) {
-    const document = JSON.parse(bundleText);
-    assert.equal(document.iconCatalog?.format, 'luma-kepler-icon-catalog');
-    assert.equal(document.iconCatalog.icons[0].id, 'custom-square');
+  // The old script optionally called a nonexistent serializeBundleWithIconCatalog hook,
+  // so it never exercised portability either. Use the actual bundle UI and require a
+  // custom catalog to survive save, a clean-page restore, rendering and another save.
+  async function saveBundle() {
+    await openNativeExport(page, true);
+    const pending = page.waitForEvent('download');
+    await page.getByRole('button', {name: 'Save portable bundle', exact: true}).click();
+    const chunks = [];
+    for await (const chunk of await (await pending).createReadStream()) chunks.push(chunk);
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   }
+  async function restoreBundle(document) {
+    await openNativeExport(page, true);
+    const portable = page.getByRole('region', {name: 'Portable sandbox bundle', exact: true});
+    await portable.getByLabel('Load portable bundle').setInputFiles({
+      name: 'custom-icons.bundle.json', mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(document))
+    });
+    await portable.getByRole('status').filter({hasText: 'Bundle validated'}).waitFor();
+    await portable.getByRole('button', {name: 'Restore portable workspace', exact: true}).click();
+    await page.locator('.ReactModal__Overlay').waitFor({state: 'hidden', timeout: 60000});
+    await page.waitForFunction(id => window.__keplerComputeTest.getState().publications
+      .some(source => source.id === id && source.selectedCount === 5), datasetId);
+    await page.waitForFunction(id => window.__keplerComputeTest.renderedLayers()
+      .some(value => value.id === id && value.visible && value.loaded && value.iconGeometryBufferId), layer.id);
+    assert.equal((await pick(1))?.sourceRowIndex, 1, 'restored custom catalog draws the elevated icon');
+  }
+  const document = await saveBundle();
+  const customIcons = [...svgIcons, {id: 'custom-square', mesh: {
+    positions: [[-1,-1,0],[1,-1,0],[1,1,0],[-1,1,0]], cells: [[0,1,2],[0,2,3]]
+  }}];
+  document.iconCatalog = {format: 'luma-kepler-icon-catalog', version: 1, icons: customIcons};
+  await restoreBundle(document);
+  const embedded = await saveBundle();
+  assert.deepEqual(embedded.iconCatalog, document.iconCatalog, 'save embeds installed custom catalog');
+  // Remove the CDN fixture: restored diamond meshes must now come from the embedded catalog.
+  defaultIcons = [];
+  await openPage(address);
+  await restoreBundle(embedded);
+  const resaved = await saveBundle();
+  assert.deepEqual(resaved.iconCatalog, document.iconCatalog, 'custom catalog survives a clean-page restore');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({passed: true, labelLayers, embeddedCatalogChecked: Boolean(bundleText)}));
+  console.log(JSON.stringify({passed: true, labelLayers, embeddedCatalogChecked: true}));
 } finally {
   await browser.close();
 }

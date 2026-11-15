@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
-import {expect, test, vi} from 'vitest';
+import {afterAll, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import {
   FlowColumnReader,
   aggregateFlowPairs,
@@ -138,4 +141,10 @@ test('column reader walks chunks, converts to float32 and reads nulls as NaN', (
   expect(Array.from(sanitizeFlowCounts(Float32Array.of(1, Number.NaN, Infinity)))).toEqual([
     1, 0, 0
   ]);
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@flowmap.gl/data');
+  vi.resetModules();
 });

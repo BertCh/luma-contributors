@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {withSyntheticSample} from './native-navigation.mjs';
+
 // Touch coverage for the Dual and Swipe maps on an emulated phone: one-finger pan, two-finger
 // pinch and rotate, and swipe divider drag by touch. Unlike views.mjs this is not limited to
 // headless Chromium.
@@ -84,7 +86,7 @@ async function leaveSplit() {
   await waitForMode('SINGLE_MAP');
 }
 async function reload() {
-  await page.goto(baseUrl);
+  await page.goto(withSyntheticSample(baseUrl));
   await page.locator('.maplibregl-canvas').waitFor();
   // On a phone viewport Kepler's side panel covers the whole map, so gestures would land on it.
   const closeButton = page.locator('.side-bar__close');

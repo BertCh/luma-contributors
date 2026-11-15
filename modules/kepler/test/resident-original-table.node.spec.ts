@@ -97,6 +97,69 @@ function fixture() {
   };
 }
 
+test('original Uint64 sort availability requires readRows and role-only sorting preserves selected identities', async () => {
+  const source = new arrow.Table({
+    cell: arrow.vectorFromArray(
+      [null, 0x8928308280fffffn, 0n, 0x8928308280bffffn],
+      new arrow.Uint64()
+    )
+  });
+  const readPage = vi.fn(async (request: ResidentTablePageRequest): Promise<ResidentTablePage> => {
+    expect(request.columns).toEqual([]);
+    return {
+      revision: 1,
+      datasetRevision: 1,
+      totalCount: 2,
+      sourceRowIndices: new Uint32Array(
+        [1, 3].slice(request.offset, request.offset + request.limit)
+      ),
+      columns: {},
+      validity: {}
+    };
+  });
+  const base: ResidentTableProvider = {
+    datasetId: 'cells',
+    sourceRevision: 1,
+    maximumPageSize: 2,
+    fields: [],
+    getRevision: () => '1',
+    subscribe: () => () => {},
+    readPage
+  };
+  // This is the same availability predicate used by e0ed33791; no scalar GPU permutation is needed.
+  expect(withOriginalSourceTable(base, source, () => true).originalFields![0].sortable).toBe(false);
+  const provider = withOriginalSourceTable(
+    {
+      ...base,
+      readRows: async (rows, columns) => {
+        expect(columns).toEqual([]);
+        return {
+          revision: 1,
+          datasetRevision: 1,
+          totalCount: 2,
+          sourceRowIndices: Uint32Array.from(rows),
+          columns: {},
+          validity: {}
+        };
+      }
+    },
+    source,
+    () => true
+  );
+  expect(provider.originalFields![0].sortable).toBe(true);
+  const page = await provider.readPage({
+    view: 'original',
+    population: 'selected',
+    offset: 0,
+    limit: 2,
+    columns: ['cell'],
+    sort: {column: 'cell', direction: 'ascending'}
+  });
+  expect(Array.from(page!.sourceRowIndices)).toEqual([3, 1]);
+  expect(page!.columns['cell']).toEqual([String(0x8928308280bffffn), String(0x8928308280fffffn)]);
+  expect(readPage).toHaveBeenCalled();
+});
+
 test('original source-only table reads bounded identities without a synthetic prepared column', async () => {
   const source = new arrow.Table({
     geometry: arrow.vectorFromArray(['first', null, 'third'], new arrow.Utf8())
@@ -131,7 +194,7 @@ test('original source-only table reads bounded identities without a synthetic pr
     limit: 2,
     columns: ['geometry']
   });
-  expect(page?.columns.geometry).toEqual(['first', 'third']);
+  expect(page?.columns['geometry']).toEqual(['first', 'third']);
   expect(readPage).toHaveBeenCalledWith(expect.objectContaining({columns: [], view: 'prepared'}));
   expect(provider.fields).toEqual([]);
 });
@@ -146,7 +209,7 @@ test('original source pages retain exact Float64, timestamp words, geometry and 
   });
   const getChild = context.source.getChild.bind(context.source);
   const vectors = new Map(
-    context.source.schema.fields.map(field => [field.name, getChild(field.name)!])
+    context.source.schema.fields.map(field => [field.name, getChild(field.name as never)!])
   );
   const valueReads = new Map([...vectors].map(([name, vector]) => [name, vi.spyOn(vector, 'get')]));
   for (const vector of vectors.values())
@@ -345,11 +408,11 @@ test('original and computed fields with the same name retain independent display
     columns: ['analysis', 'analysis_analysis_analysis'],
     sort: {column: 'analysis_analysis_analysis', direction: 'descending'}
   });
-  expect(page!.columns.analysis).toEqual(['222', '111']);
-  expect(Array.from(page!.columns.analysis_analysis_analysis)).toEqual([2, 1]);
-  expect(Array.from(page!.validity.analysis_analysis_analysis)).toEqual([1, 0]);
+  expect(page!.columns['analysis']).toEqual(['222', '111']);
+  expect(Array.from(page!.columns['analysis_analysis_analysis'])).toEqual([2, 1]);
+  expect(Array.from(page!.validity['analysis_analysis_analysis'])).toEqual([1, 0]);
   expect(readPage.mock.calls[0][0].columns).toEqual(['analysis']);
-  expect(readPage.mock.calls[0][0].sort.column).toBe('analysis');
+  expect(readPage.mock.calls[0]![0].sort!.column).toBe('analysis');
 });
 
 test('wide original tables reject excessive cell counts before any GPU read', async () => {

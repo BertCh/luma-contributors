@@ -484,6 +484,7 @@ export class FlowFieldGpuGrid {
   private readonly sums: Buffer;
   private readonly counts: Buffer;
   private readonly fieldA: Buffer;
+  private analysisField?: Buffer;
   private readonly fieldB: Buffer;
   private readonly maximumSpeed: Buffer;
   private readonly texelBuffer: Buffer;
@@ -543,8 +544,8 @@ export class FlowFieldGpuGrid {
     );
     this.sums = this.makeBuffer('sums', Buffer.STORAGE, cellCount * 8);
     this.counts = this.makeBuffer('counts', Buffer.STORAGE, cellCount * 4);
-    this.fieldA = this.makeBuffer('field-a', Buffer.STORAGE, cellCount * 16);
-    this.fieldB = this.makeBuffer('field-b', Buffer.STORAGE, cellCount * 16);
+    this.fieldA = this.makeBuffer('field-a', Buffer.STORAGE | Buffer.COPY_SRC, cellCount * 16);
+    this.fieldB = this.makeBuffer('field-b', Buffer.STORAGE | Buffer.COPY_SRC, cellCount * 16);
     this.maximumSpeed = this.makeBuffer('maximum-speed', Buffer.STORAGE, 16);
     this.texelBuffer = this.makeBuffer(
       'texels',
@@ -752,6 +753,7 @@ export class FlowFieldGpuGrid {
       [current, spare] = [spare, current];
       [currentAltitude, spareAltitude] = [spareAltitude, currentAltitude];
     }
+    this.analysisField = current;
     dispatch('speed', cellCount, common, {field: current, maximumSpeed: this.maximumSpeed});
     dispatch('write', this.paddedColumns * options.rows, common, {
       field: current,
@@ -863,6 +865,19 @@ export class FlowFieldGpuGrid {
         if (padded[offset + 2] > 0.5) altitude[row * options.columns + column] = padded[offset];
       }
     return altitude;
+  }
+
+  /** Explicit bounded analysis readback of the physical field before visual speed scaling. */
+  async readVelocitiesForAnalysis(): Promise<Float32Array> {
+    if (!this.analysisField || this.destroyed)
+      throw new Error('Wait for the physical velocity field to finish building');
+    const bytes = await this.analysisField.readAsync(
+      0,
+      this.options.columns * this.options.rows * 16
+    );
+    return new Float32Array(
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    );
   }
 
   /** Test-only readback of the final texels (counted separately; never used by rendering). */

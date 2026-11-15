@@ -15,7 +15,7 @@ import type {AnalysisRuntime} from './analysis-runtime';
 import type {KrigingVariogramSuggestion} from './kriging-diagnostics';
 import {ResidentConsumerNotice} from './resident-consumer-notice';
 
-const MODELS = ['spherical', 'exponential', 'gaussian'] as const;
+const MODELS = ['spherical', 'exponential', 'gaussian', 'matern-3/2', 'matern-5/2'] as const;
 const NUMERIC_FIELDS = [
   {name: 'west', label: 'Kriging west longitude', minimum: -180, maximum: 180, step: 'any'},
   {name: 'south', label: 'Kriging south latitude', minimum: -90, maximum: 90, step: 'any'},
@@ -85,8 +85,12 @@ export function KrigingPanel({analysis}: {analysis: AnalysisRuntime}) {
   const [error, setError] = useState('');
   const [fit, setFit] = useState<KrigingVariogramSuggestion | null>(null);
   const [fitting, setFitting] = useState(false);
+  const [fitMethod, setFitMethod] = useState<
+    'weighted-least-squares' | 'vecchia-likelihood' | 'vecchia-fisher'
+  >('weighted-least-squares');
   useEffect(() => {
     setDraft(makeDraft(settings));
+    setFitMethod(settings?.variogramFit?.method ?? 'weighted-least-squares');
     setError('');
     setFit(null);
   }, [
@@ -105,7 +109,8 @@ export function KrigingPanel({analysis}: {analysis: AnalysisRuntime}) {
     settings?.variogram.model,
     settings?.variogram.nugget,
     settings?.variogram.sill,
-    settings?.variogram.rangeMeters
+    settings?.variogram.rangeMeters,
+    settings?.variogramFit?.method
   ]);
   const buildSettings = (): KeplerKrigingSettings => {
     if (
@@ -197,6 +202,8 @@ export function KrigingPanel({analysis}: {analysis: AnalysisRuntime}) {
           <option value="spherical">Spherical</option>
           <option value="exponential">Exponential</option>
           <option value="gaussian">Gaussian</option>
+          <option value="matern-3/2">Matérn 3/2</option>
+          <option value="matern-5/2">Matérn 5/2</option>
         </select>
         {NUMERIC_FIELDS.map(field => (
           <label key={field.name} htmlFor={`kriging-${field.name}`}>
@@ -224,6 +231,21 @@ export function KrigingPanel({analysis}: {analysis: AnalysisRuntime}) {
             onChange={event => setDraft({...draft, maximumLagMeters: event.target.value})}
           />
         </label>
+        <label htmlFor="kriging-fit-method">Variogram fitting method</label>
+        <select
+          id="kriging-fit-method"
+          value={fitMethod}
+          onChange={event => {
+            setFitMethod(event.target.value as typeof fitMethod);
+            setFit(null);
+          }}
+        >
+          <option value="weighted-least-squares">Cressie weighted least squares</option>
+          <option value="vecchia-likelihood">
+            GPU Vecchia log-likelihood (up to 2,048 samples)
+          </option>
+          <option value="vecchia-fisher">GPU Vecchia Fisher scoring (up to 2,048 samples)</option>
+        </select>
         <button
           type="button"
           disabled={fitting || analysis.rowCount < 2}
@@ -232,10 +254,10 @@ export function KrigingPanel({analysis}: {analysis: AnalysisRuntime}) {
             try {
               const base = buildSettings();
               const lag = Number(draft.maximumLagMeters);
-              const suggestion = await analysis.suggestKrigingVariogram(
-                base,
-                draft.maximumLagMeters.trim() && lag > 0 ? {maximumLagMeters: lag} : {}
-              );
+              const suggestion = await analysis.suggestKrigingVariogram(base, {
+                fitMethod,
+                ...(draft.maximumLagMeters.trim() && lag > 0 ? {maximumLagMeters: lag} : {})
+              });
               setFit(suggestion);
               setDraft(current => ({
                 ...current,
@@ -255,16 +277,42 @@ export function KrigingPanel({analysis}: {analysis: AnalysisRuntime}) {
           Fit variogram automatically
         </button>
         {fit && (
-          <p className="hint" role="status">
-            Fitted {fit.fit.model}: nugget {fit.fit.nugget.toPrecision(4)}, partial sill{' '}
-            {fit.fit.sill.toPrecision(4)}, range {fit.fit.rangeMeters.toFixed(0)} m from{' '}
-            {fit.accumulatedPairCount.toLocaleString()} pairs in {fit.fit.binCount} lags
-            {fit.exhaustive ? '' : ' (deterministically thinned)'}. Compared families:{' '}
-            {fit.fit.candidates
-              .map(candidate => `${candidate.model} ${candidate.criterion.toPrecision(3)}`)
-              .join(', ')}
-            . Apply to use it.
-          </p>
+          <>
+            <p className="hint" role="status">
+              Fitted {fit.fit.model}: nugget {fit.fit.nugget.toPrecision(4)}, partial sill{' '}
+              {fit.fit.sill.toPrecision(4)}, range {fit.fit.rangeMeters.toFixed(0)} m from{' '}
+              {fit.fit.pairCount.toLocaleString()}{' '}
+              {fit.fit.method === 'weighted-least-squares'
+                ? `pairs in ${fit.fit.binCount} lags`
+                : 'conditioning links'}
+              {fit.fit.method === 'weighted-least-squares' && !fit.exhaustive
+                ? ' (deterministically thinned)'
+                : ''}
+              . Compared families:{' '}
+              {fit.fit.candidates
+                .map(candidate => `${candidate.model} ${candidate.criterion.toPrecision(3)}`)
+                .join(', ')}
+              . Apply to use it.
+            </p>
+            {fit.fit.diagnostics && (
+              <table aria-label="Variogram fit diagnostics">
+                <thead>
+                  <tr>
+                    <th>Diagnostic</th>
+                    <th>Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(fit.fit.diagnostics).map(([name, value]) => (
+                    <tr key={name}>
+                      <td>{name}</td>
+                      <td>{Number.isFinite(value) ? value.toPrecision(6) : 'Unavailable'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
         )}
         <label htmlFor="kriging-confidenceLevel">
           Prediction interval level (blank: none, for example 0.95)
@@ -289,13 +337,17 @@ export function KrigingPanel({analysis}: {analysis: AnalysisRuntime}) {
         </label>
         <p className="hint">
           Variogram parameters are explicit and replayable: type them or fit them from the data
-          (Cressie-weighted least squares over spherical, exponential and Gaussian families, on a
-          deterministic pair sample). Nugget and partial sill must be nonnegative with a positive
-          sum; range and search radius must be positive. Intervals are the kriging prediction plus
-          or minus a normal multiplier times the model standard deviation; they are conditional on
-          the variogram, assume Gaussian errors and ignore fitting uncertainty. Cross-validation
-          kriges each retained sample from its nearest other samples; a root mean square
-          standardized error near 1 and coverage near the level suggest an adequate model.
+          (Cressie-weighted least squares over spherical, exponential, Gaussian and Matérn families,
+          on a deterministic pair sample, or a GPU Vecchia likelihood fit). Vecchia uses exponential
+          or Matérn 3/2 covariance, a fitted constant mean, eight earlier neighbors in source order
+          and a local meter frame. It reports convergence and does not fit a temporal covariance
+          here; use the Space-time Vecchia catalog operation with an explicit time property for
+          that. Nugget and partial sill must be nonnegative with a positive sum; range and search
+          radius must be positive. Intervals are the kriging prediction plus or minus a normal
+          multiplier times the model standard deviation; they are conditional on the variogram,
+          assume Gaussian errors and ignore fitting uncertainty. Cross-validation kriges each
+          retained sample from its nearest other samples; a root mean square standardized error near
+          1 and coverage near the level suggest an adequate model.
         </p>
         <p className="hint">
           Repeated positions are averaged within the retained neighborhood, but still occupy

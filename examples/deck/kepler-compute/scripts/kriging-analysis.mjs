@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+// Usage: node scripts/kriging-analysis.mjs [URL] (default: http://127.0.0.1:5318/?rows=256).
 import assert from 'node:assert/strict';
 import * as arrow from 'apache-arrow';
 import {chromium} from 'playwright';
 import {PNG} from 'pngjs';
-import tiffDecoder from 'three/examples/jsm/libs/utif.module.js';
+// The old fork obtained UTIF accidentally through three's hoisted dependencies.
+// Declare the standalone decoder so this check also runs in the published-package workspace.
+import tiffDecoder from 'utif';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
 import {pinViteModules} from './pin-vite-modules.mjs';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
@@ -33,6 +36,23 @@ const operation = {
   neighborCount: 3, minimumNeighbors: 2,
   variogram: {model: 'spherical', nugget: 0, sill: 1, rangeMeters: 100000}
 };
+// Independent binary64 ordinary-kriging reference at the fourth cell, using the three
+// non-null samples above: solve [Gamma, 1; 1^T, 0] [weights, multiplier] = [gamma, 1],
+// then variance = weights dot gamma + multiplier. Distances are haversine meters on
+// R=6371008.8; nugget=0, sill=1, range=100000, with Matérn effective-range factors
+// 4.749031386012701 (3/2) and 5.924462618951797 (5/2). These are rounded to six decimals.
+const REFERENCE_INTERPOLATED_VARIANCES = {
+  spherical: 0.458716,
+  'matern-3/2': 0.370828,
+  'matern-5/2': 0.252149
+};
+// Allow float32 GPU distance/solve rounding and the inspector's six significant digits;
+// this is much smaller than the minimum inter-family variance difference (over 0.08).
+const MODEL_VARIANCE_TOLERANCE = 0.00001;
+function assertModelVariance(model, variance) {
+  assert(Math.abs(variance - REFERENCE_INTERPOLATED_VARIANCES[model]) < MODEL_VARIANCE_TOLERANCE,
+    `${model} variance ${variance} differs from independent reference ${REFERENCE_INTERPOLATED_VARIANCES[model]}`);
+}
 const browser = await chromium.launch(getPlaywrightLaunchOptions({headless: true, backend: 'webgpu-core'}));
 const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
 const failures = [];
@@ -184,6 +204,7 @@ try {
   stage('download and independently decode prediction and variance GeoTIFF bands');
   const prediction = await downloadBand(panel, 'prediction', savedRecipe);
   const variance = await downloadBand(panel, 'variance', savedRecipe);
+  assertModelVariance('spherical', variance[3]);
   assert.notDeepEqual(prediction, variance);
   stage('compare real bitmap pixels with the overlay disabled at a fixed camera');
   const cameraDispatch = await page.evaluate(() => {
@@ -225,11 +246,94 @@ try {
   const final = await page.evaluate(() => window.__keplerComputeTest.getState().publications[0]);
   for (const field of ['sourceRevision', 'sourceUploadBytes', 'sourceBufferIds', 'sourceBatches'])
     assert.deepEqual(final[field], initial[field], `Analysis changed ${field}`);
+  stage('select and run both Matérn variogram families');
+  const modelVariances = [variance[3]];
+  for (const model of ['matern-3/2', 'matern-5/2']) {
+    // Retire the previous surface first so readiness and cell reads cannot pass on stale outputs.
+    await panel.getByLabel('Operation', {exact: true}).selectOption('z-score');
+    await page.waitForFunction(id => !window.__keplerComputeTest.renderedLayers().some(layer =>
+      layer.id === `resident-kriging-points-${id}`), datasetId);
+    await panel.getByLabel('Kriging variogram model', {exact: true}).selectOption(model);
+    assert.equal(await panel.getByLabel('Kriging variogram model', {exact: true}).inputValue(), model);
+    await panel.getByRole('button', {name: 'Apply model and run kriging', exact: true}).click();
+    await waitForGrid(datasetId);
+    // Keep the constant-field invariants, and independently verify that the selected model ran.
+    const modelRows = await readGridRows(panel);
+    const modelVariance = modelRows[3][4];
+    assertModelVariance(model, modelVariance);
+    for (const previousVariance of modelVariances) {
+      assert(Math.abs(modelVariance - previousVariance) > 2 * MODEL_VARIANCE_TOLERANCE,
+        `${model} must change the interpolated variance (${modelVariance} vs ${previousVariance})`);
+    }
+    modelVariances.push(modelVariance);
+    await panel.getByRole('button', {name: 'Save recipe', exact: true}).click();
+    const modelRecipe = JSON.parse(await panel.getByLabel('Saved analysis recipe', {exact: true}).inputValue());
+    assert.equal(modelRecipe.operation.variogram.model, model);
+  }
   stage('remove the source and its prediction overlay');
   await openNativeData(page);
   await workspace.getByRole('button', {name: 'Remove kriging-analysis.arrow', exact: true}).click();
   await page.waitForFunction(id => window.__keplerComputeTest.getState().publications.length === 0 &&
     !window.__keplerComputeTest.renderedLayers().some(layer => layer.id === `resident-kriging-points-${id}`), datasetId);
+  await closeNativeDialog(page);
+  stage('publish varying-response samples for Vecchia covariance fitting');
+  const fitSource = arrow.tableFromArrays({
+    longitude: Float32Array.from({length: 16}, (_, index) => -74 + (index % 4) * 0.002),
+    latitude: Float32Array.from({length: 16}, (_, index) => 40 + Math.floor(index / 4) * 0.002),
+    response: Float32Array.from({length: 16}, (_, index) => Math.sin(index * 1.4))
+  });
+  await openNativeData(page);
+  await workspace.locator('input[type=file]').setInputFiles({
+    name: 'kriging-vecchia-fit.arrow', mimeType: 'application/vnd.apache.arrow.stream',
+    buffer: Buffer.from(arrow.tableToIPC(fitSource, 'stream'))
+  });
+  await workspace.getByLabel('Source longitude column', {exact: true}).selectOption('longitude');
+  await workspace.getByLabel('Source latitude column', {exact: true}).selectOption('latitude');
+  await workspace.getByRole('button', {name: 'Check schema and precision', exact: true}).click();
+  await workspace.getByRole('button', {name: 'Publish selected fields', exact: true}).click();
+  await page.waitForFunction(() => window.__keplerComputeTest.getState().publications[0]?.selectedCount === 16, undefined, {timeout: 30000});
+  const fitDatasetId = await page.evaluate(() => window.__keplerComputeTest.getState().publications[0].id);
+  await closeNativeDialog(page);
+  await panel.getByLabel('Dataset', {exact: true}).selectOption(fitDatasetId);
+  await panel.getByLabel('Numeric field', {exact: true}).selectOption('response');
+  if (!(await panel.locator('.analysis-kriging-settings').evaluate(element => element.open)))
+    await panel.getByText('Configure ordinary kriging grid', {exact: true}).click();
+  await panel.getByLabel('Kriging longitude field', {exact: true}).selectOption('longitude');
+  await panel.getByLabel('Kriging latitude field', {exact: true}).selectOption('latitude');
+  for (const [label, value] of [
+    ['Kriging west longitude', -74], ['Kriging south latitude', 40],
+    ['Kriging east longitude', -73.992], ['Kriging north latitude', 40.008],
+    ['Kriging columns', 2], ['Kriging rows', 2], ['Kriging search radius in meters', 100000],
+    ['Kriging nearest samples', 8], ['Kriging minimum distinct positions', 3]
+  ]) await panel.getByLabel(label, {exact: true}).fill(String(value));
+  stage('fit a covariance through each GPU Vecchia method and preserve fit provenance');
+  const models = await panel.getByLabel('Kriging variogram model', {exact: true}).locator('option').evaluateAll(options => options.map(option => option.value));
+  assert(models.includes('matern-3/2') && models.includes('matern-5/2'));
+  for (const method of ['vecchia-likelihood', 'vecchia-fisher']) {
+    await panel.getByLabel('Variogram fitting method', {exact: true}).selectOption(method);
+    await panel.getByLabel('Kriging variogram model', {exact: true}).selectOption('exponential');
+    await panel.getByLabel('Kriging nugget in squared response units', {exact: true}).fill('0.05');
+    await panel.getByLabel('Kriging partial sill in squared response units', {exact: true}).fill('1');
+    await panel.getByLabel('Kriging effective range in meters', {exact: true}).fill('300');
+    await panel.getByRole('button', {name: 'Fit variogram automatically', exact: true}).click();
+    const diagnosticsTable = panel.getByRole('table', {name: 'Variogram fit diagnostics', exact: true});
+    await diagnosticsTable.waitFor({timeout: 60000});
+    assert.match(await diagnosticsTable.innerText(), /log_likelihood/);
+    assert.match(await diagnosticsTable.innerText(), /converged/);
+    await panel.getByRole('button', {name: 'Apply model and run kriging', exact: true}).click();
+    await waitForGrid(fitDatasetId);
+    await panel.getByRole('button', {name: 'Save recipe', exact: true}).click();
+    const fittedRecipe = JSON.parse(await panel.getByLabel('Saved analysis recipe', {exact: true}).inputValue());
+    assert.equal(fittedRecipe.source.datasetId, fitDatasetId);
+    assert.equal(fittedRecipe.operation.variogramFit.method, method);
+    assert.equal(fittedRecipe.operation.variogramFit.weighting, 'conditional-likelihood');
+    assert(Number.isFinite(fittedRecipe.operation.variogramFit.criterion));
+  }
+  stage('remove the covariance-fitting source and its prediction overlay');
+  await openNativeData(page);
+  await workspace.getByRole('button', {name: 'Remove kriging-vecchia-fit.arrow', exact: true}).click();
+  await page.waitForFunction(id => window.__keplerComputeTest.getState().publications.length === 0 &&
+    !window.__keplerComputeTest.renderedLayers().some(layer => layer.id === `resident-kriging-points-${id}`), fitDatasetId);
   await closeNativeDialog(page);
   assert.deepEqual(failures, []);
   console.log(JSON.stringify({passed: true, changedPixels, checks: [
@@ -238,7 +342,9 @@ try {
     'grid inspector distinguishes prediction/variance without fabricated IDW sample counts',
     'native separate prediction/variance downloads decoded with full recipe and band provenance',
     'actual enabled/disabled geographic bitmap pixels at a fixed camera',
-    'saved recipe restore, unchanged source uploads/chunks and dataset/overlay removal'
+    'saved recipe restore, unchanged source uploads/chunks and dataset/overlay removal',
+    'both Matérn families selectable with independent model-specific variances, distinct outputs and saved model identity',
+    'separate varying-response fixture, both GPU Vecchia fit methods, provenance and cleanup'
   ]}));
 } catch (failure) {
   console.error(JSON.stringify({stage: currentStage, failures, diagnostics,

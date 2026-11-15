@@ -21,10 +21,7 @@
  * Replacements are cached per Kepler effect object so Deck's effect manager keeps one instance.
  */
 
-import {
-  WGSLShadowLightingEffect,
-  type WGSLShadowLightingEffectOptions
-} from '@deck.gl-community/gpu-layers';
+import {WGSLShadowLightingEffect, type WGSLShadowLightingEffectOptions} from '../gpu-layers/index';
 import type {Effect, EffectContext, PostRenderOptions} from '@deck.gl/core';
 import type {Device, Framebuffer, Texture} from '@luma.gl/core';
 import {BackgroundTextureModel, ShaderPassRenderer} from '@luma.gl/engine';

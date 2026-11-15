@@ -21,7 +21,7 @@ node examples/deck/kepler-compute/scripts/acceptance.mjs \
   --label <machine> [--tier <id>] [--headed]
 ```
 
-Datasets load through `?rows=N`. The cap is raised to 10,000,000 rows; the default stays 100,000. `?memoryBudgetMebibytes=N` (DEV, any query on `--url` is preserved) raises the registry's accounted dataset budget from its 512 MiB default; 1M rows as the base fixture needs it, and 10M rows needed about 8.5 GiB of registry total (including reservations and transient selection capacity) so use `memoryBudgetMebibytes=32768` for 1M, 5M and 10M. The explorer working-memory reservation is 160 bytes per row plus 8 MiB. `--verbose` logs page console output and page errors. The harness writes the JSON report and a markdown report with the same basename.
+Datasets load through `?rows=N`, which explicitly selects the synthetic fixture even though the app now opens a public Kepler sample by default. The cap is raised to 10,000,000 rows; `?sample=synthetic` without `rows` uses 100,000. `?memoryBudgetMebibytes=N` (DEV, any query on `--url` is preserved) raises the registry's accounted dataset budget from its 512 MiB default; 1M rows as the base fixture needs it, and 10M rows needed about 8.5 GiB of registry total (including reservations and transient selection capacity) so use `memoryBudgetMebibytes=32768` for 1M, 5M and 10M. The explorer working-memory reservation is 192 bytes per row plus 8 MiB. `--verbose` logs page console output and page errors. The harness writes the JSON report and a markdown report with the same basename.
 
 | Exit code | Meaning |
 | ---: | --- |

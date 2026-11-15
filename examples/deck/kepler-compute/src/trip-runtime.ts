@@ -7,10 +7,10 @@ import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector, type VertexList} from '@luma.gl/graph/gpu-data';
 import {GPUCommandGraph, GPUGather, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
-  isTabularTrips,
-  type GeoJSONTripGPUVectors,
-  type PreparedGeoJSONTrips
-} from '@luma.gl/engine/arrow';
+  isKeplerTabularTrips,
+  type KeplerGeoJSONTripGPUVectors,
+  type PreparedKeplerGeoJSONTrips
+} from './geometry-preparation';
 import {TripMembershipFilter} from './trip-membership';
 import {estimateTripOutputBytes, resolveTripWorkingBudget} from './trip-working-budget';
 import type {TripGrouping} from './trip-source-options';
@@ -53,7 +53,7 @@ export type ResidentTripBinding = {
 export type TripRuntimeProps = {
   device: Device;
   column: string;
-  trips: GeoJSONTripGPUVectors;
+  trips: KeplerGeoJSONTripGPUVectors;
   grouping?: TripGrouping;
   selectionMask: GPUVector<'uint32'>;
   colors?: GPUVector<'unorm8x4'>;
@@ -78,7 +78,7 @@ export type TripRuntimeProps = {
 /** Borrowed source vectors feed stable per-trip outputs; interaction only records GPU gathers. */
 export class TripRuntime {
   readonly binding: ResidentTripBinding;
-  readonly trips: GeoJSONTripGPUVectors;
+  readonly trips: KeplerGeoJSONTripGPUVectors;
   readonly reason?: string;
   private readonly graph: GPUCommandGraph;
   private readonly buffers: Buffer[] = [];
@@ -199,7 +199,7 @@ export class TripRuntime {
         maximumTimeErrorMilliseconds: source.maximumTimeErrorMilliseconds,
         animationDomainMilliseconds: source.animationDomainMilliseconds,
         resolveSourceRow: primitiveIndex => props.trips.resolveSourceRow(primitiveIndex),
-        resolveHoverSourceRow: isTabularTrips(source)
+        resolveHoverSourceRow: isKeplerTabularTrips(source)
           ? (primitiveIndex, currentTimeMilliseconds) =>
               resolveTabularHoverRow(source, primitiveIndex, currentTimeMilliseconds)
           : undefined
@@ -268,7 +268,7 @@ export class TripRuntime {
    */
   private filterMembers(
     source: GPUVector<'uint32'>,
-    membership: NonNullable<GeoJSONTripGPUVectors['membership']>
+    membership: NonNullable<KeplerGeoJSONTripGPUVectors['membership']>
   ) {
     const {getPath, getTimestamps} = this.trips;
     const memberMask = this.allocate('member-mask', membership.memberRows, 'uint32');
@@ -447,13 +447,13 @@ export class TripRuntime {
 
 /** Mirrors native `_findDatumForFeatureByTime` datum selection over unfiltered trip vertices. */
 function resolveTabularHoverRow(
-  source: PreparedGeoJSONTrips,
+  source: PreparedKeplerGeoJSONTrips,
   primitiveIndex: number,
   currentTime: number
 ): number {
   if (!Number.isSafeInteger(primitiveIndex) || primitiveIndex < 0 || !Number.isFinite(currentTime))
     return -1;
-  if (!isTabularTrips(source)) return -1;
+  if (!isKeplerTabularTrips(source)) return -1;
   for (const batch of source.batches) {
     if (primitiveIndex >= batch.sourceRows.length) {
       primitiveIndex -= batch.sourceRows.length;

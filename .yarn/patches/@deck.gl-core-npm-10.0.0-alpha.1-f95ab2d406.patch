@@ -1,0 +1,588 @@
+diff --git a/dist/dist.dev.js b/dist/dist.dev.js
+--- a/dist/dist.dev.js
++++ b/dist/dist.dev.js
+@@ -79797,6 +79797,8 @@
+           renderBuffers.push(
+             this.device.createFramebuffer({
+               id: `deck-renderbuffer-${i}`,
++              // The scene input needs depth; the swap target only receives fullscreen effects.
++              depthStencilAttachment: i === 0 ? 'depth24plus' : undefined,
+               colorAttachments: [texture]
+             })
+           );
+@@ -80154,8 +80156,13 @@
+       const pixelRatio = canvasContext.cssToDeviceRatio();
+       const pickableLayers = this._getPickable(layers);
+       if (!pickableLayers || viewports.length === 0) {
++        // Canvas leave has no viewport, but must still clear the previous hover.
++        const infos = processPickInfo({
++          pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++          lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++        });
+         return {
+-          result: [],
++          result: Array.from(infos.values()).filter(info => info.layer),
+           emptyInfo: getEmptyPickingInfo({ viewports, x, y, pixelRatio })
+         };
+       }
+@@ -80210,6 +80217,10 @@
+             pickedObjectIndex: -1
+           };
+         }
++        // Readback can outlive a guide layer and its GPU resources.
++        if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++          pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++        }
+         let z;
+         const depthLayers = this._getDepthLayers(pickInfo, pickableLayers, unproject3D);
+         if (depthLayers.length > 0) {
+@@ -80236,6 +80247,10 @@
+             z = pickedColors2[0];
+           }
+         }
++        // Readback can outlive a guide layer and its GPU resources.
++        if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++          pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++        }
+         if (pickInfo.pickedLayer && i + 1 < depth) {
+           affectedLayers.add(pickInfo.pickedLayer);
+           pickInfo.pickedLayer.disablePickingIndex(pickInfo.pickedObjectIndex);
+@@ -80261,7 +80276,8 @@
+         }
+       }
+       for (const layer of affectedLayers) {
+-        layer.restorePickingColors();
++        const currentLayer = layer.getCurrentLayer();
++        if (currentLayer) currentLayer.restorePickingColors();
+       }
+       return { result, emptyInfo: infos.get(null) };
+     }
+@@ -80287,8 +80303,13 @@
+       const pixelRatio = canvasContext.cssToDeviceRatio();
+       const pickableLayers = this._getPickable(layers);
+       if (!pickableLayers || viewports.length === 0) {
++        // Canvas leave has no viewport, but must still clear the previous hover.
++        const infos = processPickInfo({
++          pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++          lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++        });
+         return {
+-          result: [],
++          result: Array.from(infos.values()).filter(info => info.layer),
+           emptyInfo: getEmptyPickingInfo({ viewports, x, y, pixelRatio })
+         };
+       }
+@@ -80455,6 +80476,7 @@
+           break;
+         }
+         const pickInfo = pickInfos[i];
++        if (!pickInfo.pickedLayer?.getCurrentLayer()) continue;
+         let info = {
+           color: pickInfo.pickedColor,
+           layer: null,
+@@ -80571,6 +80593,9 @@
+       pass,
+       canvasContext
+     }, pickZ = false) {
++      // Async multi-pick retains this list across readbacks. Resolve matched layers
++      // again and omit finalized guides before writing any model uniforms.
++      layers = layers.map(layer => layer.getCurrentLayer()).filter(Boolean);
+       const pickingFBO = pickZ ? this.depthFBO : this.pickingFBO;
+       const opts = {
+         layers,
+@@ -81942,7 +81967,7 @@
+       if (!this.widgetManager) {
+         return;
+       }
+-      this.cursorState.isHovering = result.length > 0;
++      this.cursorState.isHovering = result.some(info => info.picked);
+       let pickedInfo = emptyInfo;
+       let handled = false;
+       for (const info of result) {
+diff --git a/dist/index.cjs b/dist/index.cjs
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -8029,6 +8029,8 @@
+         });
+         renderBuffers.push(this.device.createFramebuffer({
+           id: `deck-renderbuffer-${i}`,
++          // The scene input needs depth; the swap target only receives fullscreen effects.
++          depthStencilAttachment: i === 0 ? 'depth24plus' : undefined,
+           colorAttachments: [texture]
+         }));
+       });
+@@ -8352,8 +8354,13 @@
+     const pixelRatio = canvasContext.cssToDeviceRatio();
+     const pickableLayers = this._getPickable(layers);
+     if (!pickableLayers || viewports.length === 0) {
++      // Canvas leave has no viewport, but must still clear the previous hover.
++      const infos = processPickInfo({
++        pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++        lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++      });
+       return {
+-        result: [],
++        result: Array.from(infos.values()).filter(info => info.layer),
+         emptyInfo: getEmptyPickingInfo({ viewports, x, y, pixelRatio })
+       };
+     }
+@@ -8408,6 +8415,10 @@
+           pickedObjectIndex: -1
+         };
+       }
++      // Readback can outlive a guide layer and its GPU resources.
++      if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++        pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++      }
+       let z;
+       const depthLayers = this._getDepthLayers(pickInfo, pickableLayers, unproject3D);
+       if (depthLayers.length > 0) {
+@@ -8431,6 +8442,10 @@
+           z = pickedColors2[0];
+         }
+       }
++      // Readback can outlive a guide layer and its GPU resources.
++      if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++        pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++      }
+       if (pickInfo.pickedLayer && i + 1 < depth) {
+         affectedLayers.add(pickInfo.pickedLayer);
+         pickInfo.pickedLayer.disablePickingIndex(pickInfo.pickedObjectIndex);
+@@ -8456,7 +8471,8 @@
+       }
+     }
+     for (const layer of affectedLayers) {
+-      layer.restorePickingColors();
++      const currentLayer = layer.getCurrentLayer();
++      if (currentLayer) currentLayer.restorePickingColors();
+     }
+     return { result, emptyInfo: infos.get(null) };
+   }
+@@ -8469,8 +8485,13 @@
+     const pixelRatio = canvasContext.cssToDeviceRatio();
+     const pickableLayers = this._getPickable(layers);
+     if (!pickableLayers || viewports.length === 0) {
++      // Canvas leave has no viewport, but must still clear the previous hover.
++      const infos = processPickInfo({
++        pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++        lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++      });
+       return {
+-        result: [],
++        result: Array.from(infos.values()).filter(info => info.layer),
+         emptyInfo: getEmptyPickingInfo({ viewports, x, y, pixelRatio })
+       };
+     }
+@@ -8621,6 +8642,7 @@
+         break;
+       }
+       const pickInfo = pickInfos[i];
++      if (!pickInfo.pickedLayer?.getCurrentLayer()) continue;
+       let info = {
+         color: pickInfo.pickedColor,
+         layer: null,
+@@ -8715,6 +8737,9 @@
+   // Note: Implementation of the overloaded signatures above, TSDoc is on the signatures
+   async _drawAndSampleAsync({ layers, views, viewports, onViewportActive, deviceRect, cullRect, effects, pass, canvasContext }, pickZ = false) {
+     var _a;
++    // Async multi-pick retains this list across readbacks. Resolve matched layers
++    // again and omit finalized guides before writing any model uniforms.
++    layers = layers.map(layer => layer.getCurrentLayer()).filter(Boolean);
+     const pickingFBO = pickZ ? this.depthFBO : this.pickingFBO;
+     const opts = {
+       layers,
+@@ -10046,7 +10071,7 @@
+     if (!this.widgetManager) {
+       return;
+     }
+-    this.cursorState.isHovering = result.length > 0;
++    this.cursorState.isHovering = result.some(info => info.picked);
+     let pickedInfo = emptyInfo;
+     let handled = false;
+     for (const info of result) {
+diff --git a/dist/lib/deck-picker.js b/dist/lib/deck-picker.js
+--- a/dist/lib/deck-picker.js
++++ b/dist/lib/deck-picker.js
+@@ -133,8 +133,13 @@
+         const pixelRatio = canvasContext.cssToDeviceRatio();
+         const pickableLayers = this._getPickable(layers);
+         if (!pickableLayers || viewports.length === 0) {
++            // Canvas leave has no viewport, but must still clear the previous hover.
++            const infos = processPickInfo({
++              pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++              lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++            });
+             return {
+-                result: [],
++              result: Array.from(infos.values()).filter(info => info.layer),
+                 emptyInfo: getEmptyPickingInfo({ viewports, x, y, pixelRatio })
+             };
+         }
+@@ -193,6 +198,10 @@
+                     pickedObjectIndex: -1
+                 };
+             }
++            // Readback can outlive a guide layer and its GPU resources.
++            if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++              pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++            }
+             let z;
+             const depthLayers = this._getDepthLayers(pickInfo, pickableLayers, unproject3D);
+             if (depthLayers.length > 0) {
+@@ -221,6 +230,10 @@
+             // Only exclude if we need to run picking again.
+             // We need to run picking again if an object is detected AND
+             // we have not exhausted the requested depth.
++            // Readback can outlive a guide layer and its GPU resources.
++            if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++              pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++            }
+             if (pickInfo.pickedLayer && i + 1 < depth) {
+                 affectedLayers.add(pickInfo.pickedLayer);
+                 pickInfo.pickedLayer.disablePickingIndex(pickInfo.pickedObjectIndex);
+@@ -249,7 +262,8 @@
+         }
+         // reset only affected buffers
+         for (const layer of affectedLayers) {
+-            layer.restorePickingColors();
++            const currentLayer = layer.getCurrentLayer();
++            if (currentLayer) currentLayer.restorePickingColors();
+         }
+         return { result, emptyInfo: infos.get(null) };
+     }
+@@ -263,8 +277,13 @@
+         const pixelRatio = canvasContext.cssToDeviceRatio();
+         const pickableLayers = this._getPickable(layers);
+         if (!pickableLayers || viewports.length === 0) {
++            // Canvas leave has no viewport, but must still clear the previous hover.
++            const infos = processPickInfo({
++              pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++              lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++            });
+             return {
+-                result: [],
++              result: Array.from(infos.values()).filter(info => info.layer),
+                 emptyInfo: getEmptyPickingInfo({ viewports, x, y, pixelRatio })
+             };
+         }
+@@ -435,6 +454,7 @@
+                 break;
+             }
+             const pickInfo = pickInfos[i];
++            if (!pickInfo.pickedLayer?.getCurrentLayer()) continue;
+             let info = {
+                 color: pickInfo.pickedColor,
+                 layer: null,
+@@ -542,6 +562,9 @@
+     }
+     // Note: Implementation of the overloaded signatures above, TSDoc is on the signatures
+     async _drawAndSampleAsync({ layers, views, viewports, onViewportActive, deviceRect, cullRect, effects, pass, canvasContext }, pickZ = false) {
++        // Async multi-pick retains this list across readbacks. Resolve matched layers
++        // again and omit finalized guides before writing any model uniforms.
++        layers = layers.map(layer => layer.getCurrentLayer()).filter(Boolean);
+         const pickingFBO = pickZ ? this.depthFBO : this.pickingFBO;
+         const opts = {
+             layers,
+diff --git a/dist/lib/deck-renderer.js b/dist/lib/deck-renderer.js
+index 5a5d33faa505ec362d009e772f704b1231008d3f..426de5f3b318e4f573e4f60a6550c13d5ad7dec7 100644
+--- a/dist/lib/deck-renderer.js
++++ b/dist/lib/deck-renderer.js
+@@ -111,6 +111,8 @@ export default class DeckRenderer {
+                 });
+                 renderBuffers.push(this.device.createFramebuffer({
+                     id: `deck-renderbuffer-${i}`,
++                    // The scene input needs depth; the swap target only receives fullscreen effects.
++                    depthStencilAttachment: i === 0 ? 'depth24plus' : undefined,
+                     colorAttachments: [texture]
+                 }));
+             });
+diff --git a/dist/lib/deck.js b/dist/lib/deck.js
+index 2464966343be78a34b5dc5ca867898fd54239da9..93f52eecd1396e764851c5e13ce448f9a0c488a8 100644
+--- a/dist/lib/deck.js
++++ b/dist/lib/deck.js
+@@ -654,7 +654,7 @@ class Deck {
+         if (!this.widgetManager) {
+             return;
+         }
+-        this.cursorState.isHovering = result.length > 0;
++        this.cursorState.isHovering = result.some(info => info.picked);
+         let pickedInfo = emptyInfo;
+         let handled = false;
+         for (const info of result) {
+diff --git a/dist.webgl-only/index.cjs b/dist.webgl-only/index.cjs
+--- a/dist.webgl-only/index.cjs
++++ b/dist.webgl-only/index.cjs
+@@ -7390,6 +7390,8 @@
+         });
+         renderBuffers.push(this.device.createFramebuffer({
+           id: `deck-renderbuffer-${i}`,
++          // The scene input needs depth; the swap target only receives fullscreen effects.
++          depthStencilAttachment: i === 0 ? 'depth24plus' : undefined,
+           colorAttachments: [texture]
+         }));
+       });
+@@ -7713,8 +7715,13 @@
+     const pixelRatio = canvasContext.cssToDeviceRatio();
+     const pickableLayers = this._getPickable(layers);
+     if (!pickableLayers || viewports.length === 0) {
++      // Canvas leave has no viewport, but must still clear the previous hover.
++      const infos = processPickInfo({
++        pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++        lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++      });
+       return {
+-        result: [],
++        result: Array.from(infos.values()).filter(info => info.layer),
+         emptyInfo: getEmptyPickingInfo({ viewports, x, y, pixelRatio })
+       };
+     }
+@@ -7769,6 +7776,10 @@
+           pickedObjectIndex: -1
+         };
+       }
++      // Readback can outlive a guide layer and its GPU resources.
++      if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++        pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++      }
+       let z;
+       const depthLayers = this._getDepthLayers(pickInfo, pickableLayers, unproject3D);
+       if (depthLayers.length > 0) {
+@@ -7792,6 +7803,10 @@
+           z = pickedColors2[0];
+         }
+       }
++      // Readback can outlive a guide layer and its GPU resources.
++      if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++        pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++      }
+       if (pickInfo.pickedLayer && i + 1 < depth) {
+         affectedLayers.add(pickInfo.pickedLayer);
+         pickInfo.pickedLayer.disablePickingIndex(pickInfo.pickedObjectIndex);
+@@ -7817,7 +7832,8 @@
+       }
+     }
+     for (const layer of affectedLayers) {
+-      layer.restorePickingColors();
++      const currentLayer = layer.getCurrentLayer();
++      if (currentLayer) currentLayer.restorePickingColors();
+     }
+     return { result, emptyInfo: infos.get(null) };
+   }
+@@ -7830,8 +7846,13 @@
+     const pixelRatio = canvasContext.cssToDeviceRatio();
+     const pickableLayers = this._getPickable(layers);
+     if (!pickableLayers || viewports.length === 0) {
++      // Canvas leave has no viewport, but must still clear the previous hover.
++      const infos = processPickInfo({
++        pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++        lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++      });
+       return {
+-        result: [],
++        result: Array.from(infos.values()).filter(info => info.layer),
+         emptyInfo: getEmptyPickingInfo({ viewports, x, y, pixelRatio })
+       };
+     }
+@@ -7982,6 +8003,7 @@
+         break;
+       }
+       const pickInfo = pickInfos[i];
++      if (!pickInfo.pickedLayer?.getCurrentLayer()) continue;
+       let info = {
+         color: pickInfo.pickedColor,
+         layer: null,
+@@ -8076,6 +8098,9 @@
+   // Note: Implementation of the overloaded signatures above, TSDoc is on the signatures
+   async _drawAndSampleAsync({ layers, views, viewports, onViewportActive, deviceRect, cullRect, effects, pass, canvasContext }, pickZ = false) {
+     var _a;
++    // Async multi-pick retains this list across readbacks. Resolve matched layers
++    // again and omit finalized guides before writing any model uniforms.
++    layers = layers.map(layer => layer.getCurrentLayer()).filter(Boolean);
+     const pickingFBO = pickZ ? this.depthFBO : this.pickingFBO;
+     const opts = {
+       layers,
+@@ -9407,7 +9432,7 @@
+     if (!this.widgetManager) {
+       return;
+     }
+-    this.cursorState.isHovering = result.length > 0;
++    this.cursorState.isHovering = result.some(info => info.picked);
+     let pickedInfo = emptyInfo;
+     let handled = false;
+     for (const info of result) {
+diff --git a/dist.webgl-only/lib/deck-picker.js b/dist.webgl-only/lib/deck-picker.js
+--- a/dist.webgl-only/lib/deck-picker.js
++++ b/dist.webgl-only/lib/deck-picker.js
+@@ -133,8 +133,13 @@
+         const pixelRatio = canvasContext.cssToDeviceRatio();
+         const pickableLayers = this._getPickable(layers);
+         if (!pickableLayers || viewports.length === 0) {
++            // Canvas leave has no viewport, but must still clear the previous hover.
++            const infos = processPickInfo({
++              pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++              lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++            });
+             return {
+-                result: [],
++              result: Array.from(infos.values()).filter(info => info.layer),
+                 emptyInfo: getEmptyPickingInfo({ viewports, x, y, pixelRatio })
+             };
+         }
+@@ -193,6 +198,10 @@
+                     pickedObjectIndex: -1
+                 };
+             }
++            // Readback can outlive a guide layer and its GPU resources.
++            if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++              pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++            }
+             let z;
+             const depthLayers = this._getDepthLayers(pickInfo, pickableLayers, unproject3D);
+             if (depthLayers.length > 0) {
+@@ -221,6 +230,10 @@
+             // Only exclude if we need to run picking again.
+             // We need to run picking again if an object is detected AND
+             // we have not exhausted the requested depth.
++            // Readback can outlive a guide layer and its GPU resources.
++            if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++              pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++            }
+             if (pickInfo.pickedLayer && i + 1 < depth) {
+                 affectedLayers.add(pickInfo.pickedLayer);
+                 pickInfo.pickedLayer.disablePickingIndex(pickInfo.pickedObjectIndex);
+@@ -249,7 +262,8 @@
+         }
+         // reset only affected buffers
+         for (const layer of affectedLayers) {
+-            layer.restorePickingColors();
++            const currentLayer = layer.getCurrentLayer();
++            if (currentLayer) currentLayer.restorePickingColors();
+         }
+         return { result, emptyInfo: infos.get(null) };
+     }
+@@ -263,8 +277,13 @@
+         const pixelRatio = canvasContext.cssToDeviceRatio();
+         const pickableLayers = this._getPickable(layers);
+         if (!pickableLayers || viewports.length === 0) {
++            // Canvas leave has no viewport, but must still clear the previous hover.
++            const infos = processPickInfo({
++              pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++              lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++            });
+             return {
+-                result: [],
++              result: Array.from(infos.values()).filter(info => info.layer),
+                 emptyInfo: getEmptyPickingInfo({ viewports, x, y, pixelRatio })
+             };
+         }
+@@ -435,6 +454,7 @@
+                 break;
+             }
+             const pickInfo = pickInfos[i];
++            if (!pickInfo.pickedLayer?.getCurrentLayer()) continue;
+             let info = {
+                 color: pickInfo.pickedColor,
+                 layer: null,
+@@ -542,6 +562,9 @@
+     }
+     // Note: Implementation of the overloaded signatures above, TSDoc is on the signatures
+     async _drawAndSampleAsync({ layers, views, viewports, onViewportActive, deviceRect, cullRect, effects, pass, canvasContext }, pickZ = false) {
++        // Async multi-pick retains this list across readbacks. Resolve matched layers
++        // again and omit finalized guides before writing any model uniforms.
++        layers = layers.map(layer => layer.getCurrentLayer()).filter(Boolean);
+         const pickingFBO = pickZ ? this.depthFBO : this.pickingFBO;
+         const opts = {
+             layers,
+diff --git a/dist.webgl-only/lib/deck-renderer.js b/dist.webgl-only/lib/deck-renderer.js
+index 5a5d33faa505ec362d009e772f704b1231008d3f..426de5f3b318e4f573e4f60a6550c13d5ad7dec7 100644
+--- a/dist.webgl-only/lib/deck-renderer.js
++++ b/dist.webgl-only/lib/deck-renderer.js
+@@ -111,6 +111,8 @@ export default class DeckRenderer {
+                 });
+                 renderBuffers.push(this.device.createFramebuffer({
+                     id: `deck-renderbuffer-${i}`,
++                    // The scene input needs depth; the swap target only receives fullscreen effects.
++                    depthStencilAttachment: i === 0 ? 'depth24plus' : undefined,
+                     colorAttachments: [texture]
+                 }));
+             });
+diff --git a/dist.webgl-only/lib/deck.js b/dist.webgl-only/lib/deck.js
+index 2464966343be78a34b5dc5ca867898fd54239da9..93f52eecd1396e764851c5e13ce448f9a0c488a8 100644
+--- a/dist.webgl-only/lib/deck.js
++++ b/dist.webgl-only/lib/deck.js
+@@ -654,7 +654,7 @@ class Deck {
+         if (!this.widgetManager) {
+             return;
+         }
+-        this.cursorState.isHovering = result.length > 0;
++        this.cursorState.isHovering = result.some(info => info.picked);
+         let pickedInfo = emptyInfo;
+         let handled = false;
+         for (const info of result) {
+diff --git a/src/lib/deck-picker.ts b/src/lib/deck-picker.ts
+--- a/src/lib/deck-picker.ts
++++ b/src/lib/deck-picker.ts
+@@ -254,0 +255,5 @@
++      // Canvas leave has no viewport, but must still clear the previous hover.
++      const infos = processPickInfo({
++        pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++        lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++      });
+@@ -256 +261 @@
+-        result: [],
++        result: Array.from(infos.values()).filter(info => info.layer),
+@@ -322,0 +328,4 @@
++      // Readback can outlive a guide layer and its GPU resources.
++      if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++        pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++      }
+@@ -354,0 +364,4 @@
++      // Readback can outlive a guide layer and its GPU resources.
++      if (pickInfo.pickedLayer && !pickInfo.pickedLayer.getCurrentLayer()) {
++        pickInfo = {pickedColor: null, pickedObjectIndex: -1};
++      }
+@@ -387 +400,2 @@
+-      layer.restorePickingColors();
++      const currentLayer = layer.getCurrentLayer();
++      if (currentLayer) currentLayer.restorePickingColors();
+@@ -420,0 +435,5 @@
++      // Canvas leave has no viewport, but must still clear the previous hover.
++      const infos = processPickInfo({
++        pickInfo: { pickedColor: null, pickedObjectIndex: -1 },
++        lastPickedInfo: this.lastPickedInfo, mode, layers, viewports, x, y, pixelRatio
++      });
+@@ -422 +441 @@
+-        result: [],
++        result: Array.from(infos.values()).filter(info => info.layer),
+@@ -634,0 +654 @@
++      if (!pickInfo.pickedLayer?.getCurrentLayer()) continue;
+@@ -832,0 +853,3 @@
++    // Async multi-pick retains this list across readbacks. Resolve matched layers
++    // again and omit finalized guides before writing any model uniforms.
++    layers = layers.map(layer => layer.getCurrentLayer()).filter((layer): layer is Layer => Boolean(layer));
+diff --git a/src/lib/deck-renderer.ts b/src/lib/deck-renderer.ts
+index aa82725e551f491ea491a7a1cbb41646512dec6c..71dc33aeee6a9d890bbedcd061a473fcdb6f2861 100644
+--- a/src/lib/deck-renderer.ts
++++ b/src/lib/deck-renderer.ts
+@@ -168,6 +168,8 @@ export default class DeckRenderer {
+         renderBuffers.push(
+           this.device.createFramebuffer({
+             id: `deck-renderbuffer-${i}`,
++            // The scene input needs depth; the swap target only receives fullscreen effects.
++            depthStencilAttachment: i === 0 ? 'depth24plus' : undefined,
+             colorAttachments: [texture]
+           })
+         );
+diff --git a/src/lib/deck.ts b/src/lib/deck.ts
+index ebc1945bb42855c870048e917992126dd54ebbc1..a753fc563dbf3684c4a9e670bcea41c081ca37b0 100644
+--- a/src/lib/deck.ts
++++ b/src/lib/deck.ts
+@@ -999,7 +999,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
+       return;
+     }
+ 
+-    this.cursorState.isHovering = result.length > 0;
++    this.cursorState.isHovering = result.some(info => info.picked);
+ 
+     let pickedInfo = emptyInfo;
+     let handled = false;

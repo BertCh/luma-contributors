@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, test, vi} from 'vitest';
+import {afterAll, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {buildBitmapFontAtlas, type FontAtlas} from '@luma.gl/engine/text';
@@ -15,20 +18,32 @@ vi.mock('@luma.gl/engine/text', async importOriginal => {
   const actual = await importOriginal<typeof import('@luma.gl/engine/text')>();
   return {
     ...actual,
-    buildBitmapFontAtlas: vi.fn(() => makeAtlas()),
-    GPUTextResources: class {
-      readonly atlasTexture = {ready: Promise.resolve(), isReady: true};
-      readonly fontAtlas: FontAtlas;
-      constructor(
-        readonly device: Device,
-        props: {fontAtlas: FontAtlas}
-      ) {
-        this.fontAtlas = props.fontAtlas;
-      }
-      destroy = vi.fn();
-    }
+    buildBitmapFontAtlas: vi.fn(() => makeAtlas())
   };
 });
+vi.mock(
+  '../../../examples/deck/kepler-compute/src/luma-gaps/mipmapped-text-resources',
+  async importOriginal => {
+    const actual =
+      await importOriginal<
+        typeof import('../../../examples/deck/kepler-compute/src/luma-gaps/mipmapped-text-resources')
+      >();
+    return {
+      ...actual,
+      KeplerMipmappedTextResources: class {
+        readonly atlasTexture = {ready: Promise.resolve(), isReady: true};
+        readonly fontAtlas: FontAtlas;
+        constructor(
+          readonly device: Device,
+          props: {fontAtlas: FontAtlas}
+        ) {
+          this.fontAtlas = props.fontAtlas;
+        }
+        destroy = vi.fn();
+      }
+    };
+  }
+);
 function makeAtlas(): FontAtlas {
   return {
     baselineOffset: 5,
@@ -238,4 +253,11 @@ test('label allocations reject before GPU upload on budget failure and release o
   inputs.positions.destroy();
   inputs.mask.destroy();
   device.destroy();
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@luma.gl/engine/text');
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/luma-gaps/mipmapped-text-resources');
+  vi.resetModules();
 });

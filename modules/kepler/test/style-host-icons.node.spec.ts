@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
-import {afterEach, beforeAll, expect, test, vi} from 'vitest';
+import {afterAll, afterEach, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import type {CommandEncoder} from '@luma.gl/core';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerComputeSession} from '../src/session/compute-session';
@@ -14,8 +17,8 @@ import {
   makeGPUVectorsFromNativeIcons
 } from '../../../examples/deck/kepler-compute/src/icon-runtime';
 
-let NativeStyleRuntime: typeof import('../../../examples/deck/kepler-compute/src/style-host-runtime').NativeStyleRuntime;
-let KeplerResidentStyleCache: typeof import('../src/styles/style-cache').KeplerResidentStyleCache;
+import {NativeStyleRuntime} from '../../../examples/deck/kepler-compute/src/style-host-runtime';
+import {KeplerResidentStyleCache} from '../src/styles/style-cache';
 const state = vi.hoisted(() => ({order: [] as string[], released: [] as string[], sequence: 0}));
 vi.mock('../../../examples/deck/kepler-compute/src/icon-runtime', () => ({
   makeGPUVectorsFromNativeIcons: vi.fn((_device, source) => {
@@ -51,13 +54,6 @@ vi.mock('../../../examples/deck/kepler-compute/src/icon-runtime', () => ({
     };
   })
 }));
-beforeAll(async () => {
-  vi.resetModules();
-  ({NativeStyleRuntime} = await import(
-    '../../../examples/deck/kepler-compute/src/style-host-runtime'
-  ));
-  ({KeplerResidentStyleCache} = await import('../src/styles/style-cache'));
-});
 afterEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
@@ -277,4 +273,10 @@ test('dataset retirement also awaits older Icon catalogs that still borrow publi
   await retirement;
   expect(state.released).toContain('source-1');
   await context.runtime.destroy(Promise.resolve());
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('../../../examples/deck/kepler-compute/src/icon-runtime');
+  vi.resetModules();
 });

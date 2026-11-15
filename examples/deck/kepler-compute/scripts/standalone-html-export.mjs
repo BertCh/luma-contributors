@@ -36,7 +36,8 @@ try {
     offlinePage.on('pageerror', error => offlineErrors.push(error.message));
     await offlinePage.setContent(html);
     await offlinePage.waitForFunction(() => document.querySelector('#map canvas'), undefined, {timeout: 30000});
-    assert.match(await offlinePage.locator('#status').innerText(), /Rendering \d+ dataset/);
+    // The viewer reports drawable layers (several may use one dataset), including in the old fork.
+    assert.match(await offlinePage.locator('#status').innerText(), /Rendering [1-9]\d* layer\(s\)/);
     assert.deepEqual(offlineErrors, []);
     await offlineContext.close();
   } else {

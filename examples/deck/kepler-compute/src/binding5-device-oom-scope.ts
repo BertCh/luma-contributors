@@ -3,7 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {KeplerAllocationError} from '@luma-contributors/kepler';
-import {OutOfMemoryError} from '@luma.gl/core';
+
+/**
+ * Cause attached to a KeplerAllocationError when WebGPU reports a device out-of-memory. Published
+ * luma.gl exports no out-of-memory error class, so this domain error carries the name that
+ * isKeplerAllocationError matches in modules/kepler/src/runtime/dataset-registry.ts.
+ */
+export class KeplerDeviceOutOfMemoryError extends Error {
+  override readonly name = 'OutOfMemoryError';
+}
 
 /** The subset of a WebGPU GPUDevice used to observe out-of-memory errors. */
 type ErrorScopeHandle = {
@@ -38,7 +46,7 @@ export async function runWithOutOfMemoryScope<Result>(
   const outOfMemory = await handle.popErrorScope();
   if (outOfMemory) {
     throw new KeplerAllocationError('device-out-of-memory', {
-      cause: new OutOfMemoryError(`Device out of memory: ${outOfMemory.message ?? ''}`)
+      cause: new KeplerDeviceOutOfMemoryError(`Device out of memory: ${outOfMemory.message ?? ''}`)
     });
   }
   return result;

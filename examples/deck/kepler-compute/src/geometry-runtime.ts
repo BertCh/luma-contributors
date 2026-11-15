@@ -6,16 +6,16 @@ import {Buffer, type Device, type CommandEncoder} from '@luma.gl/core';
 import {GPUData, GPUVector, type VertexList} from '@luma.gl/graph/gpu-data';
 import {GPUCommandGraph, GPUGather, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {
-  PreparedGeometryGPUVectors,
-  GeometryPrimitiveMapping,
-  GeometryGPUPaths
-} from '@luma.gl/engine/arrow';
+  PreparedKeplerGeometryGPUVectors,
+  KeplerGeometryPrimitiveMapping,
+  KeplerGeometryGPUPaths
+} from './geometry-preparation';
 import type {ResidentDatasetBinding, ResidentGeometryPathBinding} from './resident-layers';
 
 export type GeometryRuntimeProps = {
   device: Device;
   column: string;
-  geometry: PreparedGeometryGPUVectors;
+  geometry: PreparedKeplerGeometryGPUVectors;
   selectionMask: GPUVector<'uint32'>;
   /** Effective source-row fill colors, including any analysis override. */
   colors?: GPUVector<'unorm8x4'>;
@@ -39,7 +39,7 @@ export type GeometryRuntimeProps = {
  */
 export class GeometryRuntime {
   readonly binding: NonNullable<ResidentDatasetBinding['geojson']>;
-  readonly geometry: PreparedGeometryGPUVectors;
+  readonly geometry: PreparedKeplerGeometryGPUVectors;
   readonly reason?: string;
   private readonly graph: GPUCommandGraph;
   private readonly buffers: Buffer[] = [];
@@ -289,7 +289,7 @@ export class GeometryRuntime {
     if (this.props.ownsGeometry) this.geometry.destroy();
   }
 
-  private makePaths(name: string, geometry: GeometryGPUPaths): ResidentGeometryPathBinding {
+  private makePaths(name: string, geometry: KeplerGeometryGPUPaths): ResidentGeometryPathBinding {
     return {
       getPath: geometry.getPath,
       getPathLow: geometry.getPathLow,
@@ -308,7 +308,7 @@ export class GeometryRuntime {
   private gather<Format extends 'uint32' | 'float32' | 'unorm8x4'>(
     name: string,
     source: GPUVector<Format>,
-    indices: GeometryPrimitiveMapping['sourceRowIds']
+    indices: KeplerGeometryPrimitiveMapping['sourceRowIds']
   ): GPUVector<Format> {
     const output = new GPUVector({
       type: 'data',

@@ -30,6 +30,8 @@ import {
   notify
 } from './app-services';
 import {initializeDevice} from './device-init';
+import {cancelSampleMapLoads, whenSampleMapMutationsSettled} from './sample-map-lifecycle';
+import {getSampleMapProvenance, SAMPLE_MAP_METADATA_KEY} from './sample-map-provenance';
 
 export function createResidentFilterAction(
   field: 'value' | 'category' | 'time' | 'timestamp',
@@ -55,6 +57,8 @@ export function setNativeCategories(categories: number[]): void {
 }
 
 export async function applyNativeConfig(config: KeplerJSONValue): Promise<void> {
+  cancelSampleMapLoads();
+  await whenSampleMapMutationsSettled();
   assertSingleViewConfiguration(config, SUPPORTED_VIEW_COUNT);
   if (
     !config ||
@@ -90,6 +94,15 @@ export async function applyNativeConfig(config: KeplerJSONValue): Promise<void> 
           ...publications.map(published => ({
             info: {id: published.dataset.id, label: published.label},
             data: published.nativeData,
+            ...(getSampleMapProvenance(published.dataset.source?.metadata)
+              ? {
+                  metadata: {
+                    [SAMPLE_MAP_METADATA_KEY]: getSampleMapProvenance(
+                      published.dataset.source?.metadata
+                    )
+                  }
+                }
+              : {}),
             ...(published.groupBy
               ? {
                   metadata: {
@@ -163,6 +176,7 @@ export function getActiveRuntime(): ComputeRuntime {
 }
 
 export async function reimportSource(descriptor: KeplerSandboxSource): Promise<ComputeRuntime> {
+  cancelSampleMapLoads();
   const fixture = readSandboxFixture(descriptor);
   const previous = getActiveRuntime();
   effect.runtime = null;

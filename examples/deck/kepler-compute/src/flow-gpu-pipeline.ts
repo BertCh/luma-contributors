@@ -28,7 +28,6 @@ import {Buffer, type Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {
-  alignGraphVectorViews,
   createTransientView,
   getBoundedDispatchLayout,
   getBoundedInvocationIndexSource,
@@ -42,6 +41,7 @@ import {
   type CompiledGPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {alignKeplerGraphVectorViews} from './luma-gaps/graph-vector-chunks';
 import type * as arrow from 'apache-arrow';
 import type {KeplerDatasetRegistry, KeplerMemoryReservation} from '@luma-contributors/kepler';
 import {
@@ -298,7 +298,7 @@ class FlowGpuAggregator implements FlowAggregateSource {
       for (const [
         spanIndex,
         [sourceLongitude, sourceLatitude, targetLongitude, targetLatitude]
-      ] of alignGraphVectorViews(graph, [
+      ] of alignKeplerGraphVectorViews(graph, [
         imported.sourceLongitude,
         imported.sourceLatitude,
         imported.targetLongitude,
@@ -609,7 +609,7 @@ if (index == ${endpointCount - 1}u) {
       const selection = mask ? graph.importGPUVector('selection', mask) : undefined;
       let rowBase = 0;
       // Without a selection the counts align with themselves, so one span set serves both cases.
-      for (const [spanIndex, [countSpan, selectionSpan]] of alignGraphVectorViews(graph, [
+      for (const [spanIndex, [countSpan, selectionSpan]] of alignKeplerGraphVectorViews(graph, [
         counts,
         selection ?? counts
       ] as const).entries()) {

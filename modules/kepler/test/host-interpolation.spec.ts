@@ -40,7 +40,7 @@ test('interpolation publishes a separate north-up grid with exact-hit, source va
     row: new Float32Array([2, 3, 4, 5])
   });
   const dataset = session.importArrowDataset({id: 'idw-source', table: first.concat(second)});
-  const sourceChunks = [...dataset.value.columns.value.data];
+  const sourceChunks = [...dataset.value.columns['value'].data];
   const explorer = session.openExplorer(dataset.id, {
     workingMemoryBudgetBytes: 8 * 1024 * 1024,
     dimensions: [{id: 'row', column: 'row', kind: 'range'}]
@@ -116,7 +116,7 @@ test('interpolation publishes a separate north-up grid with exact-hit, source va
     expect((await analysis.readInterpolationPage(0, 4)).map(cell => cell.value)).toEqual([
       10, 20, 30, 40
     ]);
-    expect(dataset.value.columns.value.data).toEqual(sourceChunks);
+    expect(dataset.value.columns['value'].data).toEqual(sourceChunks);
     expect(sourceChunks.map(chunk => chunk.length)).toEqual([2, 4]);
     const cpuReservationBeforeCancellation = session.registry.memoryUsage.reservedBytes.cpu;
     const pendingExport = analysis.exportInterpolationGeoTIFF();

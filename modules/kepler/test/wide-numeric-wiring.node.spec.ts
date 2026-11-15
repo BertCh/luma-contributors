@@ -15,19 +15,19 @@ import {
   splitDecimal128ToWords,
   summarizeDecimal128Reference,
   type Decimal128CompareOperator
-} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-decimal-reference';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   isInteger64InRange,
   makeInteger64RangeSelectionExpression,
   resolveInteger64Range
-} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-int64-filter';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   makeWideSqlAggregateTable,
   parseWideSqlAggregate
 } from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-sql';
-import {summarizeInteger64Reference} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-reference';
+import {summarizeInteger64Reference} from '@luma-contributors/analysis/dataframe-analysis';
 import {planResidentWideScalarMeasure} from '../../../examples/deck/kepler-compute/src/resident-chart-wide-scalar';
-import {makeDecimal128SelectionExpression} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-decimal-aggregate';
+import {makeDecimal128SelectionExpression} from '@luma-contributors/analysis/dataframe-analysis';
 
 const OPERATORS: Decimal128CompareOperator[] = ['<', '<=', '=', '>=', '>', '!='];
 

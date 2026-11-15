@@ -13,6 +13,7 @@ import {
 import type {ComputeRuntime} from '../../../examples/deck/kepler-compute/src/compute-runtime';
 import {saveSandbox} from '../../../examples/deck/kepler-compute/src/sandbox-state';
 import {IncompleteSandboxPopulationError} from '../../../examples/deck/kepler-compute/src/sandbox-population';
+import {SampleMapCheckpointDeferredError} from '../../../examples/deck/kepler-compute/src/sample-map-lifecycle';
 
 it('recovery checkpoint detaches native metadata while retaining the original CPU table in memory', async () => {
   const context = fixture();
@@ -48,6 +49,29 @@ it('recovery checkpoint rejects a stale source and unrepresented native dataset'
     context.inspector.isCurrent = true;
     context.nativeConfig.config.visState.filters[0].dataId = ['unretained-source'];
     expect(() => captureResidentRecoverySnapshot(context)).toThrow();
+  } finally {
+    await context.cleanup();
+  }
+});
+
+it('actual capture identifies remote layers before generic manifest coverage failure', async () => {
+  const context = fixture();
+  try {
+    const original = context.getNativeConfig();
+    const remote = {
+      version: 'v1',
+      config: {visState: {layers: [{id: 'tiles', type: 'vectorTile', config: {dataId: 'remote'}}]}}
+    };
+    expect(() =>
+      captureResidentRecoverySnapshot({...context, getNativeConfig: () => remote})
+    ).toThrow(SampleMapCheckpointDeferredError);
+    expect(context.getNativeConfig()).toEqual(original);
+    expect(() =>
+      captureResidentRecoverySnapshot({
+        ...context,
+        getNativeDatasets: () => [{type: 'raster-tile'}]
+      })
+    ).toThrow('Remote sample maps are not recoverable');
   } finally {
     await context.cleanup();
   }

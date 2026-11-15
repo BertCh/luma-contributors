@@ -207,14 +207,15 @@ export async function executeResidentSuitability(props: {
       return graph.createDataView(handle, {format, length, byteOffset});
     };
     const runGraph = async (graph: GPUCommandGraph): Promise<void> => {
-      const plannedBytes = graph.planResources().stats.physicalTransientResourceBytes;
-      if (persistentBytes + plannedBytes > gpuReservation!.byteLength)
-        throw new KeplerAllocationError('memory-budget', {
-          message: 'Suitability exceeds admitted GPU working memory'
-        });
+      // Published luma.gl has no pre-compile resource plan: compile, then admit the measured bytes.
       const compiled = graph.compile();
       let encoder: CommandEncoder | undefined;
       try {
+        const plannedBytes = compiled.stats.physicalTransientResourceBytes;
+        if (persistentBytes + plannedBytes > gpuReservation!.byteLength)
+          throw new KeplerAllocationError('memory-budget', {
+            message: 'Suitability exceeds admitted GPU working memory'
+          });
         assertCurrent();
         encoder = device.createCommandEncoder();
         compiled.encode(encoder, {parameters: undefined});

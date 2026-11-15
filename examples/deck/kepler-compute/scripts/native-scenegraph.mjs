@@ -81,7 +81,7 @@ const failures = [];
 const consoleErrors = [];
 page.on('pageerror', error => failures.push(error.message));
 page.on('console', message => {
-  if (message.type() === 'error') consoleErrors.push(message.text().slice(0, 400));
+  if (message.type() === 'error') consoleErrors.push(message.text());
 });
 await page.route(MODEL_URL, route =>
   route.fulfill({
@@ -160,7 +160,7 @@ try {
   assert.equal(await pick(0), null, 'filtered-out instance is masked from picking');
   assert.equal(await pick(3), null, 'filtered-out instance is masked from picking');
   checks.push('filter masking hides instances from picking');
-  assert.equal(consoleErrors.filter(text => /pipeline|wgsl|shader|attachment/i.test(text)).length, 0, consoleErrors.join('\n'));
+  assert.equal(consoleErrors.filter(text => /pipeline|wgsl|shader|attachment|constant attributes|invalid commandbuffer|models is not iterable|drawing.*ResidentScenegraph/i.test(text)).length, 0, consoleErrors.join('\n'));
   console.log(JSON.stringify({passed: true, checks}, null, 2));
 } catch (error) {
   console.error(JSON.stringify({completedChecks: checks, consoleErrors: consoleErrors.slice(-5)}));

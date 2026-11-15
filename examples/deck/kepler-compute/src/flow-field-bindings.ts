@@ -4,6 +4,8 @@
 
 import type * as arrow from 'apache-arrow';
 import type {Device} from '@luma.gl/core';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import type {FlowFieldAnalysisSnapshot} from './flow-field-grid';
 import {buildFlowFieldGrid, type FlowFieldColumnMode, type FlowFieldGrid} from './flow-field-grid';
 import {
   getFlowFieldGridKey,
@@ -95,8 +97,24 @@ function readNumbers(table: arrow.Table, name: string): Float64Array | null {
 
 const GEOJSON_POSITION_PREFIX = 'geojson:';
 
-type CachedField = {key: string; table: arrow.Table; grid: FlowFieldGrid | null};
+type CachedField = {
+  key: string;
+  table: arrow.Table;
+  grid: FlowFieldGrid | null;
+  selectionRevision: number | null;
+  selectionMask?: GPUVector<'uint32'>;
+};
+type CpuFieldRequest = {
+  key: string;
+  config: FlowFieldLayerConfig;
+  context: {
+    device: Device;
+    table: arrow.Table | undefined;
+    selection?: FlowFieldSelectionContext;
+  };
+};
 type CachedRuntime = {
+  mode: FlowFieldColumnMode;
   key: string;
   device: Device;
   runtime: FlowFieldRuntime;
@@ -118,6 +136,7 @@ export class FlowFieldBindings {
   private readonly gpuFields = new Map<string, CachedGpuField>();
   private readonly gpuFailures = new Map<string, string>();
   private readonly fields = new Map<string, CachedField>();
+  private readonly cpuRequests = new Map<string, CpuFieldRequest>();
   private readonly runtimes = new Map<string, CachedRuntime>();
   private readonly selections = new FlowFieldSelectionCache();
   private readonly centroids = new FlowFieldCentroidCache();
@@ -136,6 +155,11 @@ export class FlowFieldBindings {
     }
   ): FlowFieldResolution {
     const resolution = this.resolveField(layerId, config, context);
+    if (resolution.runtime) {
+      resolution.runtime.onViewportAvailabilityChange = context.requestUpdate;
+      const failure = resolution.runtime.stats.viewportFailure;
+      if (failure) resolution.limits.push(failure);
+    }
     if (resolution.runtime && context.requestUpdate) {
       const {runtime} = resolution;
       const requestUpdate = context.requestUpdate;
@@ -191,7 +215,10 @@ export class FlowFieldBindings {
             secondName,
             altitudeName
           ]);
-          if (resolution) return resolution;
+          if (resolution) {
+            this.cpuRequests.delete(layerId);
+            return resolution;
+          }
         } catch (error) {
           this.releaseGpu(layerId);
           this.gpuFailures.set(layerId, error instanceof Error ? error.message : String(error));
@@ -201,13 +228,20 @@ export class FlowFieldBindings {
       if (reason) gpuLimit = `GPU field grid unavailable, using the CPU reference grid: ${reason}`;
     }
     const selection = this.selections.resolve(layerId, context.selection);
-    const gridKey = `${getFlowFieldGridKey(
+    const sourceKey = getFlowFieldGridKey(
       mode,
       [longitude, latitude, firstName, secondName, altitudeName],
       visConfig
-    )}|${selection.key}`;
+    );
+    this.cpuRequests.set(layerId, {key: sourceKey, config, context});
+    const gridKey = `${sourceKey}|${selection.key}|mask:${selection.appliedGeneration}`;
     let field = this.fields.get(layerId);
-    if (!field || field.key !== gridKey || field.table !== context.table) {
+    if (
+      !field ||
+      field.key !== gridKey ||
+      field.table !== context.table ||
+      field.selectionMask !== selection.appliedMask
+    ) {
       const {longitudes, latitudes} = this.readPositions(
         layerId,
         context.table,
@@ -228,6 +262,8 @@ export class FlowFieldBindings {
       field = {
         key: gridKey,
         table: context.table,
+        selectionRevision: selection.appliedRevision,
+        selectionMask: selection.appliedMask,
         grid: buildFlowFieldGrid(
           {
             longitudes,
@@ -257,17 +293,26 @@ export class FlowFieldBindings {
     );
     const runtimeKey = `${gridKey}|${plan.particleCount}|${plan.lifetimeSeconds}|${plan.trailSeconds}|${plan.widthPixels}|${plan.opacity}|${plan.velocityScale}`;
     let cached = this.runtimes.get(layerId);
-    if (!cached || cached.key !== runtimeKey || cached.device !== context.device) {
+    if (
+      !cached ||
+      cached.key !== runtimeKey ||
+      cached.device !== context.device ||
+      cached.table !== context.table
+    ) {
       cached?.runtime.destroy();
       cached = {
+        mode,
         key: runtimeKey,
         device: context.device,
+        table: context.table,
         runtime: new FlowFieldRuntime(
           context.device,
           layerId,
           field.grid,
           plan,
-          getFlowFieldSeed(layerId)
+          getFlowFieldSeed(layerId),
+          undefined,
+          context.selection?.memoryRegistry
         )
       };
       this.runtimes.set(layerId, cached);
@@ -385,6 +430,7 @@ export class FlowFieldBindings {
         }
       );
       cached = {
+        mode,
         key: runtimeKey,
         device: context.device,
         table,
@@ -448,13 +494,99 @@ export class FlowFieldBindings {
   }
 
   /** Test and diagnostics snapshot of live particle runtimes. */
-  getStats(): Record<string, FlowFieldRuntime['stats'] & {columns: number; rows: number}> {
+  getStats(): Record<
+    string,
+    FlowFieldRuntime['stats'] & {columns: number; rows: number; mode: FlowFieldColumnMode}
+  > {
     return Object.fromEntries(
-      [...this.runtimes].map(([layerId, {runtime}]) => [
-        layerId,
-        {...runtime.stats, columns: runtime.grid.columns, rows: runtime.grid.rows}
-      ])
+      [...this.runtimes].map(([layerId, {runtime, mode}]) => {
+        const request = this.cpuRequests.get(layerId);
+        const field = this.fields.get(layerId);
+        const selection = request?.context.selection;
+        const gridReady = request
+          ? Boolean(
+              field?.grid &&
+                field.selectionRevision === (selection?.getRevision() ?? null) &&
+                field.selectionMask === selection?.mask
+            )
+          : runtime.isGridReady;
+        return [
+          layerId,
+          {
+            ...runtime.stats,
+            mode,
+            gridReady,
+            columns: runtime.grid.columns,
+            rows: runtime.grid.rows
+          }
+        ];
+      })
     );
+  }
+
+  /** Explicit analysis snapshot. Reads the physical field before GPU visual scaling. */
+  async readGridForAnalysis(layerId: string): Promise<FlowFieldAnalysisSnapshot> {
+    const runtime = this.runtimes.get(layerId)?.runtime;
+    if (!runtime) throw new Error('The flow layer has no active velocity grid');
+    if (runtime.grid.texels) {
+      const request = this.cpuRequests.get(layerId);
+      if (!request) throw new Error('The CPU flow layer has no source for analysis');
+      await this.selections.waitForCurrent(layerId, request.context.selection);
+      const latest = this.cpuRequests.get(layerId);
+      if (
+        !latest ||
+        latest.key !== request.key ||
+        latest.context.table !== request.context.table ||
+        latest.context.device !== request.context.device ||
+        latest.context.selection?.mask !== request.context.selection?.mask
+      )
+        throw new Error('Flow layer changed while awaiting its analysis mask');
+      // The normal renderer may not have run since readback completed. Build from the applied
+      // current words now, through the same binding and grid builder used for rendering.
+      const resolution = this.resolveField(layerId, latest.config, latest.context);
+      const field = this.fields.get(layerId);
+      if (!resolution.runtime?.grid.texels || !field?.grid)
+        throw new Error(resolution.reason ?? 'The filtered CPU flow grid is unavailable');
+      const selection = latest.context.selection;
+      if (
+        field.selectionRevision !== (selection?.getRevision() ?? null) ||
+        field.selectionMask !== selection?.mask
+      )
+        throw new Error('Flow selection changed while preparing its analysis grid');
+      return {
+        ...field.grid,
+        mode: this.runtimes.get(layerId)!.mode,
+        bounds: [...field.grid.bounds],
+        texels: field.grid.texels.slice()
+      };
+    }
+    await runtime.waitForGridReady();
+    if (this.runtimes.get(layerId)?.runtime !== runtime)
+      throw new Error('Flow layer changed while awaiting its analysis grid');
+    if (!runtime.gpu) throw new Error('The flow layer has no GPU velocity grid');
+    const bounds = [...runtime.grid.bounds] as [number, number, number, number];
+    const revision = runtime.stats.selectionRevision;
+    const buildCount = runtime.stats.gridBuildCount;
+    const texels = await runtime.gpu.grid.readVelocitiesForAnalysis();
+    if (
+      this.runtimes.get(layerId)?.runtime !== runtime ||
+      !runtime.isGridReady ||
+      revision !== runtime.stats.selectionRevision ||
+      buildCount !== runtime.stats.gridBuildCount ||
+      (runtime.gpu.selection && runtime.gpu.selection.getRevision() !== revision) ||
+      bounds.some((value, index) => value !== runtime.grid.bounds[index])
+    )
+      throw new Error('Flow grid changed during snapshot; run again');
+    return {
+      ...runtime.grid,
+      mode: this.runtimes.get(layerId)!.mode,
+      bounds,
+      texels,
+      minimumSpeed: 0,
+      maximumSpeed: 0,
+      sampleCount: 0,
+      skippedCount: 0
+    };
   }
 
   /** Test-only: reads back the GPU velocity texels (never used while rendering). */
@@ -467,6 +599,7 @@ export class FlowFieldBindings {
     this.releaseGpu(layerId);
     this.gpuFailures.delete(layerId);
     this.fields.delete(layerId);
+    this.cpuRequests.delete(layerId);
     this.selections.release(layerId);
     this.centroids.release(layerId);
     this.debugGrids.release(layerId);
@@ -486,3 +619,6 @@ export class FlowFieldBindings {
     for (const layerId of [...this.runtimes.keys()]) this.release(layerId);
   }
 }
+
+/** Shared native flow workflow state, independent of layer registration and host publication. */
+export const flowFieldBindings = new FlowFieldBindings();

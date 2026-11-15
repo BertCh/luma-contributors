@@ -4,13 +4,13 @@
 
 import type {Device} from '@luma.gl/core';
 import * as arrow from 'apache-arrow';
-import {aggregateInteger64OnGpu} from './wide-numeric-gpu-aggregate';
+import {aggregateInteger64OnGpu} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   makeInteger64RangeSelectionExpression,
   type Integer64Bound,
   type Integer64Range
-} from './wide-numeric-gpu-int64-filter';
-import type {WideInteger64Summary} from './wide-numeric-gpu-reference';
+} from '@luma-contributors/analysis/dataframe-analysis';
+import type {WideInteger64Summary} from '@luma-contributors/analysis/dataframe-analysis';
 import {makeWideNumericWordVectors} from './wide-numeric-gpu-summary';
 
 export type WideSqlAggregateFunction = 'count' | 'sum' | 'min' | 'max';

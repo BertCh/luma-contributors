@@ -125,7 +125,11 @@ test('empirical variogram and automatic fit select a valid replayable model', ()
   const populated = Array.from(empirical.pairCounts).filter(count => count > 0).length;
   expect(populated).toBeGreaterThanOrEqual(8);
   const fit = fitKeplerVariogram(empirical);
-  expect(['spherical', 'exponential', 'gaussian']).toContain(fit.model);
+  // Automatic selection now ranks all five supported analysis families.
+  expect(['spherical', 'exponential', 'gaussian', 'matern-3/2', 'matern-5/2']).toContain(fit.model);
+  expect(fit.candidates.map(candidate => candidate.model).sort()).toEqual(
+    ['spherical', 'exponential', 'gaussian', 'matern-3/2', 'matern-5/2'].sort()
+  );
   expect(fit.nugget).toBeGreaterThanOrEqual(0);
   expect(fit.sill).toBeGreaterThanOrEqual(0);
   expect(fit.rangeMeters).toBeGreaterThan(0);
@@ -215,4 +219,22 @@ test('matches the neighbor lattice aspect to projected bounds within the cell bu
     getKeplerNeighborGridSize(1_000_000)
   );
   expect(getKeplerNeighborGridSize(1000, [0, 0, 400000, 100000])).toEqual([32, 16]);
+});
+
+test('automatic Matérn fits rank candidates using the analysis family shape', () => {
+  const distances = Float64Array.from({length: 24}, (_, index) => (index + 1) * 250);
+  const pairCounts = new Float64Array(distances.length).fill(100);
+  for (const model of ['matern-3/2', 'matern-5/2'] as const) {
+    const semivariances = Float64Array.from(distances, distance => {
+      const argument =
+        ((model === 'matern-3/2' ? 4.749031386012701 : 5.924462618951797) * distance) / 3000;
+      const correlation =
+        (1 + argument + (model === 'matern-5/2' ? argument ** 2 / 3 : 0)) * Math.exp(-argument);
+      return 0.2 + 2 * (1 - correlation);
+    });
+    const fit = fitKeplerVariogram({distances, semivariances, pairCounts});
+    expect(fit.model).toBe(model);
+    expect(fit.criterion).toBeLessThan(1e-8);
+    expect(fit.rangeMeters).toBeCloseTo(3000, 2);
+  }
 });

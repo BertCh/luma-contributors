@@ -46,10 +46,10 @@ describe('raster live source', () => {
     expect([...source.tiles[0].bands[3].validity]).toEqual([1, 0, 1, 1]);
   });
 
-  it('changes signature only when the tile set changes', () => {
-    expect(getKeplerTileSignature([makeTile(0, 0, 1, 1)])).toBe(
-      getKeplerTileSignature([makeTile(0, 0, 1, 2)])
-    );
+  it('changes signature for replacement sample buffers, even at the same tile coordinates', () => {
+    const tile = makeTile(0, 0, 1, 1);
+    expect(getKeplerTileSignature([tile])).toBe(getKeplerTileSignature([tile]));
+    expect(getKeplerTileSignature([tile])).not.toBe(getKeplerTileSignature([makeTile(0, 0, 1, 2)]));
     expect(getKeplerTileSignature([makeTile(0, 0, 1, 1)])).not.toBe(
       getKeplerTileSignature([makeTile(1, 0, 1, 1)])
     );

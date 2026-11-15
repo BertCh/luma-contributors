@@ -9,7 +9,7 @@ import {
   type KeplerComputeSession,
   type KeplerDatasetSnapshot
 } from '@luma-contributors/kepler';
-import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
+import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/analysis/analysis-core';
 import {formatOriginalTableCell} from './original-table-values';
 import {STREAM_ORIGIN_METADATA_KEY, openRemoteStream} from './remote-stream-source';
 import {openResumableRemoteStream, type ResumeEvent} from './resumable-remote-stream';

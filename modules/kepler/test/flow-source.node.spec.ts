@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
-import {expect, test, vi} from 'vitest';
+import {afterAll, expect, test, vi} from 'vitest';
+
+// Node uses isolate:false: discard previously evaluated consumers before applying this file's mocks.
+vi.hoisted(() => vi.resetModules());
 import {
   makeFlowData,
   prepareFlowSource
@@ -108,4 +111,10 @@ test('flow runtime aggregates each selection revision once and reads only unique
   expect(runtime.readbackCount).toBe(3);
   expect(runtime.readbackBytes).toBeGreaterThan(bytesAfterFirst);
   runtime.destroy();
+});
+
+// Remove mocked dependencies and their consumers before the next shared-worker spec.
+afterAll(() => {
+  vi.doUnmock('@flowmap.gl/data');
+  vi.resetModules();
 });

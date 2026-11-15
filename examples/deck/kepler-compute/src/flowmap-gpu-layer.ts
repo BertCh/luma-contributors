@@ -16,7 +16,7 @@ import {
   type UpdateParameters
 } from '@deck.gl/core';
 import {ScatterplotLayer} from '@deck.gl/layers';
-import {GPUFlowCirclesLayer, GPUFlowLinesLayer} from '@deck.gl-community/gpu-layers';
+import {GPUFlowCirclesLayer, GPUFlowLinesLayer} from '../gpu-layers/index';
 import {
   FlowLocationLabels,
   selectFlowLocationLabels,

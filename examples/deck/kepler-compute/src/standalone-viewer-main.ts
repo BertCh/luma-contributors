@@ -16,6 +16,7 @@ import {
   fetchDefaultIconDefinitions,
   type ViewerIconAtlas
 } from './standalone-viewer-icons';
+import {getHostRequiredLimits, resolveHostRequiredLimits} from './device-limits';
 import {isViewerOnline} from './standalone-viewer-raster';
 import {getViewStateForBounds} from './standalone-viewer-model';
 import {readViewerConfig} from './standalone-viewer-config';
@@ -53,6 +54,7 @@ async function verifyDigest(bytes: Uint8Array, expected: string): Promise<boolea
 }
 
 async function main(): Promise<void> {
+  await resolveHostRequiredLimits();
   const element = document.getElementById('luma-kepler-bundle');
   if (!element?.textContent) {
     status.textContent = 'No embedded workspace bundle found.';
@@ -208,7 +210,7 @@ async function main(): Promise<void> {
             .join('\n')
         };
       },
-      deviceProps: {type: 'best-available', adapters}
+      deviceProps: {type: 'best-available', adapters, requiredLimits: getHostRequiredLimits()}
     }
   });
   viewSize = panes.getSize();

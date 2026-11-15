@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {COORDINATE_SYSTEM} from '@deck.gl/core';
-
 /**
  * Overlay for Dorling layouts in an arbitrary declared projected CRS, as a local tangent plane
  * anchored at a declared geographic origin (Deck METER_OFFSETS). The caller declares the CRS unit
@@ -74,7 +72,7 @@ export function getDeclaredProjectedCartogramLayerProps(
   const tx = -planeOrigin[0] * metersPerUnit;
   const ty = -planeOrigin[1] * metersPerUnit;
   return {
-    coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
+    coordinateSystem: 'meter-offsets',
     coordinateOrigin: [anchor[0], anchor[1], 0] as [number, number, number],
     modelMatrix: [
       metersPerUnit,

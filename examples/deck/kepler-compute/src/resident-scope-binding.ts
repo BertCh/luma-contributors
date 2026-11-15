@@ -962,7 +962,12 @@ export class ResidentScopeBinding {
       return {
         ...common,
         kind: 'time',
-        window: {start: String(window.start), end: String(window.end), unit: window.unit}
+        // Scalar controls represent an empty intersection with their flag and an ordered window.
+        empty: common.empty || window.start > window.end,
+        window:
+          window.start > window.end
+            ? {start: '0', end: '0', unit: window.unit}
+            : {start: String(window.start), end: String(window.end), unit: window.unit}
       };
     }
     return {...common, kind: 'range', minimum: range[0], maximum: range[1]};

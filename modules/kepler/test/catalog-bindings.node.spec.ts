@@ -171,10 +171,30 @@ test('parameters are range checked and unknown names rejected', () => {
 });
 
 test('every binding declares inputs, outputs, cleanup, behavior and a serializable default', () => {
+  // These bindings generate their raster/velocity fixtures rather than consume datasets.
+  const generatedFixtureBindingIds = new Set([
+    'raster-embedding-kmeans',
+    'raster-embedding-nearest-prototype',
+    'raster-embedding-nearest-pixels',
+    'raster-embedding-knn',
+    'raster-embedding-linear-probe',
+    'raster-embedding-change',
+    'raster-embedding-covariance',
+    'raster-embedding-pca',
+    'raster-embedding-projection',
+    'raster-embedding-dequantize',
+    'raster-embedding-quantize',
+    'raster-embedding-pyramid',
+    'raster-embedding-similarity',
+    'raster-embedding-zone-mean',
+    'raster-embedding-usable-mask',
+    'raster-lagrangian-ftle'
+  ]);
+  for (const id of generatedFixtureBindingIds) expect(requireBinding(id).inputs, id).toEqual([]);
   for (const entry of listCatalogEntries().filter(candidate => candidate.bindingIds.length)) {
     for (const id of entry.bindingIds) {
       const binding = requireBinding(id);
-      expect(binding.inputs.length).toBeGreaterThan(0);
+      if (!generatedFixtureBindingIds.has(id)) expect(binding.inputs.length, id).toBeGreaterThan(0);
       expect(binding.outputs.length).toBeGreaterThan(0);
       expect(binding.cleanup).not.toBe('');
       expect(binding.declaredBehavior.length).toBeGreaterThan(0);

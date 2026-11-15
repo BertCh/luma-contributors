@@ -5,9 +5,13 @@
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import {assert, Buffer, type Device} from '@luma.gl/core';
 import {GPUData, type GPUVector} from '@luma.gl/graph/gpu-data';
-import {buildBitmapFontAtlas, buildSdfFontAtlas, GPUTextResources} from '@luma.gl/engine/text';
+import {buildBitmapFontAtlas, buildSdfFontAtlas} from '@luma.gl/engine/text';
+import {
+  KeplerMipmappedTextResources,
+  getKeplerMipChainByteLength
+} from './luma-gaps/mipmapped-text-resources';
 import {getDistanceScales, zoomToScale} from '@math.gl/web-mercator';
-import type {GPUPointLabelBatch, GPUPointLabelLayerProps} from '@deck.gl-community/gpu-layers';
+import type {GPUPointLabelBatch, GPUPointLabelLayerProps} from '../gpu-layers/index';
 import type {KeplerDatasetRegistry, KeplerMemoryReservation} from '@luma-contributors/kepler';
 import {getPointLabelFormatKey} from './label-format';
 import {preparePointLabelLayout, type PreparedPointLabelSource} from './label-source';
@@ -98,7 +102,7 @@ export type PointLabelLayerContext = {
   hasRowBounds: boolean;
   hasCollisionAnchors: boolean;
   batches: readonly GPUPointLabelBatch[];
-  resources: GPUTextResources;
+  resources: KeplerMipmappedTextResources;
   positions: GPUVector<'float32x2' | 'float32x3'>;
 };
 
@@ -208,7 +212,7 @@ export class PointLabelRuntime {
   readonly source: PreparedPointLabelSource;
   readonly fontWeight: number;
   readonly ready: Promise<void>;
-  private readonly resources: GPUTextResources;
+  private readonly resources: KeplerMipmappedTextResources;
   private readonly batches: readonly GPUPointLabelBatch[];
   private readonly buffers: Buffer[] = [];
   private readonly reservations: KeplerMemoryReservation[] = [];
@@ -257,21 +261,15 @@ export class PointLabelRuntime {
     };
     const fontAtlas = props.sdf
       ? buildSdfFontAtlas(atlasSettings)
-      : buildBitmapFontAtlas({cache: false, ...atlasSettings});
+      : buildBitmapFontAtlas(atlasSettings);
     if (
       fontAtlas.width > device.limits.maxTextureDimension2D ||
       fontAtlas.height > device.limits.maxTextureDimension2D
     )
       throw new Error('Point label atlas exceeds device texture limits');
     const atlasBytes = fontAtlas.width * fontAtlas.height * 4 * fontAtlas.pages.length;
-    // Native TextLayer uses a full trilinear mip chain for bitmap minification.
-    let atlasGPUBytes = 0;
-    for (let width = fontAtlas.width, height = fontAtlas.height; ; ) {
-      atlasGPUBytes += width * height * 4 * fontAtlas.pages.length;
-      if (width === 1 && height === 1) break;
-      width = Math.max(1, Math.floor(width / 2));
-      height = Math.max(1, Math.floor(height / 2));
-    }
+    // Native TextLayer samples a trilinear mip chain for bitmap minification.
+    const atlasGPUBytes = getKeplerMipChainByteLength(fontAtlas);
     const batchBytes = props.source.chunks.reduce(
       (bytes, chunk) =>
         bytes +
@@ -294,7 +292,7 @@ export class PointLabelRuntime {
       throw new KeplerAllocationError('memory-budget', {
         message: 'Point label atlas and glyphs exceed their admitted GPU budget'
       });
-    let resources: GPUTextResources | undefined;
+    let resources: KeplerMipmappedTextResources | undefined;
     let transient: KeplerMemoryReservation | undefined;
     try {
       if (props.memoryRegistry) {
@@ -307,9 +305,8 @@ export class PointLabelRuntime {
         transient = props.memoryRegistry.reserveMemory(glyphBytes, 'cpu', 'scratch');
       }
       const layouts = preparePointLabelLayout(props.source, fontAtlas);
-      resources = new GPUTextResources(device, {
+      resources = new KeplerMipmappedTextResources(device, {
         fontAtlas,
-        mipmaps: true,
         id: `point-label-${props.source.fieldName}`
       });
       const allocate = (data: Float32Array | Uint32Array, minimum: number) => {

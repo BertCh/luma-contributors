@@ -5,6 +5,7 @@
 import {expect, test} from 'vitest';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import {buildMemoryManagerModel} from '../../../examples/deck/kepler-compute/src/memory-manager-model';
+import {createMemoryManagerHost} from '../../../examples/deck/kepler-compute/src/memory-manager-host';
 import {MemoryNotifier} from '../../../examples/deck/kepler-compute/src/memory-notifier';
 import {ResidentEvictionHost} from '../../../examples/deck/kepler-compute/src/resident-eviction-host';
 
@@ -135,4 +136,70 @@ test('manual eviction requires enabled policy and a rebuild source', () => {
   expect(host.evictDataset('a')).toBe(false);
   expect(host.status.evictedIds).toEqual(['a']);
   expect(evicted).toEqual(['a']);
+});
+
+test('render-time reservations defer and coalesce memory panel updates', async () => {
+  const {registry} = makeRegistry();
+  const host = createMemoryManagerHost({
+    getRegistry: () => registry,
+    getLayers: () => [],
+    getDatasetLabels: () => ({}),
+    getPinnedIds: () => new Set<string>(),
+    getEvictedIds: () => [],
+    isEvictionEnabled: false,
+    canEvict: () => false,
+    evictDataset: () => false,
+    unloadDataset() {},
+    emitNotice() {},
+    openManager() {}
+  });
+  host.bindRegistry();
+  await Promise.resolve();
+  let updates = 0;
+  const unsubscribe = host.source.subscribe(() => updates++);
+  const first = registry.reserveMemory(10, 'gpu', 'output');
+  const second = registry.reserveMemory(20, 'gpu', 'scratch');
+  expect(host.source.getModel()?.usedBytes).toBe(30);
+  expect(updates).toBe(0);
+  await Promise.resolve();
+  expect(updates).toBe(1);
+  first.release();
+  second.release();
+  unsubscribe();
+  await Promise.resolve();
+  expect(updates).toBe(1);
+});
+
+test('a real registry pressure crossing defers the Redux notice and emits it once', async () => {
+  const {registry} = makeRegistry();
+  const notices: string[] = [];
+  const host = createMemoryManagerHost({
+    getRegistry: () => registry,
+    getLayers: () => [],
+    getDatasetLabels: () => ({}),
+    getPinnedIds: () => new Set<string>(),
+    getEvictedIds: () => [],
+    isEvictionEnabled: false,
+    canEvict: () => false,
+    evictDataset: () => false,
+    unloadDataset() {},
+    emitNotice: notice => {
+      notices.push(notice.key);
+    },
+    openManager() {}
+  });
+  host.bindRegistry();
+  await Promise.resolve();
+  const reservation = registry.reserveMemory(850, 'gpu', 'output');
+  expect(registry.memoryUsage.totalBytes).toBe(850);
+  expect(notices).toEqual([]);
+  host.refresh();
+  expect(notices).toEqual([]);
+  await Promise.resolve();
+  expect(notices).toEqual(['memory-pressure-warning']);
+  host.refresh();
+  await Promise.resolve();
+  expect(notices).toEqual(['memory-pressure-warning']);
+  reservation.release();
+  await Promise.resolve();
 });

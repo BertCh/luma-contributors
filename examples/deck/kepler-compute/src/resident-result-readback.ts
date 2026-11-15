@@ -7,7 +7,7 @@ import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   prepareArrowTableForGPUAnalytics,
   type PreparedArrowAnalyticsTable
-} from '@luma.gl/graph/arrow';
+} from '@luma-contributors/analysis/analysis-core';
 import type {KeplerComputeSession} from '@luma-contributors/kepler';
 import * as arrow from 'apache-arrow';
 

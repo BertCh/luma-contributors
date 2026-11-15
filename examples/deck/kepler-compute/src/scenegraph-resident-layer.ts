@@ -4,6 +4,7 @@
 
 import {
   CompositeLayer,
+  type Attribute,
   type GetPickingInfoParams,
   type Layer,
   type LayerContext,
@@ -15,7 +16,7 @@ import {ScenegraphLayer, type ScenegraphLayerProps} from '@deck.gl/mesh-layers';
 import {load} from '@loaders.gl/core';
 import {GLTFLoader} from '@loaders.gl/scene/gltf';
 import {assert, Buffer, type CommandEncoder, type Device, type ShaderLayout} from '@luma.gl/core';
-import {Computation, DynamicBuffer} from '@luma.gl/engine';
+import {Computation, DynamicBuffer, type Model} from '@luma.gl/engine';
 import {postProcessGLTF} from '@luma.gl/engine/gltf';
 import {areaLighting, ibl, pbrScene, type ShaderModule} from '@luma.gl/shaders';
 import type {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
@@ -257,7 +258,37 @@ class ResidentScenegraphChunkLayer extends ScenegraphLayer<unknown, ScenegraphCh
     return shaders;
   }
 
+  protected override _setModelAttributes(
+    model: Model,
+    changedAttributes: Record<string, Attribute>,
+    bufferLayoutChanged = false,
+    bufferGroupsUpdated = false
+  ): void {
+    if (this.context.device.type !== 'webgpu') {
+      super._setModelAttributes(model, changedAttributes, bufferLayoutChanged, bufferGroupsUpdated);
+      return;
+    }
+    // glTF creates a luma Model, outside Deck's GPUVectorModel subclass check. Feed the
+    // public vector API explicitly so fp64-low constants become GPU buffers on WebGPU.
+    const attributeManager = this.getAttributeManager();
+    if (attributeManager) {
+      model.setGPUAttributes(
+        attributeManager.getGPUVectors(),
+        attributeManager.getBufferLayouts(model)
+      );
+    }
+  }
+
   override draw(parameters: Parameters<ScenegraphLayer['draw']>[0]): void {
+    // The glTF factory installs a legacy depthFormat parameter, which overrides luma's
+    // render-pass attachment detection (Deck's picking pass uses depth16unorm).
+    // Keep material/depth state; let Model.draw infer the format for each actual pass.
+    for (const model of this.getModels()) {
+      if (model.parameters.depthFormat) {
+        const {depthFormat: _depthFormat, ...pipelineParameters} = model.parameters;
+        model.setParameters(pipelineParameters);
+      }
+    }
     if ((this.state as {scenegraph?: unknown}).scenegraph) this.props.encodeInstances();
     super.draw(parameters);
   }

@@ -91,3 +91,23 @@ test('Trips source review rejects unsupported retained CRS before GPU publicatio
     prepareSandboxTrips(source, 'geometry', {timestampEncoding: 'unix-millisecond'})
   ).toThrow(/CRS/);
 });
+
+test('explicit part-column policy survives saved options and rejects malformed roles', () => {
+  const options = {
+    timestampEncoding: 'unix-millisecond',
+    grouping: {
+      timestampColumn: 'time',
+      longitudeColumn: 'lon',
+      latitudeColumn: 'lat',
+      altitudeColumn: 'height',
+      partColumn: 'part'
+    }
+  };
+  expect(readSandboxTripOptions(JSON.parse(JSON.stringify(options)))).toMatchObject(options);
+  expect(() =>
+    readSandboxTripOptions({...options, grouping: {...options.grouping, partColumn: ''}})
+  ).toThrow(/part column/);
+  expect(() =>
+    readSandboxTripOptions({...options, grouping: {...options.grouping, altitudeColumn: 4}})
+  ).toThrow(/altitude column/);
+});

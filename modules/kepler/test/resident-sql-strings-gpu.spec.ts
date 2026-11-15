@@ -84,7 +84,7 @@ test('string predicates run on the GPU and match a JavaScript oracle', async () 
     const {execution, result} = await run(runtime, `SELECT id FROM places WHERE ${predicate}`);
     const expected = rows.filter(matches).map(row => row.id);
     expect(
-      result.map(row => row.id),
+      result.map(row => row['id']),
       predicate
     ).toEqual(expected);
     expect(execution.materialization).toBe('resident');
@@ -99,7 +99,7 @@ test('string projection keeps dictionary labels and aliases work', async () => {
   );
   const star = await run(runtime, "SELECT * FROM places WHERE city = 'Beta'");
   expect(Object.keys(star.result[0])).toEqual(['id', 'city', 'amount', 'quantity']);
-  expect(star.result.every(row => row.city === 'Beta')).toBe(true);
+  expect(star.result.every(row => row['city'] === 'Beta')).toBe(true);
 });
 
 test('ORDER BY a string follows label order, not dictionary insertion order', async () => {
@@ -113,10 +113,10 @@ test('ORDER BY a string follows label order, not dictionary insertion order', as
     .filter(row => row.city !== null)
     .sort((a, b) => compareResidentSqlStrings(a.city!, b.city!) || a.id - b.id)
     .slice(0, 8);
-  expect(result.map(row => row.city)).toEqual(expected.map(row => row.city));
+  expect(result.map(row => row['city'])).toEqual(expected.map(row => row.city));
   expect(execution.rowCount).toBe(8);
   const descending = await run(runtime, 'SELECT city, id FROM places ORDER BY city DESC LIMIT 4');
-  const labels = descending.result.map(row => row.city as string);
+  const labels = descending.result.map(row => row['city'] as string);
   expect([...labels].sort((a, b) => compareResidentSqlStrings(b, a))).toEqual(labels);
 });
 
@@ -135,7 +135,9 @@ test('GROUP BY a string key with a string predicate', async () => {
     groups.set(row.city, group);
   }
   expect(
-    new Map(result.map(row => [row.city, {rows: Number(row.rows), total: Number(row.total)}]))
+    new Map(
+      result.map(row => [row['city'], {rows: Number(row['rows']), total: Number(row['total'])}])
+    )
   ).toEqual(groups);
 });
 
@@ -148,15 +150,17 @@ test('CAST among int, float and bool follows DuckDB rounding and nulls out-of-ra
   expect(execution.rowCount).toBe(ROW_COUNT);
   for (const row of rows) {
     const cells = result[row.id];
-    expect(cells.quantity_float).toBe(row.quantity);
+    expect(cells['quantity_float']).toBe(row.quantity);
     const rounded =
       row.amount === null ? null : castResidentSqlValue(row.amount, 'float32', 'sint32');
-    expect(cells.amount_int ?? null).toBe(rounded?.valid ? rounded.value : null);
-    expect(cells.amount_flag ?? null).toBe(row.amount === null ? null : row.amount !== 0 ? 1 : 0);
-    expect(cells.quantity_unsigned ?? null).toBe(row.quantity >= 0 ? row.quantity : null);
+    expect(cells['amount_int'] ?? null).toBe(rounded?.valid ? rounded.value : null);
+    expect(cells['amount_flag'] ?? null).toBe(
+      row.amount === null ? null : row.amount !== 0 ? 1 : 0
+    );
+    expect(cells['quantity_unsigned'] ?? null).toBe(row.quantity >= 0 ? row.quantity : null);
   }
   const filtered = await run(runtime, 'SELECT id FROM places WHERE CAST(amount AS INTEGER) = -4');
-  expect(filtered.result.map(row => row.id)).toEqual(
+  expect(filtered.result.map(row => row['id'])).toEqual(
     rows
       .filter(
         row =>
@@ -246,7 +250,7 @@ test('right-side join columns gather through the GPU probe and honour duplicate 
     runtime,
     'SELECT o.order_id, c.customer AS buyer FROM orders o FULL JOIN customers c ON o.customer = c.customer'
   );
-  expect(full.result.map(row => [row.order_id ?? null, row.buyer ?? null])).toEqual([
+  expect(full.result.map(row => [row['order_id'] ?? null, row['buyer'] ?? null])).toEqual([
     [1, 'ann'],
     [2, 'bob'],
     [2, 'bob'],
@@ -261,7 +265,7 @@ test('right-side join columns gather through the GPU probe and honour duplicate 
     runtime,
     'SELECT c.region, o.order_id FROM orders o RIGHT JOIN customers c ON o.customer = c.customer'
   );
-  expect(right.result.map(row => row.region).sort()).toEqual([
+  expect(right.result.map(row => row['region']).sort()).toEqual([
     'east',
     'east',
     'north',
@@ -282,7 +286,7 @@ test('multi-batch filters gather every source batch and GROUP BY drops empty slo
   const counts = new Map<string | null, number>();
   for (const row of rows)
     if (row.city !== null) counts.set(row.city, (counts.get(row.city) ?? 0) + 1);
-  expect(new Map(grouped.result.map(row => [row.city as string, Number(row.rows)]))).toEqual(
+  expect(new Map(grouped.result.map(row => [row['city'] as string, Number(row['rows'])]))).toEqual(
     counts
   );
 });

@@ -11,19 +11,19 @@ import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {
   aggregateDecimal128Column,
   aggregateDecimal128OnGpu
-} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-decimal-aggregate';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   splitDecimal128ToWords,
   summarizeDecimal128Reference,
   DECIMAL128_MAXIMUM,
   DECIMAL128_MINIMUM,
   type Decimal128CompareOperator
-} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-decimal-reference';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   aggregateInteger64Range,
   isInteger64InRange
-} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-int64-filter';
-import {summarizeInteger64Reference} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-reference';
+} from '@luma-contributors/analysis/dataframe-analysis';
+import {summarizeInteger64Reference} from '@luma-contributors/analysis/dataframe-analysis';
 import {makeWideNumericWordVectors} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-summary';
 import {
   executeWideSqlAggregate,
@@ -210,6 +210,25 @@ describe('exact Int64 wiring', () => {
       values.map(value => (value === null ? null : BigInt.asUintN(64, value))),
       new arrow.Uint64()
     )
+  });
+
+  it('preserves sliced nullable Int64 chunks during Arrow upload', async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const source = [99n, 11n, null, (1n << 60n) + 3n, -22n, 88n];
+    const original = arrow.vectorFromArray(source, new arrow.Int64());
+    const column = new arrow.Vector([...original.slice(1, 4).data, ...original.slice(4, 5).data]);
+    const vectors = makeWideNumericWordVectors(device, column);
+    try {
+      // A range predicate excludes null rows, matching WHERE semantics.
+      expect(await aggregateInteger64Range({device, ...vectors, signed: true, range: {}})).toEqual(
+        summarizeInteger64Reference([11n, (1n << 60n) + 3n, -22n], true)
+      );
+    } finally {
+      vectors.words.destroy();
+      vectors.validity?.destroy();
+      vectors.unusedValidity?.destroy();
+    }
   });
 
   it('range aggregates equal the BigInt reference for signed and unsigned columns', async () => {

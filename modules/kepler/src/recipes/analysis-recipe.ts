@@ -9,7 +9,10 @@ import {
   parseKeplerDorlingSettings,
   type KeplerDorlingSettings
 } from '../analysis/dorling-cartogram';
-import type {GPUVariableStandardizationMethod} from '@luma-contributors/analysis/dataframe-analysis';
+import type {
+  GPUVariableStandardizationMethod,
+  VariogramModelType
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 import {
   getKeplerPointWeightCoordinateKeys,
@@ -131,7 +134,7 @@ export type KeplerKrigingSettings = Readonly<{
   neighborCount: number;
   minimumNeighbors: number;
   variogram: Readonly<{
-    model: 'spherical' | 'exponential' | 'gaussian';
+    model: VariogramModelType;
     nugget: number;
     sill: number;
     rangeMeters: number;
@@ -140,10 +143,10 @@ export type KeplerKrigingSettings = Readonly<{
   confidenceLevel?: number;
   /** Also run leave-one-out cross-validation over the retained samples. Optional. */
   crossValidation?: boolean;
-  /** Provenance of an automatic weighted-least-squares fit that produced `variogram`. Optional. */
+  /** Provenance of an automatic variogram fit that produced `variogram`. Optional. */
   variogramFit?: Readonly<{
-    method: 'weighted-least-squares';
-    weighting: 'cressie';
+    method: 'weighted-least-squares' | 'vecchia-likelihood' | 'vecchia-fisher';
+    weighting: 'cressie' | 'conditional-likelihood';
     binCount: number;
     pairCount: number;
     maximumLagMeters: number;
@@ -1091,6 +1094,15 @@ export function parseKeplerIDWSettings(value: unknown): KeplerIDWSettings {
   });
 }
 
+/** Variogram families the kriging settings accept: the analysis fit and kriging kernels cover all five. */
+const KEPLER_KRIGING_VARIOGRAM_MODELS = [
+  'spherical',
+  'exponential',
+  'gaussian',
+  'matern-3/2',
+  'matern-5/2'
+] as const satisfies readonly VariogramModelType[];
+
 /** Ordinary geographic kriging with explicit manual variogram and no silent capacity clamping. */
 export function parseKeplerKrigingSettings(value: unknown): KeplerKrigingSettings {
   const settings = readObject(value);
@@ -1135,7 +1147,7 @@ export function parseKeplerKrigingSettings(value: unknown): KeplerKrigingSetting
     neighborCount,
     minimumNeighbors: readInteger(settings['minimumNeighbors'], 1, neighborCount),
     variogram: Object.freeze({
-      model: readChoice(variogram['model'], ['spherical', 'exponential', 'gaussian'] as const),
+      model: readChoice(variogram['model'], KEPLER_KRIGING_VARIOGRAM_MODELS),
       nugget,
       sill,
       rangeMeters
@@ -1182,10 +1194,23 @@ function parseKrigingDiagnosticSettings(settings: Record<string, unknown>) {
       !Number.isFinite(criterion)
     )
       throw new Error('Invalid kriging variogram fit provenance');
+    if (
+      (fitObject['method'] === 'weighted-least-squares') !==
+      (fitObject['weighting'] === 'cressie')
+    )
+      throw new Error('Invalid kriging variogram fit weighting for method');
     result.variogramFit = Object.freeze({
-      method: readChoice(fitObject['method'], ['weighted-least-squares'] as const),
-      weighting: readChoice(fitObject['weighting'], ['cressie'] as const),
-      binCount: readInteger(fitObject['binCount'], 2, 512),
+      method: readChoice(fitObject['method'], [
+        'weighted-least-squares',
+        'vecchia-likelihood',
+        'vecchia-fisher'
+      ] as const),
+      weighting: readChoice(fitObject['weighting'], ['cressie', 'conditional-likelihood'] as const),
+      binCount: readInteger(
+        fitObject['binCount'],
+        fitObject['method'] === 'weighted-least-squares' ? 2 : 0,
+        512
+      ),
       pairCount: readInteger(fitObject['pairCount'], 0, Number.MAX_SAFE_INTEGER),
       maximumLagMeters,
       criterion

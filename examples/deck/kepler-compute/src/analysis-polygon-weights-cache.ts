@@ -4,11 +4,11 @@
 
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
 import {
-  MAXIMUM_POLYGON_CONTIGUITY_ROWS,
+  POLYGON_CONTIGUITY_MAXIMUM_ROWS,
   POLYGON_CONTIGUITY_PREPARATION_BYTES,
-  preparePackedPolygonContiguityTopology,
-  type PreparedPolygonTopologySource
-} from '@luma.gl/engine/arrow';
+  preparePolygonContiguityTopology,
+  type PreparedKeplerPolygonTopologySource
+} from './geometry-preparation';
 import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph,
@@ -28,7 +28,7 @@ import {
 /** Borrowed original-coordinate polygon data, charged to the publication's CPU reservation. */
 export type PolygonAnalysisSource = {
   column: string;
-  source: PreparedPolygonTopologySource;
+  source: PreparedKeplerPolygonTopologySource;
 };
 
 type PolygonDiagnostics = readonly [Buffer, Buffer, Buffer, Buffer];
@@ -89,7 +89,7 @@ export class AnalysisPolygonWeightsCache {
   ) {
     if (
       dataset.rowCount < 1 ||
-      dataset.rowCount > MAXIMUM_POLYGON_CONTIGUITY_ROWS ||
+      dataset.rowCount > POLYGON_CONTIGUITY_MAXIMUM_ROWS ||
       source.source.metadata.rowCount !== dataset.rowCount ||
       !dataset.value.source.schema.fields.some(field => field.name === source.column)
     )
@@ -240,7 +240,7 @@ export class AnalysisPolygonWeightsCache {
     const buffers: Buffer[] = [];
     let reservation: KeplerMemoryReservation | undefined;
     try {
-      const prepared = preparePackedPolygonContiguityTopology(this.source.source);
+      const prepared = preparePolygonContiguityTopology(this.source.source);
       if (prepared.cpuByteLength > staging.byteLength)
         throw new Error('Polygon topology exceeds the admitted CPU preparation budget');
       const byteLength =

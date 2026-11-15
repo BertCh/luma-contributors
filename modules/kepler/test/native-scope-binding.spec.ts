@@ -115,9 +115,9 @@ it('native scope binding publishes distinct same-field plots, dynamic domains an
   async function update(filters: readonly KeplerComputeFilter[]): Promise<void> {
     table.filterTable(filters, nativeLayers);
     expect(failures).toEqual([]);
-    const encoder = device.createCommandEncoder();
+    const encoder = device!.createCommandEncoder();
     primary.encode(encoder);
-    device.submit(encoder.finish());
+    device!.submit(encoder.finish());
     expect(await binding.readSummary()).toBe(true);
     binding.publishHistograms(table.lumaCompute);
   }
@@ -342,9 +342,9 @@ it('native registration transactions defer selector readiness and commit replace
     }
   };
   async function selectedCount(): Promise<number | undefined> {
-    const encoder = device.createCommandEncoder();
+    const encoder = device!.createCommandEncoder();
     primary.encode(encoder);
-    device.submit(encoder.finish());
+    device!.submit(encoder.finish());
     expect(await binding.readSummary()).toBe(true);
     binding.publishHistograms(table.lumaCompute);
     return (await primary.readSelectedCount())?.selectedCount;
@@ -507,9 +507,9 @@ it('native topology omits ordinary GPU ranges, includes CPU predicates and inver
   async function update(filters: KeplerComputeFilter[]) {
     table.filterTable(filters, nativeLayers);
     expect(failures).toEqual([]);
-    const encoder = device.createCommandEncoder();
+    const encoder = device!.createCommandEncoder();
     primary.encode(encoder);
-    device.submit(encoder.finish());
+    device!.submit(encoder.finish());
     expect(await binding.readSummary()).toBe(true);
     return {
       display: await readMask(binding.getLayerMask('layer')),

@@ -41,6 +41,7 @@ export type ResidentWideColumnStatistics = {
  * Float32 copy of a 64-bit or Float64 column, expressed relative to the column minimum so a
  * timestamp in milliseconds keeps range/2^24 resolution instead of losing its low digits. Nulls,
  * NaN and infinities are invalid rows (counted as nulls, like the bounded CPU statistics).
+ * A finite source range that overflows this relative Float32 copy is refused, not made invalid.
  */
 export function makeRelativeFloat32Column(
   vector: arrow.Vector,
@@ -66,7 +67,14 @@ export function makeRelativeFloat32Column(
   }
   if (!validCount) base = 0;
   const values = new Float32Array(rowCount);
-  for (let row = 0; row < rowCount; row++) if (validity[row]) values[row] = wide[row] - base;
+  for (let row = 0; row < rowCount; row++) {
+    if (!validity[row]) continue;
+    values[row] = wide[row] - base;
+    if (!Number.isFinite(values[row]))
+      throw new Error(
+        'GPU column statistics range exceeds Float32 after subtracting the minimum; narrow the population to at most 262,144 rows for CPU statistics, or use SQL.'
+      );
+  }
   return {values, validity, base, validCount};
 }
 

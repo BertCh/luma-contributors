@@ -5,7 +5,7 @@
 import {expect, test} from 'vitest';
 import * as arrow from 'apache-arrow';
 import {Buffer} from '@luma.gl/core';
-import {prepareGeometrySource} from '@luma.gl/engine/arrow';
+import {prepareKeplerGeometrySource} from '../../../examples/deck/kepler-compute/src/geometry-preparation';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {KeplerComputeSession} from '../src/session/compute-session';
 import type {
@@ -58,7 +58,7 @@ test('polygon analysis keeps original rows, rejects incomplete topology and reus
     workingMemoryBudgetBytes: 8 * 1024 * 1024,
     dimensions: [{id: 'row', column: 'row', kind: 'range'}]
   });
-  const prepared = prepareGeometrySource([
+  const prepared = prepareKeplerGeometrySource([
     {id: 'first', rows: geometries.slice(0, 2)},
     {id: 'second', rows: geometries.slice(2)}
   ]);

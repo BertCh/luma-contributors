@@ -24,6 +24,11 @@ export type RemoteLoadOptions = {
   fetchFunction?: typeof fetch;
 };
 
+export type SourceTypeRoutingOptions = {
+  /** Retain IPC source types for explicit preparation instead of converting wide integers to labels. */
+  preserveArrowTypes?: boolean;
+};
+
 export const REMOTE_SOURCE_MAXIMUM_BYTES = 128 * 1024 * 1024;
 export const REMOTE_SOURCE_FILE_ACCEPT = '.arrow,.feather,.ipc,.csv,.tsv,.geojson,.json,.parquet';
 
@@ -337,13 +342,15 @@ function suggestCoordinates(table: arrow.Table): CoordinateRoles | undefined {
 export async function makeSourceCandidateFromBytes(
   bytes: Uint8Array,
   label: string,
-  contentType: string | null = null
+  contentType: string | null = null,
+  options: SourceTypeRoutingOptions = {}
 ): Promise<SourceCandidate> {
   const format = sniffRemoteSourceFormat(label, contentType, bytes);
   return makeSourceCandidateFromTable(
     await decodeRemoteBytesToArrowTable(bytes, format),
     label,
-    format
+    format,
+    options
   );
 }
 
@@ -351,9 +358,15 @@ export async function makeSourceCandidateFromBytes(
 export function makeSourceCandidateFromTable(
   decoded: arrow.Table,
   label: string,
-  format: RemoteSourceFormat
+  format: RemoteSourceFormat,
+  options: SourceTypeRoutingOptions = {}
 ): SourceCandidate {
-  const routed = routeArrowTable(decoded, {wkbGeometryColumns: readGeoParquetColumns(decoded)});
+  // Explicit IPC preparation can retain Int64/Uint64 and let the analytics adapter enforce the
+  // chosen Float32 error budget. The default import still keeps every digit as a category label.
+  const routed =
+    format === 'arrow' && options.preserveArrowTypes
+      ? {table: decoded, routes: []}
+      : routeArrowTable(decoded, {wkbGeometryColumns: readGeoParquetColumns(decoded)});
   const table = routed.table;
   const geometryName =
     format === 'geojson'
@@ -362,6 +375,7 @@ export function makeSourceCandidateFromTable(
   const coordinates = geometryName ? undefined : suggestCoordinates(table);
   return {
     table,
+    originalTable: decoded,
     label,
     isCurrent: () => true,
     ...(geometryName ? {suggestedGeometryColumn: geometryName} : {}),
@@ -388,10 +402,14 @@ export async function loadRemoteSource(
 }
 
 /** Local file counterpart used by the file input; same decoders and routing as URLs. */
-export async function loadLocalSource(file: File): Promise<SourceCandidate> {
+export async function loadLocalSource(
+  file: File,
+  options: SourceTypeRoutingOptions = {}
+): Promise<SourceCandidate> {
   return makeSourceCandidateFromBytes(
     new Uint8Array(await file.arrayBuffer()),
     file.name,
-    file.type || null
+    file.type || null,
+    options
   );
 }

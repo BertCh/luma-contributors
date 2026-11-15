@@ -37,7 +37,7 @@ async function runCase(rows) {
       errors.push(message.text());
   });
   try {
-    await page.goto(`http://127.0.0.1:5318/?rows=${rows}`, {waitUntil: 'domcontentloaded'});
+    await page.goto(`${process.env.KEPLER_BASE_URL ?? 'http://127.0.0.1:5318'}/?rows=${rows}`, {waitUntil: 'domcontentloaded'});
     await page.waitForFunction(
       () => {
         const api = window.__keplerComputeTest;

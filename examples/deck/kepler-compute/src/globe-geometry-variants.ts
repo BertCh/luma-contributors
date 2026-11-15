@@ -5,10 +5,10 @@
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import type * as arrow from 'apache-arrow';
 import {
-  prepareGeometrySourceIncremental,
-  type PreparedGeometryGPUVectors,
-  type PreparedGeometrySource
-} from '@luma.gl/engine/arrow';
+  prepareKeplerGeometrySourceIncremental,
+  type PreparedKeplerGeometryGPUVectors,
+  type PreparedKeplerGeometrySource
+} from './geometry-preparation';
 import type {KeplerMemoryReservation} from '@luma-contributors/kepler';
 
 /**
@@ -64,9 +64,9 @@ export type GlobeVariantStatus = Readonly<{
 
 export type GlobeGeometryVariantsProps = {
   /** Creates a sliceable preparation for a resolution; each `next()` should be one bounded step. */
-  createPreparation(resolutionDegrees: number): Generator<void, PreparedGeometrySource, void>;
+  createPreparation(resolutionDegrees: number): Generator<void, PreparedKeplerGeometrySource, void>;
   /** Uploads prepared geometry; throws on device-limit failures. */
-  makeVectors(prepared: PreparedGeometrySource): PreparedGeometryGPUVectors;
+  makeVectors(prepared: PreparedKeplerGeometrySource): PreparedKeplerGeometryGPUVectors;
   /** Registry admission. `byteLength` is an upper bound; the result is released with the variant. */
   reserve(byteLength: number): KeplerMemoryReservation;
   /** Bytes of the planar geometry, to scale the admission bound. */
@@ -83,7 +83,7 @@ export type GlobeGeometryVariantsProps = {
 };
 
 type Resident = {
-  vectors: PreparedGeometryGPUVectors;
+  vectors: PreparedKeplerGeometryGPUVectors;
   reservation: KeplerMemoryReservation;
   resolutionDegrees: number;
 };
@@ -95,7 +95,7 @@ export class GlobeGeometryVariants {
   private resident?: Resident;
   private preparing?: {
     resolutionDegrees: number;
-    generator: Generator<void, PreparedGeometrySource, void>;
+    generator: Generator<void, PreparedKeplerGeometrySource, void>;
   };
   private band?: number;
   private timer?: unknown;
@@ -126,7 +126,7 @@ export class GlobeGeometryVariants {
    * The variant to draw now, or undefined while the first one is still being prepared. Starts the
    * background preparation for the zoom's band when the resident variant is a different resolution.
    */
-  getVariant(zoom: number | undefined): PreparedGeometryGPUVectors | undefined {
+  getVariant(zoom: number | undefined): PreparedKeplerGeometryGPUVectors | undefined {
     if (this.destroyed) return undefined;
     this.band = getGlobeZoomBand(zoom, this.band);
     const resolutionDegrees = GLOBE_ZOOM_BANDS[this.band].resolutionDegrees;
@@ -140,7 +140,7 @@ export class GlobeGeometryVariants {
   }
 
   /** The resident variant without starting any preparation (planar rebuild draws it meanwhile). */
-  peekVariant(): PreparedGeometryGPUVectors | undefined {
+  peekVariant(): PreparedKeplerGeometryGPUVectors | undefined {
     return this.destroyed ? undefined : this.resident?.vectors;
   }
 
@@ -200,14 +200,14 @@ export class GlobeGeometryVariants {
     }
   }
 
-  private install(resolutionDegrees: number, prepared: PreparedGeometrySource): void {
+  private install(resolutionDegrees: number, prepared: PreparedKeplerGeometrySource): void {
     const planarBytes = this.props.getPlanarByteLength();
     // Cuts scale with the square of the refinement relative to the 5 degree baseline.
     const refinement = (5 / resolutionDegrees) ** 2;
     const maximumBytes = this.props.maximumBytes ?? DEFAULT_MAXIMUM_BYTES;
     const budget = Math.min(maximumBytes, 8 * 1024 * 1024 + planarBytes * 16 * refinement);
     let reservation: KeplerMemoryReservation | undefined;
-    let vectors: PreparedGeometryGPUVectors | undefined;
+    let vectors: PreparedKeplerGeometryGPUVectors | undefined;
     try {
       // Peak residency is bounded: the previous variant is retired before the replacement uploads.
       const previous = this.resident;
@@ -265,8 +265,8 @@ export function* prepareGlobeGeometryIncrementally(
     source: arrow.Table,
     name: string,
     options: {globe?: {resolutionDegrees: number}}
-  ) => PreparedGeometrySource
-): Generator<void, PreparedGeometrySource, void> {
+  ) => PreparedKeplerGeometrySource
+): Generator<void, PreparedKeplerGeometrySource, void> {
   const field = source.schema.fields.find(candidate => candidate.name === name);
   if (!field || field.metadata.get('ARROW:extension:name') !== undefined) {
     yield;
@@ -289,7 +289,7 @@ export function* prepareGlobeGeometryIncrementally(
         )
       };
   }
-  return yield* prepareGeometrySourceIncremental(readBatches(), {
+  return yield* prepareKeplerGeometrySourceIncremental(readBatches(), {
     crs,
     ...(resolutionDegrees === undefined ? {} : {globe: {resolutionDegrees}})
   });
