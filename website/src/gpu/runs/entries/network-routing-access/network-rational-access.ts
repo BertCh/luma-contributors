@@ -64,7 +64,7 @@ export default defineOperationRun({
           assignments: assignments.view,
           scores: scores.view,
           unservedDemand: unserved.view,
-          status: status.view
+          summary: status.view
         }
       })
     );

@@ -22,6 +22,10 @@ import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import ts from 'typescript';
 
+// The extracted operations use domain verbs rather than create/make. Their word arithmetic,
+// selection-expression builders and upload helpers remain implementation building blocks.
+const WIDE_NUMERIC_HELPER_FILE_PATTERN = /\/column-profile\/(?:gpu-wide-numeric-scan|wide-numeric-gpu-|numeric-narrowing-diagnostics)/;
+
 const websiteDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryRoot = resolve(websiteDirectory, '..');
 const analysisSource = join(repositoryRoot, 'modules/analysis/src');
@@ -104,6 +108,17 @@ function readOntology(): Map<string, InventoryOntology> {
         for (const property of node.properties) {
           if (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)) {
             fields.set(property.name.text, property.initializer);
+          }
+        }
+        // Extracted domain functions use aggregate/diagnose/prepare verbs. Their explicit
+        // descriptors supply inventory metadata without importing GPU execution code here.
+        if (name === 'reused-analysis-catalog.ts') {
+          const exportName = fields.get('exportName');
+          const capability = fields.get('primaryCapability');
+          const role = fields.get('role');
+          if (exportName && ts.isStringLiteralLike(exportName) && capability && ts.isStringLiteralLike(capability) && !(role && ts.isStringLiteralLike(role) && role.text === 'helper')) {
+            const spatial = capability.text === 'spatial-neighborhoods';
+            byOperator.set(exportName.text, {capability: capability.text, domain: spatial ? 'spatial-statistics' : 'dataframe-analysis', stage: spatial ? 'construct' : 'aggregate', inputs: readStrings(fields.get('inputs')), outputs: readStrings(fields.get('outputs'))});
           }
         }
         const operators = readStrings(fields.get('operators'));
@@ -277,6 +292,7 @@ function main(): void {
       const isMarkedInternal = ts.getJSDocTags(declaration).some(tag => tag.tagName.text === 'internal');
       // GPUGraph operation forms and CPU twins of contributors that have their own entry.
       const isOperationForm = OPERATION_FORM_FILE_PATTERN.test(declarationFile);
+      if (WIDE_NUMERIC_HELPER_FILE_PATTERN.test(declarationFile) && !isOperator) continue;
       if (!included || (isCoreInternal && !isOperator) || isMarkedInternal || isOperationForm) continue;
 
       const signature = isClass

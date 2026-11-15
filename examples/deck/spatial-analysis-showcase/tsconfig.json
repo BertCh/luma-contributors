@@ -2,7 +2,11 @@
   "compilerOptions": {
     "target": "ESNext",
     "useDefineForClassFields": true,
-    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ESNext"
+    ],
     "allowJs": false,
     "skipLibCheck": true,
     "strict": true,
@@ -11,7 +15,20 @@
     "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["@webgpu/types", "vite/client"]
+    "types": [
+      "@webgpu/types",
+      "vite/client"
+    ],
+    "paths": {
+      "@deck.gl/core": [
+        "./node_modules/@deck.gl/core"
+      ],
+      "@deck.gl/layers": [
+        "./node_modules/@deck.gl/layers"
+      ]
+    }
   },
-  "include": ["."]
+  "include": [
+    "."
+  ]
 }

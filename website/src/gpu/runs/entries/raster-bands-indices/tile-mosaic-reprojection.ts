@@ -67,13 +67,16 @@ export default defineOperationRun({
     const result = builder.allocate('values', 'float32', cellCount);
     const validity = builder.allocate('validity', 'uint32', cellCount);
     builder.graph.add(
-      new GPURasterTileReprojection({
-        sourceGrid,
-        destinationGrid,
-        sources,
-        method: 'bilinear',
-        output: {values: result.view, validity: validity.view}
-      })
+      builder.own(
+        new GPURasterTileReprojection({
+          sourceGrid,
+          destinationGrid,
+          sources,
+          method: 'bilinear',
+          output: {values: result.view, validity: validity.view}
+        }),
+        {reusable: true}
+      )
     );
     return {
       outputs: {result},

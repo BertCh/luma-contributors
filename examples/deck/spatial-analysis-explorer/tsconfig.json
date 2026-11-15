@@ -18,7 +18,12 @@
     "types": [
       "@webgpu/types",
       "vite/client"
-    ]
+    ],
+    "paths": {
+      "@deck.gl/core": [
+        "./node_modules/@deck.gl/core"
+      ]
+    }
   },
   "include": [
     "."

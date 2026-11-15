@@ -785,26 +785,30 @@ export async function createTiledObservations(
       const interpolationNoDataPolicy =
         options.resampling === 'bilinear-strict' ? 'strict' : 'renormalize';
       graph.add(
-        new GPURasterTileReprojection({
-          id: 'half-cell-shift-tiled-reprojection',
-          sourceGrid: rasterMetadata,
-          destinationGrid: destinationMetadata,
-          sources: reprojectionSources,
-          method: interpolationMethod,
-          noDataPolicy: interpolationNoDataPolicy,
-          output: resamplingOutput
-        })
+        resources.track(
+          new GPURasterTileReprojection({
+            id: 'half-cell-shift-tiled-reprojection',
+            sourceGrid: rasterMetadata,
+            destinationGrid: destinationMetadata,
+            sources: reprojectionSources,
+            method: interpolationMethod,
+            noDataPolicy: interpolationNoDataPolicy,
+            output: resamplingOutput
+          })
+        )
       );
       graph.add(
-        new GPURasterReprojection({
-          id: 'half-cell-shift-untiled-reference',
-          sourceGrid: rasterMetadata,
-          destinationGrid: destinationMetadata,
-          input: sourceReferenceBand,
-          method: interpolationMethod,
-          noDataPolicy: interpolationNoDataPolicy,
-          output: referenceOutput
-        })
+        resources.track(
+          new GPURasterReprojection({
+            id: 'half-cell-shift-untiled-reference',
+            sourceGrid: rasterMetadata,
+            destinationGrid: destinationMetadata,
+            input: sourceReferenceBand,
+            method: interpolationMethod,
+            noDataPolicy: interpolationNoDataPolicy,
+            output: referenceOutput
+          })
+        )
       );
       addKernelPass(graph, {
         id: 'tiled-resampling-reference-difference',

@@ -75,7 +75,7 @@ export default defineOperationRun({
           selectedFacilities: selected.view,
           assignments: assignments.view,
           objective: objective.view,
-          status: status.view
+          summary: status.view
         }
       })
     );

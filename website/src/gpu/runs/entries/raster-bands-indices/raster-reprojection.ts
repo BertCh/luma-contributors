@@ -39,13 +39,16 @@ export default defineOperationRun({
     const result = builder.allocate('values', 'float32', cellCount);
     const validity = builder.allocate('validity', 'uint32', cellCount);
     builder.graph.add(
-      new GPURasterReprojection({
-        sourceGrid,
-        destinationGrid,
-        input: makeGPURasterBand(source.view, sourceGrid, {id: 'source'}),
-        method: values.method === 1 ? 'bilinear' : 'nearest',
-        output: {values: result.view, validity: validity.view}
-      })
+      builder.own(
+        new GPURasterReprojection({
+          sourceGrid,
+          destinationGrid,
+          input: makeGPURasterBand(source.view, sourceGrid, {id: 'source'}),
+          method: values.method === 1 ? 'bilinear' : 'nearest',
+          output: {values: result.view, validity: validity.view}
+        }),
+        {reusable: true}
+      )
     );
     return {outputs: {source, result}};
   },

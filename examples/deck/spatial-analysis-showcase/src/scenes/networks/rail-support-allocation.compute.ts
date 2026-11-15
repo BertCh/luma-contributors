@@ -322,7 +322,7 @@ export async function createRailSupportAllocation(
           selectedFacilities: view(outputs.selected, 'uint32', facilityCount),
           assignments: view(outputs.assignments, 'uint32', demandCount),
           objective: view(outputs.objective, 'float32', 1),
-          status: view(outputs.status, 'uint32', 4)
+          summary: view(outputs.status, 'uint32', 4)
         }
       })
     );
@@ -393,7 +393,7 @@ export async function createRailSupportAllocation(
           assignments: view(output.assignments, 'float32', demandCount * facilityCount),
           scores: view(output.scores, 'float32', demandCount),
           unservedDemand: view(output.unserved, 'float32', demandCount),
-          status: view(output.status, 'uint32', 4)
+          summary: view(output.status, 'uint32', 4)
         }
       })
     );
