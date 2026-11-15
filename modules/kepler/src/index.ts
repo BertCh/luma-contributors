@@ -38,6 +38,7 @@ export {
   type KeplerSelectionScopePlan
 } from './selection/selection-scope-plan';
 export * from './session/compute-session';
+export * from './session/metered-command-graph';
 export * from './session/resident-dataset';
 export * from './session/selection-export';
 export * from './session/arrow-stream-publisher';
@@ -47,3 +48,13 @@ export {
   planKeplerTripAnimation,
   type KeplerTripAnimationPlan
 } from './analysis/trip-animation';
+
+export * from './session/device-out-of-memory-scope';
+
+export * from './analysis/rate-invalid-diagnostics';
+
+export * from './profile/index';
+export * from './descriptors/index';
+export * from './presentation/index';
+export * from './curated/index';
+export * from './workflows/index';

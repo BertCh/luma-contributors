@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getResidentMapSplitMode} from './resident-view-plan';
+import {SAMPLE_MAP_BACKGROUND_STYLE} from './sample-map-catalog';
+
 import React, {useState, useEffect, useContext} from 'react';
 import {
   MapContainerFactory,
@@ -22,8 +25,10 @@ import {
   MapsLayoutFactory,
   LayerLegendContentFactory,
   LayerColorLegendFactory,
-  ContainerFactory
+  ContainerFactory,
+  CustomPanelsFactory
 } from '@kepler.gl/components';
+import {WorkbenchPanelsFactory} from './workflow/workbench-app';
 import {appState} from './app-state';
 import {SINGLE_VIEW_REASON} from './resident-action-guards';
 import {
@@ -202,10 +207,11 @@ function ComputeMapContainerFactory(...dependencies: Parameters<typeof MapContai
     if (props.mapState !== appState.previousNativeMapState) {
       appState.previousNativeMapState = props.mapState;
       appState.nativeMapZoom = props.mapState.zoom;
-      // Deck's GlobeViewport carries `resolution` (degrees; Kepler uses 5), which selects H3's polygon branch.
+      // The host's native viewport carries `resolution` in degrees (Kepler uses 5; the Deck view gets 72 intervals through withoutGlobeViewClear), which selects H3's polygon branch.
       appState.nativeMapViewport = makeNativeMapViewport(props.mapState);
     }
-    const isDual = props.mapState.mapSplitMode === 'DUAL_MAP' && Boolean(appState.secondaryView);
+    const isDual =
+      getResidentMapSplitMode(props.mapState) === 'DUAL_MAP' && Boolean(appState.secondaryView);
     const isSwipe =
       props.mapState.mapSplitMode === 'SWIPE_COMPARE' && Boolean(appState.secondaryView);
     const mapStateActions = getViewportSizeFilteredActions(props, isSwipe);
@@ -371,6 +377,7 @@ const computeInjector = chartInjector
     })
   )
   .provide(MapControlFactory, ResidentMapControlFactory)
+  .provide(CustomPanelsFactory, WorkbenchPanelsFactory as never)
   .provide(LayerManagerFactory, NativeLayerManagerFactory)
   .provide(LayerConfiguratorFactory, createFlowConfiguratorFactory())
   .provide(LoadDataModalFactory, NativeLoadDataModalFactory)
@@ -483,14 +490,4 @@ const NativeChartManager = computeInjector.get(ChartManagerFactory);
 
 export const KeplerGl = computeInjector.get(ContainerFactory);
 
-export const mapStyles = [
-  {
-    id: 'compute-background',
-    label: 'Compute background',
-    style: {
-      version: 8,
-      sources: {},
-      layers: [{id: 'background', type: 'background', paint: {'background-color': '#101d2b'}}]
-    }
-  }
-];
+export const mapStyles = [SAMPLE_MAP_BACKGROUND_STYLE];

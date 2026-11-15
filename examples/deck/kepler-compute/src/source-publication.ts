@@ -13,20 +13,21 @@ import type {
   KeplerMemoryReservation
 } from '@luma-contributors/kepler';
 import {
-  prepareGeometrySource,
-  prepareGeometrySourceFromArrow,
-  makeGeometryGPUVectors,
-  prepareGeoJSONTripsFromArrow,
-  makeGeoJSONTripGPUVectors,
-  makeTabularTripGPUVectors,
-  prepareTabularTripsFromArrow,
-  isTabularTrips,
-  type GeoJSONTripGPUVectors,
-  type GlobeGeometryOptions,
-  type PreparedGeometryGPUVectors,
-  type PreparedGeoJSONTrips
-} from '@luma.gl/engine/arrow';
-import {type PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
+  prepareKeplerGeometrySource,
+  prepareKeplerGeometrySourceFromArrow,
+  makeKeplerGeometryGPUVectors,
+  prepareKeplerGeoJSONTripsFromArrow,
+  makeKeplerGeoJSONTripGPUVectors,
+  makeKeplerTabularTripGPUVectors,
+  prepareKeplerTabularTripsFromArrow,
+  isKeplerTabularTrips,
+  type KeplerGeoJSONTripGPUVectors,
+  type KeplerGlobeGeometryOptions,
+  type PreparedKeplerGeometryGPUVectors,
+  type PreparedKeplerGeoJSONTrips
+} from './geometry-preparation';
+import {type PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/analysis/analysis-core';
+import {getGeographicViewportBounds} from '@luma-contributors/analysis/geospatial-analysis';
 import {GeometryRuntime} from './geometry-runtime';
 import {GlobeGeometryVariants, prepareGlobeGeometryIncrementally} from './globe-geometry-variants';
 import {PlanarGeometryHibernation} from './planar-geometry-hibernation';
@@ -42,6 +43,7 @@ import {AnalysisRuntime} from './analysis-runtime';
 import type {PolygonAnalysisSource} from './analysis-polygon-weights-cache';
 import {getPolygonAnalysisSource} from './polygon-publication-source';
 import {PublishedDatasetRuntime} from './published-dataset-runtime';
+import {getPublishedTableSortMemoryBudgetBytes} from './resident-table-sort-keys';
 import {TimeRuntime} from './time-runtime';
 import {assertNotResidentSource, selectRangeDomain} from './resident-source-guards';
 import {ResidentScopeBinding} from './resident-scope-binding';
@@ -65,6 +67,8 @@ import {
   type TabularPointGPUVectors,
   type CoordinateRoles
 } from './point-position-source';
+const TIME_FILTER_STEP_MILLISECONDS = 1000;
+
 export type {CoordinateRoles} from './point-position-source';
 export type PublishedSource = {
   id: string;
@@ -109,7 +113,7 @@ export class PublishedSourceRuntime {
   private planarHibernation?: PlanarGeometryHibernation;
   readonly trip?: TripRuntime;
   flow?: FlowRuntime;
-  readonly tripGeometry?: GeoJSONTripGPUVectors;
+  readonly tripGeometry?: KeplerGeoJSONTripGPUVectors;
   readonly h3?: H3GPUVectors;
   private tripReservation?: KeplerMemoryReservation;
   private tripSourceReservation?: KeplerMemoryReservation;
@@ -293,6 +297,9 @@ export class PublishedSourceRuntime {
           dimension: name,
           kind: 'time',
           domain: time.domainMilliseconds ?? [0, 0],
+          // Native time filters step by one second. Without a step Kepler's brush rounds to a zero
+          // step, divides by zero and reports [NaN, NaN].
+          step: TIME_FILTER_STEP_MILLISECONDS,
           validateRange: time.validateRange,
           ...(interval ? {intervalEndColumn: interval.endColumn} : {})
         };
@@ -384,7 +391,7 @@ export class PublishedSourceRuntime {
           maximumPageSize: 256,
           maximumReadbackBytes: 65536
         },
-        sortMemoryBudgetBytes: 8 * 1024 * 1024 + dataset.rowCount * 32,
+        sortMemoryBudgetBytes: getPublishedTableSortMemoryBudgetBytes(dataset.rowCount),
         requestUpdate,
         getDerivedColumns: () => this.analysis?.getTableColumns(),
         destroyDerived: async completion => {
@@ -392,8 +399,13 @@ export class PublishedSourceRuntime {
         }
       });
       consumer = this.consumer;
-      if (geometryColumn && !tripOptions) {
-        const geometry = preparePublishedGeometry(dataset.value.source, geometryColumn);
+      // A GeoJSON trip source can also back ordinary GeoJSON layers (world_flights saves
+      // both animated Flights and static Paths). Admit both representations through their
+      // existing budgets. A grouped tabular trip ID column is not a geometry column.
+      if (geometryColumn && !tripOptions?.grouping) {
+        const geometry = preparePublishedGeometry(dataset.value.source, geometryColumn, {
+          timedLineStrings: Boolean(tripOptions)
+        });
         const polygonAnalysis = getPolygonAnalysisSource(geometry, geometryColumn);
         this.polygonUnavailableReason = polygonAnalysis.reason;
         const sourceBytes = geometry.batches.reduce(
@@ -423,7 +435,7 @@ export class PublishedSourceRuntime {
           'source'
         );
         this.retainedPolygonSource = polygonAnalysis.source;
-        const vectors = makeGeometryGPUVectors(session.device, geometry);
+        const vectors = makeKeplerGeometryGPUVectors(session.device, geometry);
         try {
           this.geometry = new GeometryRuntime({
             device: session.device,
@@ -482,7 +494,7 @@ export class PublishedSourceRuntime {
             Math.max(4, batch.positions.byteLength) +
             Math.max(4, batch.timestamps.byteLength) +
             Math.max(4, batch.sourceRows.byteLength) +
-            (isTabularTrips(preparedTrips)
+            (isKeplerTabularTrips(preparedTrips)
               ? Math.max(4, preparedTrips.batches[index].memberOffsets.byteLength) +
                 Math.max(4, preparedTrips.batches[index].memberRows.byteLength)
               : 0) +
@@ -496,9 +508,9 @@ export class PublishedSourceRuntime {
           0
         );
         this.tripReservation = session.registry.reserveMemory(gpuBytes, 'gpu', 'source');
-        this.tripGeometry = isTabularTrips(preparedTrips)
-          ? makeTabularTripGPUVectors(session.device, preparedTrips)
-          : makeGeoJSONTripGPUVectors(session.device, preparedTrips);
+        this.tripGeometry = isKeplerTabularTrips(preparedTrips)
+          ? makeKeplerTabularTripGPUVectors(session.device, preparedTrips)
+          : makeKeplerGeoJSONTripGPUVectors(session.device, preparedTrips);
         if (this.tripGeometry.gpuByteLength > gpuBytes)
           throw new Error('Prepared Trips exceed the admitted source budget');
         this.trip = new TripRuntime({
@@ -512,16 +524,11 @@ export class PublishedSourceRuntime {
             4 * 1024 * 1024 + preparedTrips.tripCount * 64 + preparedTrips.vertexCount * 4
         });
         this.trip.prepare();
-        const bounds: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
-        for (const batch of preparedTrips.batches) {
-          for (let offset = 0; offset < batch.positions.length; offset += 3) {
-            bounds[0] = Math.min(bounds[0], batch.positions[offset]);
-            bounds[1] = Math.min(bounds[1], batch.positions[offset + 1]);
-            bounds[2] = Math.max(bounds[2], batch.positions[offset]);
-            bounds[3] = Math.max(bounds[3], batch.positions[offset + 1]);
-          }
-        }
-        if (bounds.every(Number.isFinite)) this.bounds = bounds;
+        // Share all-part fitting bounds with native metadata and zoom-to-layer. A tight Float32
+        // envelope can put an original boundary coordinate just outside the fitted viewport.
+        this.bounds =
+          getGeographicViewportBounds(preparedTrips.batches.map(batch => batch.positions)) ??
+          undefined;
       }
       if (h3Column) {
         const preparedCells = preparePublishedH3(
@@ -713,7 +720,7 @@ export class PublishedSourceRuntime {
    * accounted in the memory registry and released by `releaseGlobeGeometry` or with the publication.
    * A source that is not geometry, or a band over budget, keeps the planar geometry.
    */
-  getGlobeGeometry(zoom?: number): PreparedGeometryGPUVectors | undefined {
+  getGlobeGeometry(zoom?: number): PreparedKeplerGeometryGPUVectors | undefined {
     const column = this.geometryColumn;
     const summary = this.planarSummary;
     if (!column || !summary || this.destroyed) return undefined;
@@ -723,9 +730,13 @@ export class PublishedSourceRuntime {
           this.dataset.value.source,
           column,
           resolutionDegrees,
-          preparePublishedGeometry
+          (source, name, options) =>
+            preparePublishedGeometry(source, name, {
+              ...options,
+              timedLineStrings: Boolean(this.tripOptions)
+            })
         ),
-      makeVectors: prepared => makeGeometryGPUVectors(this.session.device, prepared),
+      makeVectors: prepared => makeKeplerGeometryGPUVectors(this.session.device, prepared),
       reserve: byteLength => this.session.registry.reserveMemory(byteLength, 'gpu', 'source'),
       getPlanarByteLength: () => summary.byteLength,
       requestUpdate: () => this.requestUpdate()
@@ -740,7 +751,7 @@ export class PublishedSourceRuntime {
    * Flat view: returns undefined when the planar geometry can draw. While the released planar copy
    * is rebuilt (time-sliced) the resident globe variant keeps drawing; it is freed once planar is back.
    */
-  releaseGlobeGeometry(): PreparedGeometryGPUVectors | undefined {
+  releaseGlobeGeometry(): PreparedKeplerGeometryGPUVectors | undefined {
     const state = this.getPlanarHibernation()?.noteFlatFrame() ?? 'resident';
     if (state === 'resident') {
       this.globeVariants?.release();
@@ -782,13 +793,17 @@ export class PublishedSourceRuntime {
           this.dataset.value.source,
           column,
           undefined,
-          preparePublishedGeometry
+          (source, name, options) =>
+            preparePublishedGeometry(source, name, {
+              ...options,
+              timedLineStrings: Boolean(this.tripOptions)
+            })
         ),
       installPlanar: prepared => {
         const reservation = this.session.registry.reserveMemory(summary.budget, 'gpu', 'scratch');
-        let vectors: PreparedGeometryGPUVectors | undefined;
+        let vectors: PreparedKeplerGeometryGPUVectors | undefined;
         try {
-          vectors = makeGeometryGPUVectors(this.session.device, prepared as never);
+          vectors = makeKeplerGeometryGPUVectors(this.session.device, prepared as never);
           const runtime = new GeometryRuntime({
             device: this.session.device,
             column,
@@ -991,7 +1006,7 @@ function getArrowDataBytes(data: arrow.Data): number {
 export function preparePublishedGeometry(
   source: arrow.Table,
   name: string,
-  options: {globe?: GlobeGeometryOptions} = {}
+  options: {globe?: KeplerGlobeGeometryOptions; timedLineStrings?: boolean} = {}
 ) {
   const field = source.schema.fields.find(candidate => candidate.name === name);
   const column = source.getChild(name);
@@ -1015,7 +1030,7 @@ export function preparePublishedGeometry(
     case 'geoarrow.polygon':
     case 'geoarrow.multipolygon':
     case 'geoarrow.geometry':
-      return prepareGeometrySourceFromArrow(column, {
+      return prepareKeplerGeometrySourceFromArrow(column, {
         encoding,
         crs,
         globe: options.globe,
@@ -1023,14 +1038,19 @@ export function preparePublishedGeometry(
         fp64: !options.globe
       });
     case undefined:
-      return prepareGeometrySource(
+      return prepareKeplerGeometrySource(
         source.batches.map((batch, index) => ({
           id: `geometry-${index}`,
           rows: Array.from({length: batch.numRows}, (_, row): unknown =>
             batch.getChild(name)?.get(row)
           )
         })),
-        {crs, globe: options.globe, fp64: !options.globe}
+        {
+          crs,
+          globe: options.globe,
+          fp64: !options.globe,
+          timedLineStrings: options.timedLineStrings
+        }
       );
     default:
       throw new Error(
@@ -1044,7 +1064,7 @@ export function preparePublishedTrips(
   source: arrow.Table,
   name: string,
   options: TripPreparationOptions
-): PreparedGeoJSONTrips {
+): PreparedKeplerGeoJSONTrips {
   if (options.grouping) {
     const {grouping, ...preparationOptions} = options;
     const crs = preparationOptions.crs;
@@ -1055,13 +1075,14 @@ export function preparePublishedTrips(
       timestamp: grouping.timestampColumn,
       longitude: grouping.longitudeColumn,
       latitude: grouping.latitudeColumn,
-      ...(grouping.altitudeColumn ? {altitude: grouping.altitudeColumn} : {})
+      ...(grouping.altitudeColumn ? {altitude: grouping.altitudeColumn} : {}),
+      ...(grouping.partColumn ? {partId: grouping.partColumn} : {})
     };
     // Columns are read by name from the retained source, so a missing role fails before upload.
     for (const column of Object.values(columns))
       if (!source.getChild(column))
         throw new Error('Trip column is missing from the retained source');
-    const grouped = prepareTabularTripsFromArrow(source, columns, preparationOptions);
+    const grouped = prepareKeplerTabularTripsFromArrow(source, columns, preparationOptions);
     if (!grouped.tripCount) throw new Error('The grouped rows contain no valid Trips');
     return grouped;
   }
@@ -1087,7 +1108,7 @@ export function preparePublishedTrips(
     retainedCrs !== 'OGC:CRS84'
   )
     throw new Error('Trips require longitude/latitude coordinates in EPSG:4326 or OGC:CRS84');
-  const prepared = prepareGeoJSONTripsFromArrow(column, {...options, crs: retainedCrs});
+  const prepared = prepareKeplerGeoJSONTripsFromArrow(column, {...options, crs: retainedCrs});
   if (!prepared.tripCount) throw new Error('The timed geometry column contains no valid Trips');
   return prepared;
 }

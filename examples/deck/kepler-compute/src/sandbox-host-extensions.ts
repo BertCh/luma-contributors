@@ -10,6 +10,12 @@ import {
   clearCatalogInvocations
 } from './catalog-invocation-store';
 import type {AnalysisStreamedWeightsOptions} from './analysis5-streamed-weights';
+import {
+  SANDBOX_EXTENSION_WORKFLOWS,
+  applyWorkbenchExtension,
+  collectWorkbenchExtension,
+  validateWorkbenchExtension
+} from './workflow/workbench-extension';
 
 /** Workspace members saved under `settings.extensions` of the sandbox state. */
 export type StreamedWeightsExtension = {
@@ -33,6 +39,8 @@ export function collectSandboxExtensions(
   const extensions: Record<string, KeplerJSONValue> = {};
   const catalog = serializeCatalogInvocationRecords();
   if (catalog) extensions[SANDBOX_EXTENSION_CATALOG] = catalog;
+  const workflows = collectWorkbenchExtension();
+  if (workflows) extensions[SANDBOX_EXTENSION_WORKFLOWS] = workflows;
   const datasets: Record<string, KeplerJSONValue> = {};
   for (const source of analyses) {
     const options = source.getStreamedWeightsOptions();
@@ -82,7 +90,8 @@ export function validateSandboxExtensions(extensions: Record<string, KeplerJSONV
   const streamed = extensions?.[SANDBOX_EXTENSION_STREAMED_WEIGHTS];
   return {
     catalog: catalog === undefined ? [] : parseCatalogInvocationRecords(catalog),
-    streamedWeights: streamed === undefined ? undefined : parseStreamedWeightsExtension(streamed)
+    streamedWeights: streamed === undefined ? undefined : parseStreamedWeightsExtension(streamed),
+    workflows: validateWorkbenchExtension(extensions?.[SANDBOX_EXTENSION_WORKFLOWS])
   };
 }
 
@@ -94,6 +103,7 @@ export function applySandboxExtensions(
   const validated = validateSandboxExtensions(extensions);
   if (validated.catalog.length) restoreCatalogInvocations(validated.catalog);
   else clearCatalogInvocations();
+  applyWorkbenchExtension(validated.workflows);
   for (const [datasetId, options] of Object.entries(validated.streamedWeights?.datasets ?? {}))
     setStreamedOptions(datasetId, options);
 }

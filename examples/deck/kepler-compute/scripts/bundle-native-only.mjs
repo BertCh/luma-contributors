@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {withSyntheticSample} from './native-navigation.mjs';
+
 // Native-only datasets (autoPrepare=0 keeps a loaded CSV as a native Kepler table) are embedded in
 // the portable bundle as checksummed Arrow IPC and restored as native tables after a reload.
 import assert from 'node:assert/strict';
@@ -26,10 +28,10 @@ async function readDownload(button) {
 }
 try {
   const address = process.argv[2] || 'http://127.0.0.1:5318/?autoPrepare=0';
-  await page.goto(address);
+  await page.goto(withSyntheticSample(address));
   await page.waitForFunction(() => window.__keplerComputeTest?.getState().selectedCount > 0, undefined, {timeout: 60000});
   await page.getByRole('button', {name: 'Add Data', exact: true}).click();
-  await page.locator('input[type=file]').setInputFiles({name: 'native-only.csv', mimeType: 'text/csv', buffer: csv});
+  await page.locator('.ReactModal__Content input[type=file]').setInputFiles({name: 'native-only.csv', mimeType: 'text/csv', buffer: csv});
   await page.locator('.ReactModal__Content').getByRole('button', {name: 'Add Data', exact: true}).click();
   await page.waitForTimeout(2000);
   assert.equal(await page.evaluate(() => window.__keplerComputeTest.getState().publications.length), 0, 'dataset must stay native-only');

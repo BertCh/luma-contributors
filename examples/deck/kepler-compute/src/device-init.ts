@@ -33,6 +33,8 @@ import {
 } from './app-services';
 import {createDeviceRecovery, invalidateLostRuntime, retireRecoveryRuntime} from './recovery';
 import {attachPublishedDataset} from './publication';
+import {initializeStartupSample} from './sample-map-host';
+import {cancelSampleMapLoads} from './sample-map-lifecycle';
 
 export function setTimestampRange(minimum: number, maximum: number): void {
   appState.runtime?.time.validateRange(minimum, maximum);
@@ -69,6 +71,7 @@ export function initializeDevice(
     return;
   }
   if (appState.runtime?.device === device) return;
+  cancelSampleMapLoads();
   if (!pendingInitialization) appState.deviceRecovery = createDeviceRecovery();
   if (device.type !== 'webgpu') {
     reportError(new Error('This resident example requires WebGPU.'));
@@ -130,6 +133,27 @@ export function initializeDevice(
       getKeplerComputeTableState(
         store.getState().keplerGl['compute']?.visState?.datasets[datasetId]
       );
+    // Histograms published into a table bridge reach native plots only through the filter-plot seam.
+    // Native plots of a published dataset are rebuilt only by LUMA_PUBLISH_SUMMARY. Refresh once
+    // per ready bridge revision while a filter on the dataset still shows a pending plot; a filter
+    // edit can mark its plot pending at the new revision before the histograms arrive, so the plot
+    // revision alone cannot tell whether the refresh has happened.
+    const refreshedRevisions = new Map<string, number>();
+    appState.runtime.onPublicationHistograms = datasetId => {
+      if (appState.runtime !== activeRuntime) return;
+      const visState = store.getState().keplerGl['compute']?.visState;
+      const bridge = getKeplerComputeTableState(visState?.datasets[datasetId]);
+      if (bridge?.status !== 'ready' || refreshedRevisions.get(datasetId) === bridge.revision)
+        return;
+      const hasPendingPlot = visState?.filters.some(filter => {
+        const ids = typeof filter.dataId === 'string' ? [filter.dataId] : filter.dataId;
+        const plot = (filter as {lumaComputePlot?: {status: string}}).lumaComputePlot;
+        return ids.includes(datasetId) && plot?.status === 'pending';
+      });
+      if (!hasPendingPlot) return;
+      refreshedRevisions.set(datasetId, bridge.revision);
+      store.dispatch({type: 'LUMA_PUBLISH_SUMMARY'});
+    };
     let publishedSqlRevision = 0;
     appState.runtime.duckdb.subscribe(() => {
       notify();
@@ -269,6 +293,7 @@ export function initializeDevice(
     if (pendingInitialization) pendingInitialization.resolve(appState.runtime);
     else appState.deviceRecovery.checkpoint(appState.runtime);
     notify();
+    if (!pendingInitialization) void initializeStartupSample();
   } catch (error) {
     if (pendingInitialization) {
       pendingInitialization.reject(error);

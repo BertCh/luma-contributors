@@ -24,7 +24,8 @@ export function NativeAutoPreparePanel({controller}: {controller: NativeAutoPrep
     <section aria-label="Automatic preparation" data-testid="auto-prepare-report">
       <h2>Automatic preparation</h2>
       {entries.map(report => (
-        <details key={report.datasetId} open>
+        // A prepared dataset shows its summary line only; failures and pending work stay open.
+        <details key={report.datasetId} open={report.state !== 'ready'}>
           <summary>
             {report.label}: {STATE_LABELS[report.state]} ({report.rowCount.toLocaleString()} rows)
           </summary>

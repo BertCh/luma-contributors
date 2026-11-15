@@ -19,3 +19,9 @@ website/.output/
 
 # Website run reports
 website/.reports/
+
+# Kepler sample datasets downloaded at runtime (third-party licences; never commit)
+examples/deck/kepler-compute/scripts/kepler-demo-cache/
+
+# Workbench acceptance script screenshots
+examples/deck/kepler-compute/workflow-screenshots/

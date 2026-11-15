@@ -19,7 +19,7 @@ import {getNativeCellIndex, CELL_INDEX_METADATA_KEY} from './cell-layer-types';
 import {removeDataset, addDataToMap} from '@kepler.gl/actions';
 import {fieldPreparationCoordinator} from './binding3-field-preparation';
 import {type SourceCandidate} from './source-workspace-panel';
-import {type PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
+import {type PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/analysis/analysis-core';
 import {recordUploadMeasure} from './acceptance-instrumentation';
 import {PREPARE_DATA_MESSAGE} from './prepared-layer-classes';
 import {DatasetOperationQueue} from './binding2-dataset-operations';
@@ -27,6 +27,7 @@ import {type Device} from '@luma.gl/core';
 import {residentDatasetIds, plotDiagnostics, notify, residentEviction} from './app-services';
 import {store} from './app-store';
 import {scheduleRecoveryCheckpoint} from './recovery';
+import {getSampleMapProvenance, SAMPLE_MAP_METADATA_KEY} from './sample-map-provenance';
 import {getActiveRuntime} from './native-config';
 
 /**
@@ -135,6 +136,13 @@ export async function attachPublishedDataset(
             ...(nativeConfig?.datasetColor ? {color: [...nativeConfig.datasetColor]} : {})
           },
           data: published.nativeData,
+          ...(getSampleMapProvenance(dataset.source?.metadata)
+            ? {
+                metadata: {
+                  [SAMPLE_MAP_METADATA_KEY]: getSampleMapProvenance(dataset.source?.metadata)
+                }
+              }
+            : {}),
           ...(groupBy
             ? {
                 metadata: {
@@ -254,7 +262,10 @@ export async function attachPublishedDataset(
       })
     );
     await waitForNativeDataset(dataset.id, activeRuntime);
-    if (!isCurrent()) throw new Error('Request changed during native dataset registration');
+    // An in-place replacement removes and re-adds the source's native dataset above, so a source
+    // identity check is necessarily stale here; the runtime check in waitForNativeDataset still applies.
+    if (!nativeConfig && !isCurrent())
+      throw new Error('Request changed during native dataset registration');
     activeRuntime.requestUpdate();
     notify();
   } finally {
@@ -266,25 +277,38 @@ export async function attachPublishedDataset(
 
 export function waitForNativeDataset(
   datasetId: string,
-  activeRuntime: ComputeRuntime
+  activeRuntime: ComputeRuntime,
+  timeoutMilliseconds = 15000
 ): Promise<void> {
   const isRegistered = () =>
     Boolean(store.getState().keplerGl['compute']?.visState?.datasets[datasetId]);
+  const isCurrent = () =>
+    appState.runtime === activeRuntime &&
+    !activeRuntime.session.deviceLost &&
+    !activeRuntime.device.isLost;
+  if (!isCurrent())
+    return Promise.reject(new Error('Workspace changed or device lost during native registration'));
   if (isRegistered()) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
+    const cleanup = () => {
+      clearTimeout(timeout);
+      clearInterval(interval);
       unsubscribe();
-      reject(new Error('Native dataset registration did not complete'));
-    }, 15000);
-    const unsubscribe = store.subscribe(() => {
-      if (appState.runtime !== activeRuntime || isRegistered()) {
-        clearTimeout(timeout);
-        unsubscribe();
-        if (appState.runtime !== activeRuntime)
-          reject(new Error('Workspace changed during native registration'));
+    };
+    const check = () => {
+      if (!isCurrent() || isRegistered()) {
+        cleanup();
+        if (!isCurrent())
+          reject(new Error('Workspace changed or device lost during native registration'));
         else resolve();
       }
-    });
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Native dataset registration did not complete for ${datasetId}`));
+    }, timeoutMilliseconds);
+    const interval = setInterval(check, 50);
+    const unsubscribe = store.subscribe(check);
   });
 }
 
@@ -320,7 +344,12 @@ async function publishSourceNow(
     id: nativeReplacement?.datasetId ?? createPublicationId(activeRuntime),
     table: candidate.table,
     normalization,
-    ...(candidate.cellIndex ? {metadata: {[CELL_INDEX_METADATA_KEY]: candidate.cellIndex}} : {})
+    metadata: {
+      ...(candidate.cellIndex ? {[CELL_INDEX_METADATA_KEY]: candidate.cellIndex} : {}),
+      ...(nativeReplacement?.nativeConfig?.sampleMap
+        ? {[SAMPLE_MAP_METADATA_KEY]: nativeReplacement.nativeConfig.sampleMap}
+        : {})
+    }
   });
   try {
     if (!candidate.isCurrent()) throw new Error('Source changed during upload');
@@ -333,7 +362,7 @@ async function publishSourceNow(
       tripOptions,
       h3Column,
       undefined,
-      undefined,
+      () => candidate.isCurrent(),
       undefined,
       undefined,
       nativeReplacement?.nativeConfig
@@ -349,6 +378,12 @@ async function publishSourceNow(
     // The native dataset stays in Kepler when its automatic replacement fails.
     if (nativeReplacement && !activeRuntime.publications.has(dataset.id))
       residentDatasetIds.delete(dataset.id);
+    if (!nativeReplacement && appState.runtime === activeRuntime) {
+      // Attachment may become stale after native registration as well as before it.
+      store.dispatch(removeDataset(dataset.id));
+      residentDatasetIds.delete(dataset.id);
+      residentEviction.forget(dataset.id);
+    }
     await activeRuntime.removePublication(dataset.id);
     if (activeRuntime.session.registry.getDataset(dataset.id))
       await activeRuntime.session.removeDataset(dataset.id, Promise.resolve());
@@ -375,13 +410,15 @@ function createPublicationId(activeRuntime: ComputeRuntime): string {
 export const datasetOperations = new DatasetOperationQueue();
 
 export async function removePublishedDataset(datasetId: string): Promise<void> {
+  const owner = appState.runtime;
   // Removals of one dataset never overlap each other or a queued replacement.
   await datasetOperations.run(datasetId, 'remove', async () => {
+    if (appState.runtime !== owner || owner?.session.deviceLost || owner?.device.isLost) return;
     residentEviction.forget(datasetId);
     fieldPreparationCoordinator.forget(datasetId);
     store.dispatch(removeDataset(datasetId));
-    await appState.runtime?.removePublication(datasetId);
-    residentDatasetIds.delete(datasetId);
+    await owner?.removePublication(datasetId);
+    if (appState.runtime === owner) residentDatasetIds.delete(datasetId);
     notify();
   });
 }

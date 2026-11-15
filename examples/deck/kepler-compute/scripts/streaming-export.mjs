@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {withSyntheticSample} from './native-navigation.mjs';
+
 // Native-only export and Stream download: bounded pages, progress, cancel, Blob fallback.
 import assert from 'node:assert/strict';
 import * as arrow from 'apache-arrow';
@@ -27,10 +29,10 @@ async function readDownload(trigger) {
   return Buffer.concat(chunks);
 }
 try {
-  await page.goto(process.argv[2] || 'http://127.0.0.1:5318/?autoPrepare=0');
+  await page.goto(withSyntheticSample(process.argv[2] || 'http://127.0.0.1:5318/?autoPrepare=0'));
   await page.waitForFunction(() => window.__keplerComputeTest?.getState().selectedCount > 0, undefined, {timeout: 60000});
   await page.getByRole('button', {name: 'Add Data', exact: true}).click();
-  await page.locator('input[type=file]').setInputFiles({name: 'stream-native.csv', mimeType: 'text/csv', buffer: csv});
+  await page.locator('.ReactModal__Content input[type=file]').setInputFiles({name: 'stream-native.csv', mimeType: 'text/csv', buffer: csv});
   await page.locator('.ReactModal__Content').getByRole('button', {name: 'Add Data', exact: true}).click();
   await page.waitForTimeout(3000);
   await openNativeExport(page, false);

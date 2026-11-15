@@ -536,7 +536,22 @@ export function installKeplerComputeTableBridge<Table extends KeplerComputeTable
           ? cached.bins
           : undefined;
       // Linked plots keep every other dataset's entry; native bins are per dataset, never summed.
-      const entry = linked ? (bins ?? PENDING_PLOT_BINS) : bins;
+      // While a new revision is pending the plot keeps drawing its last bins, marked pending. Native
+      // keeps them during a brush drag; an unmounted plot loses its width and the brush reports NaN.
+      const shownBins =
+        bins ??
+        (selectionStatus === 'pending' && !plotFailures.has(filter.id)
+          ? filter.type === 'range'
+            ? (
+                filter.bins as Record<string, readonly KeplerComputeBin[] | undefined> | undefined
+              )?.[table.id]
+            : (
+                filter.timeBins as
+                  | Record<string, Record<string, readonly KeplerComputeBin[] | undefined>>
+                  | undefined
+              )?.[table.id]?.[histogramInterval ?? '']
+          : undefined);
+      const entry = linked ? (bins ?? PENDING_PLOT_BINS) : shownBins;
       const status: ResidentPlotStatus = {
         status: selectionStatus === 'unsupported' ? 'unsupported' : bins ? 'ready' : 'pending',
         reason: selectionReason,

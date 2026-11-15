@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  listPointCloudCatalogSources,
+  getPointCloudCatalogCoordinates
+} from './analysis-catalog-pointcloud';
 import {ComputeRuntime, type ExplorerSummary} from './compute-runtime';
 import React, {useState, useEffect} from 'react';
 import {ArrowStreamPanel} from './arrow-stream-panel';
@@ -20,6 +24,10 @@ import {
 } from '@kepler.gl/actions';
 import {type SourceCandidate, SourceWorkspacePanel} from './source-workspace-panel';
 import {DATASET_ID} from './sample-data';
+import {SampleMapsPanel} from './sample-maps-panel';
+import {SampleAttribution, SampleDatasetAttributions} from './sample-map-attribution';
+import {listSampleMapAttributions} from './sample-map-provenance';
+import {loadSampleMap, sampleMapStatus} from './sample-map-host';
 import {bindLocalCloudHost} from './local-cloud-provider';
 import {createLocalCloudHost} from './local-cloud-host';
 import KeplerGlSchema from '@kepler.gl/schemas';
@@ -50,12 +58,14 @@ import {categoryCoverageRegistry} from './binding3-filter-runtime';
 import {RemoteRefetchSection} from './remote-refetch-host';
 import {AnalysisPanel} from './analysis-panel';
 import {AnalysisCatalogPanel} from './analysis-catalog-panel';
+import {makeCatalogResidentDatasets} from './analysis-catalog-resident-input';
 import {NativeSqlExplorer} from './native-sql-explorer';
 import {makeNativeSqlGpuExecutor, getResidentSqlGpuRuntime} from './resident-sql-gpu-runtime';
 import {SandboxPanel} from './sandbox-panel';
 import {AssistantPanel} from './assistant-panel';
 import {SandboxCapabilities} from './sandbox-capabilities-panel';
 import {webgpuAdapter} from '@luma.gl/core/webgpu';
+import {getHostRequiredLimits} from './device-limits';
 import {
   attachPublishedDataset,
   isResidentDataset,
@@ -80,6 +90,11 @@ import {restoreBundle, formatAutomaticRecoveryStatus, formatEvictionStatus} from
 import {nativeAutoPrepare} from './native-hosts';
 import {rasterLiveHost} from './main-raster-live';
 import {KeplerGl, mapStyles} from './map-container';
+import {WorkbenchMount, getWorkbenchStore, useWorkbenchDockInset} from './workflow/workbench-app';
+import {withWorkbenchAssistant} from './workflow/workbench-assistant-host';
+
+/** The app's assistant host plus the workflow tools (list, describe, propose a draft). */
+const workbenchAssistantHost = withWorkbenchAssistant(assistantHost, getWorkbenchStore);
 
 function ResidentStreamSection({owner}: {owner: ComputeRuntime}): React.JSX.Element {
   return (
@@ -121,11 +136,20 @@ function ResidentStreamSection({owner}: {owner: ComputeRuntime}): React.JSX.Elem
 
 export function App(): React.JSX.Element {
   const [size, setSize] = useState({width: innerWidth, height: innerHeight});
+  // The open workbench dock sits below Kepler, so Kepler's bottom widget stays visible above it.
+  const workbenchDockInset = useWorkbenchDockInset();
   const [summary, setSummary] = useState<ExplorerSummary | null>(null);
   const [stateRevision, setStateRevision] = useState(0);
   const [sandboxRuntime, setSandboxRuntime] = useState<ComputeRuntime | null>(appState.runtime);
   const [sourceCandidate, setSourceCandidate] = useState<SourceCandidate | null>(null);
   const [selectedAnalysisDatasetId, setSelectedAnalysisDatasetId] = useState(DATASET_ID);
+  useEffect(() => {
+    const datasets = store.getState().keplerGl['compute']?.visState?.datasets ?? {};
+    if (!datasets[selectedAnalysisDatasetId]) {
+      const firstPublication = [...(appState.runtime?.publications.keys() ?? [])][0];
+      if (firstPublication) setSelectedAnalysisDatasetId(firstPublication);
+    }
+  }, [stateRevision, selectedAnalysisDatasetId]);
   useEffect(() => {
     if (sourceCandidate && !sourceCandidate.isCurrent()) setSourceCandidate(null);
   }, [sourceCandidate, stateRevision]);
@@ -190,10 +214,61 @@ export function App(): React.JSX.Element {
     <NativeWorkflows.Provider
       value={{
         unavailable: recovery.phase !== 'ready',
+        samples: (
+          <SampleMapsPanel
+            loadingId={sampleMapStatus.loadingId}
+            error={sampleMapStatus.error}
+            onLoad={loadSampleMap}
+          />
+        ),
         memory: <MemoryManagerPanel source={memoryManager.source} variant="compact" />,
         memoryManager: <MemoryManagerPanel source={memoryManager.source} variant="full" />,
         status: (
           <div data-testid="native-compute-status" data-revision={stateRevision}>
+            {sampleMapStatus.notice ? (
+              <p role="status" data-testid="sample-map-notice">
+                {sampleMapStatus.notice}
+              </p>
+            ) : null}
+            {sampleMapStatus.error ? (
+              <p
+                role="alert"
+                data-testid="sample-map-error"
+                data-code={sampleMapStatus.remoteServiceFailure?.code}
+              >
+                Sample map could not load: {sampleMapStatus.error}
+              </p>
+            ) : null}
+            {sampleMapStatus.loaded ? (
+              <details
+                open={sampleMapStatus.limitations.length > 0}
+                data-testid="loaded-sample-map"
+                data-sample-id={sampleMapStatus.loaded.id}
+              >
+                <summary>Sample map: {sampleMapStatus.loaded.label}</summary>
+                {/* The dataset attribution below already carries this sample's text. */}
+                {listSampleMapAttributions(
+                  Object.values(store.getState().keplerGl['compute']?.visState?.datasets ?? {})
+                ).some(provenance => provenance.sample.id === sampleMapStatus.loaded?.id) ? null : (
+                  <SampleAttribution sample={sampleMapStatus.loaded} />
+                )}
+                {sampleMapStatus.limitations.map(limitation => (
+                  <p
+                    key={limitation.layerId}
+                    role="status"
+                    data-testid="sample-map-limitation"
+                    data-code={limitation.code}
+                  >
+                    Partial support ({limitation.code}): {limitation.reason}
+                  </p>
+                ))}
+              </details>
+            ) : null}
+            <SampleDatasetAttributions
+              datasets={Object.values(
+                store.getState().keplerGl['compute']?.visState?.datasets ?? {}
+              )}
+            />
             <NativeAutoPreparePanel controller={nativeAutoPrepare} />
             <ResidentDrawingPanel
               features={toDrawnFeatures(
@@ -461,14 +536,16 @@ export function App(): React.JSX.Element {
                 ) : null}
               </section>
             ) : null}
-            <p className="count" data-testid="selected-count">
-              {recovery.phase !== 'ready'
-                ? 'Device unavailable'
-                : summary
-                  ? summary.selectedCount.toLocaleString()
-                  : 'Preparing…'}
-              <small> selected observations</small>
-            </p>
+            {store.getState().keplerGl['compute']?.visState?.datasets[DATASET_ID] ? (
+              <p className="count" data-testid="selected-count">
+                {recovery.phase !== 'ready'
+                  ? 'Device unavailable'
+                  : summary
+                    ? summary.selectedCount.toLocaleString()
+                    : 'Preparing…'}
+                <small> selected observations</small>
+              </p>
+            ) : null}
           </div>
         ),
         analysis: (
@@ -479,11 +556,15 @@ export function App(): React.JSX.Element {
                 selectedDatasetId={selectedAnalysisDatasetId}
                 onSelectDataset={setSelectedAnalysisDatasetId}
                 sources={[
-                  {
-                    id: DATASET_ID,
-                    label: 'Resident observations',
-                    getAnalysis: () => getActiveRuntime().analysis
-                  },
+                  ...(store.getState().keplerGl['compute']?.visState?.datasets[DATASET_ID]
+                    ? [
+                        {
+                          id: DATASET_ID,
+                          label: 'Resident observations',
+                          getAnalysis: () => getActiveRuntime().analysis
+                        }
+                      ]
+                    : []),
                   ...[...appState.runtime.publications.values()].map(published => ({
                     id: published.dataset.id,
                     label: published.label,
@@ -496,16 +577,39 @@ export function App(): React.JSX.Element {
             {appState.runtime && !appState.runtime.session.deviceLost ? (
               <AnalysisCatalogPanel
                 device={appState.runtime.session.device}
+                residentDatasets={makeCatalogResidentDatasets(
+                  appState.runtime,
+                  () => appState.runtime
+                )}
                 datasets={Object.values(
                   store.getState().keplerGl['compute']?.visState?.datasets ?? {}
-                ).filter(dataset => !isResidentDataset(dataset.id))}
-                onPublish={(table, label, geometryColumn) => {
+                )
+                  .filter(dataset => !isResidentDataset(dataset.id))
+                  .concat(
+                    listPointCloudCatalogSources(appState.runtime.publications.values()) as never
+                  )}
+                trajectorySources={Array.from(appState.runtime.publications.values())
+                  .filter(
+                    published =>
+                      !published.dataset.value.resident &&
+                      (!published.dataset.population ||
+                        (published.dataset.population.state === 'complete' &&
+                          !published.dataset.population.partial))
+                  )
+                  .map(published => ({
+                    id: published.dataset.id,
+                    label: published.label,
+                    table: published.dataset.value.source
+                  }))}
+                onPublish={(table, label, geometryColumn, tripOptions) => {
                   const activeRuntime = appState.runtime;
                   setSourceCandidate({
                     table,
                     label,
                     isCurrent: () => appState.runtime === activeRuntime,
-                    suggestedGeometryColumn: geometryColumn
+                    suggestedGeometryColumn: geometryColumn,
+                    suggestedTripOptions: tripOptions,
+                    suggestedCoordinates: getPointCloudCatalogCoordinates(table, label)
                   });
                 }}
               />
@@ -603,7 +707,7 @@ export function App(): React.JSX.Element {
         ),
         help: (
           <>
-            <AssistantPanel host={assistantHost} />
+            <AssistantPanel host={workbenchAssistantHost} />
             <SandboxCapabilities />
           </>
         )
@@ -612,7 +716,7 @@ export function App(): React.JSX.Element {
       <KeplerGl
         id="compute"
         width={size.width}
-        height={size.height}
+        height={Math.max(0, size.height - workbenchDockInset)}
         mapboxApiAccessToken=""
         appName="Kepler"
         cloudProviders={LOCAL_CLOUD_PROVIDERS}
@@ -623,6 +727,7 @@ export function App(): React.JSX.Element {
           deviceProps: {
             type: 'webgpu',
             adapters: [webgpuAdapter],
+            requiredLimits: getHostRequiredLimits(),
             // ?maxLimits=1 requests the adapter maximum storage binding and buffer sizes, which
             // raises the neighbor-slot and large-column capacity checks (default limits are 128 MiB).
             ...(new URLSearchParams(window.location.search).get('maxLimits') === '1'
@@ -631,6 +736,10 @@ export function App(): React.JSX.Element {
           }
         }}
         RTLTextPlugin={false}
+      />
+      <WorkbenchMount
+        externalRevision={stateRevision}
+        sidePanelOpen={Boolean(store.getState().keplerGl['compute']?.uiState?.activeSidePanel)}
       />
     </NativeWorkflows.Provider>
   );

@@ -1,6 +1,50 @@
 # Kepler with resident luma compute
 
-This example mounts the actual Kepler 3.3.0-alpha.18 application. A Kepler table factory routes native filters to `@luma.gl/kepler`, and native Point, Line, Arc and GeoJSON layer overrides render borrowed GPU geometry through `@deck.gl-community/gpu-layers`. Deck owns the WebGPU device and submission; the compute effect encodes selection before rendering in the same frame.
+This example mounts the actual Kepler 3.3.0-alpha.18 application. A Kepler table factory routes native filters to `@luma-contributors/kepler`, and native Point, Line, Arc and GeoJSON layer overrides render borrowed GPU geometry through the example-local `gpu-layers/` directory. Deck owns the WebGPU device and submission; the compute effect encodes selection before rendering in the same frame.
+
+## Stack and source layout
+
+The example is a yarn workspace (`luma-contributors-examples-deck-kepler-compute`) on published deck.gl 10.0.0-alpha.1, which pins luma.gl 10.0.0-alpha.14, and on math.gl and loaders.gl 5.0.0-beta.8 (the same luma.gl as the rest of the repository). Kepler 3.3.0-alpha.18 still ships deck.gl 9 and luma.gl 9 code; the Vite config maps its luma.gl 9 imports (`@luma.gl/webgl`, `@luma.gl/effects`, `@luma.gl/gltf`, `@luma.gl/shadertools`, `@luma.gl/constants`) to the public luma.gl 10 entry points. The example imports only published, public `@luma.gl/*` entry points (`yarn check-upstream-first`); there is no luma.gl fork and no `@luma.gl/kepler` or `@deck.gl-community/gpu-layers` package.
+
+- `gpu-layers/` is a 30-file closure copied from the earlier fork of `@deck.gl-community/gpu-layers` and ported to deck.gl 10 (`GPUScatterplotLayer`, `GPUPathLayer`, `GPUArcLayer`, `GPUPointLabelLayer`, flow layers, trip markers and the globe helpers). It exports through `gpu-layers/index.ts`; its specs are in `modules/kepler/test/gpu-layers`. Deck 10 removed `COORDINATE_SYSTEM`, so layers use `coordinateFrame`, and globe meter offsets are computed in the layers.
+- `src/geometry-preparation/` holds geometry and trip preparation (Kepler-prefixed names such as `prepareKeplerGeometrySourceFromArrow`), built on public luma.gl and `@math.gl/arrow` APIs. luma.gl does not export this; see `dev-docs/upstream-workarounds.md`. Exact-source polygon contiguity preparation comes from `@luma-contributors/analysis/gpu-spatial-analysis`, including an optional CPU route over the same equality-only tokens.
+- `src/luma-gaps/` holds small helpers for things published luma.gl keeps internal or does not offer: a glyph walker (`text-glyph-walk.ts`), graph vector chunk alignment (`graph-vector-chunks.ts`; chunk access uses the analysis package’s `getGraphViewChunks`) and mipmapped label atlas resources (`mipmapped-text-resources.ts`). Pre-compile resource plans (`planResources`) and `compilationStats` are replaced by measuring a compiled graph with `MeteredCommandGraph` from `@luma-contributors/kepler`: admission runs after compile, so transient memory is already allocated when it is checked.
+- Exact Int64/Decimal128 aggregates, their CPU references and Float32 narrowing diagnostics come from `@luma-contributors/analysis/dataframe-analysis`. Integer maximum narrowing errors are exact bigint values. The device-wide out-of-memory scope and rate-cause diagnostics live in `@luma-contributors/kepler`; see [the shared contracts](../../../docs/api/reused-analysis-preparation.md).
+- Kepler's `COORDINATE_SYSTEM` import is rewritten to a local constant by a source transform (`kepler-compute-transform.ts`) in both the Vite dependency optimizer and production builds. An alias to a shim file created a second `@deck.gl/core` instance and shader module name collisions.
+- `@deck.gl/core` carries a three-hunk yarn patch (`.yarn/patches/@deck.gl-core-npm-10.0.0-alpha.1-*.patch`, resolved through the root `package.json`): a depth attachment on the scene render buffer, a hover clear when the pointer leaves the canvas, and `isHovering` derived from `info.picked`. Each is proposed upstream in `dev-docs/upstream-proposals.md`.
+
+Port status: the app builds (`yarn vite build`) and the dev server loads without module-resolution errors. Browser bring-up in headless WebGPU is tracked as KE-PORT-5 in `dev-docs/roadmap.md`; consult it for what has been verified.
+
+The native `vectorTile`, `rasterTile`, `wms`, `tile3d` and `bitmap` dataset types bypass tabular preparation: their URL/metadata inputs have no source table to publish. Data vector tiles retain Kepler's loading and cache callbacks, while resident geometry replaces their native MVT draw and its GLSL extensions. A tileset subclass reports native refinement visibility after every traversal, including visible cached fallbacks while selected tiles load. Resident draws/uploads and globe-variant rebuilds use only those visible keys; hidden tiles stay cached. Globe basemap MVT layers instead retain deck 10's native tile-local CRS, transforms, clipping and selected-tile traversal. `GlobeBasemapTileLayer` preserves the basemap's feature-based fill/line accessors and country labels using published WGSL GeoJsonLayer/TextLayer; it replaces Kepler's GLSL glyph subclass. Cached tiles from the previous planar view are not added to the resident draw population. Its polygon fill subclass keeps deck 10's native WGSL renderer and selects the next finer binary-exact subdivision grid: the normalized z0 step becomes 1/128 instead of 1/72. This avoids the pinned math.gl cutter's `null.pos` failure at fractional grid boundaries without reducing globe resolution. The offline `globe-basemap-fill.spec.ts` fixture checks the actual MVT fill initialization and water pixels on both hemispheres. In globe mode the tile geometry uses the existing five-degree globe preparation, preserving tile-local longitude intervals (including a full-world water polygon); leaving globe replaces that variant and releases its reservation.
+
+Raster tile sublayers are replaced before native shader initialization, including `RasterMeshLayer` terrain. The WGSL renderer prefers finite native `minPixelValue`/`maxPixelValue` overrides, then each tile's statistics. Terrain without NORMAL/normals attributes infers derivative face shading like native RasterMeshLayer, while supplied smooth normals are retained. It uploads array or `ImageBitmap` imagery/colormaps through public luma APIs, and uses Deck's subdivision step on both mesh axes. This avoids the removed luma 9 `ShaderAssembler.getDefaultShaderAssembler` and module `inject` APIs. The focused `modules/kepler/test/raster-wgsl.spec.ts` also exercises the scene-depth yarn patch through a depth-reading post effect. The driver has passed the raster, WMS, vector-tile and globe lifecycle acceptance scripts, including globe shadows. The driver passes all 15 browser scripts, including globe basemap fill, 3D tile picking and effects. The offline fill fixture and the extended directional-terrain regression still need driver GPU runs; Node shader assembly alone does not establish pixel parity. Scenegraph models drop glTF's fixed `depthFormat` so the public Model API infers color/shadow/picking attachments (deck picking uses depth16unorm). A targeted loaders.gl consumer transform accepts both raw and postprocessed glTF `extensionsRemoved` metadata, in development optimization and production builds.
+
+Known behavior differences from the previous fork:
+
+- Flow Field viewport spawning uses public `FlowParticleSimulation.setField`: velocity and altitude textures are cropped on the GPU to the viewport bounding rectangle (padded 10% and clipped to the source field). A 150 ms settle delay and 2% extent hysteresis avoid reseeding on every pan frame. The full particle budget follows a zoomed viewport on both GPU and CPU grid paths. If crop memory admission or construction fails, the previous field keeps animating, the layer reports the refusal, and allocation retries wait at least one second. This adds bilinear field resampling and resets all particles when the domain moves, rather than the old fork's per-particle spawn rectangle; pitched/globe views still use a bounding box. GPU/browser verification of this port adaptation is pending the driver run of `flow-field-gpu.mjs`.
+- Point label bitmap atlases are cached by luma.gl per font settings (the fork could build a private atlas). The label layer reads the atlas through `KeplerMipmappedTextResources`, because published `GPUTextResources` has no mipmaps and bitmap labels minified from the 64 px atlas paint about one pixel narrower than the native `TextLayer` without them.
+
+Known dependency warning: Kepler's `TippyTooltip` and `LazyTippy` use
+`@tippyjs/react@4.2.6`, whose ref-preservation callbacks read `children.ref`. Under React 19,
+that read emits “Accessing element.ref was removed in React 19” when the child has a ref.
+The installed dependency reproduces the warning in Node; its ESM callbacks are in
+`dist/tippy-react.esm.js` at lines 360 and 517 (the headless variant has the same reads).
+This is recorded as a dependency compatibility warning; the example does not patch the
+package or suppress the warning.
+## Export, share, sandbox and assistant parity
+
+Run `yarn build:viewer` here **after** the application build (which can clear `dist`). The viewer configuration now resolves the shared callback before merging. `dist/standalone-viewer.html` is 3,158,598 bytes (Vite reports 872.77 kB gzip), with inline JavaScript/CSS and no asset references. During `yarn vite`, the built artifact is served verbatim without HMR injection, so **Save standalone HTML** embeds the viewer and bundle. Without a build, export explicitly falls back to a bundle-only page. Scoped TypeScript, JavaScript parsing and Node VM startup pass; Chromium must still verify offline GPU rendering.
+
+The audit compared 55 export/share/bundle/sandbox/assistant/media/standalone sources with the old fork at `e0ed33791`: no files or feature branches disappeared. Differences are public imports, equivalent polygon-topology preparation and device/globe settings. Selection, sandbox schemas and clustering already use `@luma-contributors/kepler`; Arrow preparation uses `@luma-contributors/analysis/analysis-core`. The remaining serialization/media/UI adapters have no equivalent analysis contributor.
+
+Both soft script results predate the port. `webcodecs-video-export.mjs`, `media-bframes.mjs`, `webcodecs-video-encoder.ts`, `video-muxers.ts` and `dev-test-hooks.ts` are identical to `e0ed33791`. The initial split (`fd19008c`) also lacks `mediaExport.captureCanvasFrame`, so the optional probe never established nonblank video frames. Quality mode permits B-frames without requiring the encoder to emit them; `media-sharing5.node.spec.ts` checks synthetic reordered MP4 samples, signed offsets and edit lists. The standalone script's stale “dataset” status assertion now requires a positive drawable “layer(s)” count, matching the old and current viewer.
+
+Inherited limits remain; no additional published-luma/deck blocker was found in this stream:
+
+- Offline viewing does not execute resident analysis/DuckDB or embed basemap/raster pixels (`standalone-viewer-main.ts`, `standalone-viewer-raster.ts`). Tiled PNG omits basemap/DOM overlays and rejects pitch (`native-tiled-capture.ts`).
+- Cloud storage remains local IndexedDB/memory; public publishing is refused (`local-cloud-provider.ts`). The assistant has no model/provider, and SQL/chart/boundary/load/export routes stage notices (`assistant-host-capabilities.ts`, `assistant-host.ts`).
+- Bundles omit raster/terrain/interpolation source bindings and flow-field settings; catalog declarations restore without rerunning computations (`sandbox-host-extensions.ts`, `sandbox-capabilities.json` entry `save`). These boundaries also exist in the old fork.
+The [validation and regression catalog](./VALIDATION-CATALOG.md) documents the GTWR, space-time kriging, Vecchia fitting, applicability, conformal, predictive scoring and FDR forms and their diagnostics.
 
 All workflows live in Kepler’s existing UI. There is no separate luma support panel:
 
@@ -21,16 +65,66 @@ From the repository root:
 ```sh
 nvm use
 yarn install
-yarn workspace luma.gl-examples-kepler-compute start
+cd examples/deck/kepler-compute
+yarn start
 ```
 
-Open `http://localhost:5318/` in a browser with WebGPU. `?rows=10000` changes the deterministic fixture size (default 100,000; maximum 1,000,000). The background map is local and requires no token or network tiles.
+`yarn workspace luma-contributors-examples-deck-kepler-compute start` from the repository root is equivalent.
+
+Open `http://localhost:5318/` in a browser with WebGPU. The app opens Kepler's California Earthquakes sample, including its layers, time filter and camera. `?sample=<id>` chooses another public Kepler map. `?sample=synthetic` opens the deterministic squares fixture (100,000 rows); `?rows=10000` also selects that fixture and changes its size (maximum 10,000,000). An explicit `rows` parameter takes precedence over `sample`. A failed catalog, config or data request keeps the synthetic fixture and shows a visible fallback notice. The background map is local and requires no token or network tiles.
+
+## Public Kepler sample maps
+
+**Add Data → Sample maps** lists the runtime [Kepler sample catalog](https://raw.githubusercontent.com/keplergl/kepler.gl-data/master/samples.json), with source attribution, source licence statements and the repository licence. Hidden and config-only entries are included. Loading applies the config through Kepler's public `addDataToMap`: layer IDs, visual channels, filters, camera and split views are preserved. The basemap style changes to the host's token-free background; the two named partial-support adaptations below also retain an original layer hidden and add a location layer. Existing datasets remain available; the sample's config replaces the current presentation. The synthetic bootstrap table leaves the native dataset list after a successful default sample load; its runtime remains available for lifecycle/recovery infrastructure.
+
+Samples are fetched when requested, never bundled, copied to a tracked path or uploaded elsewhere. CSV, GeoJSON, row objects and GeoArrow IPC use Kepler's public processors. `world_flights` uses the filenames declared in the catalog and prepares both its animated Flights and static Paths layers. Explicit timed-LineString preparation projects XYZ from `[longitude, latitude, altitude, time]` for static drawing while the trip adapter retains time; ordinary geometry preparation still rejects unmarked four-ordinate positions. Both representations use the existing separately accounted memory admission paths, with no budget increase; `nyc_earnings` uses Arrow. Row datasets enter the existing automatic GPU preparation flow and remain subject to its schema, precision and memory admission limits. Preparation failures stay visible in the auto-preparation report. Loading a map does not promise that every field supports every analysis contributor.
+
+Native GeoArrow extensions remain in their original binary/nested buffers through type routing, including encoding and CRS metadata. In particular, earnings multipolygons must not go through the generic nested-value JSON-text route: that loses their geometry encoding and produces no draw primitives. Kepler’s initial Arrow container rebuild drops extension metadata even though its processed field descriptors retain it. The native-source adapter restores those descriptors onto a new Arrow schema sharing the existing buffers before routing. This covers the actual processor → native table → preparation boundary; direct preparation of the original IPC alone does not test it. GPU-free tests reproduce that boundary with generated polygons and three read-only cached earnings rows, then verify geometry preparation over the full cached earnings table when available. An empty native dataset type (`""`) is normal for a local row/Arrow table; tile dataset types are separate. Publication also captures split-map masks with the layers and filters, so removing/re-registering a resident table preserves Pittsburgh's opposite per-view visibility assignments. Stock reducer tests verify the complete saved config before and after that replacement. Legacy saved maps with `isSplit: true` can retain the installed reducer’s `SINGLE_MAP` default. The shared-Deck host resolves these to dual views, promotes a visible layer instance from the second map when it is hidden in the first, and filters the shared layer in each actual viewport. This makes the parcel-location fallback visible in its intended view while retaining the hidden original encoding. The browser harness checks every expected viewport, requiring visible layers there and excluding layers hidden there, including limited originals and location fallbacks. It reads the actual Deck layer flags and `layerFilter`, not only the primary map’s flag.
+
+Config-driven samples (`fsq_places`, `mvt_population`, `lake_lucerne_raster`, `wms_conus_cref_qcd`) fetch their separate `remoteDatasetConfigUrl` descriptors and pass native remote metadata to Kepler. The host waits for Kepler’s asynchronous CREATE_TABLE_TASK to refresh remote metadata and register the table before reporting the sample loaded; returning from addDataToMap alone is not completion. Their layers use the existing tile/raster integrations rather than resident row tables. Tile services must be reachable and may impose access or CORS restrictions. Missing config/remote descriptors are marked unsupported with a reason; failed requests show an error with the gallery available to retry. The hidden `usdot` entry has only a legacy saved-map URL and is currently marked unsupported. Source terms vary; the repository's Apache-2.0 licence does not establish each underlying dataset's licence. See [THIRD-PARTY-DATA.md](../../../THIRD-PARTY-DATA.md).
+
+The installed Kepler layer registry includes `vectorTile`, `rasterTile` and `wms` (the dataset types are `vector-tile`, `raster-tile` and `wms-tile`). No extra layer registration is needed. Remote samples are exempt from the host's row-preparation render guard; applying that guard to MVT incorrectly displayed a Prepare data notice and suppressed streaming. Kepler restores saved layers by exact `config.dataId` lookup. For a single remote descriptor and a config referring to exactly one dataset, the loader binds `info.id` to that saved dataset ID, retaining layer IDs, tooltip keys, filters and all other config references. Mixed dataset IDs or incompatible layer types are rejected explicitly rather than guessing a binding. Missing-layer diagnostics name the layer IDs and both configured/registered dataset IDs.
+
+Before starting Kepler's remote loader, the app probes the descriptor's metadata/service URL with `Range: bytes=0-0` and cancels the body, even if the service ignores Range. WMS probes use GetCapabilities. A definite HTTP failure has the visible `remote-service-unavailable` state and names the status and URL; it is distinct from unsupported layers and network/CORS failures. In the driver's November 2026 verification, Foursquare's catalog PMTiles URL returned HTTP 404. This is an upstream service outage/moved URL, not an installed Kepler limit; no replacement dataset URL is invented. When it becomes reachable, the harness requires the normal full load again. The harness independently probes the live service, asserts the same HTTP status in the visible UI, and requires no uncaught page errors (the preflight prevents the failing PMTiles task). It does not discard the earlier `Bad response code: 404` class of page error: any uncaught error still fails and is included in the result.
+
+Sample loads are serialized transactions. Reloading an existing ID creates a fresh native table (avoiding cross-format updates of a resident Arrow container), waits for that specific Kepler task, then explicitly republishes the new rows through the dataset operation queue before reporting success. Because Kepler resets native datasets when replacing a config, retained sources are re-registered in the same transaction. A failed load replays the previous source descriptors, layers, filters, camera and split views; startup claims synthetic fallback only after that rollback succeeds. Rollback failure is reported explicitly. New explicit sample requests and workspace replacement cancel pending startup work; shared abort signals cancel catalog/config/data/service requests and unused bodies. Late native task results are discarded after cancellation, device loss or ownership changes.
+
+**Remote sample recovery limitation:** the existing recovery manifest represents retained Arrow sources and replayable resident results, with no network-descriptor replay contract. Remote tile samples are therefore explicitly non-recoverable. A persistent notice beside each retained remote dataset explains that GPU recovery restores the last healthy workspace and the remote map must be loaded again. Checkpoint capture defers while a sample transaction is pending or remote datasets remain, retaining the healthy checkpoint rather than invalidating it. This applies even after switching to a row sample while retaining remote datasets. Ordinary missing-source validation remains strict for other cases.
+
+Attribution and restriction notices are stored per dataset in `metadata.lumaSampleMap`, copied into resident source metadata, saved source parameters and portable native-only bundles, and restored with those sources. The status UI lists attribution for every retained sample dataset, so loading another sample does not remove Movement's non-commercial notice. Native Kepler save/export also retains dataset metadata. No data licence is inferred from the repository's code licence. With `?autoPrepare=0`, new samples retain the manual Prepare data flow; resident sample reloads are rejected before mutation until automatic preparation is enabled, avoiding a native/GPU revision mismatch.
+
+Two maps currently have explicit **partial support**, displayed beside their attribution and included in the browser result:
+
+- `sftrees` — `dense-aggregation-capacity`: the source includes distant but valid-coordinate outliers (latitude up to about 47.27°, longitude down to about −138.28°). At its original 50 m radius, the full extent requires far more than the host's 65,536 dense lattice cells. Native Kepler/Deck's CPU hexbin path stores occupied bins in a map; `GPUKeplerAggregation`/`GPUPointDensity` allocate a rectangular dense lattice. Earlier standalone revisions (`fd19008c`, `9a66f083`) contain the same 65,536-cell cap, so the old example did not admit this extent either. Increasing capacity to cover the outliers would allocate enormous empty regions. The original hexagon layer stays hidden with its radius/settings retained; a named unaggregated tree-location layer renders the unchanged resident rows. No outlier removal, capacity increase or radius clamp is applied.
+- `la_assessorparcels` — `wide-integer-style`: `roll_totalvalue` exceeds the exact Float32 integer range (±2^24). The public `GPUColorScale` has a numeric integer input route, but the current `KeplerResidentStyle` numeric binding and its scalar sqrt-size path require Float32, with no complete split/fp64 route. The geometry fp64 path and exact integer filter/statistics paths do not supply that scalar style contract. The original point encoding stays hidden and constant-style parcel locations render instead; exact source values, the original encoding, all filters and both views remain available. The year-built hexagons use the existing certified GPU integer-to-Float32 cast and `GPUGroupStatistics`, avoiding density's fixed-point sum fast path. Wide values are not silently rounded or rescaled.
+
+The harness asserts each limitation code, visible explanation, original hidden layer, constant point fallback, and preserved filters/split maps; all other original visibility assertions remain strict. `sfcontour` has full support: absent embedded width/color properties retain explicit upload absence even when another embedded property has a GPU buffer. Missing buffers for properties actually declared present remain errors.
+
+The catalog/loader/UI are Kepler host adapters. GPU preparation and computation continue through the existing `@luma-contributors/analysis` and `@luma-contributors/kepler` paths; this flow adds no example-local analysis algorithm.
+
+The shared split Deck preserves partial `setProps` updates during dataset retirement, sample replacement and rollback. A layers-only update retains the current views, controllers and event handlers; it cannot replace the view list with an undefined entry. GPU-free tests exercise this same props builder through split → single → split rollback using real Deck view cloning and viewport creation. A failed load records its original error and stack separately from any rollback failure; the browser harness prints both diagnostics, and the visible combined error names the original failure first. Presentation and per-view rendering assertions remain strict.
+
+```sh
+# Against a running dev server: every sample's native tab/config and default/offline startup
+node examples/deck/kepler-compute/scripts/kepler-demo-data.mjs http://127.0.0.1:5320/
+# Optional: --only=earthquakes,nyc_earnings,world_flights --max-bytes=268435456
+# Fetch/validate resources without launching Chromium:
+node examples/deck/kepler-compute/scripts/kepler-demo-data.mjs --download-only
+# Load Files path: download each kepler.gl-data file and load it through native Add Data > Load Files
+node examples/deck/kepler-compute/scripts/kepler-demo-files.mjs http://127.0.0.1:5320/
+```
+
+The harness attempts raw GitHub requests at runtime, with gitignored `scripts/kepler-demo-cache/samples/` fixtures as a read-only offline fallback. It checks attribution, original layer settings and visual channels (including hidden limited originals), filter types/bindings/settings, camera, every split-view visibility assignment, expected visible rendered layers, resident preparation and errors. Expected settings come from an independent stock Kepler reference run: a pristine `keplerGlReducerCore` receives the original downloaded presentation with the same inline-basemap substitution and `addDataToMap` options as the host, followed by the public `createNewDatasetSuccess` action at its normal asynchronous registration boundary. Fresh stock `KeplerTable` instances import the same retained rows or Arrow source; remote tables retain the restored dataset IDs, types and fetched metadata. The reference uses stock table/layer classes, copies no live presentation settings, and skips dataset/network task execution. Stock tile formatters can eagerly initialize a tile source's header; those metadata promises are observed immediately and awaited, with any failure naming the sample and layer rather than escaping as an unhandled page rejection. `getConfigToSave` receives the complete stock reducer state, including effect defaults. No direct layer/column/channel validator calls or hand-built visState are used. This applies Kepler's own palette migrations, column serialization, layer defaults and removal of obsolete properties rather than maintaining a hand-written migration list. Layer settings and visual channels, the complete saved filters, and every split-map visibility mask are compared exactly; named partial-support adaptations remain explicit. The only unspecified layer value excluded is an absent original constant color, which Kepler assigns from a module-global cycling generator; explicitly saved colors and palette contents remain exact. Camera properties supplied by the sample are exact; unspecified defaults are inherited by Kepler, and canvas dimensions depend on the driver viewport. GPU-free Node tests bundle the installed stock Kepler public dependencies in an isolated VM, cross-check the reference against real `addDataToMap`/CREATE_TABLE_TASK loads for all 15 cached sample configs, and replay restored remote tables without service I/O. Small generated rows and fallback configs keep tests independent of ignored datasets; Arrow detachment is tested separately. Original-config comparison-store basemap requests receive fixture responses; a separate matrix of all 15 supported configs applies the inline background and asserts zero fetches from both the real stock store and the reference, including a subsequent dispatch that drains Kepler’s global task queue. Unexpected service requests fail. Reference failures name the sample and state/dataset path; a forced eager tile-header rejection also verifies the named error path without unhandled rejections. Tests also mutate actual stock-loaded configs and reject erased/added channels, changed settings, dataset IDs, filter bindings/types/values, flipped split visibility and camera changes, as well as missing static flight paths. Assertions name the sample and checked property, including the full text of any unexpected workflow notice. Gallery cases request an 8 GiB accounting budget unless the supplied URL specifies one; default startup uses the app's normal budget. Unavailable GitHub resources are reported as skipped, separately from passes, and their gallery errors are checked for graceful handling. Remote service probe network failures fail verification; they are never accepted as a confirmed HTTP outage. It writes no datasets. `scripts/sample-gallery.mjs` still covers the separate sandbox **Prepare data → Try a sample dataset** flow; its `?rows=128` fixture remains synthetic. Existing acceptance scripts and `smoke.mjs` use explicit row fixtures or an explicit synthetic startup URL.
+
+The reference converts physical Arrow timestamp cells to `Date` cells before stock table import. This installed Kepler version multiplies numeric `timeToUnixMilli(value, 'x')` inputs by 1,000, whereas the resident Arrow accessor already supplies epoch milliseconds. The stock Date route preserves the instant without reusing host accessors, rewriting expected filter values, or changing plot intervals. Node probes cover earthquakes, trips and assessor time filters. The harness waits for the same strict rendered-layer assertion to pass (up to 180 seconds), because integer style widening and quantile computation can finish after dataset publication; permanently absent layers still fail.
+
+Sample fetch errors now name the exact catalog/config/data/service URL, retain their cause, and distinguish cancellation, the unchanged 60,000 ms download deadline, and network/response-body failures. Service probes retain their own abort deadline inside the shared scope. Tests verify that bodies finish before successful cleanup and failed siblings are cancelled. An uncaught browser `Failed to fetch` message alone does not identify a request; the harness now includes page-error stacks, failed request URLs/methods/resource types, rendered/native layers, GeoJSON render probes and style diagnostics in a failed result. The driver traced UK commute’s failure to `LOAD_MAP_STYLE_TASK`. Kepler reducers enqueue tasks globally, so the reference could previously schedule an original remote basemap for a later host action to drain. Both host and reference now replace remote style definitions, credentials, URL/icon references and sources with the same inline background before `addDataToMap`; layer-group controls and saved background/building colors remain. The browser also asserts that no remote Mapbox/Carto/style.json request is made during sample loading or reference construction. No network errors are ignored and no timeout is increased.
 
 The initial source is an Arrow table imported through `KeplerComputeSession`. Scalar source columns stay resident across numeric, categorical, and minute-of-day controls. The additional Arrow Timestamp column retains exact signed 64-bit time words; select it in Kepler’s native Filters tab to compile millisecond controls to exact GPU time windows. Filtering, distributions and playback use Kepler’s native controls. Each native histogram excludes only its own filter ID, including when multiple filters target the same field. Per-layer spatial masks are independent; native table and analysis selection use Kepler’s targeted-layer union, including hidden targets. Inspection reads a bounded page or one hovered source row. Analysis supports population selection, standardized values and classification, GPU colors, bounded summaries, and saved recipes.
 
 The table bridge deliberately reports unsupported execution rather than scanning source rows for a plausible substitute. Kepler still retains its original CPU source rows for ingestion and application compatibility. This example does not claim arbitrary Kepler layers, exporters, or arbitrary SQL execute on the GPU. The optional DuckDB-WASM panel runs SQL on explicitly registered retained source Arrow and publishes a result as a native resident table only when requested. The prepared-result workflow also supports explicit coordinate roles and precision choices. GPU display selection does not silently alter the SQL relation.
 
-Native Group By now has a bounded resident execution path wired to the original panel; GPU and full native workflow qualification is still pending. It groups all source rows independently of map filters, using one unordered string dictionary key and up to 16 count/sum/average/minimum/maximum measures. Count includes null measure rows; the other methods require prepared Float32 numeric fields and produce null for all-null groups. Null keys form one group, and groups follow first source occurrence. Float32 arithmetic is the declared numerical policy, with nonfinite numeric inputs or results rejected. Limits are 1,000,000 source rows, 4,096 dictionary slots including null, 1 MiB key text and 4 MiB materialized results. Zero measures produces distinct keys. Unsupported configurations remain editable with explicit SQL guidance; SQL is never an automatic fallback.
+Native Group By has a resident execution path wired to the original alpha.18 panel, exercised for all five admitted techniques by `scripts/check-native-group-by.mjs`. It groups all source rows independently of map filters, using one unordered string dictionary key and up to 128 count/sum/average/minimum/maximum measures in batches of 16. Count includes null measure rows; the other methods require prepared Float32 numeric fields and produce null for all-null groups. Null keys form one group, and groups follow first source occurrence. Float32 arithmetic is the declared numerical policy, with nonfinite numeric inputs or results rejected. Limits are 67,108,864 source rows, 4,194,304 dictionary slots including null (key windows of 4,096), 32 MiB key text and 256 MiB materialized results. Zero measures produces distinct keys. Unsupported configurations remain editable with explicit SQL guidance; SQL is never an automatic fallback.
 
 Group By publishes a separate table-only result, adopts its dedicated GPU output buffers, and retains bounded result Arrow for inspection, export and recovery. It does not upload the result again or repack the original source. Native output field names, analyzer types and historical lineage survive portable bundles. Completed results are independent snapshots and remain usable after source removal; pending work is cancelled when its source or operation changes. Native Join (attribute) runs a bounded resident executor when both inputs are resident: LEFT, INNER and FULL joins on one key, with native row order (left order, duplicate right matches in right order, unmatched right rows appended for FULL), exact-string key matching in which null and empty keys never match, and native output naming (right columns prefixed with the right dataset label, collisions suffixed). Keys are prepared string dictionaries or Int32/Uint32/integral-Float32 numbers compared by their native `String(value)` form; a Float32 key must be an integer within ±16,777,216 because a non-integer cannot be proven to equal the original number. Keys are canonicalized, sorted and matched on the GPU, with a 16-byte summary read back before allocation; payload values and validity are gathered on the GPU into dedicated buffers and published as a separate table-only result with bounded Arrow, lineage and portable-bundle persistence. No input or output row cap (uint32 row indices, memory reservation and device limits apply), 32 output columns; Int32, Uint32, Float32 and dictionary-string payload columns only, with empty inputs or results refused. Native Spatial Join runs a bounded resident executor for published longitude/latitude points (left) against a published polygon or multipolygon column (right) with the intersects (boundary included) and within (boundary excluded) predicates. It returns one row per left row in left order with the left geometry fields, a matched-polygon count and Count/Sum/Average/Minimum/Maximum aggregations of right numeric fields (nulls skipped, null when nothing is defined). `GPUSpatialPredicateJoin` produces the pairs under an explicit Float32 policy: polygon vertices are rounded to Float32 like the resident points, so a point within Float32 resolution of an edge can classify differently from native double geometry, and uncertain classifications, candidate or pair overflow (at most 1,048,576 pairs) and mixed or invalid polygon rows are refused. No point, polygon, vertex or pair cap; points join in chunks of 1,048,576 on one prepared polygon index. Other predicates (equals, crosses, overlaps, touches), H3, polygon-left or point-right geometry, and Median and Count unique aggregations are rejected with SQL guidance. Merge of the polygon geometry column (the panel default) is a bounded CPU step: the GPU join's matched pairs are read back (counted, at most 4,194,304 pairs) and unioned with native `mergeGeometries` semantics (none give null, one keeps its geometry, several polygons or several multipolygons become one MultiPolygon, a mix a GeometryCollection) into a GeoJSON Feature string column. It needs a result of at most 262,144 rows and is refused above that with an uncheck-merge message; the other aggregations stay on the GPU. Join and Spatial Join never fall back to SQL or retained rows. Native Suitability (the pinned 3.3.0-alpha.18 operation: numeric fields with weights in [0, 1], range or z-score standardization, normalized or raw weights, a null score when any weighted value is missing; it has no constraints or rasters) runs a bounded resident executor over one resident source. The weighted columns are read back once, packed row-major and scored by `GPUCompositeScore`; its per-column statistics are read back (a few bytes) to refuse constant columns, which native leaves unstandardized but the scorer would zero. The score and the carried columns are published as a separate table-only result in source row order with native naming (carried fields, then a real score field with unique naming), `derivedDataset` lineage and portable-bundle persistence. Scores are Float32 (integers beyond ±16,777,216 are refused), and raw weights scale the normalized score by the weight total. Raw data standardization, weights outside [0, 1] or all zero, non-numeric fields, more than 16 weighted fields, constant weighted columns, and weighted fields missing in different rows (scorer statistics cover rows where every field is defined, native statistics cover each column) are refused with guidance. Limits are 16,777,216 rows (kernel limit), 32 output columns and memory reservation, with Float32, Int32, Uint32 or dictionary-string carried columns and empty inputs refused. Cancelled or stale runs publish nothing. GPU and native browser qualification is pending. Mixed resident and nonresident inputs are rejected with SQL guidance; ordinary nonresident operations keep their native behavior. This host owns one device and one Deck. Dual and Swipe split maps (up to two views) draw both viewports in that Deck from the same resident buffers, each half keeping its own basemap; `?views=1` forces the original single-view host, which rejects split and swipe actions and restored configurations before allocating a second view or replacing workspace sources. Each view has its own view state, so unlocked (unsynchronized) split viewports, per-view hover, click and pan/zoom, labels and elevated points work in both halves; closing either map keeps the Deck and device. Wheel zoom pivots at the pointer in each view, pitched and rotated maps and GlobeView (one seamless globe in Swipe, one per view in Dual) split correctly, touch pan and pinch work per view, the native polygon draw tool and Select Geometry operate in either view, and Swipe or Dual state (divider, per-map layers, unsynchronized viewports) is kept inside exported portable bundles.
 
@@ -38,6 +132,10 @@ Group By publishes a separate table-only result, adopts its dedicated GPU output
 ## Additional sources
 
 The Resident datasets panel opens Arrow IPC files or prepares datasets loaded through native Kepler Add Data. It previews selected fields, nullability, dictionary encoding and measured Float64 conversion error before upload. Longitude/latitude roles are explicit; leaving them empty creates a table-only dataset. A separately selected GeoJSON/GeoArrow column retains geometry independently of scalar normalization. Source names, row identities and Arrow batch boundaries are preserved, and native Arrow compaction is disabled for this host. Native row ingestion is explicitly bounded.
+
+For local Arrow IPC files, select **Preserve original Arrow types** before opening the file to retain Int64/Uint64 numeric source columns for original-value statistics and exact sorting. The precision preview still requires an explicit Float32 conversion policy for their GPU copies and rejects integers that cannot be represented exactly as JavaScript numbers. The default import keeps wide integers as exact decimal category labels. Other unsupported types in a preserved source must be excluded from scalar upload.
+
+Published table sorting has a deliberate ceiling of 8 MiB plus 128 bytes per source row, covering exact two-pass Int64/Float64 sorts and their compiled scratch. Compilation reserves the available portion of that ceiling, rejects programs that exceed it, and retains only the accounted bytes. Wide-column GPU statistics above the 262,144-row CPU bound refuse finite ranges that overflow their relative Float32 representation; narrow the population for CPU statistics or use SQL.
 
 Multiple resident datasets coexist with the fixture. Each has its own native filters, GPU table pages, source revision and optional map layer. Mixed GeoJSON point, line and polygon primitives gather masks and styles from original feature rows. Source replacement and native deletion retire consumers and style resources before releasing geometry or source storage. Stale SQL previews cannot be committed. Saved state records all resident source manifests. Portable bundles explicitly include retained source Arrow for another session; reference-only URL links reconstruct only the fixture. Bundle restore completes schema, normalization and coordinate/geometry validation before replacing sources. GPU allocation failure during replacement is not an atomic rollback to the previous workspace.
 
@@ -66,19 +164,45 @@ Select an H3 index column to retain exact Uint64, bigint, hexadecimal-string or 
 
 Native H3 controls choose canonical polygon boundaries or the viewport-centered column footprint using the pinned Kepler/deck.gl rules. Geometry selection observes the native CPU-equivalent filter population; ordinary GPU range filters do not silently change that branch. The column footprint follows the native ten-kilometer center cache. Fill, outline, coverage, height and extrusion consume resident masks and visual-channel outputs. Native high-precision polygons ignore mapped coverage, matching the pinned renderer. Polygon selection uses the cell center with native open-boundary containment; fill and outline picking retain the original source row.
 
+
+Arrow Timestamp seconds, milliseconds, microseconds and nanoseconds retain exact signed Int64 source ticks. Native filter and exact-playback controls use integral epoch milliseconds: domains enclose sub-millisecond extrema with floor/ceil, and each selected boundary converts exactly into source ticks before GPU comparison. Enclosing boundaries beyond signed Int64 are intersected with the representable source range; wholly disjoint windows select no rows. Calendar histogram edges retain their outside-range ordering alongside saturated GPU words, so extrema stay in their actual bins. Numeric statistics and Calendar/Date presentation truncate sub-millisecond fractions toward zero using raw ticks before narrowing to Number; source selection, table previews, exact copying, CSV and Arrow exports retain the original precision. Trips retain their existing integral-millisecond plus explicit Float32-relative-error policy: typed Arrow timestamps are checked before Number conversion, and sub-millisecond trip instants are refused rather than silently rounded. Run `scripts/native-time-histograms.mjs` with `KEPLER_TIME_UNIT=microsecond` and `nanosecond`, and `scripts/time-contract-panel.mjs` with either unit, to qualify filters and playback.
+
+Native Line endpoint altitude (`alt0`/`alt1`) now follows live column changes through cached XYZ variants. Each endpoint applies its own finite-altitude mask; null altitude renders at zero and invalid altitude hides only that line. Removing an altitude role releases its mask behind a fence. The pinned native Arc has no altitude-column role. Polygon/MultiPolygon geometry can use a numeric table column as base altitude through the native Elevation Offset field (`elevationOffsetField`); `fixedElevation: true` takes its values directly in metres with null defaulting to zero, adding to geometry Z independently of extrusion height and `elevationScale`. This existing analysis-backed resident path has focused node/GPU coverage and `scripts/geojson-vertical.mjs` acceptance checks. The native Polygon layer’s separate Table columns mode groups ID/longitude/latitude/altitude rows into LineStrings; it has no filled-polygon ring/hole/part assembly roles, and that separate preparation path is not introduced here. Portable custom icon catalogs remain embedded as mesh assets and now reject unused nonfinite coordinates before JSON serialization can rewrite them.
+
 ## Timed paths
 
-Select a geometry column and enable **Timed paths (Trips)** to publish one GeoJSON LineString per source row with `[longitude, latitude, altitude, time]` vertices. Timestamp encoding, optional epoch-millisecond origin, and maximum Float32 time error are explicit. Source timestamps and batch boundaries are retained; GPU times are relative to the admitted origin. Invalid paths retain their source table rows and are omitted from rendering, and a source with no valid paths is rejected.
+Select a geometry column and enable **Timed paths (Trips)** to publish GeoJSON LineString or MultiLineString rows with `[longitude, latitude, altitude, time]` vertices. Timestamp encoding, optional epoch-millisecond origin, and maximum Float32 time error are explicit. Source timestamps and batch boundaries are retained; GPU times are relative to the admitted origin. Each multipart path becomes an independent timed primitive with the same source-row identity, style and filter mask; parts never connect and may have independent overlapping time ranges. A malformed or over-budget part rejects its whole GeoJSON row. Invalid paths retain their source table rows and are omitted from rendering, and a source with no valid paths is rejected. Grouped tabular trips can additionally choose a **Trip part column**; each ID/part pair sorts independently across source batches and retains its own member-row filtering and primary source row. Null part values form one part. The part role survives saved manifests and portable bundles.
 
-The native Trips layer registers its prepared animation domain without rescanning source rows. Native playback, trail length, mapped colors and widths, scalar/time filtering, and source-row picking use resident buffers. Interactive playback can produce fractional timestamps, so an exact zero-error policy may reject an intermediate frame; choose an explicit positive budget when needed. Saved source manifests and portable bundle restore retain the policy. Polygon selection targeting Trips remains unsupported until its native spatial predicate is audited. Native Trips scenegraph markers (gallery or custom glTF/GLB URL) render through `GPUTripMarkerLayer`: the model is fetched once with loaders.gl (images included) and post-processed by `@luma.gl/gltf`, and Deck's `ScenegraphLayer` draws it with native `_lighting: 'pbr'` and `_animations: {'*': {speed: 5}}`, so textures, PBR materials and glTF animations render. Each marker's position, heading (or roll/pitch/yaw datum fields) and color are evaluated by compute passes on the GPU at the current animation time (a binary search over the resident, retained-origin timestamps) into the instance buffers `ScenegraphLayer` reads, so playback, scalar/time filters and grouped-trip filtered path copies never touch the CPU. Native `sizeScale`, adjust roll/pitch/yaw, invert flags, model angles/scale and the marker color (constant, trip color, or the table-mode per-timestamp color at the bisected vertex) apply. Roll, pitch and yaw datum fields read published numeric columns gathered per vertex (grouped tabular trips only, as native datums exist only there; a field without a published numeric column reports a reason and leaves trails only). The globe projection is not covered here. Native has no multipart timed trajectory either (its trip detection samples the first coordinate's fourth component, which a MultiLineString does not supply), so multipart timed paths stay unsupported by design, as do implicit timestamp inference and tabular grouping outside the explicit ID/time/lon/lat roles. Native H3 polygon-branch hover brushing runs per vertex in the solid-polygon and path shaders (visibility is interpolated and discarded below 0.5, like Deck's `brushing_isVisible`).
+Publication and native layer fitting bounds cover every accepted vertex of every part, including grouped tabular parts across batches. They include a 5% framing margin (at least the Float32 coordinate rounding enclosure), clipped to native geographic limits of ±180° longitude and ±90° latitude and shared by initial fitting and zoom-to-layer; source coordinates stay unchanged.
+
+The native Trips layer registers its prepared animation domain without rescanning source rows. Native playback, trail length, mapped colors and widths, scalar/time filtering, and source-row picking use resident buffers. Interactive playback can produce fractional timestamps, so an exact zero-error policy may reject an intermediate frame; choose an explicit positive budget when needed. Saved source manifests and portable bundle restore retain the policy. Polygon selection targeting Trips remains unsupported until its native spatial predicate is audited. Native Trips scenegraph markers (gallery or custom glTF/GLB URL) render through `GPUTripMarkerLayer`: the model is fetched once with loaders.gl (images included) and post-processed by `@luma.gl/gltf`, and Deck's `ScenegraphLayer` draws it with native `_lighting: 'pbr'` and `_animations: {'*': {speed: 5}}`, so textures, PBR materials and glTF animations render. Each marker's position, heading (or roll/pitch/yaw datum fields) and color are evaluated by compute passes on the GPU at the current animation time (a binary search over the resident, retained-origin timestamps) into the instance buffers `ScenegraphLayer` reads, so playback, scalar/time filters and grouped-trip filtered path copies never touch the CPU. Native `sizeScale`, adjust roll/pitch/yaw, invert flags, model angles/scale and the marker color (constant, trip color, or the table-mode per-timestamp color at the bisected vertex) apply. Roll, pitch and yaw datum fields read published numeric columns gathered per vertex (grouped tabular trips only, as native datums exist only there; a field without a published numeric column reports a reason and leaves trails only). The globe projection is not covered here. The resident Trips adapter admits multipart paths explicitly even though native trip detection samples only a LineString's fourth component. Implicit timestamp inference and tabular grouping outside the explicit ID/time/lon/lat roles remain outside this adapter's contract. Native H3 polygon-branch hover brushing runs per vertex in the solid-polygon and path shaders (visibility is interpolated and discarded below 0.5, like Deck's `brushing_isVisible`).
+
+## Analysis workbench
+
+The workbench composes the catalog operations into saved, re-runnable workflows. It is a dock over the bottom of the map (to the right of Kepler's side panel) plus a Workflows tab in the side panel. Source: `src/workflow/`; the host-independent library is `modules/kepler/src/workflows/` (see its README).
+
+- **Canvas**: one node per step with typed ports (points, lines, polygons, features, table). Drag from an output to an input to connect; drag an output into empty canvas to pick a compatible next operation. Keys while the dock has focus: N adds a step (so does Tab after clicking the canvas; with keyboard focus Tab keeps moving focus), Enter runs to the selected step, Shift+Enter runs the workflow, B disables, D shows the step on the map, F frames, L lays out, Delete removes, Mod+Z and Shift+Mod+Z undo and redo. The canvas uses `@xyflow/react`.
+- **Palette**: search over about 140 operations by title, id, category, capability or contributor name, with category filters and a compatible-only filter when started from a port.
+- **Inspector**: a generated form per operation (ranges, units, column suggestions from the upstream result or the dataset), input connections, run options, the operation's contract, and the result: preview table, column summaries, diagnostics, engine and timing, CSV and GeoJSON downloads.
+- **Sources**: a Dataset step reads any Kepler dataset, native or GPU-resident, all rows or the rows that pass the current filters and selection, with geometry from a GeoJSON field or from longitude and latitude columns. A GeoJSON step holds pasted or loaded text. A Drawn shapes step reads the polygons, rectangles and lines drawn with Kepler's draw tools. Changing a filter or a drawing marks the steps that read it as stale. The Source select on a source step swaps one kind for another without rewiring, which is how a template is pointed at real data.
+- **Start from data**: the side-panel tab lists each dataset with Use in a workflow and a short list of suggested analyses chosen from its geometry and columns.
+- **Display**: a displayed output is published as a resident dataset named `workflow-<workflow>-<step>-<output>` with a layer, replaced in place when the step re-runs, and the map fits to it the first time. It can be coloured by a column (quantile, equal interval or categories; sequential, diverging or categorical palette), from the inspector or from a column's summary in the result. The map copy is rounded to 32-bit floats; the workflow keeps the exact table.
+- **SQL**: a SQL step runs one read-only `SELECT` over up to three inputs (`input1` to `input3`) in a DuckDB-WASM instance that belongs to the workbench, so the statement sees only the tables wired into that step. The instance loads the first time a SQL step runs.
+- **Suggested fixes**: errors and warnings that have a safe repair show it as a button (for example Insert Sort rows with a limit when an input is over capacity).
+- **Templates and reuse**: six workflows over generated geometry (cluster footprints, buffer areas, nearest facilities, district counts, street coverage, Voronoi catchments). Any workflow can be saved as a template of your own, a template or workflow can be inserted into the current workflow as a block of steps, and steps can be copied, cut and pasted within and between workflows (Mod+C, Mod+X, Mod+V).
+- **Saving**: workflows are saved in the sandbox state under `settings.extensions.workflows` and travel with the portable bundle. Kepler's own Save Map does not carry them. Results are not saved; steps are ready to run after a replay.
+- **Import and export**: JSON, a TypeScript module that rebuilds the workflow with `@luma-contributors/kepler`, a Markdown run report (steps, engines, timings, parameters, diagnostics), the graph in Graphviz DOT, and promotion of runs made in the Contributor catalog panel to a draft workflow.
+- **Assistant**: the Assistant panel accepts seven more tool calls. `listAnalysisOperations`, `describeAnalysisOperation`, `listWorkflows` and `describeWorkflow` read. `defineWorkflow` shows a draft; nothing is added or run until the user accepts it in the workbench. `setWorkflowInputs` and `runWorkflow` act on a saved workflow and are refused unless that exact call was approved.
+
+Limits: steps exchange tables on the CPU within each operation's declared capacity (the runner refuses a hand-off over capacity and names the limit); eleven operations need a GPU device; there is no GPU-resident hand-off between steps, no share-link or standalone-viewer support, and the resident analysis panels (hot spots, kriging, OLS on resident columns) are not step kinds: display a step output and use them on the published dataset.
 
 ## Compatibility boundary
 
-- `vite.config.ts` resolves this repository's luma 10 sources and one Deck 9.4 family. It uses the repository's existing patched Deck core package.
+- `vite.config.ts` resolves one copy of the published luma.gl 10 packages and one deck.gl 10.0.0-alpha.1 family (deduped), with the patched `@deck.gl/core` described above; Kepler's own nested deck.gl 9 packages stay on their pinned version.
 - Kepler's public application table factory and component injector provide the table and map-container seams.
 - `kepler-compute-transform.ts` patches the pinned Kepler `updateFilterPlot` function before its internal calls build CPU row-index arrays, and preserves numeric categorical domains during native restore. The same source hook runs in the development dependency optimizer and production transforms. It validates the expected source shape and fails on upstream drift. A stable upstream asynchronous plot adapter would remove this patch. For filters linked across datasets, the hook composes plots per dataset: each resident table writes its own bins, native code computes any CPU datasets, and a time plot without a complete plot type receives native's default (the interval chosen for the merged domain) once for every dataset. Native draws a line chart for the first dataset only; a resident first dataset reduces a Float32 y axis per time or numeric bin on the GPU over the same keys as the histogram. Numeric range plots use native's edges: the d3 `ticks` thresholds of the filter domain (the merged domain of linked datasets) or the configured numeric interval, computed on the CPU and applied by exact comparisons of the stored Int32, Uint32 or Float32 words, so resident and CPU series share their edges, the zero-width bin at an upper tick and d3's treatment of nulls (compared as zero) and NaN (outside every bin). Average, sum, minimum and maximum stream through a grouped dataframe reduction. Median (d3's linearly interpolated 0.5 quantile) and standard deviation (d3 `deviation`, the square root of the sample n-1 variance, computed by `GPUGroupStatistics` as a corrected two-pass reduction) are exact: rows are stable-sorted by bin, so they cost a declared 96 bytes per row of working memory and are limited to 4,194,304 rows. Null and non-finite y values are skipped as d3 skips null and NaN (so infinite y values differ from d3, which keeps them); a bin with no value has no median, and one with fewer than two has no deviation. Grouped series (`plotType.groupBy`) on a prepared string dictionary field (at most 4,096 labels, 20 groups plus Others) rank labels by their first (bin, row) on the GPU as native discovers them, then count and reduce per series; the native builder draws the chart from those values. Numeric and boolean group fields, other native aggregations (mode, variance, unique count) and y fields that are not Float32 are reported unsupported. `scripts/native-linked-filters.mjs` drives the native synced-dataset selectors with two resident datasets and one CPU dataset against native oracles (bin edges and counts, numeric intervals, every line aggregation, grouped series); `scripts/native-numeric-charts.mjs` checks the same edges, intervals and median/deviation series on a published range filter.
 - The `compat` modules preserve real upstream math 5 and compression 4/5 implementations where Kepler's dependencies still import older exports. They are migration adapters, not replacement algorithms.
-- The native map editor applies a GLSL-only `PathStyleExtension` dash to every sublayer. The host replaces it with `EditorWGSLDashExtension` (`src/editor-dash-extension.ts`), which injects WGSL into Deck's path layer on WebGPU (segment-relative `widths` dashes, butt/round caps, gap picking; no `dashJustified`, `dashMode: 'path'` or offsets; hard dash edges; only path sublayers). If a shader/pipeline error is raised the extension is disabled and later editor layers fall back to solid strokes. The WGSL anchors are text matches on Deck 9.4's `path-layer.wgsl` and are checked by `modules/kepler/test/editor-dash-extension.node.spec.ts`; browser verification is pending.
+- The native map editor applies `PathStyleExtension({dash: true})` to every sublayer. deck.gl 10 ships WGSL for it (segment-relative `widths` dashes, butt and round caps, gap picking), so the host uses it unchanged; the earlier `EditorWGSLDashExtension`, which injected WGSL into Deck 9.4's path layer, is gone. `src/editor-dash-extension.ts` keeps only the status contract: if a shader or pipeline error is raised the dash is disabled and later editor layers render solid strokes. Browser verification of the dashed strokes is pending.
 - Kepler's distance fog and surface fog run as WGSL shader passes (`src/effects-wgsl-fog-passes.ts`, `src/effects-wgsl-effects.ts`) and Light & Shadow is replaced by a plain Deck `LightingEffect` with the same lights; shadow maps are not rendered on WebGPU (Deck's shadow module is GLSL-only) and a visible message says so. Other GLSL-only effects are skipped with a visible message (`src/effects-webgpu-policy.ts`); the 15 image post-processing effects use `@luma.gl/effects` WGSL. Effect state is untouched, so saved settings round trip.
 - `src/basemap-context.ts` manages an optional external MapLibre style URL: failures keep the local background and all data, report a message and preserve declared attributions. It is exposed through the dev test hook (`setBasemapStyleUrl`, `getBasemapState`); `src/basemap-picker.ts` registers a validated style in Kepler's native map-style picker (hook `addBasemapStyle`) and `src/basemap-attribution.ts` shows the active style's attribution. `src/tile3d-diagnostics.ts` backs the 3D tile checks in `scripts/tile3d-effects.mjs` (hooks `getTile3DDiagnostics`, `pickTile3D`, `getDeviceResourceCounts`, `getEffectReplacements`).
 - Source precision is explicit: this fixture uses float32 coordinates/values, uint32 category codes, exact minute offsets, and Arrow millisecond timestamps with UTC metadata. The time adapter rejects unsafe or lossy native endpoints; it never casts epoch timestamps to float32.
@@ -136,13 +260,33 @@ Device loss immediately detaches rendering and clears stale inspection, counts a
 
 Stream prefixes require explicit preview permission. Analysis, SQL and other complete-population consumers reject open, cancelled and failed streams by default. The current save/recovery schema rejects those unfinished populations; a rejected stream checkpoint retains the last valid complete checkpoint and reports that limitation. Completed streams use normal save/export/recovery. Registry device-loss recovery keeps stream status with retained CPU sources; it does not silently convert a prefix into a finite dataset. A marked partial-stream bundle format is not yet supported.
 
+## Space-time contributor catalog
+
+Layers → Analysis catalog exposes the existing GPU contributors for space-time KDE and case/control risk, adaptive spatial KDE, Hawkes EM, expectation-based scan, lagged cross correlation, lagged/differential local Moran, Jacquez, local/near-repeat Knox, Diggle, space-time K, Pettitt and per-location change points. The operation form shows parameter units, ranges and limits. Newer ontology contributors appear in discovery with their existing capability IDs; no numerical contributor is implemented in the example.
+
+Resident inputs are labeled with their dataset name, “resident” and row count. They use the existing original-column readback provider on an explicit run or serialization, preserving numeric epoch values before Float32 conversion. Readback uses the complete population in source-row order and refuses datasets above the smaller of 20,000 rows and the operation’s input limit before reading columns; source changes during the read fail instead of publishing partial input. Non-resident datasets retain the native `dataContainer` path.
+
+Choose a resident dataset, then its GeoJSON Point field or **Point from numeric columns** with explicit X/longitude and Y/latitude columns. Enter a numeric **Time column** and select epoch milliseconds or seconds. Temporal bandwidths, thresholds and lags in seconds are independent of the input epoch unit; period lags use equally spaced observations. Geographic points are projected into a local meter frame; planar points retain their units. Numeric strings and invalid/missing rows fail before GPU dispatch.
+
+Time-series operations group by a location ID column (blank uses exact Point coordinates), sort the periods and require unique observations in a complete, regularly spaced location/time rectangle. Coordinates must stay fixed for each location. Set the numeric value column, second value column for cross correlation, and positive expected-count column for the expectation-based scan. The scan uses integer counts and scans windows ending at the latest period. Moran reports the latest period; earlier rows carry null results. Adaptive KDE uses spatial positions; its time mapping is metadata only. Jacquez exposes the contributor's global statistic, which has no per-event output.
+
+Density slices follow the positive observed time span, including subsecond spans; equal-time events produce a single slice and the summary records requested and actual slice counts. Radius filtering uses the same Float32 distances and thresholds as uploaded band tests. Resident reads preserve exact original columns and use bounded original-view pages for derived aliases, so a name collision with a source column does not block unrelated analysis.
+
+All fourteen bindings are GPU only, capped at 512 input rows. Series allow 64 locations and 128 periods within that row cap. Density outputs allow 32 × 32 cells and 16 slices (16,384 voxels); K, Diggle and near-repeat outputs allow 8 × 8 distance/time classes. Permutation/replicate controls allow 1–999 draws. Hawkes allows 100 iterations and 512 parents, and reports convergence and candidate truncation. Change-point output allows 32 changes per location and reports overflow as a failure. The form documents each operation's fixed kernels, window construction, edge correction and inference convention.
+
+Results are plain catalog tables staged through Sources: per-observation tables include `source_index`, `source_id` and Point geometry, density grids carry cell/slice identities, and band/global tables carry their own identities. Point tables can be published as resident datasets/layers or joined through the source identities. Summaries include test statistics, p-values where available, seeds/draw counts, bandwidths and limits. Unadjusted p-values are labeled; undefined float32 results become null. GPU buffers and compiled graphs are released after readback.
+
+`data/spacetime-observations.csv` is a synthetic 48-row fixture (the UI script strips its SPDX comment lines before import). `scripts/analysis-catalog.mjs` loads it through Add Data, maps the resident point/time columns, runs all fourteen operations, checks result text and stages change-point results. Node mapping tests are in `modules/kepler/test/catalog-spacetime-bindings.node.spec.ts`; `catalog-spacetime-gpu.spec.ts` compares every binding with the real contributor called directly using independently packed fixture buffers.
+
 ## Verification
+
+For the wave-3 flow/trips/memory parity driver, start Vite from this example with `yarn vite --host 127.0.0.1 --port 5328 --strictPort` and pass `http://127.0.0.1:5328/?rows=256` explicitly to each scoped browser script. The viewport regression checks are part of `scripts/flow-field-gpu.mjs`.
 
 With the development server running, execute these commands from the repository root. The browser scripts use the repository's Playwright WebGPU launch configuration; run them sequentially.
 
 ```sh
-yarn workspace luma.gl-examples-kepler-compute typecheck
-yarn workspace luma.gl-examples-kepler-compute build
+yarn workspace luma-contributors-examples-deck-kepler-compute typecheck
+yarn workspace luma-contributors-examples-deck-kepler-compute build
 node examples/deck/kepler-compute/scripts/native-ui.mjs
 node examples/deck/kepler-compute/scripts/native-image-export.mjs
 node examples/deck/kepler-compute/scripts/smoke.mjs
@@ -164,3 +308,325 @@ node examples/deck/kepler-compute/scripts/native-analysis-export.mjs
 The smoke checks native filter actions, GPU counts, self-excluding histograms, bounded inspection, visible map pixels and picking. The workflow script checks polygon holes, exact timestamps, selected analysis, classification and recipe revisions. The sandbox script exercises actual save/replay/export/regeneration and optional DuckDB UI. The layer script restores native Line, Arc, Grid and Hexagon configurations, checks visible GPU output and filter changes, and verifies endpoint-specific polygon scope when switching from points to lines. The native table script exercises the bounded table and native export routing through the actual application UI. The publication script imports multiple sources, verifies preserved source batches and native table identities, renders mixed geometry, applies native filters and deletes a source. It pins its loaded development modules by ignoring Vite hot-reload messages so parallel implementation does not restart the test.
 
 See the implementation record (`dev-docs/archive/kepler-compute-integration-implementation.md`, removed from the tree on 2026-11-13; in git history at `d9d56f0f`) for the completed gates and remaining boundaries, and the [independent review](../../../dev-docs/research/kepler-sandbox-2026-10-28/README.md) for the audited capability matrix and evidence.
+
+The analysis catalog also exposes the existing network, categorical and distribution contributors through GPU-only operations (no CPU fallback):
+
+| Operation / contributor | Inputs and result |
+| --- | --- |
+| Kernel flow smoothing / `GPUKernelFlowSmoothing` | Identified zone centroids plus unique OD flows; dense arcs and adaptive endpoint radii. Point and singleton MultiPoint centroids retain original endpoint coordinate precision. Weights are means and do not conserve total flow. |
+| Matched edge volumes / `GPUMapMatchedEdgeVolumes` | Directed edge rows plus already matched traversal lists; source-aligned edge counts, including loops and sub-track breaks. Native JS/typed arrays and Arrow list columns retain null breaks during catalog ingestion. This does not perform GPS matching. |
+| Radiation flow / `GPURadiationFlowModel` | Zone centroids, populations and outflows; modeled OD arcs, optionally finite-size normalized. |
+| Potential path area / `GPUNetworkPotentialPathArea` | Network lines and graph-node anchors; directed edge membership, slack and endpoint membership from forward/reverse GPU reachability. |
+| Travel-time percentiles / `GPUNetworkTravelTimePercentiles` | Network lines with affine FIFO durations, origin node and departure window; nearest-rank node travel times, reached counts and per-departure validity/convergence. Shared-vertex splits with nonzero slopes are rejected; provide per-edge lines or disable splitting. Zero-slope splits retain prorated static costs. |
+| Colocation / `GPUColocationQuotient` | Categorical points and distance band; global category-pair and source-aligned local quotients. |
+| Local category dependence / `GPULocalCategoryDependence` | Categorical points and distance band; counts, shares, binomial upper tail and score on original point rows. |
+| Spatial entropy / `GPUSpatialEntropy` | Categorical points and distance band; Shannon/co-occurrence entropy and mutual information in nats. |
+| Category pairs / `GPUCategoryPairCounts` | Categorical points and distance band; ordered pair counts and category populations. |
+| Factor detector / `GPUGeographicalDetector` | Categorical strata and finite response; q, F, noncentrality, degrees of freedom and the library's host p-value. |
+| Constrained single linkage / `GPURedcapSingleLinkage` | Distance-band points and one attribute; region labels and convergence status. Cuts the heaviest MST edges; this is not REDCAP's SSD partition. |
+| HEALPix / `GPUHealpixPointToCell`, `GPUHealpixCellAggregation` | Geographic points; exact nested cell ids or cell polygons with counts and optional sum/min/max. Overflow prevents partial publication. |
+| Datum grid / `GPUDatumGridTransform` | Geographic points and a caller-decoded row-major regular shift grid; high/residual coordinate transforms and row status, including nodata/no coverage/inverse exhaustion. |
+| Sinkhorn / `GPUSinkhornDivergence` | Two mass fields on one explicit row-major planar lattice; divergence, three OT components, marginal error and iteration status. |
+
+Every operation has a small runnable sample, declared capacities, typed controls and invocation serialization. The example completes the legacy discovery list with `completeNetworkCategoricalCatalogEntries`; the shared binding registry receives only the family import and one spread. Flows are capped at 128 zones; network time geography at 256 nodes/4096 directed arcs; categorical inputs at 1024 rows/32 categories. Categorical topology uses the shared local-frame distance-band builder (meters for EPSG:4326, native units for planar input); it does not infer polygon contiguity. Null category rows retain source alignment. Numeric inputs must be finite Float32 values; undefined output statistics become null with status retained. HEALPix uses spherical nested orders 0–14 and sampled curved cell boundaries on a continuous longitude branch. Datum grids must already be decoded, with longitude/latitude shifts in degrees and height shifts in meters. Sinkhorn normalizes both masses and uses declared planar cell spacing, independently of display point geometry.
+
+`catalog-network-categorical.spec.ts` supplies driver-run GPU readback checks for all operations and numerical edge cases. `scripts/analysis-catalog.mjs` runs every built-in sample, stages and publishes HEALPix polygons through the preparation dialog, and verifies their loaded GPU polygon layer; `catalog-discovery.mjs` checks operation listing; `flow-h3.mjs` also smooths the rendered H3 endpoint flow fixture through the catalog. Chromium execution is required for those checks.
+## Trajectory contributor catalog
+
+The contributor catalog exposes thirteen trajectory operations on Point observations or timed
+LineStrings. Select the track ID and timestamp properties and the input timestamp encoding
+(epoch seconds, epoch milliseconds or ISO 8601). Native point tables can choose **Point rows
+(mapped longitude/latitude columns)** and explicit coordinate column names. Uploaded, complete
+retained Arrow sources are available alongside native datasets; lazy GPU result tables and
+unfinished or explicitly partial stream populations are excluded.
+
+Inputs are bounded to 2,048 fixes and 128 tracks. Both limits are checked once with named capacity
+validators before fix packing. These host limits bound pairwise CPU work and browser responsiveness;
+eight recursion radii produce at most 16,384 rows. They are not library contributor maxima. Fixes
+are grouped in first-seen track order and sorted by timestamp. Null geometries are skipped with a diagnostic; malformed non-null rows,
+duplicate timestamps within a track and sub-millisecond times reject the run. Integer millisecond
+words retain large absolute epochs. Geographic analysis uses a local azimuthal equidistant frame
+in meters; planar analysis uses the declared coordinate units. Duration controls use seconds.
+Source row and path vertex IDs remain in the output tables. Source altitude is retained in
+fixes and timed paths, including when a cleaner changes XY; numerical analysis remains two
+dimensional. Native timestamp-array properties accept JavaScript arrays and Arrow Lists.
+Discovery reads raw cells without numeric conversion. During explicit ingestion, Int64 track IDs
+and unrelated integer properties become lossless strings; selected numeric roles require exact
+JavaScript integers.
+
+| Contributor | Controls beyond input roles | Native output | Execution |
+| --- | --- | --- | --- |
+| GPUTrajectoryHampel | Coordinate/scalar target, property, window, deviations | Filtered fixes and timed tracks | GPU |
+| GPUTrajectoryOutlierFlags | Speed and acceleration limits | Flagged fixes and cleaned timed tracks | GPU |
+| GPUTrajectorySplit | Gap/stop/value-change mode, gap, stay thresholds, property | Split timed tracks and retained fixes | Library CPU twin |
+| GPUTrajectoryThinning | Minimum distance/time, tolerance | Thinned timed tracks and fixes | Library CPU twin |
+| GPUTrajectoryTrackRelativeTimes | Maximum rounding error in milliseconds | Fixes with relative milliseconds and timed tracks | GPU |
+| GPUTrajectoryStaypoints | Distance, duration, gap, include final stay | Staypoint points | Library CPU twin |
+| GPUTrajectorySegments | Stay controls, activity duration | Moving triplegs, activity-to-activity trips and stays | Library CPU twin |
+| GPUTrajectoryLocations | Stay controls, clustering radius | Location centers and labeled stays | Library CPU twin |
+| GPUTrajectoryRecursions | Up to eight positive radii | Fix/radius points with revisits, residence and censored first passage | Library CPU twin |
+| GPUMobilityIndicators | Stay, activity and location controls | Per-track measures and stays with jumps/waits | Library CPU twin |
+| GPUModalSplit | Stay/activity controls, speed class bounds, count/distance/duration | Per-track mode metrics and classified triplegs | Library CPU twin |
+| GPUBrownianBridgeUtilization | Grid dimensions, padding, motion variance, location error, integration midpoints | Pooled utilization density polygon cells | Library CPU twin |
+| GPUUtilizationVolumeIsopleths | Bridge controls and probability level | Selected home-range polygon cells with volumes | CPU bridge preparation, GPU isopleths |
+
+**Stage in Sources** retains the geometry role and suggests native Trips for timed track outputs.
+The Sources precision check keeps the animation time origin and error budget explicit (default
+zero error); the user can adjust the budget before publication. For timed tracks, exclude the
+redundant Float64 `start_time` and `end_time` fields from scalar upload to retain exact epoch metadata
+in the original source without rounding it to Float32; the geometry carries the Trips clock. Points and cells publish through
+the usual native geometry route, and scalar summaries become native table datasets. Home ranges
+are individual grid cells, not dissolved contours. Home/work indicators rank cumulative location
+stay durations rather than classify time of day. Speed class numbers carry no transport labels.
+
+The node coverage is in `catalog-trajectory.node.spec.ts` and
+`catalog-trajectory-input.node.spec.ts`; GPU coverage is in `catalog-trajectory.spec.ts` under
+`modules/kepler/test`. Browser coverage is integrated into `analysis-catalog.mjs`,
+`catalog-discovery.mjs` and `trips.mjs` through `scripts/catalog-trajectory.mjs`.
+## Point-cloud contributor catalog
+
+The catalog exposes all eleven numerical contributors in
+`@luma-contributors/analysis/pointcloud-analysis`. Choose a native point dataset or a complete,
+retained Arrow source and select **XYZ columns: [...]** in its geometry-field menu. Discovery
+recognizes `x/y/z` (including LAS-style `X/Y/Z`) or `longitude/latitude/altitude`, with aliases
+`lon`, `lng`, `lat`, `alt`, `elevation`, `height` and `z`. Canonical
+`longitude/latitude/altitude` fields take priority over retained aliases regardless of column order,
+so published aligned coordinates can be selected again. An existing `x/y/z` mapping remains
+available separately. The selected role set is saved as part of
+the input reference. Existing XYZ GeoJSON Point columns and pasted XYZ Points also work. CSV,
+Arrow and LAS-like inputs use the sources the host already loads; this adds no LAS decoder.
+Open, partial and failed streams and GPU-only result tables are excluded from source discovery.
+
+Set the coordinate system explicitly. Geographic XY is projected into the shared local
+azimuthal-equidistant metric frame; Z must be altitude in meters in a common vertical datum.
+Planar XYZ must use a single Cartesian unit. All inputs of registration/change share the same
+binary64 origin before Float32 upload. Planar output XY remains in its input coordinate system;
+map rendering requires geographic coordinates supplied by the host. No datum conversion or
+registration is inferred.
+
+| Catalog operation | Contributors dispatched | Main output columns |
+| --- | --- | --- |
+| `pointcloud-ground` | GPUPointCloudSurfaces → GPUPointCloudGround | `classification`, `ground_mask`, `ground_status` |
+| `pointcloud-smrf` | GPUPointCloudSMRF | `classification`, `ground_mask`, `ground_status` |
+| `pointcloud-surfaces` | GPUPointCloudSurfaces | `terrain`, `surface`, `canopy`, `coverage`; separate cell table |
+| `pointcloud-height` | GPUPointCloudSurfaces → GPUPointCloudHeight | `height_above_ground`, `height_status` |
+| `pointcloud-neighborhoods` | GPUPointCloudNeighborhoods | `neighbor_count`, `neighbor_N_row`, `neighbor_N_distance`, `neighborhood_status` |
+| `pointcloud-features` | GPUPointCloudNeighborhoods → GPUPointCloudFeatures | normals, eigenvalues, covariance, linearity/planarity/scattering, statuses |
+| `pointcloud-statistical-filter` | GPUPointCloudNeighborhoods → GPUPointCloudStatisticalFilter | `mean_distance`, `inlier`, `neighborhood_status` |
+| `pointcloud-normal-scale` | GPUPointCloudNormalScale | normals, `normal_scale`, `normal_variance`, `normal_status` |
+| `pointcloud-icp` | GPUPointCloudICP | aligned coordinates, original coordinates, inliers/status; transform and history table |
+| `pointcloud-change` | GPUPointCloudNeighborhoods → GPUPointCloudFeatures → GPUPointCloudChange | signed change/bounds, roughness, detection limit, epoch counts, normals/statuses |
+| `pointcloud-voxel-merge` | GPUPointCloudVoxelMerge | centroid coordinates, `count`, `representative`, `voxel_id`, `merge_status` |
+
+Results retain `source_row`, `source_id`, `result_id`, source scalar fields, and numeric
+`longitude`, `latitude`, `altitude` columns. **Publish** stages an Arrow table in Sources with all
+three coordinate roles suggested. Check schema/precision and publish the selected fields to create
+a native point layer. Style color or size using classification, height, features or change, and keep
+`altitude` as the native altitude role. Statistical filtering emits inlier flags without deleting
+rows. Null measurements and status warnings expose missing support and degeneracy rather than
+turning them into zero-valued measurements. Collinear neighborhoods with at least three retained
+neighbors keep their finite covariance and converged eigenvalues; their undefined normals and
+shape descriptors are null. Fewer than three retained neighbors produce null moments as well.
+
+Interactive limits are 2,048 points per input, 4,096 raster cells, 64 retained neighbors, eight
+increasing radii and 30 ICP iterations. Increase raster cell size if its capacity is exceeded.
+Ground first computes unclassified cell minima over every point, independent of existing LAS class.
+Ground radii are integer cells; their slope uses the contributor's radius-increment convention,
+not Zhang's full-window-width convention. SMRF caps the opening window at eight cells and disables
+net cuts. Height uses cell or bilinear sampling of explicit class-2 ground (negative heights are
+preserved); run ground classification and select its published result first when needed.
+ICP uses point-to-point matching with identity initialization and reports a local, column-major
+source-to-target transform and its shared origin. Change requires the aligned-frame checkbox and
+uses reference rows as cores with upward feature normals. Inspect statuses before interpreting
+an unconverged alignment or incomplete support.
+
+Voxel merge accepts **already aggregated** planar per-voxel arithmetic centroids, uint32 counts
+and representatives, with identical unique voxel IDs in identical order in both inputs. The
+checkbox certifies one identical grid and disjoint owned source rows; the right-row offset restores
+global representative identity. Only positive-count entries across both inputs determine the
+shared origin; empty voxel slots retain their row identity and use harmless local zero coordinates.
+It does not compute centroids from raw points or merge halo
+replicas. Attribute-statistic merging, point-to-plane/robust ICP, IDW height sampling, selection
+masks and streaming execution remain library features outside this bounded catalog form. Public
+attribute/local-origin/covariance helpers are support APIs, not numerical catalog operations.
+
+The node specs cover discovery, input admission, source roles, precision, identity, serialization
+and Arrow publication. Headless specs cover all eleven operations with analytical plane, translation,
+displacement and weighted-centroid oracles. `analysis-catalog.mjs` adds sample execution plus the
+CSV → mapped XYZ → height → styled native XYZ point workflow; `catalog-discovery.mjs` checks all
+operation IDs and point-cloud runnability. The existing scenegraph and layer adapters are unchanged.
+### Raster embeddings and Lagrangian diagnostics
+
+**Layers → Analysis → Raster embeddings and flow diagnostics** runs the existing analysis contributors.
+Choose the generated 8 × 8 four-band unit-vector fixture, a loaded raster layer and explicit tile, or
+load a multiband GeoTIFF/COG URL with the existing range reader. URL loads use full resolution and
+accept an optional source-CRS window, refusing oversized windows before sample allocation. Generic
+average overviews are never selected automatically; use the vector-mean pyramid for embeddings. Select decoded float vectors or
+AlphaEarth signed int8 decoding (normalized before analysis). Every run intersects band validity;
+there is no implicit normalization of ordinary float bands. One tile is admitted at a time, up to
+262,144 pixels, 128 bands and 128 MiB of Float32 vectors, subject to device binding limits.
+
+Operations include k-means, nearest prototype, nearest pixels, k-nearest classifier, linear probe,
+change, covariance, PCA/projection, quantize/dequantize, vector-mean pyramid, similarity, zone mean
+and usable mask. Nearest prototype uses `GPURasterEmbeddingSimilarity.bestQuery`; usable mask uses
+`GPURasterEmbeddingQuantize.validity`, the library's public per-pixel validity output whose contract
+is 1 for finite, unmasked vectors and 0 otherwise (`gpu-raster-embedding-quantize.ts`, output type
+and validity kernel). The reduction family's equivalent mask helper is internal.
+PCA uses GPU covariance, the library's CPU eigensolver, and GPU projection. Results publish as native
+tables with row identities; invalid floats and missing labels become null, while codec words retain
+all 32 bits. Quantization returns packed words, covariance a row-major matrix, nearest pixels
+query/rank identities, and zone means zero-based zone rows. Other outputs follow source pixel order;
+pyramid rows follow the reduced grid. The catalog also offers explicitly labelled generated fixtures.
+
+JSON settings accept pixel/sample-major query and training vectors, integer training labels,
+class count, trained probe weights and bias, cluster/neighbor/result counts, threshold, pyramid scale,
+and one zone ID per pixel with zone count. The optional illustrative defaults use ± first-band
+prototypes, zero-bias two-class probe weights and left/right zones; these are demonstrations, not a
+trained model. Zone IDs can be supplied from a previously rasterized segmentation. Change requires an
+explicit comparison tile with identical CRS, extent, dimensions and bands. The generated fixture uses
+a first-band sign change on its right half. Dequantize on the fixture demonstrates a codec roundtrip.
+
+Flow diagnostics accept UV and SPEED_DIR fields in ground m/s. Snapshots retain the field mode;
+elevation-mode grids contain dimensionless downhill slopes and are excluded from both start and end
+slice selectors and refused by physical preparation. No slope-to-velocity conversion is assumed.
+
+Flow diagnostics take an explicit bounded snapshot of an active native Flow Field grid, directly
+from the physical GPU field before visual speed scaling (or from the CPU-built grid). They resample
+the endpoint-spaced degree field onto cell centres on a regular local Web Mercator metre grid,
+convert ground east/north m/s with sec(latitude), and subtract the projected origin to preserve
+Float32 detail. `GPULagrangianFlowMap` integrates a regular inset seed grid and
+`GPUFiniteTimeLyapunovExponent` computes FTLE in s⁻¹. Negative steps integrate backward. An optional
+second active layer supplies an aligned end velocity slice over the integration interval; otherwise
+the velocity is frozen. Invalid corners, lost seeds and affected FTLE stencils stay invalid. Results
+publish seed point geometry, final longitude/latitude and separate flow/FTLE validity columns.
+Non-wrapping extents within ±85° latitude and 4–512 cells per field axis are required. This is a
+projected diagnostic, with Mercator's scale distortion, and is independent of the particle animation.
+
+Verification from the example directory (requires its running dev server and WebGPU Chromium):
+
+```sh
+node scripts/raster-embeddings-lagrangian.mjs http://127.0.0.1:5318/?rows=256
+# Optional second argument: a CORS-enabled multiband GeoTIFF URL.
+```
+
+The script exercises native embedding publication, every fixture operation, and forward/backward
+flow diagnostics on a native Flow Field layer. Analysis awaits the actual grid build for the current
+mask and filter revision (with a ten-second deadline and cancellation on GPU runtime destruction).
+CPU analysis also awaits the current mask readback, rebuilds from that applied mask before taking a
+snapshot, and refuses failed mask loads; particle rendering may display its previous grid meanwhile;
+`getFlowFieldStats().gridReady` exposes that readiness to browser checks. The script verifies
+constant ground velocity `(2, 1)` m/s over signed four-second integrations: displacement `(±8, ±4)` m
+within 0.75 m (including native coordinate narrowing), and FTLE near zero within 2e-6 s⁻¹ (including
+Mercator scale strain and Float32 stencil error). Focused specs are
+`modules/kepler/test/raster-embeddings-lagrangian.node.spec.ts` and
+`modules/kepler/test/raster-embeddings-lagrangian.spec.ts` (GPU/headless).
+
+## Raster time series
+
+The Raster tools **Raster time series** panel wraps all 19 GPU contributor classes in
+`modules/analysis/src/raster-analysis/raster-time-series` (including calibration and climate-run
+accumulation) through the raster-native catalog in
+`modules/kepler/src/analysis/catalog-raster-timeseries-bindings.ts`. The feature-collection catalog
+inventory points these contributors to this panel. No numerical contributor is added.
+
+Choose a loaded numeric raster tile layer, or import a numeric GeoTIFF with the same reader used
+by the raster host. Enter an ordered acquisition mapping, for example:
+
+```json
+[
+  {"time": "2020-01-01T00:00:00Z", "bands": [1]},
+  {"time": "2020-02-01T00:00:00Z", "bands": [2]},
+  {"time": "2020-03-01T00:00:00Z", "layerId": "another-loaded-layer", "bands": [1]}
+]
+```
+
+Band indices are one-based. Multiple bands per acquisition are supported for COLD and the three
+compositors. Other operations take one band per acquisition. Input is **only the currently loaded
+window**, with identical north-up grid dimensions, extent, zoom, tile coverage and CRS at every
+date. Tile order and IDs may differ. Duplicate/overlapping tile coverage and mismatched grids are
+refused; there is no implicit reprojection, alignment, gap filling or historical tile fetching.
+Dates require explicit timezones and strictly increase; impossible calendar dates, leap days and out-of-range clock components are rejected before parsing. Input nodata becomes NaN. Limits are
+256 dates, 16 bands, 256 tiles at one zoom, 65,536 cells and 1,048,576 scalar input values. Medoid has the library's lower
+64-date limit. Contributor QR/work limits can further restrict monitor/model sizes. Explicit
+output/state allocations are bounded to 64 MiB, in addition to inputs and graph scratch.
+
+Choose an original published polygon dataset (at most 1,024 rows, no existing `zonal_*` columns), operation and settings. A run exposes all output names and
+component counts. Select an output field and zero-based component and repeat to publish another
+date/band/slot/mode/metric. Outputs are GPU-computed and explicitly read back, then reduced by the
+existing CPU zonal implementation into source-aligned `zonal_*` columns, preserving polygon
+geometry and Arrow metadata. The result metadata records dates, bands, selected output, settings,
+contributor names and readback bytes. Snapshot covariance publishes its temporal Gram matrix as a
+global table; EOF also makes covariance and explained-variance ratios available as global tables.
+The selected numeric raster remains available through the host for subsequent analysis. These are
+zonal publications, not GPU-resident raster layer publication. GPU failures surface as errors;
+there is no silent numerical fallback. Concurrent runs are refused; source/device changes before
+publication reject the result. The publication path also receives a current-generation guard.
+Retained `getLatest()` results recheck every acquisition source, device and selected values and
+are invalidated when those change. Tile cache signatures now include payload and band/mask buffer
+identities and dimensions, so replacement samples at identical XYZ coordinates rebuild the source
+and retire old residency. Producers must replace buffers/payloads when editing masks: the controller
+has no producer-supplied content version and does not scan mask pixels every frame, so in-place
+mask edits cannot refresh cached validity. The bounded stack comparison detects in-place changes
+to valid values; changes to validity require replacement buffers/payloads. Replacing decoded
+buffers is the supported content-update route.
+All-invalid polygon tables and all-outside zones are refused; mixed tables retain null skipped
+rows and report `skippedRowCount`. EOF global covariance, kept-cell count and explained-variance
+outputs require no polygon dataset; its spatial EOF fields still require zones.
+
+Exposed operations and data qualifications:
+
+- Rolling mean: complete trailing windows on equally spaced acquisitions. State is reset per run.
+- Whittaker and HANTS: smooth on the acquisition axis; HANTS rejects both tails. Harmonic regression
+  uses centred fractional years and reports trend per year; period is in years.
+- BFAST monitor: explicit history and critical value. The example value is illustrative, not a
+  significance calibration. COLD is the library's simplified OLS monitor, with no pyxccd/Tmask
+  equivalence; choose band-dependent thresholds and the RMSE floor. Status/summary/segment fields
+  remain available, including insufficient support and bounded fit/segment overflow.
+- Medoid, geometric median and best-pixel composites: complete multi-band observations. Best-pixel
+  scores dates/years only. **Cloud-aware BAP is not exposed**: the tile ingestion descriptor carries
+  values and validity but no cloud-distance or scene-quality metadata (see `NumericRasterBand` in
+  `src/raster-tile-ingest.ts` and `GPURasterBestAvailablePixelProps.cloudDistance` in the library).
+  No cloud distances are invented. Geometric median exposes status and last-step distance.
+- Phenology: one season after Whittaker smoothing. Metric order is start/end/peak time, length,
+  peak/base/amplitude, left/right slope and integral. Times and duration are centred years.
+- Streaming accumulation/climate anomaly: one fresh bounded chunk, overall or 12 UTC-month slots;
+  anomaly calibrates on the first N dates and evaluates the full stack. Mean/sample deviation and
+  counts remain selectable. Multi-chunk, unbounded historical streaming is not a host input route.
+- Standardized calibration/index: gamma (zero-inflated) or Fisk APP fit on the first N dates;
+  shape/scale/zero probability and status are available. Fixed-point bounds use the actual float32-shifted
+  calibration samples and the bounded chunk length, including for sub-unit magnitudes. No climate variable, accumulation window,
+  calendar frequency or suitable calibration period is inferred. These controls can fit user-loaded
+  precipitation or water-balance bands but do not claim SPI/SPEI from arbitrary reflectance values.
+- Resample: regular grid over the input date span, linear interpolation within maximumGap years.
+- Lagged correlation: requires a user-supplied reference value per date and equally spaced dates;
+  lags count samples. The host cannot load a remote climate-index feed automatically.
+- Snapshot covariance/EOF: complete cases and equal cell weights (not geographic area weights).
+  EOF uses the library's explicit CPU eigen step on the small GPU Gram-matrix readback and then
+  dispatches GPU projection. There is no example-local eigensolver.
+- Climate runs: daily acquisitions only; strictly above-threshold spells (equality is excluded) and
+  daily positive excess sums.
+
+No contributor class in this family is omitted. Cloud-scored BAP, unbounded multi-chunk ingestion,
+remote reference feeds and automatic area weighting need metadata/input routes absent from this
+host; they are not simulated.
+
+Driver verification (run with the example dev server, sequentially with the existing raster scripts):
+
+```sh
+yarn vitest run --project node modules/kepler/test/raster-timeseries.node.spec.ts modules/kepler/test/raster-timeseries-review.node.spec.ts --maxWorkers=2
+yarn vitest run --project headless modules/kepler/test/raster-timeseries.spec.ts
+node examples/deck/kepler-compute/scripts/raster-timeseries.mjs
+node examples/deck/kepler-compute/scripts/raster-tiles.mjs
+node examples/deck/kepler-compute/scripts/raster-zonal-panel.mjs
+node examples/deck/kepler-compute/scripts/raster-terrain-gpu.mjs
+```
+
+The new browser script injects a generated 24-date numeric band stack, drives the panel, compares a
+rolling mean with an independent oracle, checks nodata and rejects reversed dates without
+publication, then executes every raster-native binding through the same live host. GPU specs
+check primary numerical outputs and statuses against analytic/SciPy/NumPy fixtures for every
+binding (including shifted calibration, threshold equality and tiny variance), rolling/baseline/medoid
+oracles, zonal publication/provenance and source invalidation. Node specs cover stack layout, grids,
+CRS, capacity, dates and refusal paths. The review node suite uses real wrappers and contributor
+constructors with GPU submission/readback stubbed, checks replacement band/mask generations and
+publication guards, and confirms that finite status words cannot substitute for numerical success.

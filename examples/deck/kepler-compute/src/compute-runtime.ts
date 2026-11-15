@@ -29,7 +29,7 @@ import {
 import type {KeplerArrowDataset, KeplerDatasetSnapshot} from '@luma-contributors/kepler';
 import type {KeplerComputeTableState} from './kepler-table-bridge';
 import {HeatmapBindingRuntime} from './heatmap-binding-runtime';
-import {GPUTripMarkerLayer} from '@deck.gl-community/gpu-layers';
+import {GPUTripMarkerLayer} from '../gpu-layers/index';
 import {ResidentScenegraphPointLayer} from './scenegraph-resident-layer';
 import {renderResidentHeatmapPasses} from './resident-heatmap-layer';
 import {PointLabelBindingRuntime} from './point-label-binding-runtime';
@@ -69,6 +69,12 @@ type SummaryReadTiming = {
 
 /** Owns source uploads; Deck owns submission and the explorer borrows these columns. */
 const DEFAULT_MEMORY_BUDGET_BYTES = 512 * 1024 * 1024;
+/**
+ * Explorer working memory per source row. The published crossfilter keeps one mask per dimension
+ * plus per-view masks; the host's dimension set measured 172 bytes per row on luma.gl 10.0.0-alpha.14
+ * (it was 160 with the previous crossfilter), so this leaves a margin above that.
+ */
+const EXPLORER_WORKING_BYTES_PER_ROW = 192;
 
 /** Accounted dataset budget; `?memoryBudgetMebibytes=N` raises it for million-row acceptance runs. */
 function getMemoryBudgetBytes(): number {
@@ -101,6 +107,8 @@ export class ComputeRuntime {
   readonly publications = new Map<string, PublishedSourceRuntime>();
   private chartProvider?: ResidentChartProvider;
   getPublicationBridge?: (datasetId: string) => KeplerComputeTableState | undefined;
+  /** Called after a published dataset's histograms reach its table bridge, so native plots can refresh. */
+  onPublicationHistograms?: (datasetId: string) => void;
   private readonly sourceVectors: GPUVector[] = [];
   private readonly renderReservation: KeplerMemoryReservation;
   private dirty = true;
@@ -254,7 +262,8 @@ export class ComputeRuntime {
       });
       this.tableBinding = tableBinding;
       this.explorer = this.session.openExplorer(dataset.id, {
-        workingMemoryBudgetBytes: source.value.length * 160 + 8 * 1024 * 1024,
+        workingMemoryBudgetBytes:
+          source.value.length * EXPLORER_WORKING_BYTES_PER_ROW + 8 * 1024 * 1024,
         dimensions: [
           {id: 'longitude', kind: 'range', column: 'longitude'},
           {id: 'latitude', kind: 'range', column: 'latitude'},
@@ -601,6 +610,7 @@ export class ComputeRuntime {
             ? performance.now()
             : undefined;
           await published.readSummary(this.getPublicationBridge?.(published.dataset.id));
+          if (!this.destroyed) this.onPublicationHistograms?.(published.dataset.id);
           const summary = published.consumer.summary;
           if (
             publicationStartedAt !== undefined &&
