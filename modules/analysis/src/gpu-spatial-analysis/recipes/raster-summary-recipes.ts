@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getRecipeView as getOrCreateView} from './expansion-recipe-utils';
+import {getRecipeView as getOrCreateView} from './recipe-utils';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPURasterNeighborhood} from '@luma.gl/graph/gpu-raster';
@@ -11,7 +11,7 @@ import {
   GPUChangeDetection,
   type GPUChangeDetectionProps
 } from '../../raster-analysis/change-detection/gpu-change-detection';
-import {createRecipeKernelNode as createWGSLKernelNode} from './expansion-recipe-utils';
+import {createRecipeKernelNode as createWGSLKernelNode} from './recipe-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {RecipeBuilder} from './recipe-utils';
 import {

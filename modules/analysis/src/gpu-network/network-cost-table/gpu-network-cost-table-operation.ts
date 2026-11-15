@@ -22,7 +22,12 @@ export type NetworkCostTableOperationProps = {
     offsets: string;
     targets: string;
     costs: string;
-    status?: {overflow?: string; requiredCount?: string; converged?: string};
+    status?: {
+      overflow?: string;
+      requiredCount?: string;
+      converged?: string;
+      iterationLimitReached?: string;
+    };
   };
 };
 /** Vector operation form. Count is the last CSR offset, as in the contributor. */

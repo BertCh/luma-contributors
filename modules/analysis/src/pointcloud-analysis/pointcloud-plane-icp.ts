@@ -63,8 +63,8 @@ export function getPlaneSolveSource(
   loadTransform: string,
   blocks: number,
   iteration: number,
-  translationTolerance: number,
-  rotationTolerance: number
+  translationTolerance: number | string,
+  rotationTolerance: number | string
 ): string {
   const words = POINT_CLOUD_PLANE_ICP_BLOCK_WORDS;
   return `${loadTransform}
@@ -114,6 +114,6 @@ let updatedRotation=deltaRotation*rotation;let updatedTranslation=deltaRotation*
 for(var column=0u;column<3u;column++){for(var row=0u;row<3u;row++){writeNext(column*4u+row,updatedRotation[column][row]);}}
 writeNext(12u,updatedTranslation.x);writeNext(13u,updatedTranslation.y);writeNext(14u,updatedTranslation.z);
 let step=length(deltaTranslation);let rotationStep=max(max(length(rotationChange[0]),length(rotationChange[1])),length(rotationChange[2]));
-if(step<=${Math.fround(translationTolerance)}&&rotationStep<=${Math.fround(rotationTolerance)}){writeNext(16u,0.0);}
+if(step<=${typeof translationTolerance === 'number' ? Math.fround(translationTolerance) : translationTolerance}&&rotationStep<=${typeof rotationTolerance === 'number' ? Math.fround(rotationTolerance) : rotationTolerance}){writeNext(16u,0.0);}
 writeHistory(${iteration}u,vec3f(count,residual,step));`;
 }

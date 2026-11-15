@@ -11,15 +11,13 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createMultiscaleInference} from './multiscale-inference';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {
-  GET_NAN_WGSL,
-  IS_FINITE_BITS_WGSL,
-  IS_FINITE_VALUE_WGSL
-} from '../../analysis-core/kernels/wgsl-common';
+import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -29,21 +27,34 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {getCandidateLoopWGSL} from './local-weighted-least-squares-wgsl';
 import {
-  GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT,
   createLocalRegressionGrid,
   getRegressionBindings,
   getRegressionWGSL,
   validateRegressionInputs,
   type LocalRegressionInputs
 } from './gpu-generalized-geographically-weighted-regression';
-import {getCholeskyWGSL} from './spatial-regression-solve';
+import {GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS} from './geographically-weighted-regression-parameters';
+import {getDefaultGWRGridSize} from './gwr-grid-index';
+import {
+  createMultiscaleBandwidthSelection,
+  createMultiscaleBandwidthWorkspace,
+  validateMultiscaleBandwidthSelection
+} from './mgwr-bandwidth-selection';
+import {
+  createMultiscaleGlobalFit,
+  getMultiscaleGlobalFitPartialLength
+} from './multiscale-global-fit';
 
+// Upper bound for grid sort/scan setup, initialization, output and conditional-inference nodes.
+// The grid's public primitives do not expose estimates; node specs measure this at the row cap.
+const MGWR_FIXED_COMMAND_NODE_ALLOWANCE = 256;
 const CONVERGENCE_WORKGROUP_SIZE = 256;
 const CONVERGENCE_MAXIMUM_GROUP_COUNT = 256;
 const CONVERGENCE_ELEMENTS_PER_GROUP = 1024;
 
 export type GPUMultiscaleGeographicallyWeightedRegressionProps = Omit<
   LocalRegressionInputs,
+  | 'indexGridSize'
   | 'offset'
   | 'parameters'
   | 'inference'
@@ -53,9 +64,17 @@ export type GPUMultiscaleGeographicallyWeightedRegressionProps = Omit<
   | 'bandwidthMode'
   | 'maximumNeighborCount'
 > & {
+  /** Automatic planar finite-support grid from 1024 rows; false forces the bounded dense path. */
+  indexGridSize?: readonly [number, number] | false;
+  /** Per-component partial-response selection; omitted preserves finite-grid leave-one-out SSE. */
+  bandwidthSelection?: {
+    criterion?: 'leave-one-out' | 'AICc';
+    searchMethod?: 'finite-grid' | 'golden-section';
+    maximumSearchIterations?: number;
+  };
   /** `[relativeContributionTolerance, interceptBandwidth, predictorBandwidth0, ...]`. */
   parameters: GraphDataView<'float32'>;
-  /** Optional column-major candidate bandwidths, including intercept, each with candidateCount entries. */
+  /** Column-major candidates, including intercept. Golden-section uses two positive bounds per column. */
   bandwidthCandidates?: GraphDataView<'float32'>;
   bandwidthCandidateCount?: number;
   /** Known homoskedastic error variance, required for conditionalStandardErrors. */
@@ -93,8 +112,13 @@ export type GPUMultiscaleGeographicallyWeightedRegressionProps = Omit<
  * Gaussian-response multiscale GWR with per-variable distance bandwidths.
  * Cyclic additive backfitting starts all coefficient surfaces at the global least squares fit (zero with full inference). For each variable, regress
  * the partial residual on that variable using its own spatial kernel, then replace that coefficient
- * surface simultaneously at every location. An optional finite candidate grid selects each bandwidth
- * by leave-one-out partial-residual SSE during every sweep (ties choose the first candidate).
+ * surface simultaneously at every location. Optional finite-grid or golden-section selection uses
+ * leave-one-out partial-residual SSE (default) or Gaussian AICc during every sweep. Grid ties
+ * choose the first candidate. Golden-section uses the shared GWR score tolerance and two bounds,
+ * probing the upper endpoint too so infeasible interior points do not hide a feasible fit.
+ * AICc selection uses the scalar partial-response smoother trace, as mgwr multi_bw. Full-model
+ * inference uses trace(S) = sum_j trace(R_j), with R_j the coupled component response operators
+ * (Li and Fotheringham 2020), not the sum of independent scalar smoother traces.
  * No valid candidate invalidates the fit. Stop when the largest relative change in any fitted
  * variable contribution is at most tolerance. Fixed graph depth bounds work and propagates singular
  * univariate fits/non-convergence. Conditional coefficient standard errors, when requested, use the
@@ -103,14 +127,24 @@ export type GPUMultiscaleGeographicallyWeightedRegressionProps = Omit<
  * uncertainty. Optional inference instead propagates the full coupled response Jacobian,
  * estimates residual variance and reports bandwidth-history-conditioned MGWR standard errors
  * and effective parameters. No readback or regularization.
- * Dense O(iterations * predictors * rows²) traversal is intended for bounded workloads.
+ * Planar finite-support kernels automatically build the shared GWR grid from 1024 rows;
+ * indexGridSize overrides it, and false forces dense traversal. Untruncated Gaussian and
+ * great-circle fits use the dense fallback. Limits: 65,536 dense rows, 1,048,576 indexed rows,
+ * 24 predictors, 128 backfit sweeps, 32 grid candidates, 64 search iterations and the shared
+ * 32,768 command-node budget. Full inference retains its 128-row/cubic-work limits.
+ * Compile-time: shapes, kernel, index, iteration limits, selection and inference modes.
+ * Per-frame: data, mask, tolerance, bandwidths/candidates/bounds and noise variance.
  */
 export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
   readonly spatialContext: GPUSpatialContext;
   /** Sphere radius of great-circle distances, or null for planar distances. */
   readonly sphereRadius: number | null;
-  constructor(readonly props: GPUMultiscaleGeographicallyWeightedRegressionProps) {
+  readonly props: Omit<GPUMultiscaleGeographicallyWeightedRegressionProps, 'indexGridSize'> & {
+    indexGridSize?: readonly [number, number];
+  };
+  constructor(props: GPUMultiscaleGeographicallyWeightedRegressionProps) {
     this.id = props.id ?? 'multiscale-geographically-weighted-regression';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext, {
       ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -120,7 +154,36 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
       this.spatialContext.metric === 'great-circle'
         ? getGPUSphereRadius(this.spatialContext)
         : null;
-    validateRegressionInputs(this.id, props, this.sphereRadius !== null);
+    const indexGridSize =
+      props.indexGridSize === false
+        ? undefined
+        : (props.indexGridSize ??
+          (this.sphereRadius === null &&
+          (props.kernel === 'bisquare' || props.gaussianCutoff !== undefined)
+            ? getDefaultGWRGridSize(props.response.length)
+            : undefined));
+    this.props = {...props, indexGridSize};
+    validateRegressionInputs(this.id, {...props, indexGridSize}, this.sphereRadius !== null);
+    validateMultiscaleBandwidthSelection(
+      this.id,
+      props.bandwidthSelection,
+      Boolean(props.bandwidthCandidates),
+      props.bandwidthCandidateCount
+    );
+    const selectionNodeCount = !props.bandwidthCandidates
+      ? 0
+      : props.bandwidthSelection?.searchMethod === 'golden-section'
+        ? 3 +
+          5 *
+            (props.bandwidthSelection.maximumSearchIterations ??
+              GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS)
+        : 6;
+    // Snapshot/convergence: three per sweep. Each component adds prepare/fit/inference plus
+    // selection. The fixed allowance includes optional publication and public index primitives.
+    this.estimatedCommandNodeCount =
+      MGWR_FIXED_COMMAND_NODE_ALLOWANCE +
+      (props.maximumIterations ?? 32) * (3 + (props.predictorCount + 1) * (3 + selectionNodeCount));
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     if (props.parameters.length < props.predictorCount + 2)
       throw new Error(`${this.id}: supply tolerance and one bandwidth per coefficient`);
     if (props.bandwidthCandidates) {
@@ -196,7 +259,7 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
         ...Object.values(props.inference?.output ?? {})
       ],
       [
-        ...getRegressionBindings(props).map(binding => binding.view),
+        ...getRegressionBindings(this.props).map(binding => binding.view),
         props.bandwidthCandidates,
         props.noiseVariance
       ]
@@ -206,6 +269,24 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    if (!props.inference) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'globalFitPartial',
+        getMultiscaleGlobalFitPartialLength(props.response.length, props.predictorCount) * 4,
+        'reduce rowCount or predictorCount'
+      );
+    }
+    const selectionWorkspace = props.bandwidthCandidates
+      ? createMultiscaleBandwidthWorkspace(
+          graph,
+          id,
+          props.response.length,
+          props.bandwidthCandidateCount!,
+          props.bandwidthSelection
+        )
+      : undefined;
     const rows = props.response.length;
     const columns = props.predictorCount + 1;
     const maximumIterations = props.maximumIterations ?? 32;
@@ -230,11 +311,12 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
       'uint32',
       3 * convergenceGroupCount
     );
-    const candidateCount = props.bandwidthCandidateCount ?? 1;
-    const candidateScores = props.bandwidthCandidates
-      ? createTransientView(graph, `${id}-candidate-scores`, 'float32', rows * candidateCount)
-      : undefined;
-    const gridSetup = createLocalRegressionGrid(graph, id, props, this.sphereRadius);
+    const gridSetup = createLocalRegressionGrid(
+      graph,
+      id,
+      {...props, indexGridSize: props.indexGridSize || undefined},
+      this.sphereRadius
+    );
     const effective = gridSetup.props;
     const isGrid = gridSetup.grid !== undefined;
     const bindings = getRegressionBindings({...effective, parameters: workingParameters});
@@ -259,13 +341,14 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
       : [];
     const gridCommon = `${getRegressionWGSL(effective, {
       sphereRadius: this.sphereRadius,
-      grid: props.indexGridSize,
+      grid: effective.indexGridSize,
       neighborhoodOnly: true
     })}
 fn isActive(row: u32) -> bool { return isFiniteBits(pairs[pairsOffset + 2u * row]); }`;
-    const pairs = isGrid
-      ? createTransientView(graph, `${id}-pairs`, 'float32', 2 * rows)
-      : undefined;
+    const pairs =
+      isGrid || props.bandwidthCandidates
+        ? createTransientView(graph, `${id}-pairs`, 'float32', 2 * rows)
+        : undefined;
     const loop = (body: string) => `{\n${getCandidateLoopWGSL(body, true, 'isActive(row)')}\n}`;
     validateGraphViewsBelongToGraph(id, graph, [
       ...bindings.map(binding => binding.view),
@@ -285,64 +368,13 @@ fn isActive(row: u32) -> bool { return isFiniteBits(pairs[pairsOffset + 2u * row
     const nodes: GPUCommandNode<Parameters>[] = [...gridSetup.nodes];
     if (globalFit) {
       nodes.push(
-        createWGSLKernelNode(graph, {
-          id: `${id}-global-fit`,
-          operation: 'GPUMultiscaleGeographicallyWeightedRegression',
-          variant: 'global-fit',
-          invocationCount: 1,
-          bindings: [
-            ...bindings.filter(binding => binding.name !== 'parameters'),
-            {name: 'globalFit', view: globalFit, type: 'f32', access: 'read_write'}
-          ],
-          declarations: `${common}\n${IS_FINITE_VALUE_WGSL}\n${getCholeskyWGSL(props.predictorCount, GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT + 1)}`,
-          body: `// Centered, equilibrated normal equations of the included rows; zeros when singular.
-for (var column = 0u; column < ${columns}u; column++) { globalFit[globalFitOffset + column] = 0.0; }
-var means: array<f32, ${props.predictorCount}>;
-var responseMean = 0.0;
-var count = 0u;
-for (var row = 0u; row < ${rows}u; row++) {
-  if (!included(row)) { continue; }
-  count++;
-  let weight = 1.0 / f32(count);
-  responseMean += weight * (response[responseOffset + row] - responseMean);
-  for (var column = 0u; column < ${props.predictorCount}u; column++) {
-    means[column] += weight * (predictor(row, column + 1u) - means[column]);
-  }
-}
-if (count < ${columns}u) { return; }
-var gram: array<f32, ${props.predictorCount * props.predictorCount}>;
-var cross: array<f32, ${props.predictorCount}>;
-for (var row = 0u; row < ${rows}u; row++) {
-  if (!included(row)) { continue; }
-  let centeredResponse = response[responseOffset + row] - responseMean;
-  for (var column = 0u; column < ${props.predictorCount}u; column++) {
-    let first = predictor(row, column + 1u) - means[column];
-    cross[column] += first * centeredResponse;
-    for (var other = 0u; other <= column; other++) {
-      gram[column * ${props.predictorCount}u + other] += first * (predictor(row, other + 1u) - means[other]);
-    }
-  }
-}
-var equilibration: array<f32, ${props.predictorCount}>;
-for (var column = 0u; column < ${props.predictorCount}u; column++) {
-  let diagonal = gram[column * ${props.predictorCount + 1}u];
-  if (!(diagonal > 0.0) || !isFiniteBits(diagonal)) { return; }
-  equilibration[column] = inverseSqrt(diagonal);
-}
-for (var column = 0u; column < ${props.predictorCount}u; column++) {
-  cross[column] *= equilibration[column];
-  for (var other = 0u; other <= column; other++) { gram[column * ${props.predictorCount}u + other] *= equilibration[column] * equilibration[other]; }
-}
-if (!choleskyFactor_${props.predictorCount}(&gram)) { return; }
-choleskySolve_${props.predictorCount}(&gram, &cross);
-var intercept = responseMean;
-for (var column = 0u; column < ${props.predictorCount}u; column++) {
-  let slope = cross[column] * equilibration[column];
-  if (!isFiniteBits(slope)) { return; }
-  globalFit[globalFitOffset + column + 1u] = slope;
-  intercept -= slope * means[column];
-}
-if (isFiniteBits(intercept)) { globalFit[globalFitOffset] = intercept; }`
+        ...createMultiscaleGlobalFit(graph, {
+          id,
+          rowCount: rows,
+          predictorCount: props.predictorCount,
+          bindings: bindings.filter(binding => binding.name !== 'parameters'),
+          declarations: common,
+          output: globalFit
         })
       );
     }
@@ -397,7 +429,7 @@ if (index == 0u) { state[stateOffset] = 3u; state[stateOffset + 1u] = 0u; }`
         })
       );
       for (let column = 0; column < columns; column++) {
-        if (isGrid && pairs) {
+        if (pairs) {
           nodes.push(
             createWGSLKernelNode(graph, {
               id: `${id}-prepare-${iteration}-${column}`,
@@ -421,107 +453,23 @@ pairs[pairsOffset + 2u * index + 1u] = predictor(index, ${column}u);`
             })
           );
         }
-        if (props.bandwidthCandidates && candidateScores) {
+        if (props.bandwidthCandidates && pairs && selectionWorkspace) {
           nodes.push(
-            isGrid && pairs
-              ? createWGSLKernelNode(graph, {
-                  id: `${id}-cv-${iteration}-${column}`,
-                  operation: 'GPUMultiscaleGeographicallyWeightedRegression',
-                  variant: `cv-${column}`,
-                  invocationCount: rows * candidateCount,
-                  bindings: [
-                    {name: 'positions', view: effective.positions, type: 'f32', access: 'read'},
-                    {name: 'pairs', view: pairs, type: 'f32', access: 'read'},
-                    {
-                      name: 'candidates',
-                      view: props.bandwidthCandidates,
-                      type: 'f32',
-                      access: 'read'
-                    },
-                    {name: 'scores', view: candidateScores, type: 'f32', access: 'read_write'},
-                    {name: 'state', view: state, type: 'u32', access: 'read'},
-                    ...gridBindings
-                  ],
-                  declarations: gridCommon,
-                  body: `if (state[stateOffset] != 3u) { scores[scoresOffset + index] = 0.0; return; }
-let focus = index / ${candidateCount}u; let candidate = index % ${candidateCount}u;
-var score = 0.0;
-if (isActive(focus)) {
-  score = getNaN(); let bandwidth = candidates[candidatesOffset + ${column * candidateCount}u + candidate];
-  if (bandwidth > 0.0 && isFiniteBits(bandwidth)) {
-    var numerator = 0.0; var denominator = 0.0;
-    let origin = getPosition(focus);
-    ${loop(`if (row == focus) { continue; }
-      let weight = spatialWeight(focus, row, bandwidth); if (!(weight > 0.0)) { continue; }
-      let value = pairs[pairsOffset + 2u * row + 1u]; let partial = pairs[pairsOffset + 2u * row];
-      numerator += weight * value * partial; denominator += weight * value * value;`)}
-    if (denominator > 0.0 && isFiniteBits(denominator)) { let residual = pairs[pairsOffset + 2u * focus] - pairs[pairsOffset + 2u * focus + 1u] * numerator / denominator; score = residual * residual; }
-  }
-}
-scores[scoresOffset + index] = score;`
-                })
-              : createWGSLKernelNode(graph, {
-                  id: `${id}-cv-${iteration}-${column}`,
-                  operation: 'GPUMultiscaleGeographicallyWeightedRegression',
-                  variant: `cv-${column}`,
-                  invocationCount: rows * candidateCount,
-                  bindings: [
-                    ...bindings.filter(binding => binding.name !== 'parameters'),
-                    {name: 'source', view: current, type: 'f32', access: 'read'},
-                    {
-                      name: 'candidates',
-                      view: props.bandwidthCandidates,
-                      type: 'f32',
-                      access: 'read'
-                    },
-                    {name: 'scores', view: candidateScores, type: 'f32', access: 'read_write'},
-                    {name: 'state', view: state, type: 'u32', access: 'read'}
-                  ],
-                  declarations: `${common}
-fn partialResponse(row: u32) -> f32 {
-  var partial = response[responseOffset + row];
-  for (var other = 0u; other < ${columns}u; other++) { if (other != ${column}u) { partial -= predictor(row, other) * source[sourceOffset + row * ${columns}u + other]; } }
-  return partial;
-}`,
-                  body: `if (state[stateOffset] != 3u) { scores[scoresOffset + index] = 0.0; return; }
-let focus = index / ${candidateCount}u; let candidate = index % ${candidateCount}u;
-var score = 0.0;
-if (included(focus)) {
-  score = getNaN(); let bandwidth = candidates[candidatesOffset + ${column * candidateCount}u + candidate];
-  if (bandwidth > 0.0 && isFiniteBits(bandwidth)) {
-    var numerator = 0.0; var denominator = 0.0;
-    for (var row = 0u; row < ${rows}u; row++) {
-      if (row == focus || !included(row)) { continue; }
-      let weight = spatialWeight(focus, row, bandwidth); if (!(weight > 0.0)) { continue; }
-      let value = predictor(row, ${column}u); numerator += weight * value * partialResponse(row); denominator += weight * value * value;
-    }
-    if (denominator > 0.0 && isFiniteBits(denominator)) { let residual = partialResponse(focus) - predictor(focus, ${column}u) * numerator / denominator; score = residual * residual; }
-  }
-}
-scores[scoresOffset + index] = score;`
-                })
-          );
-          nodes.push(
-            createWGSLKernelNode(graph, {
-              id: `${id}-select-${iteration}-${column}`,
-              operation: 'GPUMultiscaleGeographicallyWeightedRegression',
-              variant: `select-${column}`,
-              invocationCount: 1,
-              bindings: [
-                {name: 'scores', view: candidateScores, type: 'f32', access: 'read'},
-                {name: 'candidates', view: props.bandwidthCandidates, type: 'f32', access: 'read'},
-                {name: 'parameters', view: workingParameters, type: 'f32', access: 'read_write'},
-                {name: 'state', view: state, type: 'u32', access: 'read'}
-              ],
-              declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,
-              body: `if (state[stateOffset] != 3u) { return; }
-var best = getNaN(); var bestScore = 3.402823e38;
-for (var candidate = 0u; candidate < ${candidateCount}u; candidate++) {
-  var sum = 0.0;
-  for (var row = 0u; row < ${rows}u; row++) { sum += scores[scoresOffset + row * ${candidateCount}u + candidate]; }
-  if (isFiniteBits(sum) && sum < bestScore) { bestScore = sum; best = candidates[candidatesOffset + ${column * candidateCount}u + candidate]; }
-}
-parameters[parametersOffset + ${column + 1}u] = best;`
+            ...createMultiscaleBandwidthSelection(graph, {
+              id: `${id}-selection-${iteration}-${column}`,
+              positions: effective.positions,
+              pairs,
+              gridBindings,
+              common: gridCommon,
+              hasGrid: isGrid,
+              rows,
+              column,
+              candidates: props.bandwidthCandidates,
+              candidateCount: props.bandwidthCandidateCount!,
+              selection: props.bandwidthSelection,
+              parameters: workingParameters,
+              state,
+              workspace: selectionWorkspace
             })
           );
         }

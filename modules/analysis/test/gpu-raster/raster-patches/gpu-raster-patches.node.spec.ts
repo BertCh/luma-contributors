@@ -45,7 +45,7 @@ it('GPURasterPatchMetrics and GPURasterSieve validate props and declare nodes', 
         output: {pixelCounts: view('uint32', 4)}
       })
   ).toThrow(/affine/);
-  // `parameters` carries the row edges of a non-uniform cellSizeMode only.
+  // Uniform mode also reads per-frame affine steps and area.
   expect(
     () =>
       new GPURasterPatchMetrics({
@@ -53,7 +53,7 @@ it('GPURasterPatchMetrics and GPURasterSieve validate props and declare nodes', 
         parameters: view('float32', 8),
         output: {pixelCounts: view('uint32', 4)}
       })
-  ).toThrow(/^raster-patch-metrics parameters is read only with a non-uniform cellSizeMode/);
+  ).not.toThrow();
   expect(
     () =>
       new GPURasterPatchMetrics({
@@ -62,7 +62,7 @@ it('GPURasterPatchMetrics and GPURasterSieve validate props and declare nodes', 
         parameters: view('float32', 5),
         output: {pixelCounts: view('uint32', 4)}
       })
-  ).toThrow(/^raster-patch-metrics parameters must contain at least 6 values/);
+  ).toThrow(/^raster-patch-metrics parameters must contain at least 8 values/);
   const metrics = new GPURasterPatchMetrics({
     ...base,
     output: {

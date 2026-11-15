@@ -9,13 +9,32 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  type WGSLDispatchGate,
+  createWGSLKernelNode
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {type GPUIterationStatusPort} from '../../analysis-core/contracts/status';
+import {
+  GPU_GTWR_SEARCH_PARAMETER_LENGTH,
+  createGTWRBandwidthSearchNodes,
+  getGTWRBandwidthSearchNodeCount,
+  getGTWRAdaptiveBandwidthWGSL,
+  validateGTWRBandwidthSearch,
+  type GPUGTWRBandwidthSearch
+} from './gtwr-bandwidth-search';
 import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
 import {
   GET_NAN_WGSL,
@@ -81,6 +100,47 @@ export function getGPUGTWRParameterValues(
   return target;
 }
 
+/** Per-frame bounds for a nested bandwidth/time-scale profile search. */
+export type GPUGTWRBandwidthSearchSettings = {
+  /** Inclusive bandwidth bounds; integer neighbour counts when `adaptive` is enabled. */
+  bandwidthBounds: readonly [number, number];
+  /** Inclusive nonnegative time-scale bounds. */
+  timeScaleBounds: readonly [number, number];
+  /** Interval stopping tolerance, default 1e-3. */
+  absoluteTolerance?: number;
+  /** Relative interval stopping tolerance, default 1e-3. */
+  relativeTolerance?: number;
+};
+
+/** Packs [minimumBandwidth, maximumBandwidth, minimumTimeScale, maximumTimeScale, absoluteTolerance, relativeTolerance]. */
+export function getGPUGTWRBandwidthSearchParameterValues(
+  settings: GPUGTWRBandwidthSearchSettings
+): Float32Array {
+  const values = new Float32Array([
+    ...settings.bandwidthBounds,
+    ...settings.timeScaleBounds,
+    settings.absoluteTolerance ?? 1e-3,
+    settings.relativeTolerance ?? 1e-3
+  ]);
+  validateRequirement(
+    'getGPUGTWRBandwidthSearchParameterValues',
+    values.every(Number.isFinite) &&
+      values[0] > 0 &&
+      values[0] <= values[1] &&
+      values[2] >= 0 &&
+      values[2] <= values[3] &&
+      values[4] > 0 &&
+      values[5] >= 0,
+    'bounds must be finite and ordered, bandwidth > 0, timeScale >= 0, absoluteTolerance > 0 and relativeTolerance >= 0'
+  );
+  validateRequirement(
+    'getGPUGTWRBandwidthSearchParameterValues',
+    values.length === GPU_GTWR_SEARCH_PARAMETER_LENGTH,
+    `bounds require ${GPU_GTWR_SEARCH_PARAMETER_LENGTH} values`
+  );
+  return values;
+}
+
 /** Caller-owned outputs of {@link GPUGeographicallyTemporallyWeightedRegression}. */
 export type GPUGeographicallyTemporallyWeightedRegressionOutput = {
   /**
@@ -108,6 +168,10 @@ export type GPUGeographicallyTemporallyWeightedRegressionOutput = {
    * correction is undefined there; see the class documentation for the formula).
    */
   summary: GraphDataView<'float32'>;
+  /** Selected [bandwidth, timeScale], optional; requires bandwidthSearch. */
+  selectedParameters?: GraphDataView<'float32'>;
+  /** Profile-search iterations and convergence, optional. */
+  status?: GPUIterationStatusPort;
 };
 
 /** Properties for {@link GPUGeographicallyTemporallyWeightedRegression}. */
@@ -119,6 +183,8 @@ export type GPUGeographicallyTemporallyWeightedRegressionProps = {
   times: GraphDataView<'float32'>;
   /** Declared meaning of `times`: `float32-relative` encoding with an origin epoch. */
   temporalContext: GPUTemporalContext;
+  /** Planar native metric only; omitted keeps the legacy planar context. */
+  spatialContext?: GPUSpatialContext;
   /** Predictors, `rows x predictorCount` row-major; the intercept is added. */
   predictors: GraphDataView<'float32'>;
   predictorCount: number;
@@ -127,6 +193,10 @@ export type GPUGeographicallyTemporallyWeightedRegressionProps = {
   mask?: GraphDataView<'uint32'>;
   /** Kernel on the space-time distance, fixed at compile time. Default `gaussian`. */
   kernel?: 'gaussian' | 'bisquare';
+  /** Interpret bandwidth as an integer nearest-neighbour count, including the focal row, at most 128. */
+  adaptive?: boolean;
+  /** Nested golden-section profile search, compile-time budget with per-frame bounds. */
+  bandwidthSearch?: GPUGTWRBandwidthSearch;
   /** At least 4 float32 values from {@link getGPUGTWRParameterValues}. */
   parameters: GraphDataView<'float32'>;
   output: GPUGeographicallyTemporallyWeightedRegressionOutput;
@@ -136,7 +206,7 @@ const OPERATION = 'GPUGeographicallyTemporallyWeightedRegression';
 const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
 
 /**
- * Geographically and temporally weighted regression (Huang, Wu and Barry 2010) at a fixed
+ * Geographically and temporally weighted regression (Huang, Wu and Barry 2010) at a fixed or adaptive
  * bandwidth: a local weighted least squares fit at every row with kernel weights on the
  * space-time distance `sqrt(ds^2 + tau dt^2)`, as in the Python package mgtwr (its `GTWRKernel`
  * and `GTWR` with a fixed bandwidth, the Gaussian `exp(-z^2 / 2)` and bisquare `(1 - z^2)^2`
@@ -144,10 +214,14 @@ const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
  *
  * The local system is solved in coordinates centered on the focal row, with the diagonally
  * equilibrated Cholesky factorization shared with the GWR family, so a near-collinear local
- * design reports `SINGULAR` per row rather than a wild coefficient. Selecting `(bandwidth,
- * timeScale)` is done by the caller: rewrite `parameters` between encodings and compare the
- * `summary` AICc, the profile approach of the mgtwr two-step search without its adaptive
- * bandwidth. The fit is exhaustive over rows, float32, deterministic for a given adapter, and the
+ * design reports `SINGULAR` per row rather than a wild coefficient. Optional `bandwidthSearch`
+ * profiles bandwidth inside a time-scale golden-section search; `selectedParameters` publishes
+ * the winning pair. `adaptive` uses the kth usable space-time distance, including self, inflated
+ * by 1.0000001 as in mgtwr. Counts above the usable row count or 128, and zero kth distances,
+ * are singular. Search bounds/tolerances and fixed settings are per-frame; shapes, kernel,
+ * adaptive mode and search budgets are compile-time. This reference-tier exhaustive search
+ * assumes a unimodal profile, tests both endpoints, and keeps its best finite AICc at the limit.
+ * The fit is exhaustive over rows, float32, deterministic for a given adapter, and the
  * caller's data are never reordered.
  *
  * The summary AICc is the one `GPUGeographicallyWeightedRegression` publishes (the mgwr formula),
@@ -163,10 +237,29 @@ const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
 export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommandNodeProducer {
   readonly id: string;
   readonly rows: number;
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUGeographicallyTemporallyWeightedRegressionProps) {
     this.id = props.id ?? 'geographically-temporally-weighted-regression';
     const {id} = this;
     const columns = props.predictorCount;
+    const searchIterations = validateGTWRBandwidthSearch(
+      id,
+      props.bandwidthSearch,
+      props.output.status
+    );
+    this.estimatedCommandNodeCount =
+      3 +
+      Number(Boolean(props.output.residuals)) +
+      (searchIterations
+        ? getGTWRBandwidthSearchNodeCount(searchIterations, 2) +
+          Number(Boolean(props.output.selectedParameters))
+        : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    resolveGPUSpatialContext(id, props.spatialContext, {
+      coordinateSpaces: ['planar'],
+      metrics: ['native'],
+      measure: 'distance'
+    });
     validateCapacity(id, 'predictorCount', columns, 1, GPU_GTWR_MAXIMUM_PREDICTOR_COUNT);
     resolveGPUTemporalContext(id, props.temporalContext, {encodings: ['float32-relative']});
     validateSinglePackedView(props.response, ['float32'], `${id} response`);
@@ -201,7 +294,24 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
       validateSinglePackedView(output.residuals, ['float32'], `${id} output.residuals`);
       validateViewLength(id, 'output.residuals', output.residuals, this.rows);
     }
-    validatePredictionViews(id, this.getInputViews(), Object.values(output).filter(Boolean));
+    if (output.selectedParameters) {
+      validateSinglePackedView(
+        output.selectedParameters,
+        ['float32'],
+        `${id} output.selectedParameters`
+      );
+      validateRequirement(
+        id,
+        Boolean(props.bandwidthSearch),
+        'output.selectedParameters requires bandwidthSearch'
+      );
+      validateRequirement(
+        id,
+        output.selectedParameters.length >= 2,
+        'output.selectedParameters must have at least 2 values'
+      );
+    }
+    validatePredictionViews(id, this.getInputViews(), this.getOutputViews());
   }
 
   private getInputViews(): GraphDataView[] {
@@ -212,23 +322,109 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
       props.predictors,
       props.response,
       props.mask,
-      props.parameters
+      props.parameters,
+      props.bandwidthSearch?.parameters
     ];
     return views.filter((view): view is GraphDataView => view !== undefined);
+  }
+
+  private getOutputViews(): GraphDataView[] {
+    const {status, ...output} = this.props.output;
+    return [...Object.values(output), ...Object.values(status ?? {})].filter(
+      (view): view is GraphDataView<'float32'> | GraphDataView<'uint32'> => Boolean(view)
+    );
   }
 
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    return this.createNodes(graph);
+  }
+
+  private createNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    gate?: WGSLDispatchGate<Parameters>,
+    preparedPoints?: GraphDataView<'float32'>
+  ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rows} = this;
     const {output} = props;
     const columns = props.predictorCount;
     const size = columns + 1;
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...this.getInputViews(),
-      ...Object.values(output).filter(Boolean)
-    ]);
-    const spaceTime = createSpaceTimePointNodes(graph, id, props, rows);
+    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'space-time and coefficient scratch',
+      rows * Math.max(3, size) * 4,
+      'reduce rows or predictorCount'
+    );
+    if (props.bandwidthSearch) {
+      const spaceTime = createSpaceTimePointNodes(graph, id, props, rows);
+      const selectedParameters = createTransientView(graph, `${id}-selected`, 'float32', 4);
+      const searchNodes = createGTWRBandwidthSearchNodes(graph, {
+        id,
+        rows,
+        adaptive: props.adaptive ?? false,
+        search: props.bandwidthSearch,
+        parameters: selectedParameters,
+        status: output.status,
+        evaluate: (parameters, evaluationGate, evaluationId) => {
+          const candidateOutput = {
+            coefficients: createTransientView(
+              graph,
+              `${evaluationId}-coefficients`,
+              'float32',
+              rows * size
+            ),
+            localStatus: createTransientView(graph, `${evaluationId}-status`, 'uint32', rows),
+            fitted: createTransientView(graph, `${evaluationId}-fitted`, 'float32', rows),
+            hatDiagonal: createTransientView(graph, `${evaluationId}-hat`, 'float32', rows),
+            summary: createTransientView(graph, `${evaluationId}-summary`, 'float32', 12)
+          };
+          const candidate = new GPUGeographicallyTemporallyWeightedRegression({
+            ...props,
+            id: evaluationId,
+            bandwidthSearch: undefined,
+            parameters,
+            output: candidateOutput
+          });
+          return {
+            nodes: candidate.createNodes(graph, evaluationGate, spaceTime.points),
+            summary: candidateOutput.summary
+          };
+        }
+      });
+      const {status, selectedParameters: selectedOutput, ...fitOutput} = output;
+      const finalFit = new GPUGeographicallyTemporallyWeightedRegression({
+        ...props,
+        id: `${id}-selected-fit`,
+        bandwidthSearch: undefined,
+        parameters: selectedParameters,
+        output: fitOutput
+      });
+      if (selectedOutput) {
+        searchNodes.push(
+          createWGSLKernelNode(graph, {
+            id: `${id}-publish-selected`,
+            operation: OPERATION,
+            invocationCount: 2,
+            bindings: [
+              {name: 'selected', view: selectedParameters, type: 'f32', access: 'read'},
+              {name: 'output', view: selectedOutput, type: 'f32', access: 'read_write'}
+            ],
+            body: 'output[outputOffset + index] = selected[selectedOffset + index];'
+          })
+        );
+      }
+      return [
+        ...spaceTime.nodes,
+        ...searchNodes,
+        ...finalFit.createNodes(graph, undefined, spaceTime.points)
+      ];
+    }
+    const spaceTime = preparedPoints
+      ? {points: preparedPoints, nodes: []}
+      : createSpaceTimePointNodes(graph, id, props, rows, gate);
     const points = spaceTime.points;
     return [
       ...spaceTime.nodes,
@@ -237,6 +433,7 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
         operation: OPERATION,
         variant: 'local-fit',
         invocationCount: rows,
+        ...gate?.getGate(0),
         bindings: [
           {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'points', view: points, type: 'f32', access: 'read'},
@@ -252,9 +449,10 @@ ${IS_FINITE_VALUE_WGSL}
 ${GET_NAN_WGSL}
 ${getCholeskyWGSL(size, size)}
 ${getEquilibratedCholeskyWGSL(size)}
-${getLocalKernelWeightWGSL()}`,
-        body: `let bandwidth = parameters[parametersOffset];
-  let timeScale = parameters[parametersOffset + 1u];
+${getLocalKernelWeightWGSL()}
+${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}`,
+        body: `let timeScale = parameters[parametersOffset + 1u];
+  let bandwidth = ${props.adaptive ? 'getAdaptiveBandwidth(index, parameters[parametersOffset], timeScale)' : 'parameters[parametersOffset]'};
   let originX = points[pointsOffset + 3u * index];
   var code = ${STATUS.SINGULAR}u;
   var coefficient: array<f32, ${size}>;
@@ -334,6 +532,7 @@ ${getLocalKernelWeightWGSL()}`,
               operation: OPERATION,
               variant: 'residuals',
               invocationCount: rows,
+              ...gate?.getGate(0),
               bindings: [
                 {name: 'response', view: props.response, type: 'f32', access: 'read'},
                 {name: 'fitted', view: output.fitted, type: 'f32', access: 'read'},
@@ -348,6 +547,7 @@ ${getLocalKernelWeightWGSL()}`,
         operation: OPERATION,
         variant: 'summary',
         invocationCount: 1,
+        ...gate?.getGate(1),
         bindings: [
           {name: 'response', view: props.response, type: 'f32', access: 'read'},
           {name: 'fitted', view: output.fitted, type: 'f32', access: 'read'},
@@ -382,7 +582,9 @@ ${getLocalKernelWeightWGSL()}`,
       totalSquares += deviation * deviation;
     }
   }
-  let logLikelihood = -0.5 * count * (log(6.283185307179586 * residualSquares / count) + 1.0);
+  // Work in log space: 2 pi * RSS can overflow even when RSS and 2 pi * RSS / n are finite.
+  let logVariance = log(residualSquares) - log(count);
+  let logLikelihood = -0.5 * count * (logVariance + 1.8378770664093453 + 1.0);
   // The AICc of GPUGeographicallyWeightedRegression (mgwr): -2 llf + 2 n (tr + 1) / (n - tr - 2),
   // defined only while n - tr - 2 > 0. mgtwr's own aicc is 2 (tr + 1) (n - 1) / (n - tr - 1) in
   // the penalty and is not published here.
@@ -418,7 +620,8 @@ export function createSpaceTimePointNodes<Parameters>(
     GPUGeographicallyTemporallyWeightedRegressionProps,
     'positions' | 'times' | 'predictors' | 'predictorCount' | 'response' | 'mask'
   >,
-  rows: number
+  rows: number,
+  gate?: WGSLDispatchGate<Parameters>
 ): {nodes: GPUCommandNode<Parameters>[]; points: GraphDataView<'float32'>} {
   const columns = props.predictorCount;
   const points = createTransientView<'float32', Parameters>(
@@ -432,6 +635,7 @@ export function createSpaceTimePointNodes<Parameters>(
     operation: OPERATION,
     variant: 'usable-rows',
     invocationCount: rows,
+    ...gate?.getGate(0),
     bindings: [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
       {name: 'times', view: props.times, type: 'f32', access: 'read'},

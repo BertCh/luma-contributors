@@ -27,7 +27,17 @@ for (const fixture of ['affine', 'piecewise', 'invalid', 'no-transitions'] as co
       departure: 'departure',
       costModel: piecewise ? 'piecewise-arrival' : 'affine-duration',
       samplesPerTransition: piecewise ? 2 : undefined,
-      output: {arrivals: 'arrivals', predecessorTransitions: 'predecessors', summary: 'summary'}
+      output: {
+        arrivals: 'arrivals',
+        predecessorTransitions: 'predecessors',
+        summary: 'summary',
+        status: {
+          invalidCount: 'invalidCount',
+          converged: 'converged',
+          iterationCount: 'iterationCount',
+          iterationLimitReached: 'iterationLimitReached'
+        }
+      }
     };
     const inputs = {
       vertices: {format: 'uint32' as const, values: new Uint32Array([0, 1, 2, 99])},
@@ -51,7 +61,15 @@ for (const fixture of ['affine', 'piecewise', 'invalid', 'no-transitions'] as co
         values: new Float32Array([fixture === 'invalid' ? -1 : 4])
       }
     };
-    const outputs = ['arrivals', 'predecessors', 'summary'];
+    const outputs = [
+      'arrivals',
+      'predecessors',
+      'summary',
+      'invalidCount',
+      'converged',
+      'iterationCount',
+      'iterationLimitReached'
+    ];
     const results = [];
     for (const Operation of [GPUNetworkTimeRoutingOperation, CPUNetworkTimeRoutingOperation])
       results.push(
@@ -60,6 +78,8 @@ for (const fixture of ['affine', 'piecewise', 'invalid', 'no-transitions'] as co
     // These dyadic fixtures have exact labels and target-arrival bits. Integer tolerance is zero.
     expect(results[0]['predecessors']).toEqual(results[1]['predecessors']);
     expect(results[0]['summary']).toEqual(results[1]['summary']);
+    for (const field of ['invalidCount', 'converged', 'iterationCount', 'iterationLimitReached'])
+      expect(results[0][field]).toEqual(results[1][field]);
     for (let state = 0; state < 4; state++) {
       const expected = results[1]['arrivals'][state];
       if (!Number.isFinite(expected)) expect(results[0]['arrivals'][state]).toBe(expected);

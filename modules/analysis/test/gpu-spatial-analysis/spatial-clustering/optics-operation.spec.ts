@@ -12,10 +12,14 @@ import {
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
-for (const neighborIndex of ['brute-force', 'grid'] as const) {
+for (const {neighborIndex, orderingMethod} of [
+  {neighborIndex: 'brute-force', orderingMethod: 'sequential'},
+  {neighborIndex: 'grid', orderingMethod: 'sequential'},
+  {neighborIndex: 'grid', orderingMethod: 'parallel'}
+] as const) {
   for (const extractionMethod of ['dbscan', 'xi'] as const) {
     for (const scene of ['ordinary', 'all-invalid', 'duplicates', 'temporal'] as const) {
-      it(`OPTICS graph twins agree: ${neighborIndex}, ${extractionMethod}, ${scene}`, async () => {
+      it(`OPTICS graph twins agree: ${neighborIndex}, ${orderingMethod}, ${extractionMethod}, ${scene}`, async () => {
         const device = await getWebGPUTestDevice();
         requireTestDevice(device);
         const coordinates =
@@ -36,6 +40,7 @@ for (const neighborIndex of ['brute-force', 'grid'] as const) {
           xi: 0.2,
           minimumClusterSize: 2,
           neighborIndex,
+          orderingMethod,
           neighborCapacity: neighborIndex === 'grid' ? rowCount * rowCount : undefined,
           ...(scene === 'temporal'
             ? {
@@ -59,9 +64,14 @@ for (const neighborIndex of ['brute-force', 'grid'] as const) {
             ...(extractionMethod === 'xi'
               ? {clusterIntervals: 'clusterIntervals', clusterSummary: 'clusterSummary'}
               : {}),
-            ...(neighborIndex === 'grid'
-              ? {ports: {status: {candidateOverflow: 'candidateOverflow'}}}
-              : {})
+            ports: {
+              status: {
+                iterationCount: 'iterationCount',
+                converged: 'converged',
+                iterationLimitReached: 'iterationLimitReached',
+                ...(neighborIndex === 'grid' ? {candidateOverflow: 'candidateOverflow'} : {})
+              }
+            }
           }
         };
         const outputs = [
@@ -71,6 +81,9 @@ for (const neighborIndex of ['brute-force', 'grid'] as const) {
           'predecessors',
           'labels',
           'status',
+          'iterationCount',
+          'converged',
+          'iterationLimitReached',
           ...(extractionMethod === 'xi' ? ['clusterIntervals', 'clusterSummary'] : []),
           ...(neighborIndex === 'grid' ? ['candidateOverflow'] : [])
         ];

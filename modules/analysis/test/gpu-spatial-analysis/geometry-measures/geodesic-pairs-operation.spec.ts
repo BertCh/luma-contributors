@@ -14,18 +14,14 @@ import {requireTestDevice} from '../../utils/require-test-device';
 
 for (const metric of ['great-circle', 'ellipsoidal', 'rhumb'] as const) {
   for (const coincident of [false, true]) {
-    it(`compares every ${metric} output (${coincident ? (metric === 'rhumb' ? 'zero latitude span' : 'coincident and seam identities') : 'long, short, polar and seam paths'})`, async () => {
+    it(`compares every ${metric} output (${coincident ? 'coincident and seam identities' : 'long, short, polar and seam paths'})`, async () => {
       const device = await getWebGPUTestDevice();
       requireTestDevice(device);
       const origins = new Float32Array([-73.75, 40.5, 179.998, 12.5, -4, -30, 20, 80, 15, 0]);
       const targets = coincident
         ? origins.slice()
         : new Float32Array([2.25, 48.75, -179.996, 12.501, 100, 60, 40, 81, 15.001, 0]);
-      if (coincident && metric === 'rhumb') {
-        // rhumbBearingDegrees currently evaluates atan2(0, 0) for coincident pairs;
-        // that result is unspecified in WGSL, so use the east-west limiting case here.
-        for (let row = 0; row < 5; row++) targets[row * 2] += 0.5;
-      } else if (coincident) {
+      if (coincident) {
         origins[2] = -180;
         targets[2] = 180;
         origins[3] = 0;
@@ -88,3 +84,38 @@ for (const metric of ['great-circle', 'ellipsoidal', 'rhumb'] as const) {
     });
   }
 }
+
+it('rhumb cardinal and coincident bearings match the hand-derived oracle for signed zeros', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // On the equator/prime meridian, one degree has central angle pi / 180. Bearings are
+  // clockwise from north; a coincident pair has the documented zero bearing.
+  const targets = new Float32Array([1, 0, 1, -0, -1, 0, -1, -0, -0, 1, -0, -1, 0, 0, -0, -0]);
+  const pairCount = targets.length / 2;
+  const bearings = [90, 90, -90, -90, 0, 180, 0, 0];
+  for (const Operation of [GPUGeodesicPairsOperation, CPUGeodesicPairsOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: {
+        origins: {format: 'float32x2', values: new Float32Array(targets.length)},
+        targets: {format: 'float32x2', values: targets}
+      },
+      operations: [
+        new Operation({
+          origins: 'origins',
+          targets: 'targets',
+          pairCount,
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb', sphereRadius: 1},
+          output: {distances: 'distances', initialBearings: 'initial', finalBearings: 'final'}
+        })
+      ],
+      outputs: ['distances', 'initial', 'final']
+    });
+    for (let row = 0; row < pairCount; row++) {
+      for (const port of ['initial', 'final']) {
+        const difference = result[port][row] - bearings[row];
+        expect(Math.abs(difference - 360 * Math.round(difference / 360))).toBeLessThan(1e-4);
+      }
+      expect(Math.abs(result['distances'][row] - (row < 6 ? Math.PI / 180 : 0))).toBeLessThan(1e-8);
+    }
+  }
+});

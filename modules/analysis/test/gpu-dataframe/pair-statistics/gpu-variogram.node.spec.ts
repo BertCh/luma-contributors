@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
 import {
   GPUVariogram,
   type GPUVariogramOutput,
@@ -19,7 +20,10 @@ import {
   getGPUVariogramParameterValues,
   GPU_VARIOGRAM_PARAMETER_LENGTH
 } from '../../../src/dataframe-analysis/pair-statistics/variogram-parameters';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {computeVariogramOnCPU} from './variogram-oracle';
 
 let serial = 0;
@@ -50,6 +54,23 @@ function expectThrows(overrides: (graph: GPUCommandGraph) => Overrides, message:
   expect(() => new GPUVariogram(createProps(graph, overrides(graph)))).toThrow(message);
   device.destroy();
 }
+
+it('GPUVariogram guards a zero coordinate difference before directional binning', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const contributor = new GPUVariogram(createProps(graph, {lagCount: 2, directionCount: 4}));
+    const sources = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+    const source = sources.find(entry => entry.source.includes('let azimuthOffset ='))?.source;
+    expect(source).toBeDefined();
+    expect(() => new WgslReflect(source!)).not.toThrow();
+    // Modulo pi hides the sign error in many cases; pin rule 11 even on those adapters.
+    expect(source).toContain('guardedAtan2(deltaY, deltaX) - azimuthOffset');
+    expect(source?.match(/fn guardedAtan2\(/g)).toHaveLength(1);
+  } finally {
+    device.destroy();
+  }
+});
 
 it('getGPUVariogramParameterValues packs and validates the layout', () => {
   expect(

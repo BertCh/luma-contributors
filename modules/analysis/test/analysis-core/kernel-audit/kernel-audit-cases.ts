@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {QUANTILE_LISA_AUDIT_CASES} from './cases-quantile-lisa';
+import {COREGIONALIZATION_FIT_AUDIT_CASES} from './cases-coregionalization-fit';
 import {EXACT_NATURAL_BREAKS_AUDIT_CASES} from './cases-exact-natural-breaks';
 import {DORLING_CARTOGRAM_AUDIT_CASES} from './cases-dorling-cartogram';
 import {MOVEMENT_SEMANTICS_AUDIT_CASES} from './cases-movement-semantics';
@@ -50,6 +51,8 @@ import {COVERAGE_TRANCHE_ONE_CASES} from './cases-coverage-tranche-one';
 import {EXPANSION_CASES} from './cases-expansion';
 import type {KernelAuditCase} from './kernel-audit-context';
 import {DATAFRAME_CASES} from './cases-dataframe';
+import {FOREST_INFERENCE_AUDIT_CASES} from './cases-forest-inference';
+import {WIDE_NUMERIC_SCAN_CASES} from './cases-wide-numeric-scan';
 import {RASTER_CASES} from './cases-raster';
 import {TERRAIN_CASES} from './cases-terrain';
 import {NETWORK_CASES} from './cases-network';
@@ -62,6 +65,7 @@ import {POINTCLOUD_AND_DATUM_CASES} from './cases-pointcloud-and-datum';
 
 /** Every kernel-audit case, by area file. */
 export const KERNEL_AUDIT_CASES: Readonly<Record<string, readonly KernelAuditCase[]>> = {
+  'coregionalization-fit': COREGIONALIZATION_FIT_AUDIT_CASES,
   'coverage-global': COVERAGE_GLOBAL_CASES,
   'coverage-network-movement': COVERAGE_NETWORK_MOVEMENT_CASES,
   'movement-semantics': MOVEMENT_SEMANTICS_AUDIT_CASES,
@@ -102,8 +106,10 @@ export const KERNEL_AUDIT_CASES: Readonly<Record<string, readonly KernelAuditCas
   backlog: BACKLOG_CASES,
   'coverage-tranche-one': COVERAGE_TRANCHE_ONE_CASES,
   expansion: EXPANSION_CASES,
+  'wide-numeric-scan': WIDE_NUMERIC_SCAN_CASES,
   dataframe: [
     ...DATAFRAME_CASES,
+    ...FOREST_INFERENCE_AUDIT_CASES,
     ...TIME_GLUE_AUDIT_CASES,
     ...VALUE_CUBE_AUDIT_CASES,
     ...VARIABLE_STANDARDIZATION_AUDIT_CASES,

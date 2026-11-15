@@ -8,12 +8,18 @@ import {
   type GPUCommandNode,
   type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {GPURasterReprojection, type GPURasterReprojectionProps} from './gpu-raster-reprojection';
+import {
+  GPURasterReprojection,
+  getGPURasterReprojectionParameterValues,
+  GPU_RASTER_REPROJECTION_PARAMETER_LENGTH,
+  type GPURasterReprojectionProps
+} from './gpu-raster-reprojection';
 import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
-  validateRasterGrid
+  validateRasterGrid,
+  validateRasterParameters
 } from './raster-band-utils';
 import {validateRequirement} from '../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterExpansionViews, validateRasterExpansionGraph} from './raster-expansion-utils';
@@ -53,10 +59,17 @@ export class GPURasterTileReprojection implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-tile-reprojection';
     this.props = props;
     validateRasterGrid(this.id, props.sourceGrid);
+    getGPURasterReprojectionParameterValues(props);
+    if (props.parameters) {
+      validateRasterParameters(this.id, props.parameters, GPU_RASTER_REPROJECTION_PARAMETER_LENGTH);
+    }
     validateRasterExpansionViews(
       this.id,
       props.destinationGrid,
-      props.sources.flatMap(source => getRasterBandViews(source.input)),
+      [
+        ...props.sources.flatMap(source => getRasterBandViews(source.input)),
+        ...(props.parameters ? [props.parameters] : [])
+      ],
       Object.values(props.output)
     );
     for (const source of props.sources) {
@@ -95,6 +108,7 @@ export class GPURasterTileReprojection implements GPUCommandNodeProducer {
     const {props, id} = this;
     validateRasterExpansionGraph(id, graph, [
       ...props.sources.flatMap(source => getRasterBandViews(source.input)),
+      props.parameters,
       ...Object.values(props.output)
     ]);
     const count = props.sourceGrid.width * props.sourceGrid.height;

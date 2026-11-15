@@ -11,7 +11,7 @@ All outputs are caller-owned. Graph scratch is transient and graph-owned.
 | NW01 | `GPUNetworkPointRouting` | Batched static paths between fractional positions on identified directed edges; legal incoming/outgoing turn states, same-edge forward travel, parallel-edge identity, edge predecessor provenance | 128 edges, 4096 explicit turns. Fractions retain the selected directed-edge state even at endpoints. Reverse direction requires a separate directed edge. Snapping, reverse-edge discovery, and arbitrary restriction history are caller preparation. |
 | NW02 | `GPUNetworkFlow` | Integral maximum flow, residual source cut, edge-aligned feasible flow and flow/cut equality certificate; unit capacities provide edge-disjoint path capacity | 128 nodes, 1024 original directed edges; total capacity at most 16,777,215. Explicit reverse residuals preserve antiparallel edges. Does not emit a path decomposition. |
 | NW03 | `GPUNetworkFlow` with `costs`, `prepareGPUNetworkFlowDemands` | Minimum-cost requested/maximum flow, reverse cancellation, explicit balanced-demand preparation and optional exact 64-bit integer objective | Nonnegative original costs ≤32767; no negative-cost circulation or lower-bound constraints. Summary cost is f32; `exactCost` preserves the integer objective. |
-| NW04 | `GPUNetworkLouvain` | Weighted directed/undirected modularity, deterministic or seeded Fisher–Yates visitation, quotient coarsening, objective trace and convergence | Dense adjacency, ≤32 vertices. Undirected loop diagonals are twice loop weight; directed arcs/loops occur once. This is a modularity heuristic, never a global optimum certificate. |
+| NW04 | `GPUNetworkLouvain` | Sparse parallel weighted directed/undirected modularity, quotient coarsening, objective trace and convergence; legacy dense reference | CSR ≤65,535 vertices and 1,048,576 slots; dense reference ≤32 vertices. Undirected loop diagonals are twice loop weight; directed arcs/loops occur once. This is a modularity heuristic, never a global optimum certificate. |
 | NW05 | `GPUNetworkFacilityOptimization` | Exhaustive backup coverage, p-dispersion and unsplit capacitated p-median; feasibility and exhaustive completion certificates | At most 16 facilities, 64 demand rows and 1,048,576 (2^20) candidates, checked at construction. Backup coverage and p-dispersion enumerate `2 ** facilityCount` candidates, so 64 rows is their real demand limit. Capacitated p-median enumerates `facilityCount ** demandRows` candidates, so the candidate limit, not the 64-row ceiling, bounds its demand rows: 20 rows at 2 facilities, 10 at 4, 5 at 16. For larger problems use `GPULocationAllocation`. Candidates run independently in GPU batches of at most 65,536, with deterministic hierarchical winner reductions. Exhaustive search can still be expensive within the limit; there is no branch-and-bound or scalable mixed-integer solver. |
 | NW06 | `GPUNetworkTimeRouting`, `prepareGPUNetworkRestrictionStates` | FIFO affine or piecewise-arrival routing, first-sample waiting, reachable forbidden-sequence states and original-edge provenance | ≤256 states,4096 transitions,256 samples/transition. Non-FIFO schedules and arbitrary time windows remain unsupported. CPU topology preparation never solves routes. |
 | NW07 | `GPUNetworkRationalAccess` | Congestion equalization with integral/fractional demand, fractional/absolute shift caps, unserved demand and explicit equilibrium gap | ≤64 origins,32 facilities,4096 cycles; f32 demand total ≤2^24. Integral rounding stalls remain unconverged. Fractional conservation has f32 rounding tolerance. |
@@ -44,13 +44,13 @@ the original directed edges. Initial states are the empty restriction prefix at 
 The topology helper does no searching, consumes explicit JavaScript topology arrays, and returns
 typed arrays for explicit upload; it does not read GPU data.
 
-Louvain reports `[valid, converged, completedLevels, completedSweeps]`; its trace includes the
-singleton objective followed by each completed sweep. Unused trace rows are NaN. Zero-weight
+Louvain reports `[valid, converged, completedLevels, completedRounds]`; its trace includes the
+singleton objective followed by each completed round (a local-move sweep on the dense reference). Unused trace rows are NaN. Zero-weight
 graphs return singleton labels, objective zero and convergence. Symmetry is an exact input requirement only in undirected mode. Directed modularity uses
-community outgoing-strength times incoming-strength as its null-model penalty. An optional uint32
-`seed` chooses reproducible Fisher–Yates visitation, drawn without bias from the Philox stream
-registered for it (every seed gives a uniform order); it does not promise the same random ordering
-as NetworkX. Compare objective and partition invariants, not label IDs. A budget-limited partition remains a heuristic incumbent.
+community outgoing-strength times incoming-strength as its null-model penalty. With `topology`, parallel sparse moves break candidate ties by lowest label and reserve communities
+with ascending vertex priority, or `vertex ^ seed` when seeded. With dense `weights`, optional uint32
+`seed` chooses sequential Fisher–Yates visitation from the registered Philox stream. These paths can
+produce different partitions; neither promises the same visitation as NetworkX. Compare objective and partition invariants, not label IDs. A budget-limited partition remains a heuristic incumbent.
 
 Facility optimization reports `[valid, feasibleIncumbent, enumerationComplete, examinedCandidates]`.
 When enumeration is complete, a feasible incumbent is the exhaustive optimum for the supplied f32
@@ -273,14 +273,57 @@ The four-vertex directed network includes antiparallel arcs. The final edge flow
 and the source-side cut certifies total flow five. The summary retains the certificate separately
 from the value.
 
-## Modularity optimization example
+`output.status` optionally exposes one-row `uint32` ports `invalidCount`, `converged`,
+`iterationCount` and `iterationLimitReached`. `iterationCount` counts augmentations, including
+when the solver publishes an incumbent at its budget. A fully solved finite request with unserved
+flow still converged; inspect `summary[3]` for that shortfall. Invalid problems report
+`invalidCount = 1` and neither stopping flag. Every encoding clears and rewrites the ports.
+The graph operation and CPU twin accept the same named ports; the CPU twin runs to completion
+and ignores the GPU augmentation budget. Outputs, including named ports, need distinct buffers.
+
+## `GPUNetworkLouvain`
+
+Supply exactly one of weighted CSR `topology` or row-major dense `weights`. Undirected CSR
+stores each edge in both directions and doubles loop weights; directed CSR stores each arc once.
+Sparse sorting, segmented reduction and quotient aggregation use published graph primitives.
+The upstream single-level optimizer cannot supply this multilevel contract.
+
+Use `getGPUNetworkLouvainParameterValues({resolution, minimumGain})` for the two-row float32
+`parameters` view (defaults 1 and 0; both finite and nonnegative). Resolution is the modularity
+null-model penalty multiplier; minimum gain is the accepted-improvement threshold. Parameters and
+topology contents are per-frame. Shapes, `directed`, `seed`, `maximumLevels` (default 8, 1–32) and
+`maximumIterations` (default 16, 1–64) are compile-time. The command-node budget also limits their
+product on the sparse path; `estimatedCommandNodeCount` exposes its conservative bound.
+
+Outputs use separate buffers: `communities` has `nodeCount` rows, `objectiveTrace` has exactly
+`1 + maximumLevels * maximumIterations` rows, and `summary` has four words. Optional named status
+ports expose `converged`, `iterationCount`, `iterationLimitReached`, `invalidCount` and
+`approximation`. A budget exit publishes the available heuristic partition.
 
 {/* lens:GPUNetworkLouvain */}
 
+::lens{scenario=gpu-network.network-louvain.sparse rung=graph}
+
+The sparse CSR lens uses two disconnected weighted pairs, which contract to two communities.
+The objective trace starts at the singleton partition and records accepted rounds up to modularity 0.5. The sparse variant awaits
+GPU record capture. The previously captured dense reference remains available for comparison:
+
 ::lens{scenario=gpu-network.network-louvain rung=graph}
 
-Two disconnected weighted pairs contract to two communities. The objective trace starts at the
-singleton partition and records accepted sweeps up to modularity 0.5.
+{/* parameters: GPUNetworkLouvain generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+### `GPUNetworkLouvain` parameters
+
+- Packer: `getGPUNetworkLouvainParameterValues(settings?)`, writes the `float32` parameter view.
+
+Settings of `getGPUNetworkLouvainParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `resolution` (optional) | `number` | - |
+| `minimumGain` (optional) | `number` | - |
+
+{/* /parameters */}
 
 ## Exact facility assignment example
 
@@ -292,6 +335,32 @@ One origin can reach either facility, while the other can reach only the first. 
 assignment allocates the flexible origin to the second facility, certifying a feasible objective
 of three where demand-order nearest allocation fails.
 
+The packed four-word result is `output.summary` (formerly `output.status`):
+`[valid, feasibleIncumbent, enumerationComplete, examinedCandidates]`. Optional `output.status`
+ports are `invalidCount`, `converged`, `iterationCount` and `iterationLimitReached`, each one
+`uint32` row. `iterationCount` counts nonempty candidate-scoring batches (at most 16); it is
+zero for a zero-candidate budget or inputs rejected before scoring. An overflowing objective
+invalidates the result but retains the number of batches already scored. This executed-work
+counter is independent of `summary[3]`, which retains the examined candidate count (including
+infeasible candidates) for accepted results and is zero for rejected results. `converged` certifies exhaustive
+enumeration independently of whether any feasible assignment exists. A valid budget exit sets
+`iterationLimitReached` and publishes any incumbent. Invalid input or an overflowing feasible
+objective sets `invalidCount = 1` and clears both stopping flags. No claim of infeasibility is
+made before complete enumeration.
+
+Compile-time controls are the operation, view lengths, `facilityCount`, `selectCount`,
+`maximumCandidates` and which status ports exist. Costs, demand, capacities and threshold are
+per-frame buffer contents. Every encoding rewrites all outputs, including empty-demand results.
+All four optimization contributors reject unsupported own fields in `output.status` at
+construction, even when an extended object is structurally assignable in TypeScript. Only
+`invalidCount`, `iterationCount`, `converged` and `iterationLimitReached` are supported.
+The flow, time-routing and rational-access GPU and CPU operation forms apply the same field
+validation before declaring outputs, so an extra status key cannot replace a primary port.
+Each output and named port needs a distinct buffer. `estimatedCommandNodeCount` includes the
+candidate batches, hierarchical reductions and optional status pass, at most 83 commands at the
+largest search. Construction enforces the shared command budget; encoding checks storage
+binding sizes before creating scratch or kernels.
+
 ## Departure-time routing example
 
 {/* lens:GPUNetworkTimeRouting */}
@@ -302,6 +371,15 @@ The middle edge becomes more expensive as time increases. Departing at three rea
 intermediate state at four and the destination at nine; the example captures the full arrival
 and predecessor tables so the time-dependent evaluation remains inspectable.
 
+Optional `output.status` has one-row `uint32` ports `invalidCount`, `converged`, `iterationCount`
+and `iterationLimitReached`. The iteration count includes the final no-change sweep. A valid
+budget exit publishes the current arrival labels and predecessors and sets
+`iterationLimitReached = 1`; unreachable labels are conclusive only after convergence. Invalid
+inputs or nonfinite arrival arithmetic set `invalidCount = 1` and clear both stopping flags.
+The existing four-word `summary` layout is unchanged. Outputs and ports need distinct buffers.
+The GPU and CPU operation forms accept the same named graph values; the CPU twin runs to a
+fixpoint and ignores the GPU relaxation budget, so its counts and stopping flags can differ.
+
 ## Congestion allocation example
 
 {/* lens:GPUNetworkRationalAccess */}
@@ -310,3 +388,24 @@ and predecessor tables so the time-dependent evaluation remains inspectable.
 
 A demand of ten initially chooses the first of two tied facilities, then balances to five each.
 A second unreachable origin retains three units of explicitly unserved demand and a NaN score.
+
+
+The packed gap/cycle result is `output.summary` (formerly `output.status`):
+`[valid, equilibriumGapWithinTolerance, completedCycles, maximumGapBits]`. Optional named
+`output.status` ports expose `invalidCount`, `converged`, `iterationCount` and
+`iterationLimitReached`, each one `uint32` row. The iteration count is completed simultaneous
+allocation shifts; the initial gap evaluation is cycle zero. Convergence requires the final gap
+within tolerance, so an integer rounding stall still exhausts the cycle budget. A valid budget
+exit publishes the allocation, final scores and unserved demand. Invalid inputs or nonfinite
+arithmetic set `invalidCount = 1` and clear both stopping flags. Completed shifts remain counted
+when the next gap evaluation fails. Ports reset on every encoding
+and require separate output buffers. Graph and CPU operations expose the same port names; the
+pure CPU result now has `summary` and named `status` arrays, and retains the cycle budget.
+
+Rational-access cycles use one 64-lane workgroup within the existing 64-origin and 32-facility
+limits. Each origin scores and shifts independently; facility lanes sum loads and simultaneous
+inflow in ascending origin order, preserving float32 addition order and earliest-facility ties.
+Uniform workgroup exits stop at equilibrium or invalid arithmetic without unrolling command nodes
+per cycle. Ordered initialization and score publication preserve partial outputs on rejection.
+The graph uses two kernels plus optional named-status publication. This remains a bounded reference
+solver; it does not extend to larger allocations.

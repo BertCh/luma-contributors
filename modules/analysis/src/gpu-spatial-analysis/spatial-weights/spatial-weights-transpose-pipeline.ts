@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   GPUReduction,
   GPUScan,
   GPUSort,
@@ -11,15 +12,15 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
   getGPUSpatialWeightsChunkDispatches,
@@ -49,7 +50,7 @@ export type SpatialWeightsTransposeInputs = {
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights;
   columnCount?: number;
   output: GPUSpatialWeightsTransposeOutput;
-  symmetryTolerance?: number;
+  symmetryTolerance?: number | GraphDataView<'float32'>;
 };
 
 /** Validated shape and described output of a transpose. @internal */
@@ -93,12 +94,6 @@ export function planSpatialWeightsTranspose(
       throw new Error(`${id} asymmetricSlots requires square weights`);
     }
   }
-  if (
-    props.symmetryTolerance !== undefined &&
-    !(Number.isFinite(props.symmetryTolerance) && props.symmetryTolerance >= 0)
-  ) {
-    throw new Error(`${id} symmetryTolerance must be finite and >= 0`);
-  }
   if (output.distances) {
     validateSinglePackedView(output.distances, ['float32'], `${id} output.distances`);
   }
@@ -118,7 +113,12 @@ export function planSpatialWeightsTranspose(
   validateGraphOutputsDisjointFromInputs(
     id,
     [output.offsets, output.neighbors, output.weights, output.distances, output.asymmetricSlots],
-    getGPUSpatialWeightsOrChunksViews(weights)
+    [
+      typeof props.symmetryTolerance === 'object' ? props.symmetryTolerance : undefined,
+      ...getGPUSpatialWeightsOrChunksViews(weights),
+      ...Object.values(weights.status ?? {}),
+      ...dispatches.flatMap(dispatch => Object.values(dispatch.weights.status ?? {}))
+    ]
   );
   return {rowCount: rows, columnCount: columns, outputWeights};
 }
@@ -138,17 +138,54 @@ export function getSpatialWeightsTransposeNodes<Parameters>(
   id: string,
   operation: string,
   props: SpatialWeightsTransposeInputs,
-  plan: SpatialWeightsTransposePlan
+  plan: SpatialWeightsTransposePlan,
+  toleranceValues: Float32Array | GraphDataView<'float32'>,
+  // A bounded output row range, with offsets local to that chunk. Omitted for packed output.
+  range?: {rowStart: number; status: NonNullable<GPUSpatialWeights['status']>}
 ): readonly GPUCommandNode<Parameters>[] {
   const {weights, output} = props;
   const {rowCount: rows, columnCount: columns} = plan;
+  const statusViews = range ? Object.values(range.status) : [];
+  // Each input sort, output scan and optional symmetry reduction stays within one binding.
+  const bindingViews = [
+    ...getGPUSpatialWeightsOrChunksViews(weights),
+    output.offsets,
+    output.neighbors,
+    output.weights,
+    output.distances,
+    output.asymmetricSlots,
+    ...statusViews,
+    typeof props.symmetryTolerance === 'object' ? props.symmetryTolerance : undefined
+  ];
+  for (const view of bindingViews) {
+    if (view) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'weights or output binding',
+        getViewBindingRange(view).size,
+        'use smaller input or output row chunks'
+      );
+    }
+  }
+  if (output.asymmetricSlots) {
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'symmetry rows',
+      rows * 4,
+      'use chunked output for a chunked symmetry reduction'
+    );
+  }
   validateGraphViewsBelongToGraph(id, graph, [
     ...getGPUSpatialWeightsOrChunksViews(weights),
     output.offsets,
     output.neighbors,
     output.weights,
     output.distances,
-    output.asymmetricSlots
+    output.asymmetricSlots,
+    ...statusViews,
+    typeof props.symmetryTolerance === 'object' ? props.symmetryTolerance : undefined
   ]);
   const dispatches = getGPUSpatialWeightsChunkDispatches(weights);
   const hasDistances =
@@ -157,7 +194,9 @@ export function getSpatialWeightsTransposeNodes<Parameters>(
   const columnCounts = createTransientView(graph, `${id}-column-counts`, 'uint32', columns);
   const columnStarts = createTransientView(graph, `${id}-column-starts`, 'uint32', columns);
   const columnFill = createTransientView(graph, `${id}-column-fill`, 'uint32', columns);
-  const constants = `const COLUMNS: u32 = ${columns}u;`;
+  const constants = `const COLUMNS: u32 = ${columns}u;
+const COLUMN_START: u32 = ${range?.rowStart ?? 0}u;
+const OUTPUT_CAPACITY: u32 = ${output.neighbors.length}u;`;
   const nodes: GPUCommandNode<Parameters>[] = [
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-clear-columns`,
@@ -220,8 +259,8 @@ const CHUNK_ROWS: u32 = ${dispatch.rowCount}u;`;
         declarations: chunkConstants,
         // Unused and out-of-range slots share the key COLUMNS, which sorts after every column.
         body: `let neighbor = neighbors[neighborsOffset + index];
-  let used = index < offsets[offsetsOffset + CHUNK_ROWS] && neighbor < COLUMNS;
-  slotKeys[slotKeysOffset + index] = select(COLUMNS, neighbor, used);
+  let used = index < offsets[offsetsOffset + CHUNK_ROWS] && neighbor >= COLUMN_START && neighbor - COLUMN_START < COLUMNS;
+  slotKeys[slotKeysOffset + index] = select(COLUMNS, neighbor - COLUMN_START, used);
   slotIndices[slotIndicesOffset + index] = index;`
       }),
       ...new GPUSort({
@@ -255,13 +294,41 @@ const CHUNK_ROWS: u32 = ${dispatch.rowCount}u;`;
       invocationCount: columns + 1,
       declarations: constants,
       body: `if (index < COLUMNS) {
-    outputOffsets[outputOffsetsOffset + index] = columnStarts[columnStartsOffset + index];
+    outputOffsets[outputOffsetsOffset + index] = min(columnStarts[columnStartsOffset + index], OUTPUT_CAPACITY);
   } else {
     outputOffsets[outputOffsetsOffset + COLUMNS] =
-      columnStarts[columnStartsOffset + COLUMNS - 1u] + columnCounts[columnCountsOffset + COLUMNS - 1u];
+      min(columnStarts[columnStartsOffset + COLUMNS - 1u] + columnCounts[columnCountsOffset + COLUMNS - 1u], OUTPUT_CAPACITY);
   }`
     })
   );
+  if (range) {
+    const statusBindings = Object.entries(range.status).filter(
+      ([name]) => name === 'count' || name === 'requiredCount' || name === 'overflow'
+    );
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-status`,
+        operation,
+        variant: 'status',
+        bindings: [
+          {name: 'columnStarts', view: columnStarts, type: 'u32', access: 'read'},
+          {name: 'columnCounts', view: columnCounts, type: 'u32', access: 'read'},
+          ...statusBindings.map(([name, view]) => ({
+            name,
+            view: view!,
+            type: 'u32' as const,
+            access: 'read_write' as const
+          }))
+        ],
+        invocationCount: 1,
+        declarations: constants,
+        body: `let required = columnStarts[columnStartsOffset + COLUMNS - 1u] + columnCounts[columnCountsOffset + COLUMNS - 1u];
+  ${range.status.count ? 'count[countOffset] = min(required, OUTPUT_CAPACITY);' : ''}
+  ${range.status.requiredCount ? 'requiredCount[requiredCountOffset] = required;' : ''}
+  ${range.status.overflow ? 'overflow[overflowOffset] = u32(required > OUTPUT_CAPACITY);' : ''}`
+      })
+    );
+  }
   for (const {dispatch, chunkId, capacity, sortedKeys, sortedSlots} of grouped) {
     const chunkWeights = dispatch.weights;
     const destinations = createTransientView(graph, `${chunkId}-destinations`, 'uint32', capacity);
@@ -272,26 +339,21 @@ const CHUNK_ROWS: u32 = ${dispatch.rowCount}u;`;
         variant: 'destinations',
         bindings: [
           {name: 'sortedKeys', view: sortedKeys, type: 'u32', access: 'read'},
-          {name: 'outputOffsets', view: output.offsets, type: 'u32', access: 'read'},
+          {name: 'columnStarts', view: columnStarts, type: 'u32', access: 'read'},
           {name: 'columnFill', view: columnFill, type: 'u32', access: 'read'},
           {name: 'destinations', view: destinations, type: 'u32', access: 'read_write'}
         ],
         invocationCount: capacity,
-        declarations: constants,
+        declarations: `${constants}
+${getBinarySearchWGSL('sortedKeys')}`,
         body: `let key = sortedKeys[sortedKeysOffset + index];
   var destination = ${NONE};
   if (key < COLUMNS) {
-    var low = 0u;
-    var high = index;
-    while (low < high) {
-      let middle = (low + high) >> 1u;
-      if (sortedKeys[sortedKeysOffset + middle] < key) {
-        low = middle + 1u;
-      } else {
-        high = middle;
-      }
+    let low = lowerBoundSortedKeys(0u, index, key);
+    let candidate = columnStarts[columnStartsOffset + key] + columnFill[columnFillOffset + key] + (index - low);
+    if (candidate < OUTPUT_CAPACITY) {
+      destination = candidate;
     }
-    destination = outputOffsets[outputOffsetsOffset + key] + columnFill[columnFillOffset + key] + (index - low);
   }
   destinations[destinationsOffset + index] = destination;`
       }),
@@ -326,19 +388,9 @@ const CHUNK_ROWS: u32 = ${dispatch.rowCount}u;`;
         invocationCount: capacity,
         declarations: `const CHUNK_ROWS: u32 = ${dispatch.rowCount}u;
 const CHUNK_ROW_START: u32 = ${dispatch.rowStart}u;
-// Row of a used slot: the last row whose offset is at most the slot.
+${getBinarySearchWGSL('offsets')}
 fn findRow(slot: u32) -> u32 {
-  var low = 0u;
-  var high = CHUNK_ROWS;
-  while (low < high) {
-    let middle = (low + high) / 2u;
-    if (offsets[offsetsOffset + middle + 1u] <= slot) {
-      low = middle + 1u;
-    } else {
-      high = middle;
-    }
-  }
-  return low;
+  return upperBoundOffsets(0u, CHUNK_ROWS + 1u, slot) - 1u;
 }`,
         body: `let destination = destinations[destinationsOffset + index];
   if (destination != ${NONE}) {
@@ -352,6 +404,12 @@ fn findRow(slot: u32) -> u32 {
     );
   }
   if (output.asymmetricSlots) {
+    const runtime = createSpatialStatisticsParameterNodes(
+      graph,
+      `${id}-symmetry-parameters`,
+      toleranceValues
+    );
+    nodes.push(...runtime.nodes);
     const rowMismatches = createTransientView(graph, `${id}-row-mismatches`, 'uint32', rows);
     for (const dispatch of dispatches) {
       const chunkWeights = dispatch.weights;
@@ -367,12 +425,12 @@ fn findRow(slot: u32) -> u32 {
             {name: 'transposeOffsets', view: output.offsets, type: 'u32', access: 'read'},
             {name: 'transposeNeighbors', view: output.neighbors, type: 'u32', access: 'read'},
             {name: 'transposeWeights', view: output.weights, type: 'f32', access: 'read'},
-            {name: 'rowMismatches', view: rowMismatches, type: 'u32', access: 'read_write'}
+            {name: 'rowMismatches', view: rowMismatches, type: 'u32', access: 'read_write'},
+            {name: 'tolerance', view: runtime.parameters, type: 'f32', access: 'read'}
           ],
           invocationCount: dispatch.rowCount,
           declarations: `${constants}
 const CHUNK_ROW_START: u32 = ${dispatch.rowStart}u;
-const TOLERANCE: f32 = ${getWGSLFloatLiteral(props.symmetryTolerance ?? 0)};
 const NONE: u32 = 0xffffffffu;`,
           // Out-of-range neighbors of W are skipped; the transpose never holds them.
           body: `let row = index + CHUNK_ROW_START;
@@ -395,7 +453,7 @@ const NONE: u32 = 0xffffffffu;`,
       second < secondEnd
     );
     if (firstColumn == secondColumn) {
-      if (abs(weights[weightsOffset + first] - transposeWeights[transposeWeightsOffset + second]) > TOLERANCE) {
+      if (abs(weights[weightsOffset + first] - transposeWeights[transposeWeightsOffset + second]) > tolerance[toleranceOffset]) {
         mismatches++;
       }
       first++;
@@ -443,26 +501,9 @@ function createColumnCountNode<Parameters>(
       {name: 'columnTarget', view: target, type: 'u32', access: 'read_write'}
     ],
     invocationCount: target.length,
-    body: `var low = 0u;
-  var high = ${capacity}u;
-  while (low < high) {
-    let middle = (low + high) >> 1u;
-    if (sortedKeys[sortedKeysOffset + middle] < index) {
-      low = middle + 1u;
-    } else {
-      high = middle;
-    }
-  }
-  var upper = low;
-  high = ${capacity}u;
-  while (upper < high) {
-    let middle = (upper + high) >> 1u;
-    if (sortedKeys[sortedKeysOffset + middle] <= index) {
-      upper = middle + 1u;
-    } else {
-      high = middle;
-    }
-  }
+    declarations: getBinarySearchWGSL('sortedKeys'),
+    body: `let low = lowerBoundSortedKeys(0u, ${capacity}u, index);
+  let upper = upperBoundSortedKeys(low, ${capacity}u, index);
   columnTarget[columnTargetOffset + index] += upper - low;`
   });
 }

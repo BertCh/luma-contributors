@@ -71,6 +71,7 @@ export class GPULOSHResidualPermutationTest implements GPUCommandNodeProducer {
       [
         props.values,
         props.parameters,
+        typeof props.residualPower === 'object' ? props.residualPower : undefined,
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
         props.mask,
         props.weights.status?.overflow

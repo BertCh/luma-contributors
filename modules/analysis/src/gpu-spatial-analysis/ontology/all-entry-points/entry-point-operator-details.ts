@@ -20,6 +20,13 @@ const PACKAGE = '@luma-contributors/analysis';
 
 /** Operators of the entry points other than `gpu-spatial-analysis`, by export name. */
 export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOperatorDetail>> = {
+  GPUForestInference: {
+    package: `${PACKAGE}/dataframe-analysis`,
+    summary:
+      'Predicts with imported scikit-learn, XGBoost and LightGBM numerical forests, preserving original leaf ids and missing-value routing.',
+    tests: 'modules/analysis/test/gpu-dataframe/forest-inference/gpu-forest-inference.spec.ts',
+    documentation: 'docs/api/forest-inference.md'
+  },
   GPUComputationRecorder: {
     package: `${PACKAGE}/computation-record`,
     summary: 'Analysis-side record of one command graph under construction.',
@@ -102,6 +109,14 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     tests:
       'modules/analysis/test/gpu-network/network-analysis/gpu-network-path-extraction.node.spec.ts',
     documentation: 'docs/api/gpu-network/operators.md',
+    dimensionality: 'topology'
+  },
+  GPUKShortestPaths: {
+    package: `${PACKAGE}/gpu-network`,
+    summary:
+      'Yen k-shortest simple edge paths on CSR through parallel GPU shortest-path spur searches, with path, candidate and iteration budgets (Yen 1971).',
+    tests: 'modules/analysis/test/gpu-network/k-shortest-paths/gpu-k-shortest-paths.spec.ts',
+    documentation: 'docs/api/gpu-network/k-shortest-paths.md',
     dimensionality: 'topology'
   },
   GPUAlternativeRoutes: {
@@ -208,6 +223,15 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     documentation: 'docs/api/gpu-network/operators.md',
     dimensionality: 'topology'
   },
+  GPUNetworkStronglyConnectedComponents: {
+    package: `${PACKAGE}/gpu-network`,
+    summary:
+      'Exact minimum-ID directed SCCs with linear scratch, GPU trim/colour/backward marking and a fail-closed step budget; CPU reference: computeNetworkStructureOnCPU (Tarjan).',
+    tests:
+      'modules/analysis/test/gpu-network/network-structure/network-strongly-connected-components.spec.ts',
+    documentation: 'docs/api/gpu-network/expansion.md',
+    dimensionality: 'topology'
+  },
   GPUNetworkStructure: {
     package: `${PACKAGE}/gpu-network`,
     summary: 'Exact bounded graph structure on GPU-resident CSR.',
@@ -252,10 +276,10 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   },
   GPUNetworkLouvain: {
     package: `${PACKAGE}/gpu-network`,
-    summary: 'Reproducible weighted directed/undirected Louvain for at most 32 vertices.',
-    tests:
-      'modules/analysis/test/gpu-network/network-optimization/gpu-network-optimization.spec.ts',
-    documentation: 'docs/api/gpu-network/network-movement-coverage.md',
+    summary:
+      'Weighted directed/undirected multilevel Louvain with sparse parallel CSR moving, conflict resolution and quotient aggregation; legacy dense reference retained.',
+    tests: 'modules/analysis/test/gpu-network/network-optimization/network-louvain-sparse.spec.ts',
+    documentation: 'modules/analysis/docs/gpu-network-louvain.md',
     dimensionality: 'topology'
   },
   GPUNetworkFlow: {
@@ -459,9 +483,9 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   },
   GPUTerrainHeightAboveDrainage: {
     package: `${PACKAGE}/gpu-terrain`,
-    summary: 'Height Above the Nearest Drainage (HAND) on one raster tile, following D8 receivers.',
-    tests: 'modules/analysis/test/gpu-terrain/hydrology/parity-wp5-hydrology.parity.spec.ts',
-    documentation: 'docs/api/gpu-terrain/operators.md',
+    summary: 'Height above drainage over D8 or D-infinity fractions (TauDEM vertical average).',
+    tests: 'modules/analysis/test/gpu-terrain/hydrology/terrain-dinf-hand.spec.ts',
+    documentation: 'modules/analysis/docs/terrain-dinf-hand.md',
     dimensionality: '2d'
   },
   GPUTerrainHydrologicIndices: {
@@ -788,6 +812,15 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     documentation: 'docs/api/gpu-raster/operations-analysis.md',
     dimensionality: '2d'
   },
+  GPURasterContrastEqualization: {
+    package: `${PACKAGE}/raster-analysis`,
+    summary:
+      'CLAHE with reflected edge tiles and bilinear tile mappings, or quantized CDF histogram matching.',
+    tests:
+      'modules/analysis/test/gpu-raster/raster-contrast-equalization/gpu-raster-contrast-equalization.spec.ts',
+    documentation: 'docs/api/gpu-raster/contrast-equalization.md',
+    dimensionality: '2d'
+  },
   GPURasterStretch: {
     package: `${PACKAGE}/raster-analysis`,
     summary:
@@ -1047,11 +1080,20 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   GPULagrangianFlowMap: {
     package: `${PACKAGE}/raster-analysis`,
     summary:
-      'Integrates a particle per seed through a time-varying planar vector field (two slices, linear in time) for FTLE, connectivity and residence time.',
+      'Integrates a particle per seed through a time-varying planar or internally projected longitude-latitude vector field (two slices, linear in time) for FTLE, connectivity and residence time.',
     tests:
       'modules/analysis/test/gpu-raster/lagrangian-diagnostics/lagrangian-diagnostics-mob06.spec.ts',
     documentation: 'docs/api/gpu-raster/lagrangian-diagnostics-mob06.md',
     dimensionality: '2d+time'
+  },
+  GPUScalarFieldRidges: {
+    package: `${PACKAGE}/raster-analysis`,
+    summary:
+      'Local height-ridge mask and downward curvature of utilization volumes or FTLE, using a 3 by 3 Hessian stencil and a half-open subcell Newton test (Peikert and Sadlo, 2008).',
+    tests:
+      'modules/analysis/test/gpu-raster/lagrangian-diagnostics/flow-field-extensions-mob06.spec.ts',
+    documentation: 'docs/api/gpu-raster/lagrangian-diagnostics-mob06.md',
+    dimensionality: '2d'
   },
   GPUFiniteTimeLyapunovExponent: {
     package: `${PACKAGE}/raster-analysis`,
@@ -1099,6 +1141,13 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
       'Exact rectangle overlap integration, bounded to 256 candidate source cells per destination.',
     tests: 'modules/analysis/test/gpu-raster/remote-sensing/remote-sensing.node.spec.ts',
     documentation: 'docs/api/gpu-raster/remote-sensing.md',
+    dimensionality: '2d'
+  },
+  GPURasterSpectralFilter: {
+    package: `${PACKAGE}/raster-analysis`,
+    summary: 'Periodic spectral raster filtering composed from the published GPUFFT2D.',
+    tests: 'modules/analysis/test/gpu-raster/spectral-filter/gpu-raster-spectral-filter.spec.ts',
+    documentation: 'docs/api/gpu-raster/spectral-filter.md',
     dimensionality: '2d'
   },
   GPURasterRegistration: {
@@ -1153,9 +1202,17 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   },
   GPURasterEmbeddingDequantize: {
     package: `${PACKAGE}/raster-analysis`,
-    summary: 'Decodes AlphaEarth int8 embedding rasters, sign(q) (q / 127.5)^2 with NoData -128.',
+    summary:
+      'Decodes AlphaEarth int8, TESSERA per-pixel scaled int8 and IEEE float16 embedding rasters.',
     tests: 'modules/analysis/test/gpu-raster/raster-embeddings/rts03-embedding-rasters.spec.ts',
     documentation: 'docs/api/gpu-raster/raster-embeddings.md',
+    dimensionality: '2d'
+  },
+  GPURasterEmbeddingQuantize: {
+    package: `${PACKAGE}/raster-analysis`,
+    summary: 'Encodes float32 embedding rasters as packed AlphaEarth int8 with pixel-wide NoData.',
+    tests: 'modules/analysis/test/gpu-raster/raster-embeddings/emb01-embedding-codecs.spec.ts',
+    documentation: 'docs/api/gpu-raster/raster-embedding-codecs.md',
     dimensionality: '2d'
   },
   GPURasterEmbeddingSimilarity: {
@@ -1532,6 +1589,13 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     documentation: 'docs/api/gpu-dataframe-analysis.md',
     dimensionality: '2d'
   },
+  GPUCoregionalizationFit: {
+    package: `${PACKAGE}/dataframe-analysis`,
+    summary:
+      'Goulard–Voltz weighted least squares with PSD projection for supplied local co-kriging structures.',
+    tests: 'modules/analysis/test/gpu-dataframe/pair-statistics/coregionalization-fit.spec.ts',
+    documentation: 'modules/analysis/docs/coregionalization-fit.md'
+  },
   GPUVariogramModelFit: {
     package: `${PACKAGE}/dataframe-analysis`,
     summary:
@@ -1680,6 +1744,13 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     summary:
       "Bounded GPU point-to-point ICP with distance rejection and Horn's rigid least-squares solve.",
     tests: 'modules/analysis/test/gpu-pointcloud/gpu-pointcloud-advanced.spec.ts',
+    documentation: 'docs/api/pointcloud-analysis.md',
+    dimensionality: '3d'
+  },
+  GPUPointCloudNormalScale: {
+    package: `${PACKAGE}/pointcloud-analysis`,
+    summary: 'Select the minimum-roughness normal over a bounded set of spherical scales.',
+    tests: 'modules/analysis/test/gpu-pointcloud/gpu-pointcloud-normal-scale.spec.ts',
     documentation: 'docs/api/pointcloud-analysis.md',
     dimensionality: '3d'
   },

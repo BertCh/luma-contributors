@@ -1324,6 +1324,44 @@ function circleRing(
   return counterClockwise ? ring : ring.reverse();
 }
 
+it('GPUSegmentRingAssembly assigns shuffled disjoint annuli through the shell index', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rings: [number, number][][] = [];
+  for (let index = 0; index < 65; index++) {
+    const x = (index % 13) * 20;
+    const y = Math.floor(index / 13) * 20;
+    rings.push(square(x, y, x + 12, y + 12, true));
+    rings.push(square(x + 3, y + 3, x + 9, y + 9, false));
+  }
+  const segments = shuffle(rings.flatMap(ring => polygonSegments(ring)));
+  // A non-power-of-two ring capacity exercises both unused rows and BVH leaf padding.
+  const options: AssemblyOptions = {
+    ringCapacity: 139,
+    vertexCapacity: 700,
+    tolerance: 1e-4,
+    geographic: false
+  };
+  const oracle = assembleRingsOnCPU(segments, {...options, tolerance: 1e-4, interiorSide: 'left'});
+  const result = await runAssembly(device, segments, options);
+  expectMatchesOracle(result, oracle, segments.length, 'indexed annuli');
+  expect(result.count).toBe(130);
+  expect(result.isHole.slice(0, result.count).reduce((sum, value) => sum + value, 0)).toBe(65);
+  expect(result.shells.slice(result.count)).toEqual(new Array(9).fill(NONE));
+  // Refit with no written rings, then a singleton tree: no unused leaf becomes a shell.
+  const empty = await runAssembly(device, segments, {...options, count: 0});
+  expect(empty.count).toBe(0);
+  expect(empty.overflow).toBe(0);
+  expect(empty.shells).toEqual(new Array(options.ringCapacity).fill(NONE));
+  const singleton = await runAssembly(device, polygonSegments(square(0, 0, 4, 4, true)), {
+    ...options,
+    ringCapacity: 1,
+    vertexCapacity: 5
+  });
+  expect(singleton.count).toBe(1);
+  expect(singleton.shells).toEqual([0]);
+});
+
 it('GPUSegmentRingAssembly sums rings longer than the workgroup cooperatively and prunes shells by bounds', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

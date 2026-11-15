@@ -220,12 +220,10 @@ fn isPointValid(lattice: Lattice, x: f32, y: f32) -> bool {
   return lattice.valid && isPointInBounds(lattice, x, y);
 }
 
-// A cross-join query. Planar queries need only finite coordinates: the cell lookups clamp to the
-// lattice and every cell bound below is measured from the true position, so a query outside the
-// bounds still finds its exact neighbors. Great-circle queries keep the bounds rule, because the
-// longitude wrap is defined by them.
+// Cross-join queries are independent of the target bounds. Great-circle queries also need a
+// latitude on the sphere; their longitude is wrapped near the lattice for lookup and distance.
 fn isCrossJoinQueryInBounds(lattice: Lattice, x: f32, y: f32) -> bool {
-  ${geodesic ? 'return isPointInBounds(lattice, x, y);' : 'return isFiniteFloat(x) && isFiniteFloat(y);'}
+  return isFiniteFloat(x) && isFiniteFloat(y)${geodesic ? ' && abs(y) <= 90.0' : ''};
 }
 
 fn isCrossJoinQueryValid(lattice: Lattice, x: f32, y: f32) -> bool {
@@ -260,7 +258,7 @@ fn getTimeBucket(lattice: Lattice, time: f32) -> u32 {
     : ''
 }
 
-// Both clamp a position outside the lattice (a planar cross-join query) to the nearest edge cell.
+// Both clamp a position outside the lattice to the nearest edge cell.
 fn getCellColumn(lattice: Lattice, x: f32) -> u32 {
   return u32(clamp(floor((x - lattice.minimumX) / lattice.cellWidth), 0.0, f32(lattice.columns - 1u)));
 }
@@ -601,6 +599,7 @@ export function getGeodesicRadiusNeighborLoopWGSL(
   const time = getTimeLoopWGSL(timeAxis);
   return /* wgsl */ `
   ${time.preamble}
+  let longitude = getGeodesicQueryLongitude(lattice, x);
   let reach = lattice.radiusDegrees;
   let firstRow = getCellRow(lattice, max(y - reach, lattice.minimumY));
   let lastRow = getCellRow(lattice, min(y + reach, lattice.maximumY));
@@ -609,7 +608,7 @@ export function getGeodesicRadiusNeighborLoopWGSL(
     let ratio = min(sin(radians(reach)) / geodesicCosLatitude(y), 1.0);
     reachLongitude = min(degrees(asin(ratio)) * CELL_MARGIN + 0.0001, 180.0);
   }
-  let queryPoint = vec2<f32>(x, y);
+  let queryPoint = vec2<f32>(getNeighborSearchCanonicalLongitude(x), y);
   ${time.open}
   for (var cellRow = firstRow; cellRow <= lastRow; cellRow++) {
     let rowBase = ${time.rowBase('cellRow')};
@@ -619,8 +618,8 @@ export function getGeodesicRadiusNeighborLoopWGSL(
       var highLongitude = lattice.maximumX;
       if (reachLongitude < 180.0) {
         let columnOffset = 360.0 * (f32(shiftIndex) - 1.0);
-        lowLongitude = max(x - reachLongitude + columnOffset, lattice.minimumX);
-        highLongitude = min(x + reachLongitude + columnOffset, lattice.maximumX);
+        lowLongitude = max(longitude - reachLongitude + columnOffset, lattice.minimumX);
+        highLongitude = min(longitude + reachLongitude + columnOffset, lattice.maximumX);
       } else if (shiftIndex != 1u) {
         continue;
       }
@@ -638,7 +637,7 @@ export function getGeodesicRadiusNeighborLoopWGSL(
       for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
         let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 2u];
         let targetPoint = vec2<f32>(
-          bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS]),
+          getNeighborSearchCanonicalLongitude(bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS])),
           bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 1u]));
         let distance = geodesicHaversineDistance(queryPoint, targetPoint, SPHERE_RADIUS);
         if (distance <= lattice.radius${time.condition}) {
@@ -685,7 +684,8 @@ export function getGeodesicNearestNeighborSearchWGSL(
   const time = getTimeLoopWGSL(timeAxis);
   return /* wgsl */ `
   ${time.preamble}
-  let queryColumn = i32(getCellColumn(lattice, x));
+  let longitude = getGeodesicQueryLongitude(lattice, x);
+  let queryColumn = i32(getCellColumn(lattice, longitude));
   let queryRow = i32(getCellRow(lattice, y));
   let columnCount = i32(lattice.columns);
   let lastColumn = columnCount - 1;
@@ -696,7 +696,7 @@ export function getGeodesicNearestNeighborSearchWGSL(
   let maximumRing = max(lattice.columns, lattice.rows);
   let slack = (lattice.cellWidth + lattice.cellHeight) * 0.0009765625 +
     (abs(lattice.minimumX) + abs(lattice.maximumX) + abs(lattice.minimumY) + abs(lattice.maximumY)) * 0.00000095367431640625;
-  let queryPoint = vec2<f32>(x, y);
+  let queryPoint = vec2<f32>(getNeighborSearchCanonicalLongitude(x), y);
   let queryCosine = geodesicCosLatitude(y);
   for (var ringIndex = 0u; ringIndex < maximumRing; ringIndex++) {
     let ring = i32(ringIndex);
@@ -728,7 +728,7 @@ export function getGeodesicNearestNeighborSearchWGSL(
           let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 2u];
           if (${selfCondition}) {
             let targetPoint = vec2<f32>(
-              bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS]),
+              getNeighborSearchCanonicalLongitude(bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS])),
               bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 1u]));
             let distance = geodesicHaversineDistance(queryPoint, targetPoint, SPHERE_RADIUS);
             if ((!lattice.bounded || distance <= lattice.radius)${time.condition}) {
@@ -767,11 +767,11 @@ export function getGeodesicNearestNeighborSearchWGSL(
       var longitudeBound = 360.0;
       if (hasEast) {
         let farEdge = select(lattice.maximumX, westEdge + 360.0, periodic);
-        longitudeBound = min(longitudeBound, getWrappedLongitudeBound(eastEdge - x - slack, farEdge - x + slack));
+        longitudeBound = min(longitudeBound, getWrappedLongitudeBound(eastEdge - longitude - slack, farEdge - longitude + slack));
       }
       if (hasWest) {
         let farEdge = select(lattice.minimumX, eastEdge - 360.0, periodic);
-        longitudeBound = min(longitudeBound, getWrappedLongitudeBound(x - westEdge - slack, x - farEdge + slack));
+        longitudeBound = min(longitudeBound, getWrappedLongitudeBound(longitude - westEdge - slack, longitude - farEdge + slack));
       }
       let southLatitude = lattice.minimumY + f32(firstRow) * lattice.cellHeight;
       let northLatitude = min(lattice.minimumY + f32(endRow + 1) * lattice.cellHeight, lattice.maximumY);
@@ -793,17 +793,61 @@ export function getGeodesicNearestNeighborSearchWGSL(
 /**
  * WGSL helper `getWrappedLongitudeBound(lowValue, highValue)` of {@link getGeodesicNearestNeighborSearchWGSL}:
  * the smallest value of the wrapped longitude difference `min(d, 360 - d)` for `d` in `[lowValue, highValue]`
- * degrees (`lowValue` is clamped at 0).
+ * degrees. Signed intervals are needed for cross-join queries outside the target bounds.
  *
  * @internal
  */
 export const GEODESIC_WRAPPED_LONGITUDE_BOUND_WGSL = /* wgsl */ `
+// Reduce the stored f32 angle exactly modulo a turn. Floating quotient/product reduction can
+// erase the remainder for large angles (the stored f32 near 1e20 is -88 degrees, not zero).
+// For fractional angles, use integer significand units. For integer angles, modular powers of
+// two need at most seven iterations even at the largest finite f32 exponent.
+fn getNeighborSearchCanonicalLongitude(longitude: f32) -> f32 {
+  if (abs(longitude) <= 180.0) { return longitude; }
+  let bits = bitcast<u32>(longitude);
+  let exponent = (bits >> 23u) & 255u;
+  let significand = (bits & 0x7fffffu) | 0x800000u;
+  var wrapped: f32;
+  if (exponent < 150u) {
+    let fractionalBits = 150u - exponent;
+    let turnUnits = 360u << fractionalBits;
+    let remainder = significand % turnUnits;
+    let centered = select(i32(remainder), i32(remainder) - i32(turnUnits), remainder > turnUnits / 2u);
+    wrapped = f32(centered) * bitcast<f32>((127u - fractionalBits) << 23u);
+  } else {
+    var remainingExponent = exponent - 150u;
+    var power = 2u;
+    var remainder = significand % 360u;
+    while (remainingExponent > 0u) {
+      if ((remainingExponent & 1u) != 0u) { remainder = (remainder * power) % 360u; }
+      power = (power * power) % 360u;
+      remainingExponent >>= 1u;
+    }
+    wrapped = f32(select(i32(remainder), i32(remainder) - 360, remainder > 180u));
+  }
+  return select(wrapped, -wrapped, (bits & 0x80000000u) != 0u);
+}
+
+// Preserve the established lookup for queries inside the lattice. Outside it, use the
+// equivalent longitude nearest its midpoint, so three shifted cap intervals cover every cell.
+fn getGeodesicQueryLongitude(lattice: Lattice, longitude: f32) -> f32 {
+  if (longitude >= lattice.minimumX && longitude <= lattice.maximumX) {
+    return longitude;
+  }
+  let midpoint = lattice.minimumX + (lattice.maximumX - lattice.minimumX) * 0.5;
+  let wrappedLongitude = getNeighborSearchCanonicalLongitude(longitude);
+  // Add only whole turns: midpoint + (wrapped - midpoint) would erase tiny offsets near zero.
+  // Distance evaluation uses the canonical value directly, before this lattice-relative shift.
+  return wrappedLongitude + 360.0 * round((midpoint - wrappedLongitude) / 360.0);
+}
+
 fn getWrappedLongitudeBound(lowValue: f32, highValue: f32) -> f32 {
-  let lowEnd = max(lowValue, 0.0);
-  if (ceil(lowEnd / 360.0) * 360.0 <= highValue) {
+  let lowEnd = min(lowValue, highValue);
+  let highEnd = max(lowValue, highValue);
+  if (ceil(lowEnd / 360.0) * 360.0 <= highEnd) {
     return 0.0;
   }
-  return min(abs(lowEnd - 360.0 * round(lowEnd / 360.0)), abs(highValue - 360.0 * round(highValue / 360.0)));
+  return min(abs(lowEnd - 360.0 * round(lowEnd / 360.0)), abs(highEnd - 360.0 * round(highEnd / 360.0)));
 }
 `;
 

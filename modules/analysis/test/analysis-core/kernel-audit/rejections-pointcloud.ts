@@ -7,6 +7,13 @@ import type {KernelAuditRejection} from './kernel-audit-rejection-type';
 /** Expected declaration refusals of the point-cloud cases. */
 export const POINTCLOUD_REJECTIONS: readonly KernelAuditRejection[] = [
   {
+    exportName: 'GPUPointCloudNormalScale',
+    name: 'scale count one above 32',
+    kind: 'dispatch',
+    limit: 32,
+    rejects: /^Error: gpu-pointcloud-normal-scale radii\.length must be an integer in \[1, 32\]$/
+  },
+  {
     exportName: 'GPUPointCloudChange',
     name: 'unindexed scan one core above the work limit',
     kind: 'dispatch',

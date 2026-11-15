@@ -69,6 +69,7 @@ it('matches hand-computed right-triangle, segment, point and empty-group shapes'
     expect(result[port].slice(3 * width).every(Number.isNaN)).toBe(true);
   }
   expect(Array.from(result.overflow)).toEqual([0]);
+  expect(Array.from(result.groupOverflow)).toEqual([0]);
 });
 
 it('uses a rotated square closed form and exact lowest-hull-pair diameter ties', () => {
@@ -157,4 +158,31 @@ it('validates operation output contracts at construction and CPU numeric props',
   expect(() => new CPUMinimumBoundsOperation({...props, maximumHullVertices: 2})).toThrow(
     /^bounds-check.*maximumHullVertices/
   );
+});
+
+it('minimum-bounds operation forms declare the optional group-limit diagnostic', () => {
+  const props: MinimumBoundsOperationProps = {
+    positions: 'positions',
+    labels: 'labels',
+    rowCount: 4,
+    groupCount: 1,
+    maximumHullVertices: 3,
+    output: {bounds: 'bounds', status: {overflow: 'overflow', groupOverflow: 'groupOverflow'}}
+  };
+  const operation = new GPUMinimumBoundsOperation(props);
+  expect(operation.outputs['groupOverflow']).toMatchObject({
+    value: 'groupOverflow',
+    format: 'uint32',
+    length: 1
+  });
+  expect(() => new CPUMinimumBoundsOperation(props)).not.toThrow();
+  // The CPU twin computes hulls beyond the GPU limit, so both diagnostics stay zero.
+  const result = computeMinimumBoundsOnCPU({
+    positions: new Float32Array([0, 0, 2, 0, 2, 2, 0, 2]),
+    labels: new Uint32Array(4),
+    groupCount: 1
+  });
+  expect(result.hullSizes[0]).toBe(4);
+  expect(Array.from(result.overflow)).toEqual([0]);
+  expect(Array.from(result.groupOverflow)).toEqual([0]);
 });

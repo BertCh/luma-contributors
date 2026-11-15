@@ -32,11 +32,16 @@ checks its patches-times-cells distance fields against the device storage bindin
 
 The landscape and segregation totals are reductions (`GPUReduction`) over per-patch or per-unit
 terms, so the sums are tree sums rather than a serial loop and can differ from the former results in
-the last float32 digits. Still serial by design: patch reconciliation (one thread unions the raster),
-the counterfactual quantile mapping (bounded at 2,048 units) and the class and patch summary
-kernels, which scan every cell or patch once per row.
+the last float32 digits. Landscape patch measurements reuse `GPURasterPatchMetrics`; bounded
+16-column raster runs accumulate integer same-class side counts and class adjacency. Class
+perimeter, squared-area and weighted-perimeter sums use deterministic sorted segmented reductions.
+Patch reconciliation unions seam neighbors in parallel and compresses their roots, always retaining
+the lowest original patch ID. The counterfactual quantile mapping remains bounded at 2,048 units.
 
 ## `addLandscapeMetricsRecipe` — EC01
+
+Caller-owned output buffers must be distinct from each other and from both input buffers,
+including the optional reconciliation outputs. The recipe rejects aliases before appending nodes.
 
 Supply the complete raster `width`, `height`, physical `cellSize`, one patch ID per cell, and one
 class ID per patch. Patch IDs outside `patchClasses.length` are background. Class IDs outside
@@ -80,6 +85,19 @@ classes or when a present class has no valid adjacency. Set `contagionWeighting:
 landscapemetrics 2.2.1's joint-adjacency distribution, each pair count divided by all valid pair counts.
 The modes differ when class area shares differ from their adjacency shares, including interior
 background. This explicit choice preserves the area-weighted default and upstream reproduction.
+
+The measurement path uses scratch proportional to cells plus patches plus the class adjacency
+table, with no patches-times-cells allocation or raster scan per patch/class pair. The input labels
+are adapted from zero-based patch rows to the dense one-based raster labels. Class and landscape
+formulas and all public output layouts are unchanged; class tree sums may differ from the former
+serial sums within float32 rounding tolerance (relative `1e-5`). Empty patch rows remain zero,
+including merged-away rows; empty class aggregation and cohesion remain NaN.
+
+The four-sides-per-cell integer counters require at most 1,073,741,823 cells. Device storage binding
+limits also apply to the cell labels (4 bytes per cell) and patch output (16 bytes per patch); at the
+portable 128 MiB limit these permit at most 33,554,432 cells and 8,388,608 patch rows. These limits
+are checked before graph nodes are appended. The final dense class summary remains bounded at
+256 classes. No timing claims are made for this implementation until GPU measurements are run.
 
 ## `addPatchProximityRecipe` — EC02
 
@@ -332,6 +350,77 @@ requires a one-to-one support match with no excluded mass. This is exact ID alig
 polygon overlay or areal interpolation across changed boundaries. Use the existing conservative
 areal redistribution before this join when geographic supports differ.
 
+## `GPUPopulationSupportAlignment`
+
+::lens{scenario=gpu-spatial-analysis.population-support-alignment rung=result caption="Inspect reordered populations, ambiguous rows and completeness counts."}
+
+### How it computes
+
+{/* lens:GPUPopulationSupportAlignment */}
+
+::lens{scenario=gpu-spatial-analysis.population-support-alignment rung=graph caption="Follow indexed joins and parallel status reductions."}
+
+The synthetic fixture includes a unique reordered match, duplicate source and target IDs, a missing
+target, an excluded source, and a valid `0xffffffff` ID. Its target validity codes are
+`[0, 2, 1, 2, 2, 0]` and its packed status is `[0, 1, 3, 1]`.
+
+The recipe now delegates to this contributor with caller-owned `output.populations` (`float32x2`,
+one row per target), `output.validity` (`uint32`, one row per target), and `output.status`
+(`uint32x4`, one row). The recipe's existing optional output overrides and return keys are unchanged.
+Two indexed `GPUKeyJoin` operations replace exhaustive source/target scans: one matches targets to
+sources and reports excluded sources, and one detects repeated target IDs. Counts use parallel
+reductions. Work is sorting plus indexed lookups; no invocation scans an entire support table.
+Population values are copied without checking whether they are finite or nonnegative. This stage
+aligns identifiers; downstream segregation statistics validate population counts.
+
+The legacy validity codes remain `0` for a unique match, `1` for no source, and `2` for an ambiguous
+source or target. A missing source takes precedence over a repeated target. Status remains
+`[aligned, missingTargetRows, ambiguousTargetRows, excludedSourceRows]`; excluded rows are counted
+individually even if they share an ID. Every uint32 identifier, including `0xffffffff`, remains a
+valid support ID. Internally, a zero high word widens keys to uint32x2 so the key join's missing-key
+sentinel cannot discard that legacy ID.
+
+Per-frame inputs are the contents of `populations`, `sourceIds` and `targetIds`. View lengths and
+output bindings are compile-time. All inputs must be single packed views, and widened keys and
+sort scratch must fit device storage bindings. There are no coordinates or numeric parameters.
+
+## `CPUPopulationSupportAlignmentOperation`
+
+Prefer this CPU stage when support data is already on the host. It uses maps in expected
+O(sourceCount + targetCount) time, then publishes exactly the same populations, validity codes and
+packed status as the GPU contributor. `computePopulationSupportAlignmentOnCPU` exposes the pure
+typed-array calculation without a device. The CPU implementation has no GPU scratch or binding
+limit. Both paths require nonempty source/target support and exactly two population components per
+source ID. Nonfinite or negative population values are copied unchanged. No arithmetic or additional
+rounding is applied to populations.
+
+## `GPUPopulationSupportAlignmentOperation`
+
+Both operation classes accept the same `PopulationSupportAlignmentOperationProps`: logical graph
+names for `populations`, `sourceIds` and `targetIds`, a positive `targetCount`, and output names for
+`populations`, `validity` and `status`. Use these stages beside other CPU/GPU operations in the
+published `GPUGraph`, compiling GPU stages with `GPU_CONTRIBUTOR_OPERATION_LOWERING`. The executor
+handles transfers at CPU/GPU boundaries. The output populations can feed the next GPU contributor
+without application-managed readback/upload glue.
+
+```ts
+graph.add(new CPUPopulationSupportAlignmentOperation({
+  populations: 'sourcePopulation',
+  sourceIds: 'sourceIds',
+  targetIds: 'analysisIds',
+  targetCount: analysisUnitCount,
+  output: {populations: 'alignedPopulation', validity: 'alignmentCodes', status: 'alignmentStatus'}
+}));
+// Later GPU operations consume the logical value 'alignedPopulation'.
+```
+
+Node specs compare maps with an independent exhaustive scan over all 729 pairs of three-row
+supports, hand-calculated duplicate/missing cases, and a 100,001-row reorder. Headless specs compare
+every CPU/GPU output exactly (including NaNs and all uint32 IDs) and chain CPU alignment into GPU
+alignment over 257 rows. Headless execution is part of the lead's verification gates.
+
+## Segregation counterfactual generation
+
 `addSegregationCounterfactualRecipe` takes aligned baseline/final tables and explicitly selects
 `composition`, `dual-composition` or `share`. It implements the PySAL empirical-CDF convention:
 average-tie percentile ranks map to linearly interpolated quantiles of the comparison distribution.
@@ -369,7 +458,8 @@ separates preparation, compilation, first execution, repeated resident wall time
 scratch memory. Native Apple WebGPU passed exact proximity at 32², 128² and 256² cells; the largest resident median was
 about 18.4 ms. Sparse resistance benchmarks are pending re-measurement (EC03).
 
-The 2026-10-24 execution record
+The 2026-10-24 execution record describes the former serial landscape measurement path; the
+replacement above has not yet been benchmarked. That historical record
 reruns those proximity curves and adds complete class/landscape summaries at 32²,
 128² and 256² cells. Two rectangular classes provide closed-form aggregation, pooled cohesion,
 mesh and area checks; the largest absolute certificate error is below `1e-5`. Landscape summary

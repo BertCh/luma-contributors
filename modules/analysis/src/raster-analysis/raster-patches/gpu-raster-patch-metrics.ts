@@ -10,6 +10,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {WEB_MERCATOR_EARTH_RADIUS} from '@luma.gl/graph/gpu-project';
+import {SCALED_PLANAR_DISTANCE_WGSL} from '../../analysis-core/kernels/scaled-planar-distance-wgsl';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -23,12 +24,14 @@ import {
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
+  resolveGPURasterContext,
   getRasterGroundScale,
   getRasterGroundScaleWGSL,
   validateRasterCellSizeMode,
   type GPURasterCellSizeMode
 } from '../../analysis-core/raster-grid';
 import {validateRasterGridAxisAligned, validateRasterParameters} from '../raster-band-utils';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {getRasterRowEdgeWGSL} from '../raster-grid/raster-cell-area-scale';
 import {
   createPatchKeysNode,
@@ -42,6 +45,30 @@ import {
 
 const OPERATION = 'GPURasterPatchMetrics';
 const NO_ROW = '0xffffffffu';
+
+/** Float32 layout shared with fractional coverage: `[originX, originY, a, b, d, e, determinant, 0]`. */
+export const GPU_RASTER_PATCH_METRICS_PARAMETER_LENGTH = 8;
+
+/**
+ * Packs per-frame affine steps, area and row latitude for GPURasterPatchMetrics.
+ * Width, height, pixel interpretation and cellSizeMode remain fixed in the compiled graph.
+ *
+ * @param grid Raster grid whose affine will be measured.
+ * @param target Optional destination of at least eight float32 values.
+ */
+export function getGPURasterPatchMetricsParameterValues(
+  grid: GPURasterMetadata,
+  target: Float32Array = new Float32Array(GPU_RASTER_PATCH_METRICS_PARAMETER_LENGTH)
+): Float32Array {
+  const id = 'getGPURasterPatchMetricsParameterValues';
+  validateRequirement(
+    id,
+    target.length >= GPU_RASTER_PATCH_METRICS_PARAMETER_LENGTH,
+    `target must contain at least ${GPU_RASTER_PATCH_METRICS_PARAMETER_LENGTH} values`
+  );
+  target.set(resolveGPURasterContext(id, {grid}).parameterValues);
+  return target;
+}
 
 /**
  * Caller-owned per-patch columns of {@link GPURasterPatchMetrics}. Row `r` describes dense label
@@ -83,7 +110,8 @@ export type GPURasterPatchMetricsOutput = {
 /**
  * Properties for {@link GPURasterPatchMetrics}.
  *
- * Per-frame: the contents of the label views. Compile-time: the `grid` size and affine,
+ * Per-frame: label contents and affine through `parameters`. Compile-time: the `grid` shape,
+ * pixel interpretation and cellSizeMode,
  * `countRasterBorder`, the output capacity and which columns are present.
  */
 export type GPURasterPatchMetricsProps = GPURasterPatchLabels & {
@@ -105,12 +133,10 @@ export type GPURasterPatchMetricsProps = GPURasterPatchLabels & {
    */
   cellSizeMode?: GPURasterCellSizeMode;
   /**
-   * Per-frame georeference view with the layout of `getGPURasterFractionalCoverageParameterValues`;
-   * only the origin y and the row step y (slots 1 and 5) are read, with a non-uniform
-   * `cellSizeMode` only (it is rejected with `'uniform'`). The row edges of the ground weights then
-   * follow a repacked georeference on every encoding without recompiling; `grid.height` and
-   * `pixelInterpretation` stay compile-time. Without it the edges are baked from `grid.affine`,
-   * like the planar column step, row step and pixel area of every mode.
+   * Per-frame affine packed by getGPURasterPatchMetricsParameterValues (also accepts the
+   * identical fractional-coverage layout). All modes read the determinant and both axis lengths;
+   * ground modes also read row latitude. A repacked grid must remain axis-aligned in ground
+   * modes. Without this view the initial grid affine stays fixed for backwards compatibility.
    */
   parameters?: GraphDataView<'float32'>;
   /** Caller-owned per-patch output columns. */
@@ -148,15 +174,13 @@ export class GPURasterPatchMetrics implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     validatePatchLabels(id, props);
-    validateRasterCellSizeMode(id, props.cellSizeMode);
-    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     if (props.parameters) {
-      validateRasterParameters(id, props.parameters, 6);
-      validateRequirement(
-        id,
-        (props.cellSizeMode ?? 'uniform') !== 'uniform',
-        'parameters is read only with a non-uniform cellSizeMode (geographic or web-mercator)'
-      );
+      resolveGPURasterContext(id, {grid: props.grid, cellSizeMode: props.cellSizeMode});
+      validateRasterParameters(id, props.parameters, GPU_RASTER_PATCH_METRICS_PARAMETER_LENGTH);
+    } else {
+      // Legacy integer metrics never pack the affine; retain their accepted finite grids.
+      validateRasterCellSizeMode(id, props.cellSizeMode);
+      validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     }
     const columns = Object.entries(props.output).filter(([, view]) => view !== undefined) as [
       string,
@@ -186,7 +210,7 @@ export class GPURasterPatchMetrics implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       columns.map(([, view]) => view),
-      getPatchLabelViews(props)
+      [...getPatchLabelViews(props), ...(props.parameters ? [props.parameters] : [])]
     );
   }
 
@@ -202,10 +226,6 @@ export class GPURasterPatchMetrics implements GPUCommandNodeProducer {
       ...(props.parameters ? [props.parameters] : []),
       ...(Object.values(output).filter(view => view !== undefined) as GraphDataView[])
     ]);
-    const [a, b, , d, e] = props.grid.affine;
-    const columnStep = Math.hypot(a, d);
-    const rowStep = Math.hypot(b, e);
-    const pixelArea = Math.abs(a * e - b * d);
     const countBorder = props.countRasterBorder ?? true;
     const view = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
@@ -214,12 +234,14 @@ export class GPURasterPatchMetrics implements GPUCommandNodeProducer {
     const nodes: GPUCommandNode<Parameters>[] = [keysNode];
     const pixelCounts = output.pixelCounts ?? view('pixel-counts', patchCapacity);
     const cellSizeMode = props.cellSizeMode ?? 'uniform';
+    const needsGeometry = Boolean(output.areas || output.perimeters);
     const weighted =
-      cellSizeMode === 'uniform'
+      cellSizeMode === 'uniform' || !needsGeometry
         ? undefined
-        : getGroundWeights(props, cellSizeMode, columnStep, rowStep);
+        : getGroundWeights(props, cellSizeMode);
     const geometry = `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;`;
+    const metricGeometry = needsGeometry ? `${geometry}\n${getPatchGeometryWGSL(props)}` : geometry;
     // Only the kernels that bind the georeference (the ones that call getRowWeights) declare it.
     const weightDeclarations = weighted ? `\n${weighted.wgsl}` : '';
     const georeferenceBindings: WGSLKernelBinding[] = props.parameters
@@ -398,7 +420,7 @@ const HEIGHT: u32 = ${height}u;`;
               : [])
           ],
           invocationCount: getPatchSegmentCount(width, height),
-          declarations: `${geometry}${groundPerimeter ? weightDeclarations : ''}
+          declarations: `${geometry}${groundPerimeter ? `\n${getPatchGeometryWGSL(props)}${weightDeclarations}` : ''}
 const COUNT_BORDER: bool = ${countBorder};
 
 // Whether the neighbor at (column + dx, row + dy) differs from \`key\`.
@@ -450,6 +472,7 @@ fn isExposed(column: u32, row: u32, dx: i32, dy: i32, key: u32) -> bool {
         });
       }
       if (output.perimeters) {
+        finalizeBindings.push(...georeferenceBindings);
         finalizeBindings.push({
           name: 'perimeters',
           view: output.perimeters,
@@ -464,14 +487,17 @@ fn isExposed(column: u32, row: u32, dx: i32, dy: i32, key: u32) -> bool {
           variant: 'perimeters',
           bindings: finalizeBindings,
           invocationCount: patchCapacity,
+          declarations: output.perimeters
+            ? `${metricGeometry}${weighted ? weightDeclarations : ''}`
+            : '',
           body: `let rowFaces = acrossRows[acrossRowsOffset + index];
   let columnFaces = acrossColumns[acrossColumnsOffset + index];
   ${output.perimeterFaceCounts ? 'faceCounts[faceCountsOffset + index] = rowFaces + columnFaces;' : ''}
   ${
     output.perimeters
       ? groundPerimeter && weighted
-        ? `perimeters[perimetersOffset + index] = ${getFixedValueWGSL('perimeterLow', 'perimeterHigh', 'index')} * ${getWGSLFloatLiteral(weighted.perimeterReference)};`
-        : `perimeters[perimetersOffset + index] = f32(rowFaces) * ${getWGSLFloatLiteral(columnStep)} + f32(columnFaces) * ${getWGSLFloatLiteral(rowStep)};`
+        ? `perimeters[perimetersOffset + index] = ${getFixedValueWGSL('perimeterLow', 'perimeterHigh', 'index')} * getPerimeterReference();`
+        : `perimeters[perimetersOffset + index] = f32(rowFaces) * getColumnStep() + f32(columnFaces) * getRowStep();`
       : ''
   }`
         })
@@ -507,7 +533,7 @@ fn isExposed(column: u32, row: u32, dx: i32, dy: i32, key: u32) -> bool {
             ...georeferenceBindings
           ],
           invocationCount: getPatchSegmentCount(width, height),
-          declarations: `${geometry}${weightDeclarations}`,
+          declarations: `${metricGeometry}${weightDeclarations}`,
           body: getPatchRunSegmentsBody(width, {
             onRun: getAddFixedWGSL(
               'areaLow',
@@ -523,10 +549,12 @@ fn isExposed(column: u32, row: u32, dx: i32, dy: i32, key: u32) -> bool {
           bindings: [
             {name: 'areaLow', view: areaLow, type: 'u32', access: 'read'},
             {name: 'areaHigh', view: areaHigh, type: 'u32', access: 'read'},
-            {name: 'areas', view: output.areas, type: 'f32', access: 'read_write'}
+            {name: 'areas', view: output.areas, type: 'f32', access: 'read_write'},
+            ...georeferenceBindings
           ],
           invocationCount: patchCapacity,
-          body: `areas[areasOffset + index] = ${getFixedValueWGSL('areaLow', 'areaHigh', 'index')} * ${getWGSLFloatLiteral(weighted.areaReference * pixelArea)};`
+          declarations: metricGeometry,
+          body: `areas[areasOffset + index] = ${getFixedValueWGSL('areaLow', 'areaHigh', 'index')} * ${getWGSLFloatLiteral(weighted.areaReference)} * getPixelArea();`
         })
       );
     } else if (output.areas) {
@@ -537,10 +565,12 @@ fn isExposed(column: u32, row: u32, dx: i32, dy: i32, key: u32) -> bool {
           variant: 'areas',
           bindings: [
             {name: 'pixelCounts', view: pixelCounts, type: 'u32', access: 'read'},
-            {name: 'areas', view: output.areas, type: 'f32', access: 'read_write'}
+            {name: 'areas', view: output.areas, type: 'f32', access: 'read_write'},
+            ...georeferenceBindings
           ],
           invocationCount: patchCapacity,
-          body: `areas[areasOffset + index] = f32(pixelCounts[pixelCountsOffset + index]) * ${getWGSLFloatLiteral(pixelArea)};`
+          declarations: metricGeometry,
+          body: `areas[areasOffset + index] = f32(pixelCounts[pixelCountsOffset + index]) * getPixelArea();`
         })
       );
     }
@@ -601,23 +631,20 @@ function getGroundScaleBounds(
 /**
  * Per-row ground weights for a non-uniform `cellSizeMode`: the WGSL `getRowWeights(row)` that
  * returns `vec3<u32>(area, acrossRows, acrossColumns)` as 2^-26 fixed point fractions of fixed
- * references (`areaReference`, `perimeterReference`: the largest value any row of the mode can
- * have, constants of the mode, not of the grid), and those references. The row edges are read
+ * references: areaReference is a constant bound for the mode; the perimeter reference multiplies
+ * the mode bounds by the current affine step lengths. The row edges are read
  * from the `georeference` binding when `props.parameters` is given.
  */
 function getGroundWeights(
   props: GPURasterPatchMetricsProps,
-  mode: Exclude<GPURasterCellSizeMode, 'uniform'>,
-  columnStep: number,
-  rowStep: number
-): {wgsl: string; areaReference: number; perimeterReference: number} {
+  mode: Exclude<GPURasterCellSizeMode, 'uniform'>
+): {wgsl: string; areaReference: number} {
   const [maximumScaleX, maximumScaleY, maximumArea] = getGroundScaleBounds(mode);
   const areaReference = maximumArea;
-  const perimeterReference = Math.max(maximumScaleX * columnStep, maximumScaleY * rowStep);
   const wgsl = `const AREA_REFERENCE: f32 = ${getWGSLFloatLiteral(areaReference)};
-const PERIMETER_REFERENCE: f32 = ${getWGSLFloatLiteral(perimeterReference)};
-const COLUMN_STEP: f32 = ${getWGSLFloatLiteral(columnStep)};
-const ROW_STEP: f32 = ${getWGSLFloatLiteral(rowStep)};
+fn getPerimeterReference() -> f32 {
+  return max(${getWGSLFloatLiteral(maximumScaleX)} * getColumnStep(), ${getWGSLFloatLiteral(maximumScaleY)} * getRowStep());
+}
 
 // Ground weights of one row as 2^-26 fixed point fractions of the largest possible row value.
 fn getRowWeights(row: u32) -> vec3<u32> {
@@ -626,14 +653,14 @@ fn getRowWeights(row: u32) -> vec3<u32> {
   let weights = min(
     vec3<f32>(
       groundScale.x * groundScale.y / AREA_REFERENCE,
-      groundScale.x * COLUMN_STEP / PERIMETER_REFERENCE,
-      groundScale.y * ROW_STEP / PERIMETER_REFERENCE
+      groundScale.x * getColumnStep() / getPerimeterReference(),
+      groundScale.y * getRowStep() / getPerimeterReference()
     ),
     vec3<f32>(1.0)
   );
   return vec3<u32>(round(weights * ${getWGSLFloatLiteral(FIXED_POINT_SCALE)}));
 }`;
-  return {wgsl, areaReference, perimeterReference};
+  return {wgsl, areaReference};
 }
 
 /** WGSL statement adding \`expression\` to the 64-bit counter (\`low\`, \`high\`) of the current run's patch. */
@@ -648,4 +675,24 @@ function getAddFixedWGSL(low: string, high: string, expression: string): string 
 /** WGSL expression of a 64-bit fixed-point counter in world-unit fractions of its reference. */
 function getFixedValueWGSL(low: string, high: string, index: string): string {
   return `((f32(${high}[${high}Offset + ${index}]) * 4294967296.0 + f32(${low}[${low}Offset + ${index}])) / ${getWGSLFloatLiteral(FIXED_POINT_SCALE)})`;
+}
+
+/** Affine metrics read from the per-frame layout, with the legacy fixed-affine fallback. */
+function getPatchGeometryWGSL(props: GPURasterPatchMetricsProps): string {
+  const [columnX, rowX, , columnY, rowY] = props.grid.affine;
+  const read = (slot: number) => `georeference[georeferenceOffset + ${slot}u]`;
+  // Keep the square and square root in the shared significand/exponent representation, so
+  // representable axis lengths survive even when their squared lengths overflow or underflow.
+  const getAxisLength = (firstSlot: number, secondSlot: number) =>
+    `convertPlanarDistanceValue(getPlanarDistanceVectorLength(getPlanarDistanceVector(vec2f(${read(firstSlot)}, ${read(secondSlot)}), vec2f(0.0))))`;
+  return `${props.parameters ? SCALED_PLANAR_DISTANCE_WGSL : ''}
+fn getColumnStep() -> f32 {
+  return ${props.parameters ? getAxisLength(2, 4) : getWGSLFloatLiteral(Math.hypot(columnX, columnY))};
+}
+fn getRowStep() -> f32 {
+  return ${props.parameters ? getAxisLength(3, 5) : getWGSLFloatLiteral(Math.hypot(rowX, rowY))};
+}
+fn getPixelArea() -> f32 {
+  return ${props.parameters ? `abs(${read(6)})` : getWGSLFloatLiteral(Math.abs(columnX * rowY - rowX * columnY))};
+}`;
 }

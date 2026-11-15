@@ -71,6 +71,6 @@ it('GPUGlobalPermutationTest permutationBatchSize validates its limits', async (
     }).destroy();
   expect(create({permutationBatchSize: 0})).toThrow();
   expect(create({permutationBatchSize: 17})).toThrow();
-  expect(create({permutationBatchSize: 4, stopAfterExceedances: 3})).toThrow();
+  expect(create({permutationBatchSize: 4, stopAfterExceedances: 3})).not.toThrow();
   expect(GPUGlobalPermutationTest).toBeDefined();
 });

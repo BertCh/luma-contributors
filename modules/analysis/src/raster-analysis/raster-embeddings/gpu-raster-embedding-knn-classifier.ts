@@ -40,9 +40,9 @@ export const MAXIMUM_RASTER_EMBEDDING_KNN_CLASS_COUNT = 32;
 export type GPURasterEmbeddingKNearestClassifierOutput = {
   /** Predicted class per pixel; `0xffffffff` for invalid pixels. */
   labels: GraphDataView<'uint32'>;
-  /** Optional vote share of the predicted class, `votes / neighborCount`; NaN for invalid pixels. */
+  /** Optional vote share of the predicted class, `votes / filledNeighborCount`; NaN for invalid pixels. */
   confidence?: GraphDataView<'float32'>;
-  /** Optional vote share of every class, `pixel * classCount + class`; NaN for invalid pixels. */
+  /** Optional votes / filledNeighborCount per `pixel * classCount + class`; NaN for invalid pixels. */
   probabilities?: GraphDataView<'float32'>;
 };
 
@@ -55,7 +55,7 @@ export type GPURasterEmbeddingKNearestClassifierProps = {
   vectors: GraphDataView<'float32'>;
   /** Per-pixel QA; zero makes the pixel invalid. */
   mask?: GraphDataView<'uint32'>;
-  /** Labelled vectors, `sample * dimensions + band`. Contents are per-frame. */
+  /** Labelled vectors, `sample * dimensions + band`; non-finite rows are excluded. Contents are per-frame. */
   trainingVectors: GraphDataView<'float32'>;
   /** Class of each labelled vector, in `[0, classCount)`. Contents are per-frame. */
   trainingLabels: GraphDataView<'uint32'>;
@@ -63,7 +63,7 @@ export type GPURasterEmbeddingKNearestClassifierProps = {
   trainingCount: number;
   /** Number of classes, in `[1, 32]`. */
   classCount: number;
-  /** Neighbours that vote, in `[1, 16]` and at most `trainingCount`. */
+  /** Maximum neighbours that vote, in `[1, 16]` and at most `trainingCount`. */
   neighborCount: number;
   /**
    * `'euclidean'` (scikit-learn's default) or `'cosine'`, the distance `1 - cosine similarity`.
@@ -76,9 +76,12 @@ export type GPURasterEmbeddingKNearestClassifierProps = {
 
 /**
  * Brute-force k-nearest-neighbour classification of an embedding raster against a labelled set,
- * with the semantics of scikit-learn's `KNeighborsClassifier` (uniform weights): each of the
- * `neighborCount` nearest labelled vectors votes, the class with most votes wins and a tie goes
+ * with the semantics of scikit-learn's `KNeighborsClassifier` (uniform weights): up to
+ * `neighborCount` nearest labelled vectors each vote, the class with most votes wins and a tie goes
  * to the smallest class. Distance ties between labelled vectors go to the lower sample index.
+ * Non-finite training rows and non-finite computed distances are excluded. Vote shares divide by
+ * the number of filled neighbours. Masked or non-finite pixels, and pixels with no filled neighbours,
+ * have label `0xffffffff` and NaN confidence and probabilities.
  * Training stays on the host: pass the labelled set as views.
  *
  * Cost is `pixelCount x trainingCount x dimensions`; a 4096-point set on a million pixels of 64
@@ -193,14 +196,17 @@ if (!isValid) {
 }
 var nearestDistance: array<f32, ${neighborCount}>;
 var nearestSample: array<u32, ${neighborCount}>;
-for (var slot = 0u; slot < ${neighborCount}u; slot++) { nearestDistance[slot] = 3.0e38; nearestSample[slot] = 0u; }
+var filledNeighborCount = 0u;
 for (var sampleIndex = 0u; sampleIndex < ${trainingCount}u; sampleIndex++) {
   var dotProduct = 0.0;
   var sampleLength = 0.0;
+  var isSampleValid = true;
   for (var band = 0u; band < ${dimensions}u; band++) {
     let component = trainingVectors[trainingVectorsOffset + sampleIndex * ${dimensions}u + band];
+    if (!finite(component)) { isSampleValid = false; }
     ${isCosine ? 'dotProduct += vector[band] * component;\n    sampleLength += component * component;' : 'dotProduct += (vector[band] - component) * (vector[band] - component);'}
   }
+  if (!isSampleValid) { continue; }
   ${
     isCosine
       ? `let denominator = sqrt(squaredLength * sampleLength);
@@ -209,9 +215,10 @@ for (var sampleIndex = 0u; sampleIndex < ${trainingCount}u; sampleIndex++) {
   let neighborDistance = 1.0 - select(select(0.0, 1.0, squaredLength == 0.0 && sampleLength == 0.0), dotProduct / denominator, denominator > 0.0);`
       : 'let neighborDistance = dotProduct;'
   }
+  if (!finite(neighborDistance)) { continue; }
   // Strict comparison keeps the lower sample index on equal distances.
-  if (neighborDistance < nearestDistance[${neighborCount - 1}u]) {
-    var slot = ${neighborCount - 1}u;
+  if (filledNeighborCount < ${neighborCount}u || neighborDistance < nearestDistance[${neighborCount - 1}u]) {
+    var slot = min(filledNeighborCount, ${neighborCount - 1}u);
     while (slot > 0u && neighborDistance < nearestDistance[slot - 1u]) {
       nearestDistance[slot] = nearestDistance[slot - 1u];
       nearestSample[slot] = nearestSample[slot - 1u];
@@ -219,10 +226,17 @@ for (var sampleIndex = 0u; sampleIndex < ${trainingCount}u; sampleIndex++) {
     }
     nearestDistance[slot] = neighborDistance;
     nearestSample[slot] = sampleIndex;
+    filledNeighborCount = min(filledNeighborCount + 1u, ${neighborCount}u);
   }
 }
+if (filledNeighborCount == 0u) {
+  labels[labelsOffset + index] = ${RASTER_EMBEDDING_NO_LABEL}u;
+  ${output.confidence ? 'confidence[confidenceOffset + index] = missing();' : ''}
+  ${output.probabilities ? `for (var classIndex = 0u; classIndex < ${classCount}u; classIndex++) { probabilities[probabilitiesOffset + index * ${classCount}u + classIndex] = missing(); }` : ''}
+  return;
+}
 var votes: array<u32, ${classCount}>;
-for (var slot = 0u; slot < ${neighborCount}u; slot++) {
+for (var slot = 0u; slot < filledNeighborCount; slot++) {
   let classIndex = min(trainingLabels[trainingLabelsOffset + nearestSample[slot]], ${classCount - 1}u);
   votes[classIndex] += 1u;
 }
@@ -231,8 +245,8 @@ for (var classIndex = 1u; classIndex < ${classCount}u; classIndex++) {
   if (votes[classIndex] > votes[best]) { best = classIndex; }
 }
 labels[labelsOffset + index] = best;
-${output.confidence ? `confidence[confidenceOffset + index] = f32(votes[best]) / ${neighborCount}.0;` : ''}
-${output.probabilities ? `for (var classIndex = 0u; classIndex < ${classCount}u; classIndex++) { probabilities[probabilitiesOffset + index * ${classCount}u + classIndex] = f32(votes[classIndex]) / ${neighborCount}.0; }` : ''}`
+${output.confidence ? 'confidence[confidenceOffset + index] = f32(votes[best]) / f32(filledNeighborCount);' : ''}
+${output.probabilities ? `for (var classIndex = 0u; classIndex < ${classCount}u; classIndex++) { probabilities[probabilitiesOffset + index * ${classCount}u + classIndex] = f32(votes[classIndex]) / f32(filledNeighborCount); }` : ''}`
       })
     ];
   }

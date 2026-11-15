@@ -14,12 +14,15 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   createFillNode,
-  createWGSLDispatchGate
+  createWGSLDispatchGate,
+  createWGSLKernelNode
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
   getNextPowerOfTwo,
   validateCapacity,
+  validateCommandNodeBudget,
+  validateRequirement,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -30,12 +33,18 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+import {
+  resolveGPUTemporalContext,
+  type GPUTemporalContext
+} from '../../analysis-core/contracts/temporal-context';
+import {GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH} from './hierarchical-density-clustering-parameters';
 import type {GPUCardinalityPort} from '../../analysis-core/contracts/index';
 import {GPUNeighborSearch} from '../neighbor-search/gpu-neighbor-search';
 import {createNeighborSearchDerivedParameterNodes} from '../neighbor-search/neighbor-search-derived-parameters';
 import {getSortedFeatureBVHNodes} from '../spatial-join/spatial-join-passes';
 import {
   createHierarchicalDensityAddNode,
+  createHierarchicalDensityCoreNode,
   createHierarchicalDensityClusterInfoNode,
   createHierarchicalDensityContributionsNode,
   createHierarchicalDensityEdgeKeysNode,
@@ -71,7 +80,10 @@ const HIERARCHICAL_DENSITY_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
 
 const OPERATION = 'GPUHierarchicalDensityClustering';
 
-/** Largest `minimumSamples` of {@link GPUHierarchicalDensityClustering}, held at its documented bound. */
+/** Upper bound for published BVH, scans, sorts and segment sums, which do not expose node counts. */
+const GPU_HIERARCHICAL_DENSITY_CLUSTERING_COMMAND_NODE_ALLOWANCE = 2048;
+
+/** Largest `minimumSamples` of {@link GPUHierarchicalDensityClustering}, bounding the per-query private top-k distance list. */
 export const GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_SAMPLES = 32;
 
 /**
@@ -97,7 +109,8 @@ export type GPUHierarchicalDensityClusteringOutput = {
  * Properties for {@link GPUHierarchicalDensityClustering}.
  *
  * Per-frame (no recompile): the contents of `positions`. Compile-time: `positions.length`,
- * `minimumSamples`, `minimumClusterSize` and which optional outputs are present.
+ * `minimumSamples`, `minimumClusterSize`, temporal/spatial contexts and which optional views are present.
+ * With `times`, their contents and `parameters` are also per-frame.
  */
 export type GPUHierarchicalDensityClusteringProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'hierarchical-density-clustering'`. */
@@ -109,6 +122,12 @@ export type GPUHierarchicalDensityClusteringProps = {
    * Non-finite points are noise and take no part in the hierarchy.
    */
   positions: GraphDataView<'float32x2'>;
+  /** Relative float32 time per point. Non-finite times are noise. Requires temporalContext and parameters. */
+  times?: GraphDataView<'float32'>;
+  /** Describes times; only float32-relative encoding is supported. No unit conversion. */
+  temporalContext?: GPUTemporalContext;
+  /** Per-frame [timeScale, 0, 0, 0], packed by getGPUHierarchicalDensityClusteringParameterValues. */
+  parameters?: GraphDataView<'float32'>;
   /**
    * Smallest condensed cluster, scikit-learn `min_cluster_size`, at least 2. Compile-time.
    */
@@ -156,6 +175,13 @@ export type GPUHierarchicalDensityClusteringProps = {
  * clusters. Duplicate points (zero distance) get the largest float32 density instead of
  * scikit-learn's infinity.
  *
+ * With `times`, ST-HDBSCAN uses `sqrt(dx² + dy² + (timeScale * dt)²)`, equivalent to
+ * scikit-learn on `[x, y, timeScale * t]`. An indexed top-k walk of the same spatial BVH
+ * computes core distances. Spatial box distance is a conservative lower bound for the scaled
+ * metric, so the exact Boruvka search still prunes safely. Time does not prune boxes, which can
+ * make spatially coincident events expensive. The hierarchy and EOM selection are unchanged.
+ * This is a continuous scaled metric, with no hard temporal cutoff.
+ *
  * Non-goals: `allow_single_cluster`, `cluster_selection_epsilon`, `'leaf'` selection, membership
  * probabilities, outlier scores, other metrics and 3D points.
  */
@@ -170,6 +196,9 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
   readonly minimumSamples: number;
   /** Number of unrolled Boruvka rounds. */
   readonly roundCount: number;
+  readonly temporalContext?: GPUTemporalContext;
+  /** Conservative bound including logarithmic-squared tree contraction. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUHierarchicalDensityClusteringProps) {
     this.id = props.id ?? 'hierarchical-density-clustering';
@@ -182,6 +211,31 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
     );
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
+    if (props.times) {
+      validateRequirement(id, props.temporalContext !== undefined, 'times require temporalContext');
+      validateRequirement(id, props.parameters !== undefined, 'times require parameters');
+      this.temporalContext = resolveGPUTemporalContext(id, props.temporalContext, {
+        encodings: ['float32-relative']
+      });
+      validateSinglePackedView(props.times, ['float32'], `${id} times`);
+      validateRequirement(
+        id,
+        props.times.length === rows,
+        'times length must equal positions length'
+      );
+      validateSinglePackedView(props.parameters!, ['float32'], `${id} parameters`);
+      validateRequirement(
+        id,
+        props.parameters!.length === GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH,
+        `parameters length must equal ${GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH}`
+      );
+    } else {
+      validateRequirement(
+        id,
+        props.temporalContext === undefined && props.parameters === undefined,
+        'temporalContext and parameters require times'
+      );
+    }
     validateCapacity(
       id,
       'positions rows',
@@ -218,10 +272,18 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       }
     }
     this.roundCount = Math.ceil(Math.log2(Math.max(rows, 2))) + 1;
+    // Each light level has at most ceil(log2(2 rows)) + 1 three-node chain rounds.
+    // The linear allowance covers Boruvka and the other pointer-jump passes.
+    const treeRounds = Math.ceil(Math.log2(2 * Math.max(rows, 2))) + 1;
+    this.estimatedCommandNodeCount =
+      GPU_HIERARCHICAL_DENSITY_CLUSTERING_COMMAND_NODE_ALLOWANCE +
+      64 * treeRounds +
+      4 * treeRounds * treeRounds;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.labels, output.coreDistances, output.status?.count],
-      [props.positions]
+      [props.positions, props.times, props.parameters]
     );
   }
 
@@ -233,6 +295,8 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
+      props.times,
+      props.parameters,
       output.labels,
       output.coreDistances,
       output.status?.count
@@ -243,10 +307,25 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       graph.device,
       id,
       'neighbor distances',
-      rows * minimumSamples * 4,
+      props.times ? (rows + 1) * 4 : rows * minimumSamples * 4,
       'lower minimumSamples or the row count'
     );
     const leafCapacity = getNextPowerOfTwo(rows);
+    // Largest row-proportional tables: packed BVH nodes and the Euler tour (16 words/row).
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'tree scratch',
+      rows * 16 * 4,
+      'lower positions rows'
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'BVH node data',
+      (2 * leafCapacity - 1) * HIERARCHICAL_DENSITY_NODE_WORDS * 4,
+      'lower positions rows'
+    );
     const u32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', Math.max(length, 1));
     const f32 = (name: string, length: number) =>
@@ -258,7 +337,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
     const otherSamples = minimumSamples - 1;
     let neighborOffsets: GraphDataView<'uint32'> | undefined;
     let neighborDistances: GraphDataView<'float32'> | undefined;
-    if (otherSamples > 0) {
+    if (otherSamples > 0 && !props.times) {
       const search = createNeighborSearchDerivedParameterNodes<Parameters>(graph, {
         id: `${id}-neighbors-setup`,
         operation: OPERATION,
@@ -287,6 +366,28 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
         }).getCommandNodes(graph)
       );
     }
+    // Pack the time scale beside the times to keep the MST search within eight bindings.
+    // The subtraction precedes scaling, preserving precision near the temporal origin.
+    const timeData = props.times ? f32('time-data', rows + 1) : undefined;
+    if (props.times && props.parameters && timeData) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-time-data`,
+          operation: OPERATION,
+          variant: 'time-data',
+          invocationCount: rows,
+          bindings: [
+            {name: 'times', view: props.times, type: 'f32', access: 'read'},
+            {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+            {name: 'timeData', view: timeData, type: 'f32', access: 'read_write'}
+          ],
+          body: `let scale = parameters[parametersOffset];
+  let validScale = scale >= 0.0 && (bitcast<u32>(scale) & 0x7f800000u) != 0x7f800000u;
+  timeData[timeDataOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), times[timesOffset + index], validScale);
+  if (index == 0u) { timeData[timeDataOffset + ${rows}u] = scale; }`
+        })
+      );
+    }
     const state = u32('state', HIERARCHICAL_DENSITY_STATE_WORDS);
     const boxMinima = createTransientView(graph, `${id}-box-minima`, 'float32x2', rows);
     const boxMaxima = createTransientView(graph, `${id}-box-maxima`, 'float32x2', rows);
@@ -298,6 +399,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
         id: `${id}-init`,
         shape: this.getShape(0, 0, 1),
         positions: props.positions,
+        timeData,
         neighborOffsets,
         neighborDistances,
         boxMinima,
@@ -330,6 +432,19 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       })
     );
 
+    if (timeData && otherSamples > 0) {
+      nodes.push(
+        createHierarchicalDensityCoreNode(graph, {
+          id: `${id}-space-time-core`,
+          shape,
+          nodeData,
+          positions: props.positions,
+          timeData,
+          coreDistances
+        })
+      );
+    }
+
     // 2. Boruvka rounds, gated on the GPU component count.
     const components = u32('components', rows);
     const componentBest = u32('component-best', rows * HIERARCHICAL_DENSITY_EDGE_WORDS);
@@ -358,6 +473,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
           id: `${id}-resolve${suffix}`,
           shape,
           positions: props.positions,
+          timeData,
           parents,
           components,
           componentBest,
@@ -383,6 +499,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
           nodeData,
           changeScan,
           positions: props.positions,
+          timeData,
           coreDistances,
           components,
           candidates,

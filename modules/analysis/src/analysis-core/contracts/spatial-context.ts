@@ -319,18 +319,25 @@ export function resolveGPUSpatialContext(
  * - `wgs84-authalic`: equal-area mapping of the WGS84 ellipsoid onto its authalic sphere, with
  *   straight edges in the mapped coordinates.
  * - `sphere-polygon`: exact area of a spherical polygon with great-circle edges, on the WGS84
- *   authalic sphere (H3 cell areas).
+ *   authalic sphere (H3 and S2 cell areas).
+ * - `sphere-rectangle`: longitude/latitude rectangle bounded by parallels and meridians on
+ *   the WGS84 authalic sphere (Quadbin tile areas).
  * - `geodesic`: like `wgs84-authalic`, but long edges follow ellipsoidal geodesics.
  */
 export type GPUAreaModel =
   | 'planar'
   | 'sphere-equal-area'
   | 'sphere-polygon'
+  | 'sphere-rectangle'
   | 'wgs84-authalic'
   | 'geodesic';
 
-/** How a length output is computed. */
-export type GPULengthModel = 'planar' | 'great-circle' | 'ellipsoidal-geodesic';
+/** How a length output is computed; sphere-parallel-meridian follows latitude parallels and meridians. */
+export type GPULengthModel =
+  | 'planar'
+  | 'great-circle'
+  | 'sphere-parallel-meridian'
+  | 'ellipsoidal-geodesic';
 
 /** Units of an area output. */
 export type GPUAreaUnit = 'native-squared' | 'square-meters' | 'square-kilometers';

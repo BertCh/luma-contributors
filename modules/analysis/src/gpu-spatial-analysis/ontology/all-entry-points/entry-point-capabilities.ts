@@ -12,6 +12,20 @@ import type {GPUSpatialAnalysisCapability} from '../spatial-analysis-ontology';
  */
 export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] = [
   {
+    id: 'forest-inference',
+    title: 'Imported forest inference',
+    status: 'available',
+    domain: 'dataframe-analysis',
+    stage: 'analyze',
+    summary:
+      'Applies caller-supplied sparse random forests and boosted numerical trees to rows or calibrated raster stacks.',
+    inputs: ['attributes', 'parameters', 'surface'],
+    outputs: ['attributes'],
+    coordinateModels: ['none', 'grid'],
+    outputBound: 'source-sized',
+    operators: ['GPUForestInference']
+  },
+  {
     id: 'computation-recording',
     title: 'Computation recording',
     status: 'available',
@@ -74,6 +88,7 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
       'GPUNetworkReachability',
       'GPUNetworkPathExtraction',
       'GPUAlternativeRoutes',
+      'GPUKShortestPaths',
       'GPUNetworkPointRouting',
       'GPUNetworkTimeRouting',
       'GPUNetworkPotentialPathArea',
@@ -118,6 +133,7 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
     outputBound: 'source-sized',
     operators: [
       'GPUNetworkStructure',
+      'GPUNetworkStronglyConnectedComponents',
       'GPUNetworkStatistics',
       'GPUNetworkAnalyticsColumns',
       'GPUNetworkNeighborhood',
@@ -363,7 +379,8 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
       'GPURasterReclassify',
       'GPUWeightedOverlay',
       'GPURasterCellStatistics',
-      'GPURasterStretch'
+      'GPURasterStretch',
+      'GPURasterContrastEqualization'
     ]
   },
   {
@@ -504,12 +521,13 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
       'Particle advection, line integral convolution and evenly spaced streamlines through vector fields.',
     inputs: ['surface', 'points'],
     outputs: ['surface', 'points', 'lines'],
-    coordinateModels: ['grid'],
+    coordinateModels: ['grid', 'planar', 'mixed'],
     outputBound: 'capacity-bounded',
     operators: [
       'GPUParticleAdvection',
       'GPULagrangianFlowMap',
       'GPUFiniteTimeLyapunovExponent',
+      'GPUScalarFieldRidges',
       'GPULineIntegralConvolution',
       'GPUStreamlines'
     ]
@@ -531,6 +549,7 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
       'GPURasterTileReprojection',
       'GPURasterConservativeRemapping',
       'GPURasterRegistration',
+      'GPURasterSpectralFilter',
       'GPURasterExtremaPyramid'
     ]
   },
@@ -598,6 +617,7 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
     outputBound: 'mixed',
     operators: [
       'GPURasterEmbeddingDequantize',
+      'GPURasterEmbeddingQuantize',
       'GPURasterEmbeddingSimilarity',
       'GPURasterEmbeddingNearestPixels',
       'GPURasterEmbeddingChange',
@@ -689,6 +709,7 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
     operators: [
       'GPUVariogram',
       'GPUVariogramModelFit',
+      'GPUCoregionalizationFit',
       'GPUCrossVariogram',
       'GPUSpaceTimeVariogram',
       'GPUSpatialCorrelogram'
@@ -765,7 +786,7 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
     outputs: ['attributes', 'summary'],
     coordinateModels: ['planar'],
     outputBound: 'source-sized',
-    operators: ['GPUPointCloudICP', 'GPUPointCloudChange']
+    operators: ['GPUPointCloudICP', 'GPUPointCloudChange', 'GPUPointCloudNormalScale']
   },
   {
     id: 'pointcloud-merge',

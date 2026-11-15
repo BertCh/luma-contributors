@@ -2,11 +2,19 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {expect, it, vi} from 'vitest';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {GPUConditionalGaussianSimulation} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-conditional-gaussian-simulation';
 import {GPULocalKriging} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging';
+import {
+  createLocalKrigingParameterNodes,
+  type LocalKrigingParameterState
+} from '../../../src/gpu-spatial-analysis/spatial-interpolation/local-kriging-parameters';
 import {getEquilibratedSolveWGSL} from '../../../src/gpu-spatial-analysis/spatial-interpolation/equilibrated-solve-wgsl';
 import {KRIGING_PIVOT_RATIO_TOLERANCE} from '../../../src/gpu-spatial-analysis/spatial-interpolation/kriging-parameters';
 import {
@@ -140,4 +148,131 @@ it('requires covariance or a parameter buffer, and validates the parameter lengt
         }
       })
   ).toThrow('Matern');
+});
+
+it('convenience covariance uses a runtime layout and changing the model keeps the shader identical', () => {
+  const sources = (model: 'spherical' | 'gaussian') => {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    const contributor = new GPULocalKriging({
+      positions: createTransientView(graph, 'positions', 'float32x2', 4),
+      observations: createTransientView(graph, 'observations', 'float32x4', 4),
+      supports: createTransientView(graph, 'supports', 'float32x2', 2),
+      mode: 'ordinary',
+      neighborCount: 4,
+      covariance: {model, range: model === 'spherical' ? 7 : 13, sill: 5},
+      output: {
+        values: createTransientView(graph, 'values', 'float32x4', 2),
+        status: createTransientView(graph, 'status', 'uint32', 2)
+      }
+    });
+    const kernels = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+    expect(kernels[0].source).toContain('loadCovarianceParameters()');
+    expect(kernels[0].source).toContain('factorDenseLU_5(');
+    contributor.setCovariance({covariance: {model: 'exponential', range: 2, sill: 1}});
+    expect(() =>
+      contributor.setCovariance({
+        variableCount: 2,
+        covariance: {model, range: 1, sill: 1},
+        coregionalization: [1, 0, 0, 1]
+      })
+    ).toThrow('preserve covarianceStructureCount and variableCount');
+    return kernels.map(kernel => kernel.source);
+  };
+  expect(sources('spherical')).toEqual(sources('gaussian'));
+});
+
+it('preflights the packed covariance scratch before creating any nodes', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const contributor = new GPULocalKriging({
+    positions: createTransientView(graph, 'positions', 'float32x2', 4),
+    observations: createTransientView(graph, 'observations', 'float32x4', 4),
+    supports: createTransientView(graph, 'supports', 'float32x2', 2),
+    mode: 'external-drift',
+    driftCount: 1,
+    neighborCount: 4,
+    sampleDrift: createTransientView(graph, 'sample-drift', 'float32', 4),
+    queryDrift: createTransientView(graph, 'query-drift', 'float32', 2),
+    covariance: {model: 'exponential', range: 1, sill: 1},
+    output: {
+      values: createTransientView(graph, 'values', 'float32x4', 2),
+      status: createTransientView(graph, 'status', 'uint32', 2),
+      weights: createTransientView(graph, 'weights', 'float32', 8)
+    }
+  });
+  Object.assign(device.limits, {maxStorageBufferBindingSize: 64});
+  const allocations = vi.spyOn(graph, 'createTransientBuffer');
+  try {
+    expect(() => contributor.getCommandNodes(graph)).toThrow(
+      /observations plus covariance.*96 bytes.*limit 64/
+    );
+    expect(allocations).not.toHaveBeenCalled();
+  } finally {
+    allocations.mockRestore();
+    device.destroy();
+  }
+});
+
+it('declares storage and copy-destination usage for convenience covariance uploads', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const state: LocalKrigingParameterState = {
+    values: getGPULocalKrigingParameterValues({
+      covariance: {model: 'exponential', sill: 1, range: 2}
+    }),
+    buffers: new Set()
+  };
+  const {parameters, nodes} = createLocalKrigingParameterNodes(graph, 'upload', state);
+  try {
+    expect(parameters.buffer.usage & Buffer.STORAGE).toBe(Buffer.STORAGE);
+    expect(parameters.buffer.usage & Buffer.COPY_DST).toBe(Buffer.COPY_DST);
+    for (const node of nodes) graph.add(node);
+    const compiled = graph.compile();
+    expect(state.buffers.size).toBe(1);
+    const previousBuffer = [...state.buffers][0];
+    compiled.destroy();
+    expect(state.buffers.size).toBe(0);
+
+    state.values = getGPULocalKrigingParameterValues({
+      covariance: {model: 'gaussian', sill: 0.5, range: 4, nugget: 0.02}
+    });
+    const rebuiltGraph = new GPUCommandGraph(device);
+    const rebuiltUpload = createLocalKrigingParameterNodes(rebuiltGraph, 'upload', state);
+    for (const node of rebuiltUpload.nodes) rebuiltGraph.add(node);
+    const rebuilt = rebuiltGraph.compile();
+    try {
+      expect(rebuiltUpload.parameters.buffer.graph).toBe(rebuiltGraph);
+      expect(state.buffers.size).toBe(1);
+      expect([...state.buffers][0]).not.toBe(previousBuffer);
+    } finally {
+      rebuilt.destroy();
+    }
+    expect(state.buffers.size).toBe(0);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('packs a positive normalization scale for initialized zero-loading covariance models', () => {
+  const covariance = {model: 'exponential', range: 1, sill: 1} as const;
+  const shortcut = getGPULocalKrigingParameterValues({
+    covariance,
+    coregionalization: [0, 0, 0, 0]
+  });
+  expect(Array.from(shortcut)).toEqual([1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0]);
+  for (const variableCount of [2, 3, 4]) {
+    for (const structureCount of [1, 4]) {
+      const values = getGPULocalKrigingParameterValues({
+        variableCount,
+        coregionalizationModels: Array.from({length: structureCount}, () => ({
+          covariance,
+          loadings: new Array<number>(variableCount ** 2).fill(0)
+        }))
+      });
+      expect(values[0]).toBe(1);
+      expect(Array.from(values.slice(4 + 4 * structureCount))).toEqual(
+        new Array<number>(structureCount * variableCount ** 2).fill(0)
+      );
+    }
+  }
 });

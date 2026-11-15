@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
-import {GPUOPTICS, type GPUOPTICSProps} from './gpu-optics';
+import {GPUOPTICS, OPTICS_ITERATION_STATUS_FIELDS, type GPUOPTICSProps} from './gpu-optics';
 
 /** OPTICS graph values; each per-row output has the explicit rowCount inferred from positions. */
 export type OPTICSOperationProps = Omit<GPUOPTICSProps, 'positions' | 'times' | 'output'> & {
@@ -19,7 +19,14 @@ export type OPTICSOperationProps = Omit<GPUOPTICSProps, 'positions' | 'times' | 
     status: string;
     clusterIntervals?: string;
     clusterSummary?: string;
-    ports?: {status: {candidateOverflow?: string}};
+    ports?: {
+      status: {
+        candidateOverflow?: string;
+        iterationCount?: string;
+        converged?: string;
+        iterationLimitReached?: string;
+      };
+    };
   };
 };
 
@@ -51,6 +58,12 @@ export class GPUOPTICSOperation extends GPUContributorOperation {
         ...(output.clusterSummary
           ? {clusterSummary: {value: output.clusterSummary, format: 'uint32' as const, length: 2}}
           : {}),
+        ...Object.fromEntries(
+          OPTICS_ITERATION_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(name => [
+            name,
+            {value: output.ports!.status[name]!, format: 'uint32' as const, length: 1}
+          ])
+        ),
         ...(output.ports?.status.candidateOverflow
           ? {
               candidateOverflow: {
@@ -80,6 +93,11 @@ export class GPUOPTICSOperation extends GPUContributorOperation {
             clusterSummary: output.clusterSummary ? getView<'uint32'>('clusterSummary') : undefined,
             ports: {
               status: {
+                ...Object.fromEntries(
+                  OPTICS_ITERATION_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(
+                    name => [name, getView<'uint32'>(name)]
+                  )
+                ),
                 candidateOverflow: output.ports?.status.candidateOverflow
                   ? getView<'uint32'>('candidateOverflow')
                   : undefined

@@ -10,6 +10,7 @@ import {runOperationGraph, type OperationGraphInput} from '../../utils/mixed-exe
 import {requireTestDevice} from '../../utils/require-test-device';
 import {
   OPERATION_POLYGONS,
+  createPaddingTriangulationInput,
   CLAMPED_RING_END_CASES,
   createClampedRingEndInput,
   getTriangulationOperationProps,
@@ -118,3 +119,67 @@ for (const scene of CLAMPED_RING_END_CASES) {
     }
   });
 }
+
+// Adjacent ring/line intervals share a prefix offset, so internal position gaps are not representable.
+it('Earcut, monotone and CPU triangulation never include position padding in polygon geometry', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const outputs = ['indices', 'valid', 'triangleCount', 'triangleOffsets'];
+  for (const method of ['cpu', 'none', 'monotone'] as const) {
+    let reference: Record<string, number[]> | undefined;
+    for (const value of [undefined, Number.NaN, 3e30, -3e30]) {
+      const leading = value === undefined ? 0 : 2;
+      const input = createPaddingTriangulationInput(leading, leading ? 3 : 0, value);
+      const props = {
+        ...getTriangulationOperationProps(input, 128),
+        largePolygonMethod: method === 'cpu' ? ('none' as const) : method,
+        monotoneMinimumVertices: 1
+      };
+      const Operation =
+        method === 'cpu' ? CPUPolygonTriangulationOperation : GPUPolygonTriangulationOperation;
+      const result = await runOperationGraph(device, {
+        inputs: {
+          positions: {format: 'float32x2', values: input.positions},
+          featureOffsets: {format: 'uint32', values: input.featureOffsets},
+          polygonOffsets: {format: 'uint32', values: input.polygonOffsets},
+          ringOffsets: {format: 'uint32', values: input.ringOffsets}
+        },
+        operations: [new Operation(props)],
+        outputs
+      });
+      expect(Array.from(result['valid'])).toEqual([1, 1, 1]);
+      expect(Array.from(result['triangleCount'])).toEqual([0, 8, 2]);
+      const usedWords = 3 * result['triangleOffsets'][3];
+      const normalized = {
+        indices: Array.from(result['indices'].slice(0, usedWords), vertex => vertex - leading),
+        valid: Array.from(result['valid']),
+        triangleCount: Array.from(result['triangleCount']),
+        triangleOffsets: Array.from(result['triangleOffsets'])
+      };
+      if (reference) expect(normalized).toEqual(reference);
+      else reference = normalized;
+      // Independent hand areas and positive winding: no triangle may touch a garbage row.
+      for (let polygon = 0; polygon < 3; polygon++) {
+        let twiceArea = 0;
+        for (
+          let triangle = result['triangleOffsets'][polygon];
+          triangle < result['triangleOffsets'][polygon + 1];
+          triangle++
+        ) {
+          const vertices = Array.from(result['indices'].slice(3 * triangle, 3 * triangle + 3));
+          expect(vertices.every(vertex => vertex >= leading && vertex < leading + 12)).toBe(true);
+          const [first, second, third] = vertices.map(vertex => [
+            input.positions[2 * vertex],
+            input.positions[2 * vertex + 1]
+          ]);
+          const cross =
+            (second[0] - first[0]) * (third[1] - first[1]) -
+            (second[1] - first[1]) * (third[0] - first[0]);
+          expect(cross).toBeGreaterThan(0);
+          twiceArea += cross;
+        }
+        expect(twiceArea / 2).toBe([0, 12, 4][polygon]);
+      }
+    }
+  }
+}, 120000);

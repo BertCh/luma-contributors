@@ -322,6 +322,40 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
   },
 
   // ---- hydrology: tracing
+  // Eight fractions per cell fill a 128 MiB binding at MIDDLE, rather than LARGE.
+  ...(
+    [
+      ['small', SMALL],
+      ['fraction-binding-limit', MIDDLE]
+    ] as const
+  ).map(
+    ([label, grid]): KernelAuditCase => ({
+      exportName: 'GPUTerrainHeightAboveDrainage',
+      name: `${label}-fractional`,
+      build: context => {
+        const {graph, view} = context;
+        const count = cellCount(grid);
+        graph.add(
+          new GPUTerrainHeightAboveDrainage({
+            grid,
+            elevation: elevationBand(context, grid),
+            flowFractions: view('float32', count * 8),
+            streams: view('uint32', count),
+            maximumIterations: 3,
+            output: {
+              heightAboveDrainage: view('float32', count),
+              drainageCells: view('uint32', count),
+              status: {
+                converged: view('uint32', 1),
+                iterationLimitReached: view('uint32', 1),
+                iterationCount: view('uint32', 1)
+              }
+            }
+          })
+        );
+      }
+    })
+  ),
   ...GRIDS.map(
     ([label, grid]): KernelAuditCase => ({
       exportName: 'GPUTerrainHeightAboveDrainage',

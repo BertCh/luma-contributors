@@ -91,7 +91,7 @@ it('network and movement kernels parse, avoid reserved names, and respect portab
             selectedFacilities: view('uint32', 2),
             assignments: view('uint32', 2),
             objective: view('float32', 1),
-            status: view('uint32', 4)
+            summary: view('uint32', 4)
           }
         })
     ),
@@ -104,7 +104,7 @@ it('network and movement kernels parse, avoid reserved names, and respect portab
         assignments: view('float32', 4),
         scores: view('float32', 2),
         unservedDemand: view('float32', 2),
-        status: view('uint32', 4)
+        summary: view('uint32', 4)
       }
     }),
     new GPUTrajectoryKalman({

@@ -5,12 +5,12 @@
 import {
   createTransientView,
   GPUScan,
-  GPUSort,
   GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
@@ -390,45 +390,19 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
       )
     );
 
-    // 2. Stable ascending (high, low) order: low-word sort, then high-word sort of that order.
-    const firstKeys = u32('sorted-low-first', rightCount);
-    const firstRows = u32('sorted-rows-first', rightCount);
-    nodes.push(
-      ...new GPUSort({
-        id: `${id}-sort-low`,
-        keys: keyLow,
-        values: rowIds,
-        outputKeys: firstKeys,
-        outputValues: firstRows,
-        keyBits: 32
-      }).getCommandNodes(graph)
-    );
-    let sortedLow = firstKeys;
-    let sortedHigh: GraphDataView<'uint32'> | undefined;
-    let sortedRows = firstRows;
-    if (twoWords && keyHigh) {
-      const highByFirst = u32('high-by-low-order', rightCount);
-      nodes.push(
-        ...new GPUUint32Gather({
-          id: `${id}-gather-high`,
-          source: keyHigh,
-          indices: firstRows,
-          output: highByFirst
-        }).getCommandNodes(graph)
-      );
-      sortedHigh = u32('sorted-high', rightCount);
-      sortedRows = u32('sorted-rows', rightCount);
-      nodes.push(
-        ...new GPUSort({
-          id: `${id}-sort-high`,
-          keys: highByFirst,
-          values: firstRows,
-          outputKeys: sortedHigh,
-          outputValues: sortedRows,
-          keyBits: 32
-        }).getCommandNodes(graph)
-      );
-      sortedLow = u32('sorted-low', rightCount);
+    // 2. Stable ascending (high, low) order; gather the low word in the final order.
+    const sorted = createStableLexicographicIndexSortNodes(graph, {
+      id: `${id}-sort`,
+      operation: OPERATION,
+      indices: rowIds,
+      indicesAreIdentity: true,
+      keys: [...(keyHigh ? [{view: keyHigh}] : []), {view: keyLow}]
+    });
+    nodes.push(...sorted.nodes);
+    const sortedRows = sorted.sortedIndices;
+    const sortedHigh = keyHigh ? sorted.sortedPrimaryKeys : undefined;
+    const sortedLow = keyHigh ? u32('sorted-low', rightCount) : sorted.sortedPrimaryKeys;
+    if (keyHigh) {
       nodes.push(
         ...new GPUUint32Gather({
           id: `${id}-gather-low`,

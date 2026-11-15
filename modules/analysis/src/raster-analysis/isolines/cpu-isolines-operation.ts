@@ -13,11 +13,16 @@ import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
 } from '../../analysis-core/operations/cpu-operation-rows';
+import {
+  ISOLINES_MAXIMUM_SAMPLE_COUNT,
+  validateIsolinesTile,
+  validateIsolinesMaximumSegmentCount
+} from './isolines-tile';
 import {GPU_ISOLINES_PARAMETER_LENGTH} from './isolines-parameters';
 import {GPUIsolinesOperation, type IsolinesOperationProps} from './gpu-isolines-operation';
 
 /** Two raster edge families must fit in uint32 global edge identifiers. */
-export const CPU_ISOLINES_MAXIMUM_CELL_COUNT = Math.floor(0xffffffff / 2);
+export const CPU_ISOLINES_MAXIMUM_CELL_COUNT = ISOLINES_MAXIMUM_SAMPLE_COUNT;
 
 export type CPUIsolinesInput = {
   values: Float32Array;
@@ -27,7 +32,7 @@ export type CPUIsolinesInput = {
 };
 export type CPUIsolinesOptions = Pick<
   IsolinesOperationProps,
-  'grid' | 'noDataValue' | 'segmentCapacity'
+  'grid' | 'noDataValue' | 'segmentCapacity' | 'tile'
 > & {vertexCapacity?: number};
 export type CPUIsolinesResult = {
   segments: Float32Array;
@@ -70,6 +75,12 @@ export function computeIsolinesOnCPU(
   options: CPUIsolinesOptions
 ): CPUIsolinesResult {
   validateOptions('computeIsolinesOnCPU', options);
+  validateIsolinesMaximumSegmentCount(
+    'computeIsolinesOnCPU',
+    options.grid,
+    options.tile,
+    input.levels.length
+  );
   const {width, height} = options.grid;
   if (input.values.length < width * height)
     throw new Error('values must contain at least width * height rows');
@@ -79,7 +90,8 @@ export function computeIsolinesOnCPU(
   if (input.parameters.length < GPU_ISOLINES_PARAMETER_LENGTH)
     throw new Error('parameters must hold the isolines layout');
   // getGPUIsolinesParameterValues layout.
-  const [requestedLevels, minX, minY, cellWidth, cellHeight] = input.parameters;
+  const [requestedLevels, anchorX, anchorY, cellWidth, cellHeight, columnAnchor, rowAnchor] =
+    input.parameters;
   const levelCount = Math.min(input.levels.length, Math.max(0, Math.trunc(requestedLevels)));
   const capacity = options.segmentCapacity;
   const result: CPUIsolinesResult = {
@@ -98,9 +110,15 @@ export function computeIsolinesOnCPU(
     vertexCount: new Uint32Array(1)
   };
   const sentinel = options.noDataValue === undefined ? undefined : Math.fround(options.noDataValue);
+  const tile = options.tile;
+  const domainWidth = tile?.domainWidth ?? width;
+  const domainHeight = tile?.domainHeight ?? height;
+  const columnOffset = tile?.columnOffset ?? 0;
+  const rowOffset = tile?.rowOffset ?? 0;
+  const [minColumn, minRow, maxColumn, maxRow] = tile?.ownedCells ?? [0, 0, width - 1, height - 1];
   let requiredCount = 0;
-  for (let row = 0; row < height - 1; row++)
-    for (let column = 0; column < width - 1; column++) {
+  for (let row = minRow; row < maxRow; row++)
+    for (let column = minColumn; column < maxColumn; column++) {
       const samples = [
         row * width + column,
         row * width + column + 1,
@@ -117,11 +135,13 @@ export function computeIsolinesOnCPU(
       )
         continue;
       const corners = samples.map(sample => input.values[sample]);
+      const domainColumn = column + columnOffset;
+      const domainRow = row + rowOffset;
       const edgeIds = [
-        row * (width - 1) + column,
-        height * (width - 1) + row * width + column + 1,
-        (row + 1) * (width - 1) + column,
-        height * (width - 1) + row * width + column
+        domainRow * (domainWidth - 1) + domainColumn,
+        domainHeight * (domainWidth - 1) + domainRow * domainWidth + domainColumn + 1,
+        (domainRow + 1) * (domainWidth - 1) + domainColumn,
+        domainHeight * (domainWidth - 1) + domainRow * domainWidth + domainColumn
       ];
       for (let levelIndex = 0; levelIndex < levelCount; levelIndex++) {
         const level = input.levels[levelIndex];
@@ -135,11 +155,18 @@ export function computeIsolinesOnCPU(
           const second = [1, 2, 2, 3][edge];
           const fraction = (level - corners[first]) / (corners[second] - corners[first]);
           return [
-            minX +
-              (column + (edge === 0 || edge === 2 ? fraction : Number(edge === 1)) + 0.5) *
+            anchorX +
+              (domainColumn -
+                columnAnchor +
+                (edge === 0 || edge === 2 ? fraction : Number(edge === 1)) +
+                0.5) *
                 cellWidth,
-            minY +
-              (row + (edge === 1 || edge === 3 ? fraction : Number(edge === 2)) + 0.5) * cellHeight
+            anchorY +
+              (domainRow -
+                rowAnchor +
+                (edge === 1 || edge === 3 ? fraction : Number(edge === 2)) +
+                0.5) *
+                cellHeight
           ];
         };
         for (let exit = 0; exit < 4; exit++) {
@@ -232,8 +259,7 @@ export function computeIsolinesOnCPU(
 }
 
 function validateOptions(id: string, options: CPUIsolinesOptions): void {
-  validateCapacity(id, 'grid.width', options.grid.width, 2);
-  validateCapacity(id, 'grid.height', options.grid.height, 2);
+  validateIsolinesTile(id, options.grid, options.tile);
   validateRequirement(
     id,
     options.grid.affine.length === 6 && options.grid.affine.every(Number.isFinite),

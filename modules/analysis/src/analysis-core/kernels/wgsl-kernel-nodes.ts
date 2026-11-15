@@ -629,6 +629,11 @@ function assembleWGSLKernelSource<Parameters>(
       `${props.declarations ?? ''}\n${props.body}`,
       ...resolvedModules
         .filter(module => module !== fp64 && module !== fp64arithmetic)
+        // CompiledProjection.getShader() returns a uniform-free descriptor of this exact
+        // published source. Its classic branch is dead under the forced integer define above.
+        .filter(
+          module => module.name !== fp64arithmetic.name || module.source !== fp64arithmetic.source
+        )
         .map(module => module.source ?? '')
     ];
     validateRequirement(

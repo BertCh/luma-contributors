@@ -35,6 +35,10 @@
  * @internal
  */
 export const PHILOX_PURPOSES = {
+  /** Model-fitting row order, counter (row, epoch, 0, purpose), two-word caller seed. */
+  fittingMinibatchOrder: {id: 0x4649544d, word: 'counter'},
+  /** Gaussian fields, counter (mode or row, realization, phase tag, 0). */
+  gaussianRandomField: {id: 0x47524631, word: 'key'},
   /** Paired segregation label exchanges, counter `(unit, replicate, 0, 0)`. */
   segregationPairedExchange: {id: 604, word: 'key'},
   /** `GPULineIntegralConvolution` white noise, counter `(column, row, 0, 0)`. */

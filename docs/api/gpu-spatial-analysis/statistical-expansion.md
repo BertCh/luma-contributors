@@ -56,7 +56,9 @@ With `radiusCount` bins, the upper radii are `maximumRadius * (bin + 1) / radius
 `output.statistics` contains four scalar columns per bin, with indices in
 `GPU_MARKED_POINT_STATISTICS_COLUMNS`: K, L, pair correlation and mark correlation. `output.pairCounts`
 contains cumulative directed pair counts; self-pairs are excluded. `output.status` is 0 when the
-K estimate is defined, 1 for an invalid window or empty category, and 2 for nonfinite accumulation.
+K estimate is defined, 1 for an invalid window or empty category, 2 for nonfinite accumulation,
+and 3 when the cumulative directed pair count exceeds `0xffffffff`. In that case the count
+saturates at `0xffffffff` and all four statistics are NaN. An exact count of `0xffffffff` is valid.
 An empty annulus can produce a valid K with undefined correlations; inspect those float outputs too.
 
 The default `edgeCorrection: 'translation'` uses the rectangle's overlap with its translated copy.
@@ -73,33 +75,38 @@ uses weighted mean products divided by the product of category mean marks; zero 
 empty shells are undefined. Supplying intensity weights both the pair and mark sums. These choices
 must be matched before comparing another package's output.
 
-Without `gridSize` every focus scans every row, so rows are limited to 16,384. An optional
-compile-time `gridSize: [columns, rows]` builds a cell index over the window with cells at least
-`maximumRadius` wide, and each focus visits only the 3 x 3 cells around it; rows are then limited
-by the partial table (`rows * radiusCount * 3` at most `2^24`). Pair counts and status match the
-dense path. Sums are added in cell order and then per bin in a fixed tree of at most 256 entries
-per invocation, and the category mean marks are sums divided by counts (the dense path keeps a
-running mean), so the statistics can differ from the dense path in the last float32 bits. Apart
-from the pair pass, no grid pass loops over every row in one invocation; a `maximumRadius` that
-reaches the window's extent collapses the lattice to one cell, where each focus visits every row.
-A `maximumRadius` whose square overflows float32 gives no pairs on the grid path.
+The default `searchStructure: 'grid'` uses a `[256, 256]` maximum cell lattice; optional
+`gridSize: [columns, rows]` changes those dimensions. Cells are at least `maximumRadius` wide,
+and each focus visits its 3 x 3 neighboring cells. The partial table permits
+`rows * radiusCount * 3 <= 2^24` float32 entries, further constrained by the device's storage
+binding size. Device limits for the partials and cell offsets are checked before scratch allocation.
+
+`searchStructure: 'brute-force'` explicitly selects the dense reference, limited to 16,384 rows;
+it cannot be combined with `gridSize`. Counts and radius edges are unchanged. Indexed sums use
+cell order and a fixed tree of at most 256 entries per invocation. Category means reduce marks
+above `2^100` separately at scale `2^-24`, divide by the category count, then restore their scale.
+This keeps a representable mean finite even when the raw mark sum would overflow. Smaller marks
+remain unscaled, preserving their contribution when large opposite marks cancel. Means and sums
+can differ from the reference's running means and serial sums within the
+float32 comparison tolerance (`1e-6 + 1e-4 * |reference|` in the traversal regression).
+
+Large or clustered neighborhoods still require quadratic pair work: a radius reaching the window's
+extent collapses the lattice to one cell. A finite radius whose square overflows float32 also uses
+one cell, retaining the finite-distance predicate and the reference estimator instead of losing all
+pairs. Invalid or nonpositive radii remain empty. This fallback preserves correctness; it does not
+bound the pair-walk work for broad neighborhoods.
 
 ## Cross and space-time variograms
 
-`GPUCrossVariogram` computes the signed mean of `(x_i - x_j) * (y_i - y_j) / 2` for each distance bin.
-`secondValues` defaults to `values`, yielding the Matheron semivariogram. Negative cross-semivariances
-are retained. Its dense `times` and `temporalLagCount` path is superseded by `GPUSpaceTimeVariogram`
-and should not be used. Without `gridSize` every row scans every later row (at most 16,384 rows). The
-optional compile-time `gridSize: [columns, rows]` fits a cell index to the bounds of the
-complete-case rows on every encoding, with cells at least `maximumDistance` wide, so `maximumDistance`
-can still change per frame; each row then visits only the 3 x 3 cells around it, and rows are limited
-by the partial table (`rows * bins` at most `2^24`). Pair counts and status match the dense path;
-sums are added in cell order and then per bin in a fixed tree of at most 256 entries per
-invocation, so semivariances can differ in the last float32 bits. Apart from the pair pass, no grid
-pass loops over every row in one invocation. The pair pass visits every row of the 3 x 3 cells
-around its focus: when `maximumDistance` reaches the extent of the rows, the lattice collapses to
-one cell and each row visits every other row, the dense cost, so choose `gridSize` and
-`maximumDistance` such that the cells stay small against the data.
+`GPUCrossVariogram` is deprecated in favor of `GPUSpaceTimeVariogram`. It remains a forwarding class through the shared indexed empirical variogram front end, preserving its original props, `[maximumDistance, maximumTimeLag]` parameter layout and `lagCount * temporalLagCount` output bins. Its first bin includes zero lag; the newer class gives each axis an explicit zero-lag class. `secondValues` still defaults to `values`, giving the Matheron semivariogram, and negative cross-semivariances are retained. The adapter computes complete-case bounds on the GPU, including both variables, coordinates, mask and optional time. It fits the lattice to those bounds each encoding; omitted `gridSize` now uses `[256, 256]`. The default and explicit lattices now share the same limits: `rows * bins <= 2^24`, at most
+128 bins, exact float32 row IDs and the device's storage binding size. Omission of `gridSize` no
+longer imposes the former dense reference's 16,384-row cap.
+
+`GPUCrossVariogram` retains floating-point legacy arithmetic on every frame: it forms pair differences from the original values, accumulates per-row partials through the shared cell index, and combines them with bounded tree reductions. Centering can erase a small raw difference beside an unrelated value outlier, and even a finite global fixed-point scale can round a valid pair term to zero. The legacy path therefore does not center or quantize its values. Neighboring cell ranges are merged in ascending input-row order before summation, retaining the former default's signed cancellation independently of lattice dimensions. The fixed tree over per-row partials can round differently from the former serial finishing sum. Status is 0 valid, 1 empty/invalid parameters, 2 nonfinite accumulated arithmetic, or 3 when a bin's pair count exceeds `0xffffffff`. Overflow saturates the count at `0xffffffff` and publishes NaN semivariance; an exact count of `0xffffffff` remains valid. The compatibility path retains the original `rows * bins` scratch bound, with no row-sized serial finishing loop.
+
+The legacy adapter accepts positive finite radii whose square or cell margin overflows float32. It also accepts finite bounds whose width or height overflows on subtraction. These cases use a single-cell lattice, with cell lookup avoiding the overflowing subtraction and the original finite-distance filter applied to every candidate pair. Such frames can visit all pairs. Normal frames retain the fitted lattice and neighboring-cell traversal.
+
+`GPUSpaceTimeVariogram` retains its shared fixed-point pair histogram, accumulating positive and negative cross terms separately and distinguishing integer overflow as status 3.
 
 `GPUSpaceTimeVariogram` is built on the indexed pair histogram of `GPUVariogram`, so its cost follows
 the pairs in neighboring lattice cells instead of `rows^2`. Class 0 of each axis is the exact zero lag
@@ -129,7 +136,7 @@ in-repo double-precision brute-force reference, and a gstat fixture is pending.
 ## Generalized geographically weighted regression
 
 `GPUGeneralizedGeographicallyWeightedRegression` supports `family: 'poisson'` and `'logistic'`, with
-an intercept plus 1–11 predictors, finite planar positions, an optional mask and fixed-distance or adaptive-neighbor
+an intercept plus 1–24 predictors, finite planar or great-circle positions, an optional mask and fixed-distance or adaptive-neighbor
 bandwidths. Poisson response values are nonnegative integer counts, and logistic response values are
 0 or 1. An optional `offset` is additive on the linear predictor; use log exposure for Poisson.
 Parameters are `[bandwidth, relativeCoefficientTolerance]`. The kernel is `'gaussian'` (default) or
@@ -137,11 +144,13 @@ Parameters are `[bandwidth, relativeCoefficientTolerance]`. The kernel is `'gaus
 
 Each local model uses Newton/IRLS with Cholesky and a bounded likelihood step-halving search.
 `maximumIterations` defaults to 32 and is bounded to 128. Outputs are row-major `coefficients`
-(intercept first), `fitted`, and `status: {codes, iterationCount}`. Both status columns have one row per observation; `iterationCount` records the number of local IRLS steps. Only converged fits publish coefficients.
+(intercept first), `fitted`, and `status: {codes, iterationCount}`. Both status columns have one row per observation; `iterationCount` records the number of local IRLS steps. Converged fits and finite iteration-limit iterates publish coefficients.
 There is no implicit regularization or separation correction. Poisson predictors outside [-30,30]
 are reported as numerical failures; they are not silently clamped to another likelihood. Logistic
 predictors are bounded to [-80,80] for evaluation. All-zero count neighborhoods, singular designs,
-and separated binary outcomes can fail or exhaust the budget.
+and separated outcomes have explicit diagnostics; status 6 names a witnessed complete/quasi-separation
+direction. AICc grid/golden-section selection and its named search status are described in
+[Adaptive generalized GWR](./adaptive-generalized-gwr.md).
 
 ## Multiscale geographically weighted regression
 
@@ -157,18 +166,30 @@ The algorithm starts every coefficient surface at the global ordinary least squa
 updates one variable across every location, then moves to the next variable. This starting point is
 this kernel's own: a package that starts from a single-bandwidth GWR fit reaches the same fixed point
 when it is unique, with different iteration counts and a different result if the iteration limit
-stops the backfitting first. A sweep converges when the largest relative change in any fitted component
+stops the backfitting first. The starting fit reduces complete-case counts, centered sums and
+normal-equation moments in bounded row tiles, merging sums in a fixed pairwise order. Responses
+are scaled by a data-derived power of two before subtraction in the mean and moment passes;
+the fit restores the original response units when publishing coefficients. Centered mean
+contributions are also divided by the included-row count before accumulation. These steps avoid
+opposite-sign response subtraction overflow and unnormalized deviation-sum overflow. A valid
+observation anchors centering even when the leading or trailing rows are excluded. Only the small
+coefficient system is solved in one invocation; singular or insufficient global designs start at zero.
+A sweep converges when the largest relative change in any fitted component
 is within tolerance. The row selection is complete-case. Singular component fits invalidate the
 whole coupled backfit. Non-converged coefficient surfaces are not published as completed results.
 `output.status.codes` has one row per observation; `output.status.iterationCount` is one scalar
 containing the number of completed backfit sweeps.
 
 For automatic bounded selection, supply column-major `bandwidthCandidates` and
-`bandwidthCandidateCount` (1–32). Every component update evaluates the candidate bandwidths by
-leave-one-out partial-response squared error, selects the smallest total error, then fits the
-component using that bandwidth. Ties select the first candidate. An invalid candidate is rejected;
-if none is valid, fitting fails. `output.selectedBandwidths` exposes the final choices. This is a
-finite-grid CV contract, distinct from mgwr's continuous AICc or adaptive-neighbor bandwidth search.
+`bandwidthCandidateCount` (1–32). The default is finite-grid leave-one-out partial-response
+squared error; ties select the first candidate. `bandwidthSelection.criterion` also accepts
+`'AICc'`, scored from each scalar partial-response smoother as in mgwr `multi_bw`.
+`bandwidthSelection.searchMethod` accepts `'finite-grid'` (default) or `'golden-section'`.
+Golden-section requires `bandwidthCandidateCount: 2`: each column gives positive lower and upper
+distance bounds. Its `maximumSearchIterations` is 1–64 and all selection work shares the command
+node budget. Invalid candidates lose to valid ones; no valid candidate invalidates the fit.
+Selection runs during every component update. `output.selectedBandwidths` exposes final choices.
+Omitting candidates preserves fixed per-component bandwidths, as in the displayed lens.
 
 Optional `output.conditionalStandardErrors` requires a scalar `noiseVariance`. It computes
 `sqrt(noiseVariance * sum(linearSmootherWeights²))` for each local univariate coefficient, holding
@@ -189,8 +210,8 @@ freedom/variance. Failed inference produces NaNs.
 This matches mgwr's bandwidth-conditioned uncertainty, including coupling among coefficient
 surfaces; it does not add uncertainty from reselecting bandwidths under resampling. Full inference
 requires n ≤ 128 and `n³*p*maximumIterations<=268435456`, and allocates two n²p Jacobian buffers.
-Distance bandwidths are fixed; adaptive-neighbor and continuous AICc optimization are separate
-contracts. Direct mgwr 2.2.1 fixtures cover fixed bandwidths, both variance conventions, and an
+Bandwidths are distances; adaptive-neighbor MGWR selection is not supported. Golden-section is
+a bounded continuous search, not a global-optimum certificate for a non-unimodal score. Direct mgwr 2.2.1 fixtures cover fixed bandwidths, both variance conventions, and an
 explicit finite-grid LOO policy composed from actual mgwr local fits. The latter is not advertised
 as parity with Sel_BW's different default AICc selection policy.
 

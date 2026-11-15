@@ -67,6 +67,8 @@ import type {TextureFormat} from '@luma.gl/core';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
 
+import {K_SHORTEST_PATHS_AUDIT_CASES} from './cases-k-shortest-paths';
+
 const NODES = 256;
 const EDGES = 1024;
 const LON_LAT: GPUSpatialContext = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'};
@@ -3127,6 +3129,7 @@ const NETWORK_CENTRALITY_CASES: KernelAuditCase[] = [
 
 /** Kernel-audit cases for network. */
 export const NETWORK_CASES: KernelAuditCase[] = [
+  ...K_SHORTEST_PATHS_AUDIT_CASES,
   ...ADJACENCY_MATRIX_CASES,
   ...ADJACENCY_MATRIX_ORDER_CASES,
   ...EDGE_BUNDLING_CASES,

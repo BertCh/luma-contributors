@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateRecipeBoundary, getRecipeView as getOrCreateView} from './expansion-recipe-utils';
+import {validateRecipeBoundary, getRecipeView as getOrCreateView} from './recipe-utils';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUGroupStatistics} from '../../dataframe-analysis/group-statistics/index';
 import type {

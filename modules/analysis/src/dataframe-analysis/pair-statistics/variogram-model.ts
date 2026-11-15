@@ -79,8 +79,31 @@ const RANGE_LADDER_LENGTH = 200;
 const GOLDEN_SECTION_ITERATIONS = 60;
 const CRESSIE_PASSES = 3;
 
+/** Below 0.5 the direct Matérn correlations cancel; the positive exponential remainder is stable. */
+const MATERN_CPU_SERIES_ARGUMENT_LIMIT = 0.5;
+/** At argument 0.5 the first omitted remainder term, a^17 / 19!, is below 7e-23. */
+const MATERN_CPU_SERIES_MAXIMUM_ORDER = 18;
+
+/**
+ * e^-a * a^2 * (sum_{order=2}^infinity a^(order-2)/order! - quadraticCoefficient).
+ * The coefficient is 0 for Matérn 3/2 and 1/3 for 5/2. The remainder starts at 1/2,
+ * so neither subtraction loses the quadratic leading term of the semivariogram.
+ */
+function getMaternSmallArgumentShape(argument: number, quadraticCoefficient: number): number {
+  let term = 0.5;
+  let remainder = term;
+  for (let order = 3; order <= MATERN_CPU_SERIES_MAXIMUM_ORDER; order++) {
+    term *= argument / order;
+    remainder += term;
+  }
+  return argument * argument * Math.exp(-argument) * (remainder - quadraticCoefficient);
+}
+
 /**
  * Returns the normalized shape `shape(h / range)` in `[0, 1]` of a model family.
+ * Exponential and Gaussian shapes use expm1 to retain small lag/range values without
+ * subtracting a correlation rounded near one. Matérn shapes use a positive exponential
+ * remainder series below argument 0.5 to preserve their quadratic leading term.
  *
  * @param model Model family.
  * @param scaledDistance `h / range`, non-negative.
@@ -90,15 +113,19 @@ export function getVariogramModelShape(model: VariogramModelType, scaledDistance
     case 'spherical':
       return scaledDistance >= 1 ? 1 : 1.5 * scaledDistance - 0.5 * scaledDistance ** 3;
     case 'exponential':
-      return 1 - Math.exp(-3 * scaledDistance);
+      return -Math.expm1(-3 * scaledDistance);
     case 'gaussian':
-      return 1 - Math.exp(-3 * scaledDistance * scaledDistance);
+      return -Math.expm1(-3 * scaledDistance * scaledDistance);
     case 'matern-3/2': {
       const argument = MATERN_3_2_RANGE_FACTOR * scaledDistance;
+      if (argument < MATERN_CPU_SERIES_ARGUMENT_LIMIT)
+        return getMaternSmallArgumentShape(argument, 0);
       return 1 - (1 + argument) * Math.exp(-argument);
     }
     case 'matern-5/2': {
       const argument = MATERN_5_2_RANGE_FACTOR * scaledDistance;
+      if (argument < MATERN_CPU_SERIES_ARGUMENT_LIMIT)
+        return getMaternSmallArgumentShape(argument, 1 / 3);
       return 1 - (1 + argument + (argument * argument) / 3) * Math.exp(-argument);
     }
     default:

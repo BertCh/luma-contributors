@@ -41,7 +41,7 @@ for (const empty of [false, true]) {
         diameters: 'diameters',
         bounds: 'bounds',
         hullSizes: 'hullSizes',
-        status: {overflow: 'overflow'}
+        status: {overflow: 'overflow', groupOverflow: 'groupOverflow'}
       }
     };
     const outputs = [
@@ -52,7 +52,8 @@ for (const empty of [false, true]) {
       'diameters',
       'bounds',
       'hullSizes',
-      'overflow'
+      'overflow',
+      'groupOverflow'
     ];
     const results = [];
     for (const Operation of [GPUMinimumBoundsOperation, CPUMinimumBoundsOperation]) {
@@ -79,6 +80,7 @@ for (const empty of [false, true]) {
         else if (
           port === 'hullSizes' ||
           port === 'overflow' ||
+          port === 'groupOverflow' ||
           port === 'lines' ||
           port === 'bounds'
         )

@@ -377,7 +377,13 @@ Exact children of the six S2 root faces.
 
 ### `GPUS2CellMeasures`
 
-Unit-sphere area and perimeter of the six S2 root faces.
+Unit-sphere area and perimeter of S2 cells at levels 0–30. This compatibility API retains
+steradians/radians and its per-row status (0 valid, 1 invalid with NaN measures). It shares the
+stable local-increment arithmetic of [`GPUCellMeasures`](./operators-cells.md#gpucellgridpath-and-gpucellmeasures).
+Use `GPUCellMeasures` with `family: 's2'` for meters/kilometers, ordered edges and the common
+H3/S2/Quadbin interface; invalid rows there are zero. Both APIs accept the compile-time
+`precision: 'fp64'` option for published double-single projection and local-increment arithmetic;
+the default is `'float32'`. Output formats and the unit-sphere API's invalid statuses stay the same.
 
 {/* lens:GPUS2CellMeasures */}
 

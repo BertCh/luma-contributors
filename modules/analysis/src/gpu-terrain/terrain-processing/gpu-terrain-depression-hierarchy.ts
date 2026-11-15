@@ -17,6 +17,9 @@ import {
 } from '../../raster-analysis/raster-band-utils';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
+  validateMaximumCount,
+  validateGPUStorageBindingByteLength,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -31,6 +34,8 @@ import {
   FIXED_POINT_WGSL,
   getFixedPointHeadroomBits
 } from '../../analysis-core/kernels/fixed-point-accumulator';
+import {getBoundedMergeTreeSpliceRoundCount} from '../../analysis-core/kernels/parallel-merge-tree';
+import {createTerrainDepressionActivationNodes} from './terrain-depression-activation';
 import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {
   checkTerrainViews,
@@ -43,6 +48,11 @@ import {
   validateTerrainValidityView,
   TERRAIN_FINITE_WGSL
 } from './terrain-processing-utils';
+
+// The reconstruction forest has nine nodes per cell and two child slots per node, indexed by u32.
+const MAXIMUM_ACTIVATION_CELL_COUNT = Math.floor(0xffffffff / 18);
+// Published radix sort and scan have no public node estimate. This allowance covers their passes.
+const ACTIVATION_PRIMITIVE_NODE_ALLOWANCE = 256;
 
 export type GPUTerrainDepressionHierarchyProps = {
   id?: string;
@@ -107,14 +117,26 @@ function getOutputViews(output: GPUTerrainDepressionHierarchyProps['output']): G
 
 /**
  * Stable GPU-sorted sublevel-set merge tree with compressed component roots and linear stage reductions.
- * The merge-tree build is serial (one GPU invocation walks the sorted cells with union-find), so its
- * time grows linearly with cell count; very large grids can approach GPU watchdog limits.
+ * Activation builds a ranked-edge forest in parallel, contracts each activation's edges, and skips
+ * single-child activations. Compact IDs, ownership and ties match the stable serial activation.
+ * Stage curves retain fixed-order reductions. Grid shape, capacities and stage count are compile-time.
  */
 export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUTerrainDepressionHierarchyProps) {
     this.id = props.id ?? 'terrain-depression-hierarchy';
     const count = validateRasterGrid(this.id, props.grid);
+    validateMaximumCount(this.id, 'grid cell count', count, MAXIMUM_ACTIVATION_CELL_COUNT);
+    // Bounded splicing, three gated jump tables (edge contraction and two cell-sized passes),
+    // and fixed passes. The splice round bound guarantees completion for every lane schedule.
+    this.estimatedCommandNodeCount =
+      ACTIVATION_PRIMITIVE_NODE_ALLOWANCE +
+      30 +
+      2 * getBoundedMergeTreeSpliceRoundCount(count * 9) +
+      3 * (Math.ceil(Math.log2(count * 9)) + 1) +
+      6 * (Math.ceil(Math.log2(count)) + 1);
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateRasterCellSizeMode(this.id, props.cellSizeMode);
     validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);
     validateViewLength(this.id, 'elevation', props.elevation, count);
@@ -157,6 +179,14 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
       props.stages,
       ...getOutputViews(props.output)
     ]);
+    // The binary reconstruction forest's child table is the largest activation scratch binding.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'activation scratch',
+      count * 18 * 4,
+      'reduce grid dimensions'
+    );
     const masked = createTerrainValidityMask(graph, {
       id,
       operation: 'GPUTerrainDepressionHierarchy',
@@ -166,7 +196,6 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
     const elevation = masked.values;
     const isUniform = (props.cellSizeMode ?? 'uniform') === 'uniform';
     // Full internal capacity keeps required counts exact even when caller output is too small.
-    const labels = createTransientView(graph, `${id}-labels`, 'uint32', count * 2);
     const tree = createTransientView(graph, `${id}-tree`, 'uint32', count * 4);
     const levels = createTransientView(graph, `${id}-levels`, 'float32', count * 2);
     const keys = createTransientView(graph, `${id}-keys`, 'uint32', count);
@@ -192,7 +221,6 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
     );
     // A cell enters each curve value of its owner and of every ancestor at most once.
     const headroomBits = getFixedPointHeadroomBits(count);
-    const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [
       ...masked.nodes,
       createWGSLKernelNode(graph, {
@@ -217,61 +245,13 @@ cells[cellsOffset + index] = index;`
         outputKeys: sortedKeys,
         outputValues: sortedCells
       }).getCommandNodes(graph),
-      createWGSLKernelNode(graph, {
-        id: `${id}-build`,
-        operation: 'GPUTerrainDepressionHierarchy',
-        invocationCount: 1,
-        declarations,
-        bindings: [
-          terrainBinding('elevation', elevation),
-          terrainBinding('outlets', props.outlets),
-          terrainBinding('labels', labels, 'read_write'),
-          terrainBinding('tree', tree, 'read_write'),
-          terrainBinding('levels', levels, 'read_write'),
-          terrainBinding('ownership', props.output.cellNodes, 'read_write'),
-          terrainBinding('status', props.output.status, 'read_write'),
-          terrainBinding('order', sortedCells)
-        ],
-        body: `for (var cell = 0u; cell < ${count}u; cell++) { labels[labelsOffset + cell] = NO_CELL; ownership[ownershipOffset + cell] = NO_CELL; }
-var nodeCount = 0u;
-for (var iteration = 0u; iteration < ${count}u; iteration++) {
- let selected = order[orderOffset + iteration];
- let selectedHeight = elevation[elevationOffset + selected];
- if (!isFiniteValue(selectedHeight)) { break; }
- var neighbors: array<u32, 8>; var neighborCount = 0u;
- for (var direction = 0u; direction < 8u; direction++) {
-  let cell = getFlowReceiver(selected, 1u << direction); if (cell == NO_CELL) { continue; }
-  var label = labels[labelsOffset + cell]; if (label == NO_CELL) { continue; }
-  // Disjoint-set links can be compressed independently of historical hierarchy parents.
-  var root = label;
-  while (labels[labelsOffset + ${count}u + root] != root) { root = labels[labelsOffset + ${count}u + root]; }
-  while (label != root) { let next = labels[labelsOffset + ${count}u + label]; labels[labelsOffset + ${count}u + label] = root; label = next; }
-  labels[labelsOffset + cell] = root; label = root;
-  var found = false; for (var entry = 0u; entry < neighborCount; entry++) { found = found || neighbors[entry] == label; }
-  if (!found) { neighbors[neighborCount] = label; neighborCount++; }
- }
- var destination = NO_CELL;
- if (neighborCount == 1u) { destination = neighbors[0]; } else {
-  destination = nodeCount; nodeCount++; labels[labelsOffset + ${count}u + destination] = destination;
-  tree[treeOffset + destination * 4u] = NO_CELL;
-  tree[treeOffset + destination * 4u + 1u] = selected;
-  tree[treeOffset + destination * 4u + 2u] = NO_CELL;
-  tree[treeOffset + destination * 4u + 3u] = 1u;
-  levels[levelsOffset + destination * 2u] = selectedHeight;
-  levels[levelsOffset + destination * 2u + 1u] = infinity();
-  for (var entry = 0u; entry < neighborCount; entry++) {
-   let child = neighbors[entry]; labels[labelsOffset + ${count}u + child] = destination;
-   tree[treeOffset + child * 4u] = destination; levels[levelsOffset + child * 2u + 1u] = selectedHeight;
-   let childPit = tree[treeOffset + child * 4u + 1u]; let currentPit = tree[treeOffset + destination * 4u + 1u];
-   if (elevation[elevationOffset + childPit] < elevation[elevationOffset + currentPit] || (elevation[elevationOffset + childPit] == elevation[elevationOffset + currentPit] && childPit < currentPit)) { tree[treeOffset + destination * 4u + 1u] = childPit; }
-   tree[treeOffset + destination * 4u + 2u] = min(tree[treeOffset + destination * 4u + 2u], tree[treeOffset + child * 4u + 2u]);
-  }
-
- }
- labels[labelsOffset + selected] = destination; ownership[ownershipOffset + selected] = destination;
- if (outlets[outletsOffset + selected] != 0u) { tree[treeOffset + destination * 4u + 2u] = min(tree[treeOffset + destination * 4u + 2u], selected); }
-}
-status[statusOffset] = min(nodeCount, ${props.nodeCapacity}u); status[statusOffset + 1u] = nodeCount; status[statusOffset + 2u] = u32(nodeCount > ${props.nodeCapacity}u);`
+      ...createTerrainDepressionActivationNodes(graph, {
+        id,
+        hierarchy: props,
+        elevation,
+        sortedCells,
+        tree,
+        levels
       }),
       createWGSLKernelNode(graph, {
         id: `${id}-publish`,

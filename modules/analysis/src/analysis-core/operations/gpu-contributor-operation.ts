@@ -13,12 +13,28 @@ import type {
 import {gpuGraph} from '@luma.gl/graph/gpu-core';
 import {validateCapacity, validateRequirement} from '../kernels/gpu-contributor-utils';
 
+// The mixed executor accepts only portable 32-bit vectors, not every GPUVector memory format.
+const CONTRIBUTOR_OPERATION_FORMATS = new Set<GPUGraphVectorFormat>([
+  'float32',
+  'float32x2',
+  'float32x3',
+  'float32x4',
+  'sint32',
+  'sint32x2',
+  'sint32x3',
+  'sint32x4',
+  'uint32',
+  'uint32x2',
+  'uint32x3',
+  'uint32x4'
+]);
+
 /** Operation type shared by every {@link GPUContributorOperation}; the lowering matches on it. */
 export const GPU_CONTRIBUTOR_OPERATION_TYPE = 'analysis-contributor';
 
 /** One logical graph value a contributor operation writes. Contributor outputs are caller-sized. */
 export type GPUContributorOperationOutput = {
-  /** Name of the logical graph value. */
+  /** Non-empty name of the logical graph value. */
   value: string;
   format: GPUGraphVectorFormat;
   /** Row count of the value: at least one, or zero for a port listed in `emptyOutputPorts`. */
@@ -37,7 +53,7 @@ export type GPUContributorOperationViewGetter = <Format extends GPUGraphVectorFo
 export type GPUContributorOperationProps = {
   /** Operation ID, also the ID in messages. */
   id: string;
-  /** Logical graph values the contributor reads, by port name. */
+  /** Non-empty names of logical graph values the contributor reads, by port name. */
   inputs: Readonly<Record<string, string>>;
   /** Logical graph values the contributor writes, by port name. */
   outputs: Readonly<Record<string, GPUContributorOperationOutput>>;
@@ -65,6 +81,9 @@ export type GPUContributorOperationProps = {
  * Limits, all from the published mixed executor: every value is a `float32`, `sint32` or `uint32`
  * vector of one to four components; no textures; no value read and written by the same operation;
  * each value is one packed chunk.
+ * Graph value names, output formats and output lengths are validated at construction, before
+ * luma.gl plans the contract or the contributor is built. Zero output lengths require the port
+ * to be listed in `emptyOutputPorts`. Packed chunks are checked when views are resolved.
  *
  * The graph lowers its operations again on every run, so the contributor is built once per run.
  * A contributor that owns GPU resources (it has a `destroy()` method) is kept by the operation and
@@ -92,11 +111,28 @@ export class GPUContributorOperation implements GPUOperation {
     const inputValues = new Set(Object.values(this.inputs));
     const emptyOutputPorts = new Set(props.emptyOutputPorts ?? []);
     const outputValues = new Set<string>();
+    for (const [port, value] of Object.entries(this.inputs)) {
+      validateRequirement(
+        this.id,
+        typeof value === 'string' && value.length > 0,
+        `inputs.${port} must be a non-empty graph value name`
+      );
+    }
     for (const [port, output] of Object.entries(this.outputs)) {
       validateRequirement(
         this.id,
         !Object.hasOwn(this.inputs, port),
         `port "${port}" must not be both an input and an output`
+      );
+      validateRequirement(
+        this.id,
+        typeof output.value === 'string' && output.value.length > 0,
+        `outputs.${port}.value must be a non-empty graph value name`
+      );
+      validateRequirement(
+        this.id,
+        CONTRIBUTOR_OPERATION_FORMATS.has(output.format),
+        `outputs.${port}.format must be float32, sint32 or uint32 with one to four components`
       );
       // An output is at least one row unless the operation names it as one that may be empty.
       validateCapacity(

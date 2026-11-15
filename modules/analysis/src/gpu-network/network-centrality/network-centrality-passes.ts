@@ -707,12 +707,17 @@ const BETWEENNESS_SCALE: f32 = ${getWGSLFloatLiteral(props.betweennessScale)};`,
 
 /** Word of a batch status slot that holds the batch's zero-weight cycle flag. @internal */
 export const CENTRALITY_BATCH_ZERO_WEIGHT_CYCLE_WORD = 1;
+/** Word of a batch status slot that holds a round-limit exit. @internal */
+const CENTRALITY_BATCH_ITERATION_LIMIT_REACHED_WORD = 2;
+/** Convergence, zero-weight cycle, and round-limit exit per betweenness batch. @internal */
+export const CENTRALITY_BATCH_STATUS_WORDS = 3;
 
 /**
- * Finishes a batch's status slot (two words: converged, zero-weight cycle). Word 0, written by
+ * Finishes a batch's status slot (converged, zero-weight cycle, round-limit exit). Word 0, written by
  * the batch's reachability search, is cleared when either phase hit its round limit or the sigma
  * phase left a reached node unordered. Word 1 is set when nodes were left unordered although the
  * sigma phase did not hit its round limit, which only a cycle of zero-weight tight edges causes.
+ * Word 2 records any search, sigma or delta round-limit exit independently of cycle detection.
  * @internal
  */
 export function createCentralityBatchStatusNode<Parameters>(
@@ -722,7 +727,7 @@ export function createCentralityBatchStatusNode<Parameters>(
     state: FrontierState;
     sigmaPhase: FrontierPhase;
     deltaPhase: FrontierPhase;
-    /** The batch's two status words. */
+    /** The batch's three status words. */
     batchStatus: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
@@ -735,19 +740,23 @@ export function createCentralityBatchStatusNode<Parameters>(
       {name: 'batchStatus', view: props.batchStatus, type: 'u32', access: 'read_write'}
     ],
     invocationCount: 1,
-    body: `let sigmaTruncated = control[controlOffset + ${props.sigmaPhase.controlWordOffset + FRONTIER_CONTROL_TRUNCATED}u] != 0u;
+    body: `let searchTruncated = batchStatus[batchStatusOffset] == 0u;
+  let sigmaTruncated = control[controlOffset + ${props.sigmaPhase.controlWordOffset + FRONTIER_CONTROL_TRUNCATED}u] != 0u;
   let deltaTruncated = control[controlOffset + ${props.deltaPhase.controlWordOffset + FRONTIER_CONTROL_TRUNCATED}u] != 0u;
   let unordered = control[controlOffset + ${props.deltaPhase.controlWordOffset + FRONTIER_CONTROL_PARAMETER_0}u] != 0u;
   if (sigmaTruncated || deltaTruncated || unordered) {
     batchStatus[batchStatusOffset] = 0u;
   }
-  batchStatus[batchStatusOffset + ${CENTRALITY_BATCH_ZERO_WEIGHT_CYCLE_WORD}u] = select(0u, 1u, unordered && !sigmaTruncated);`
+  batchStatus[batchStatusOffset + ${CENTRALITY_BATCH_ZERO_WEIGHT_CYCLE_WORD}u] = select(0u, 1u, unordered && !sigmaTruncated);
+  batchStatus[batchStatusOffset + ${CENTRALITY_BATCH_ITERATION_LIMIT_REACHED_WORD}u] = select(0u, 1u, searchTruncated || sigmaTruncated || deltaTruncated);`
   });
 }
 
 /**
  * Combines the batch status slots into the one-row output flags: `converged` is the minimum of
- * the batches' word 0, `zeroWeightCycle` the maximum of their word 1. @internal
+ * the batches' word 0, `zeroWeightCycle` the maximum of their word 1, and iterationLimitReached
+ * the maximum of their independent round-limit words. Closeness-only batches use the search's
+ * convergence flag directly, since they have no cycle failure. @internal
  */
 export function createCentralityConvergedNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -757,6 +766,8 @@ export function createCentralityConvergedNode<Parameters>(
     batchStatus: GraphDataView<'uint32'>;
     converged?: GraphDataView<'uint32'>;
     zeroWeightCycle?: GraphDataView<'uint32'>;
+    iterationLimitReached?: GraphDataView<'uint32'>;
+    hasBetweenness: boolean;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -773,6 +784,14 @@ export function createCentralityConvergedNode<Parameters>(
       access: 'read_write'
     });
   }
+  if (props.iterationLimitReached) {
+    bindings.push({
+      name: 'iterationLimitReached',
+      view: props.iterationLimitReached,
+      type: 'u32',
+      access: 'read_write'
+    });
+  }
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
@@ -783,12 +802,19 @@ export function createCentralityConvergedNode<Parameters>(
 const SLOT_WORDS: u32 = ${CENTRALITY_ALIGNMENT_ELEMENTS}u;`,
     body: `var allConverged = 1u;
   var anyCycle = 0u;
+  var anyLimitReached = 0u;
   for (var batch = 0u; batch < BATCH_COUNT; batch++) {
     allConverged = min(allConverged, batchStatus[batchStatusOffset + batch * SLOT_WORDS]);
     anyCycle = max(anyCycle, batchStatus[batchStatusOffset + batch * SLOT_WORDS + ${CENTRALITY_BATCH_ZERO_WEIGHT_CYCLE_WORD}u]);
+    anyLimitReached = max(anyLimitReached, ${
+      props.hasBetweenness
+        ? `batchStatus[batchStatusOffset + batch * SLOT_WORDS + ${CENTRALITY_BATCH_ITERATION_LIMIT_REACHED_WORD}u]`
+        : '1u - batchStatus[batchStatusOffset + batch * SLOT_WORDS]'
+    });
   }
   ${props.converged ? 'converged[convergedOffset] = allConverged;' : ''}
-  ${props.zeroWeightCycle ? 'zeroWeightCycle[zeroWeightCycleOffset] = anyCycle;' : ''}`
+  ${props.zeroWeightCycle ? 'zeroWeightCycle[zeroWeightCycleOffset] = anyCycle;' : ''}
+  ${props.iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = anyLimitReached;' : ''}`
   });
 }
 

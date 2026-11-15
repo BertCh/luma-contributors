@@ -195,31 +195,6 @@ it('cross-variogram grid path accepts more than 16,384 rows and counts every pai
   }
 });
 
-it('cross-variogram dense path still rejects more than 16,384 rows', async () => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  const context = createContext(device);
-  try {
-    const rows = 16385;
-    expect(
-      () =>
-        new GPUCrossVariogram({
-          positions: context.input('float32x2', new Array(rows * 2).fill(0)),
-          values: context.input('float32', new Array(rows).fill(0)),
-          parameters: context.input('float32', [1]),
-          lagCount: 1,
-          output: {
-            semivariances: context.output('float32', 1).view,
-            pairCounts: context.output('uint32', 1).view,
-            status: context.output('uint32', 1).view
-          }
-        })
-    ).toThrow(/^cross-variogram positions length must be an integer in \[1, 16384\]$/);
-  } finally {
-    context.destroy();
-  }
-});
-
 const MARKED_CASES = [
   {name: 'homogeneous translation', extras: false, edgeCorrection: 'translation' as const},
   {name: 'types marks intensities mask, uncorrected', extras: true, edgeCorrection: 'none' as const}
@@ -236,7 +211,11 @@ for (const testCase of MARKED_CASES)
     const intensities = Array.from({length: ROWS}, () => 0.15 + random() * 0.1);
     const radiusCount = 10;
     const results = [];
-    for (const gridSize of [undefined, [12, 12] as const]) {
+    for (const traversal of [
+      {searchStructure: 'brute-force' as const},
+      {},
+      {gridSize: [12, 12] as const}
+    ]) {
       const context = createContext(device);
       try {
         const statistics = context.output('float32', radiusCount * 4);
@@ -253,7 +232,7 @@ for (const testCase of MARKED_CASES)
             parameters: context.input('float32', [5, 5, 95, 90, 8, 0.1]),
             radiusCount,
             edgeCorrection: testCase.edgeCorrection,
-            gridSize,
+            ...traversal,
             output: {
               statistics: statistics.view,
               pairCounts: pairCounts.view,
@@ -271,10 +250,12 @@ for (const testCase of MARKED_CASES)
         context.destroy();
       }
     }
-    const [dense, grid] = results;
-    expect(grid.pairCounts).toEqual(dense.pairCounts);
-    expect(grid.status).toEqual(dense.status);
-    expectClose(grid.statistics, dense.statistics);
+    const [dense, ...indexed] = results;
+    for (const grid of indexed) {
+      expect(grid.pairCounts).toEqual(dense.pairCounts);
+      expect(grid.status).toEqual(dense.status);
+      expectClose(grid.statistics, dense.statistics);
+    }
     expect(dense.pairCounts[radiusCount - 1]).toBeGreaterThan(1000);
   });
 
@@ -354,6 +335,7 @@ async function runMarkedPointStatistics(
         parameters: context.input('float32', [...window, maximumRadius, 0]),
         radiusCount,
         gridSize,
+        searchStructure: gridSize ? 'grid' : 'brute-force',
         output: {statistics: statistics.view, pairCounts: pairCounts.view, status: status.view}
       })
     );

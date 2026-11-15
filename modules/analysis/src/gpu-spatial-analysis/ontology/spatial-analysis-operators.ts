@@ -48,8 +48,47 @@ const BOUNDED_STATUS = ['count', 'requiredCount', 'overflow'] as const;
  * the catalogue makes additions reviewable without importing any contributor constructor.
  */
 const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
+  GPUHierarchicalDensityClustering: {
+    inputs: ['points', 'attributes', 'parameters'],
+    outputs: ['attributes', 'summary'],
+    coordinateModels: ['planar'],
+    dimensionality: '2d+time',
+    cardinality: 'source-sized',
+    semantics: 'exact',
+    deterministic: true,
+    status: ['count'],
+    documentation: 'docs/api/gpu-spatial-analysis/space-time-clustering.md',
+    tests: `${TEST_ROOT}/spatial-clustering/space-time-hdbscan.spec.ts`,
+    contract: 'GPUHierarchicalDensityClusteringProps'
+  },
   ...KEPLER_ANALYSIS_OPERATOR_OVERRIDES,
   ...COVERAGE_EXPANSION_OPERATOR_OVERRIDES,
+  GPUGeodesicPairs: {
+    coordinateModels: ['spherical', 'ellipsoidal'],
+    dimensionality: '2d',
+    topology: 'fixed',
+    semantics: 'approximate',
+    deterministic: true,
+    status: ['converged', 'approximation', 'iterationLimitReached'],
+    evidence: 'partial',
+    tests:
+      'modules/analysis/test/gpu-spatial-analysis/geometry-measures/cr01-geodesic-envelopes.spec.ts',
+    documentation: 'modules/analysis/docs/geodesic-precision.md',
+    contract: 'GPUGeodesicPairsProps'
+  },
+  GPUGeodesicDestination: {
+    coordinateModels: ['spherical', 'ellipsoidal'],
+    dimensionality: '2d',
+    topology: 'fixed',
+    semantics: 'approximate',
+    deterministic: true,
+    status: ['converged', 'iterationLimitReached', 'approximation'],
+    evidence: 'partial',
+    tests:
+      'modules/analysis/test/gpu-spatial-analysis/geometry-measures/cr01-geodesic-envelopes.spec.ts',
+    documentation: 'modules/analysis/docs/geodesic-precision.md',
+    contract: 'GPUGeodesicDestinationProps'
+  },
   GPUNestedInterpolationValidation:
     NESTED_VALIDATION_OPERATOR_OVERRIDE.GPUNestedInterpolationValidation,
   addDasymetricRedistributionRecipe: {
@@ -123,11 +162,11 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     cardinality: 'source-sized',
     semantics: 'model-based',
     deterministic: true,
-    status: ['converged'],
+    status: ['converged', 'iterationLimitReached'],
     evidence: 'partial',
     tests:
-      'modules/analysis/test/gpu-spatial-analysis/spatial-regression/geospatial-expansion.spec.ts',
-    documentation: 'docs/api/gpu-spatial-analysis/statistical-expansion.md',
+      'modules/analysis/test/gpu-spatial-analysis/spatial-regression/generalized-gwr-selection.spec.ts',
+    documentation: 'docs/api/gpu-spatial-analysis/adaptive-generalized-gwr.md',
     contract: 'GPUGeneralizedGeographicallyWeightedRegressionProps'
   },
   GPUMultiscaleGeographicallyWeightedRegression: {

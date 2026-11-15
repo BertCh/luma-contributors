@@ -13,6 +13,9 @@ import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgs
 import {GPUOrdinaryLeastSquares} from './gpu-ordinary-least-squares';
 import {GPUSpatialErrorGM} from './gpu-spatial-error-gm';
 import {GPUSeeminglyUnrelatedRegression} from './gpu-seemingly-unrelated-regression';
+import {getRegressionTileLayout, getRowTileSumNodes} from './regression-row-tiles';
+import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
+import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} from './ordinary-least-squares-parameters';
 
 /** Spatial SUR composes the existing GM moment optimizer with a joint filtered-residual GLS. */
@@ -47,7 +50,13 @@ export function getSpatialSURNodes<Parameters>(
   const filteredResiduals = view('filtered-residuals', 'float32', equations * rows);
   const coefficients = view('filtered-coefficients', 'float32', size);
   const covariance = view('filtered-covariance', 'float32', size * size);
-  const nodes: GPUCommandNode<Parameters>[] = [];
+  const invalidWeights = view('invalid-weights', 'float32', 1);
+  const nodes: GPUCommandNode<Parameters>[] = getSpatialSURWeightValidationNodes(graph, {
+    id,
+    weights: spatial.weights,
+    rowCount: rows,
+    output: invalidWeights
+  });
   for (let equation = 0; equation < equations; equation++) {
     const predictors = slice(props.predictors, equation * rows * columns, rows * columns);
     const response = slice(props.responses, equation * rows, rows);
@@ -96,9 +105,7 @@ export function getSpatialSURNodes<Parameters>(
         variant: 'spatial-error-parameter',
         invocationCount: 1,
         bindings: [
-          {name: 'offsets', view: spatial.weights.offsets, type: 'u32', access: 'read'},
-          {name: 'neighbors', view: spatial.weights.neighbors, type: 'u32', access: 'read'},
-          {name: 'weights', view: spatial.weights.weights, type: 'f32', access: 'read'},
+          {name: 'invalidWeights', view: invalidWeights, type: 'f32', access: 'read'},
           {name: 'table', view: table, type: 'f32', access: 'read'},
           {name: 'status', view: status, type: 'u32', access: 'read_write'},
           {
@@ -110,9 +117,7 @@ export function getSpatialSURNodes<Parameters>(
         ],
         declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,
         body: `parameters[parametersOffset] = getNaN();
-for (var row = 0u; row < ${rows}u; row++) { let begin = offsets[offsetsOffset + row]; let end = offsets[offsetsOffset + row + 1u]; if (end < begin || end > ${spatial.weights.neighbors.length}u) { status[statusOffset] = 4u; return; } var total = 0.0;
-for (var slot = begin; slot < end; slot++) { let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot]; if (neighbor >= ${rows}u || neighbor == row || !isFiniteBits(weight) || weight < 0.0 || (slot > begin && neighbors[neighborsOffset + slot - 1u] >= neighbor)) { status[statusOffset] = 4u; return; } total += weight; }
-if (abs(total - 1.0) > 1e-5) { status[statusOffset] = 4u; return; } }
+if (invalidWeights[invalidWeightsOffset] != 0.0) { status[statusOffset] = 4u; return; }
 if (status[statusOffset] == 0u) { parameters[parametersOffset] = table[tableOffset + ${width * 4}u]; }`
       })
     );
@@ -223,4 +228,59 @@ if (status[statusOffset] == 0u) { parameters[parametersOffset] = table[tableOffs
     })
   );
   return nodes;
+}
+
+/** Shared strict row-standardized CSR check for every spatial SUR equation. @internal */
+export function getSpatialSURWeightValidationNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    weights: GPUSpatialWeights;
+    rowCount: number;
+    output: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters>[] {
+  const layout = getRegressionTileLayout(props.rowCount);
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    props.id,
+    'weightValidationPartial',
+    layout.tileCount * 4,
+    'reduce rowCount'
+  );
+  return getRowTileSumNodes(graph, {
+    id: `${props.id}-validate-weights`,
+    operation: 'GPUSeeminglyUnrelatedRegression',
+    variant: 'validate-spatial-weights',
+    rowCount: props.rowCount,
+    layout,
+    sumCount: 0,
+    maximumCount: 1,
+    partial: createTransientView(
+      graph,
+      `${props.id}-weight-validation-partial`,
+      'float32',
+      layout.tileCount
+    ),
+    output: props.output,
+    bindings: [
+      {name: 'offsets', view: props.weights.offsets, type: 'u32', access: 'read'},
+      {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
+      {name: 'weights', view: props.weights.weights, type: 'f32', access: 'read'}
+    ],
+    declarations: `${IS_FINITE_BITS_WGSL}
+fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+  let begin = offsets[offsetsOffset + row];
+  let end = offsets[offsetsOffset + row + 1u];
+  if (end < begin || end > ${props.weights.neighbors.length}u) { (*terms)[0] = 1.0; return; }
+  var total = 0.0;
+  for (var slot = begin; slot < end; slot++) {
+    let neighbor = neighbors[neighborsOffset + slot];
+    let weight = weights[weightsOffset + slot];
+    if (neighbor >= ROW_COUNT || neighbor == row || !isFiniteBits(weight) || weight < 0.0 || (slot > begin && neighbors[neighborsOffset + slot - 1u] >= neighbor)) { (*terms)[0] = 1.0; return; }
+    total += weight;
+  }
+  if (abs(total - 1.0) > 1e-5) { (*terms)[0] = 1.0; }
+}`
+  });
 }

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getNetworkOptimizationStatusOutputs,
+  type NetworkOptimizationStatusValues
+} from './network-optimization-status';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   GPUNetworkRationalAccess,
@@ -20,7 +24,13 @@ export type NetworkRationalAccessOperationProps = Pick<
   supply: string;
   /** float32: tau, rho, initial step, minimum step, half-life, gap tolerance. */
   parameters: string;
-  output: {assignments: string; scores: string; unservedDemand: string; status: string};
+  output: {
+    assignments: string;
+    scores: string;
+    unservedDemand: string;
+    summary: string;
+    status?: NetworkOptimizationStatusValues;
+  };
 };
 
 /** GPU rational access as a graph operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
@@ -46,7 +56,11 @@ export class GPUNetworkRationalAccessOperation extends GPUContributorOperation {
           format: 'float32',
           length: props.originCount
         },
-        status: {value: props.output.status, format: 'uint32', length: 4}
+        summary: {value: props.output.summary, format: 'uint32', length: 4},
+        ...getNetworkOptimizationStatusOutputs(
+          props.id ?? 'network-rational-access',
+          props.output.status
+        )
       },
       createContributor: getView =>
         new GPUNetworkRationalAccess({
@@ -59,7 +73,12 @@ export class GPUNetworkRationalAccessOperation extends GPUContributorOperation {
             assignments: getView<'float32'>('assignments'),
             scores: getView<'float32'>('scores'),
             unservedDemand: getView<'float32'>('unservedDemand'),
-            status: getView<'uint32'>('status')
+            summary: getView<'uint32'>('summary'),
+            status: Object.fromEntries(
+              Object.entries(props.output.status ?? {}).flatMap(([name, value]) =>
+                value === undefined ? [] : [[name, getView<'uint32'>(name)]]
+              )
+            )
           }
         })
     });

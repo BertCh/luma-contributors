@@ -20,3 +20,23 @@ export {
   GPU_COLUMN_PROFILE_STATISTIC_COUNT
 } from './column-profile-parameters';
 export type {GPUColumnProfileDomain} from './column-profile-parameters';
+
+export * from './numeric-narrowing-diagnostics';
+
+export * from './wide-numeric-gpu-aggregate';
+
+export * from './wide-numeric-gpu-decimal-aggregate';
+
+export * from './wide-numeric-gpu-decimal-reference';
+
+export * from './wide-numeric-gpu-int64-filter';
+
+export * from './wide-numeric-gpu-narrowing';
+
+export * from './wide-numeric-gpu-reference';
+
+export * from './wide-numeric-gpu-runner';
+
+export * from './wide-numeric-gpu-wgsl';
+
+export * from './gpu-wide-numeric-scan';

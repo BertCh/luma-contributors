@@ -24,11 +24,7 @@ import {
 } from '../areal-interpolation/index';
 import {GPUSpatialLag} from '../spatial-weights/index';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {
-  createRecipeKernelNode,
-  getRecipeView,
-  validateRecipeBoundary
-} from './expansion-recipe-utils';
+import {createRecipeKernelNode, getRecipeView, validateRecipeBoundary} from './recipe-utils';
 import {addRecipeCountNodes, createTransientSpatialWeights, RecipeBuilder} from './recipe-utils';
 
 type FractionalCoverage = GPURasterFractionalCoverageProps['output'];

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {SCALED_PLANAR_DISTANCE_WGSL} from '../../analysis-core/kernels/scaled-planar-distance-wgsl';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {SPATIAL_GEODESIC_MAXIMUM_ANGLE, SPATIAL_GEODESIC_WGSL} from './spatial-geodesic-wgsl';
@@ -31,6 +32,12 @@ export type SpatialPredicateSide = {
 export type SpatialDistanceMetric = {kind: 'planar'} | {kind: 'great-circle'; radius: number};
 
 const PLANAR_METRIC: SpatialDistanceMetric = {kind: 'planar'};
+
+/**
+ * Largest planar threshold using squared comparisons: 2^63 leaves room below f32 overflow for
+ * the workgroup box-pruning margin. Larger thresholds compare scaled linear distances. @internal
+ */
+export const SPATIAL_PLANAR_MAXIMUM_SQUAREABLE_DISTANCE = 2 ** 63;
 
 /** Public predicates of the join. @internal */
 export type SpatialPredicateName =
@@ -112,7 +119,8 @@ fn pointSegmentDistanceSq(p: vec2f, a: vec2f, b: vec2f) -> f32 {
   return dot(d, d);
 }`;
   return /* wgsl */ `${SPATIAL_JOIN_WGSL_HELPERS}
-${metric.kind === 'great-circle' ? SPATIAL_GEODESIC_WGSL : ''}
+const PLANAR_MAXIMUM_SQUAREABLE_DISTANCE: f32 = ${getWGSLFloatLiteral(SPATIAL_PLANAR_MAXIMUM_SQUAREABLE_DISTANCE)};
+${metric.kind === 'great-circle' ? SPATIAL_GEODESIC_WGSL : SCALED_PLANAR_DISTANCE_WGSL}
 ${orient}
 // Differs from nearest-wgsl: range test first, orient() may flag an uncertain sign.
 fn onSegment(a: vec2f, b: vec2f, q: vec2f) -> bool {
@@ -139,6 +147,16 @@ fn segmentsIntersect(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> bool {
   return onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b);
 }
 ${pointSegmentDistance}
+fn pointSegmentDistance(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+  return ${metric.kind === 'planar' ? 'getPlanarPointSegmentDistance(p, a, b)' : 'pointSegmentDistanceSq(p, a, b)'};
+}
+fn segmentDistance(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
+  if (segmentsIntersect(a, b, c, d)) { return 0.0; }
+  return min(
+    min(pointSegmentDistance(a, c, d), pointSegmentDistance(b, c, d)),
+    min(pointSegmentDistance(c, a, b), pointSegmentDistance(d, a, b))
+  );
+}
 fn segmentDistanceSq(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
   if (segmentsIntersect(a, b, c, d)) { return 0.0; }
   return min(
@@ -513,6 +531,11 @@ fn ${p}EdgesIntersect(qa: vec2f, qb: vec2f, f: u32) -> bool {
   ${forEachEdge(side, 'f', 'c', 'd', 'if (segmentsIntersect(qa, qb, c, d)) { return true; }')}
   return false;
 }
+fn ${p}MinimumDistance(qa: vec2f, qb: vec2f, f: u32) -> f32 {
+  var best = FLOAT32_MAXIMUM;
+  ${forEachEdge(side, 'f', 'c', 'd', 'best = min(best, segmentDistance(qa, qb, c, d));')}
+  return best;
+}
 fn ${p}MinimumDistanceSq(qa: vec2f, qb: vec2f, f: u32) -> f32 {
   var best = FLOAT32_MAXIMUM;
   ${forEachEdge(side, 'f', 'c', 'd', 'best = min(best, segmentDistanceSq(qa, qb, c, d));')}
@@ -526,16 +549,31 @@ function getIntersectsWGSL(left: SpatialPredicateSide, right: SpatialPredicateSi
   return `
 fn pairIntersects(l: u32, r: u32) -> bool {
   if (leftFirst(l).z == 0.0 || rightFirst(r).z == 0.0) { return false; }
-  ${forEachEdge(left, 'l', 'la', 'lb', 'if (rightEdgesIntersect(la, lb, r)) { return true; }')}
-  ${right.kind === 'polygons' ? 'if (rightLocate(leftFirst(l).xy, r) != 0u) { return true; }' : ''}
-  ${left.kind === 'polygons' ? 'if (leftLocate(rightFirst(r).xy, l) != 0u) { return true; }' : ''}
+  ${forEachEdge(
+    left,
+    'l',
+    'la',
+    'lb',
+    `if (rightEdgesIntersect(la, lb, r)) { return true; }
+    ${right.kind === 'polygons' ? 'if (rightLocate(la, r) != 0u) { return true; }' : ''}`
+  )}
+  // Every component can be contained without a boundary crossing; the first feature vertex alone
+  // cannot detect containment of a later polygon in a multipolygon.
+  ${left.kind === 'polygons' ? forEachEdge(right, 'r', 'ra', 'rb', 'if (leftLocate(ra, l) != 0u) { return true; }') : ''}
   return false;
 }`;
 }
 
-/** Declares `pairDistanceSq(left, right)`: squared distance between the closed geometries. */
+/** Declares linear and squared (central-angle for great-circle) closed-geometry distances. */
 function getDistanceWGSL(left: SpatialPredicateSide): string {
   return `
+fn pairDistance(l: u32, r: u32) -> f32 {
+  if (leftFirst(l).z == 0.0 || rightFirst(r).z == 0.0) { return FLOAT32_MAXIMUM; }
+  if (pairIntersects(l, r)) { return 0.0; }
+  var best = FLOAT32_MAXIMUM;
+  ${forEachEdge(left, 'l', 'la', 'lb', 'best = min(best, rightMinimumDistance(la, lb, r));')}
+  return best;
+}
 fn pairDistanceSq(l: u32, r: u32) -> f32 {
   if (leftFirst(l).z == 0.0 || rightFirst(r).z == 0.0) { return FLOAT32_MAXIMUM; }
   if (pairIntersects(l, r)) { return 0.0; }
@@ -675,7 +713,9 @@ export type SpatialDistanceParameter = {
  * Returns WGSL declaring `distanceLimitSq() -> f32`, the squared `dwithin` distance in f32. With a
  * number it is a compile-time constant. With a {@link SpatialDistanceParameter} it is read from the
  * bound row on every call; a negative, NaN or infinite distance gives -1, which no pair satisfies.
- * Both squares are one f32 multiply, so the two forms agree bit for bit.
+ * Planar kernels also read the unsquared `distanceLimit()` for the large-distance path. Thresholds
+ * above 2^63 return FLOAT32_MAXIMUM from `distanceLimitSq()` and compare linear distances instead,
+ * avoiding overflow. Number and view forms use the same f32 arithmetic.
  *
  * With a great-circle `metric` the distance is in meters and the function returns the central angle
  * `distance / radius` in radians instead of a square. A distance above
@@ -701,13 +741,16 @@ export function getDistanceLimitWGSL(
   return select(-1.0, angle, distance >= 0.0 && angle <= ${maximum});
 }`;
   }
-  if (typeof distance === 'number') {
-    const squared = Math.fround(Math.fround(distance) * Math.fround(distance));
-    return `fn distanceLimitSq() -> f32 { return ${getWGSLFloatLiteral(squared)}; }`;
-  }
-  return `fn distanceLimitSq() -> f32 {
-  let distance = ${distance.expression};
-  return select(-1.0, distance * distance, distance >= 0.0 && distance <= 3.4028234e38);
+  const expression =
+    typeof distance === 'number' ? getWGSLFloatLiteral(Math.fround(distance)) : distance.expression;
+  return `fn distanceLimit() -> f32 {
+  let distance = ${expression};
+  return select(-1.0, distance, distance >= 0.0 && distance <= FLOAT32_MAXIMUM);
+}
+fn distanceLimitSq() -> f32 {
+  let distance = distanceLimit();
+  if (distance > PLANAR_MAXIMUM_SQUAREABLE_DISTANCE) { return FLOAT32_MAXIMUM; }
+  return select(-1.0, distance * distance, distance >= 0.0);
 }`;
 }
 
@@ -744,7 +787,16 @@ fn pairMatches(l: u32, r: u32) -> bool { return pairContains(r, l); }`;
       predicateWGSL = `${getIntersectsWGSL(left, right)}
 ${getDistanceWGSL(left)}
 ${getDistanceLimitWGSL(distance, metric)}
-fn pairMatches(l: u32, r: u32) -> bool { return pairDistanceSq(l, r) <= distanceLimitSq(); }`;
+fn pairMatches(l: u32, r: u32) -> bool {
+  ${
+    metric.kind === 'planar'
+      ? `if (distanceLimit() > PLANAR_MAXIMUM_SQUAREABLE_DISTANCE) {
+    return pairDistance(l, r) <= distanceLimit();
+  }`
+      : ''
+  }
+  return pairDistanceSq(l, r) <= distanceLimitSq();
+}`;
       break;
     }
     default:

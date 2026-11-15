@@ -133,12 +133,10 @@ fn cellTopologyQuadbinNeighborhood(cell: vec2u, ringOnly: bool) -> u32 {
 `;
 
 /**
- * H3 neighborhoods by in-thread breadth-first search, plus parent and children helpers.
+ * H3 parent and children helpers. Neighborhoods use CELL_TOPOLOGY_NEIGHBORHOOD_WGSL.
  *
  * Concatenate after `dggs.source`, `CELL_KEY_WGSL`, `H3_NEIGHBOR_WGSL` and
  * {@link QUADBIN_TOPOLOGY_WGSL}, which declares the shared private arrays and sort. Defines:
- * - `cellTopologyH3Neighborhood(cell, ringOnly) -> u32`: exact `gridDiskDistances` (ring: distance
- *   exactly `K`) including pentagons, sorted by (distance, key).
  * - `cellTopologyH3GetChild(cell, targetResolution, depth, slot) -> vec2u`: the `slot`-th child at resolution
  *   `targetResolution = resolution(cell) + depth` in ascending key order, zero past the child count. Pentagon
  *   center chains skip digit 1, so a pentagon has `(5 * 7^depth + 1) / 6` children.
@@ -196,7 +194,11 @@ fn cellTopologyH3GetChild(cell: vec2u, targetResolution: u32, depth: u32, slot: 
   return result;
 }
 
-fn cellTopologyH3Neighborhood(cell: vec2u, ringOnly: bool) -> u32 {
+`;
+
+/** Shared bounded BFS over H3 or S2 edge steps, followed by the common row sort. @internal */
+export const CELL_TOPOLOGY_NEIGHBORHOOD_WGSL = /* wgsl */ `
+fn cellTopologyNeighborhood(cell: vec2u, ringOnly: bool) -> u32 {
   cellTopologyCells[0] = cell;
   cellTopologyDistances[0] = 0u;
   var count = 1u;
@@ -211,8 +213,8 @@ fn cellTopologyH3Neighborhood(cell: vec2u, ringOnly: bool) -> u32 {
     }
     let current = cellTopologyCells[head];
     head++;
-    for (var direction = 1u; direction <= 6u; direction++) {
-      let neighbor = cellTopologyH3Neighbor(current, direction);
+    for (var direction = 0u; direction < CELL_TOPOLOGY_NEIGHBOR_COUNT; direction++) {
+      let neighbor = cellTopologyNeighbor(current, direction);
       if (neighbor.x == 0u && neighbor.y == 0u) {
         continue;
       }

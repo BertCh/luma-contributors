@@ -204,5 +204,5 @@ it('GPUAdjacencyMatrixOrder validates and names its nodes', () => {
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('adjacency-matrix-order-identity');
   expect(ids.at(-1)).toBe('adjacency-matrix-order-scatter');
-  expect(ids).toContain('adjacency-matrix-order-gather-groups');
+  expect(ids).toContain('adjacency-matrix-order-sort-pass-1-gather');
 });

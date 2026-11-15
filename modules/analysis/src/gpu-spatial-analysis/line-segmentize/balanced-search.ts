@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {SCAN_TOTAL_WGSL} from '../../analysis-core/kernels/scan-total';
+
 /** Workgroup size of kernels that use {@link getBalancedSearchSource}. @internal */
 export const BALANCED_SEARCH_WORKGROUP_SIZE = 128;
 
@@ -24,7 +26,7 @@ export const BALANCED_SEARCH_WORKGROUP_SIZE = 128;
  * @internal
  */
 export function getBalancedSearchSource(rowCount: number): string {
-  return /* wgsl */ `
+  return /* wgsl */ `${SCAN_TOTAL_WGSL}
 const BALANCED_ROWS: u32 = ${rowCount}u;
 const BALANCED_LANES: u32 = ${BALANCED_SEARCH_WORKGROUP_SIZE}u;
 const BALANCED_NONE: u32 = 0xffffffffu;
@@ -53,7 +55,7 @@ fn findBalancedOwner(slot: u32, firstSlot: u32, lane: u32) -> u32 {
   }
   let windowLow = workgroupUniformLoad(&balancedWindow[0]);
   let windowHigh = workgroupUniformLoad(&balancedWindow[1]);
-  let total = balancedStart(BALANCED_ROWS - 1u) + balancedCount(BALANCED_ROWS - 1u);
+  let total = getSaturatedScanSum(balancedStart(BALANCED_ROWS - 1u), balancedCount(BALANCED_ROWS - 1u));
   if (slot >= total) {
     return BALANCED_NONE;
   }

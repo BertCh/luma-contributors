@@ -25,7 +25,7 @@ const PROPS: NetworkRationalAccessOperationProps = {
     assignments: 'assignments',
     scores: 'scores',
     unservedDemand: 'unserved',
-    status: 'status'
+    summary: 'summary'
   }
 };
 const INPUT = {
@@ -45,8 +45,8 @@ it('matches a hand-computed simultaneous allocation and reports an integer round
   expect(Array.from(result.assignments)).toEqual([7, 3, 0, 2]);
   expect(Array.from(result.scores)).toEqual([Math.fround(3.425), 1.25]);
   expect(Array.from(result.unservedDemand)).toEqual([0, 0]);
-  expect(Array.from(result.status.subarray(0, 3))).toEqual([1, 0, 3]);
-  expect(new Float32Array(result.status.slice(3).buffer)[0]).toBe(0.25);
+  expect(Array.from(result.summary.subarray(0, 3))).toEqual([1, 0, 3]);
+  expect(new Float32Array(result.summary.slice(3).buffer)[0]).toBe(0.25);
 });
 
 it('matches the closed-form two-facility fractional equilibrium under an absolute shift cap', () => {
@@ -66,8 +66,8 @@ it('matches the closed-form two-facility fractional equilibrium under an absolut
   );
   expect(Array.from(result.assignments)).toEqual([firstAllocation, demand - firstAllocation]);
   expect(Array.from(result.scores)).toEqual([3]);
-  expect(Array.from(result.status.subarray(0, 3))).toEqual([1, 1, 3]);
-  expect(result.status[3]).toBe(0);
+  expect(Array.from(result.summary.subarray(0, 3))).toEqual([1, 1, 3]);
+  expect(result.summary[3]).toBe(0);
 });
 
 it('applies the simultaneous inflow limit with ties-to-even and recomputes final scores', () => {
@@ -85,9 +85,9 @@ it('applies the simultaneous inflow limit with ties-to-even and recomputes final
   expect(Array.from(result.assignments)).toEqual([1, 2, 1, 2]);
   expect(Array.from(result.scores)).toEqual([Math.fround(14 / 9), Math.fround(14 / 9)]);
   expect(Array.from(result.unservedDemand)).toEqual([0, 0]);
-  expect(Array.from(result.status.subarray(0, 3))).toEqual([1, 0, 1]);
+  expect(Array.from(result.summary.subarray(0, 3))).toEqual([1, 0, 1]);
   // Final costs 2 and 4/3 give the remaining gap 2/3.
-  expect(new Float32Array(result.status.slice(3).buffer)[0]).toBe(Math.fround(2 / 3));
+  expect(new Float32Array(result.summary.slice(3).buffer)[0]).toBe(Math.fround(2 / 3));
 });
 
 it('honors travel/supply normalization, nonintegral demand and the decaying step floor', () => {
@@ -103,7 +103,7 @@ it('honors travel/supply normalization, nonintegral demand and the decaying step
   // x/6 = 1 + (10-x)/12: x=22/3 and the common cost is 11/9.
   expect(Array.from(normalized.assignments)).toEqual([Math.fround(22 / 3), Math.fround(8 / 3)]);
   expect(normalized.scores[0]).toBe(Math.fround(11 / 9));
-  expect(normalized.status[1]).toBe(1);
+  expect(normalized.summary[1]).toBe(1);
   const nonintegral = computeNetworkRationalAccessOnCPU(
     {
       costs: Float32Array.of(0, 0),
@@ -114,7 +114,7 @@ it('honors travel/supply normalization, nonintegral demand and the decaying step
     {demandMode: 'fractional', initialLimitCycles: 0}
   );
   expect(Array.from(nonintegral.assignments)).toEqual([1.25, 1.25]);
-  expect(nonintegral.status[1]).toBe(1);
+  expect(nonintegral.summary[1]).toBe(1);
   const decayed = computeNetworkRationalAccessOnCPU(
     {
       costs: Float32Array.of(0, 0),
@@ -127,8 +127,8 @@ it('honors travel/supply normalization, nonintegral demand and the decaying step
   // The fractional caps are .2, .1, .1: shifts 2, 1, 1 leave loads 6 and 4.
   expect(Array.from(decayed.assignments)).toEqual([6, 4]);
   expect(decayed.scores[0]).toBe(Math.fround(5.2));
-  expect(new Float32Array(decayed.status.slice(3).buffer)[0]).toBe(2);
-  expect(Array.from(decayed.status.subarray(0, 3))).toEqual([1, 0, 3]);
+  expect(new Float32Array(decayed.summary.slice(3).buffer)[0]).toBe(2);
+  expect(Array.from(decayed.summary.subarray(0, 3))).toEqual([1, 0, 3]);
 });
 
 it('preserves demand and missing scores for unreachable and zero-demand origins', () => {
@@ -146,15 +146,15 @@ it('preserves demand and missing scores for unreachable and zero-demand origins'
   expect(Number.isNaN(result.scores[0])).toBe(true);
   expect(Number.isNaN(result.scores[1])).toBe(true);
   expect(result.scores[2]).toBe(1.5);
-  expect(Array.from(result.status.subarray(0, 3))).toEqual([1, 0, 0]);
+  expect(Array.from(result.summary.subarray(0, 3))).toEqual([1, 0, 0]);
 });
 
-it('returns documented invalid-data status and partial initialization; rejects inconsistent arrays', () => {
+it('returns documented invalid-data summary and partial initialization; rejects inconsistent arrays', () => {
   const invalid = computeNetworkRationalAccessOnCPU({
     ...INPUT,
     costs: Float32Array.of(0, 2, NaN, 0)
   });
-  expect(Array.from(invalid.status)).toEqual([0, 0, 0, 0]);
+  expect(Array.from(invalid.summary)).toEqual([0, 0, 0, 0]);
   expect(Array.from(invalid.assignments)).toEqual([10, 0, 0, 0]);
   expect(Array.from(invalid.unservedDemand)).toEqual([0, 2]);
   for (const demand of [
@@ -162,13 +162,13 @@ it('returns documented invalid-data status and partial initialization; rejects i
     Float32Array.of(16777216, 2),
     Float32Array.of(-1, 2)
   ])
-    expect(computeNetworkRationalAccessOnCPU({...INPUT, demand}).status[0]).toBe(0);
+    expect(computeNetworkRationalAccessOnCPU({...INPUT, demand}).summary[0]).toBe(0);
   expect(
-    computeNetworkRationalAccessOnCPU({...INPUT, supply: Float32Array.of(0, 1)}).status[0]
+    computeNetworkRationalAccessOnCPU({...INPUT, supply: Float32Array.of(0, 1)}).summary[0]
   ).toBe(0);
   expect(
     computeNetworkRationalAccessOnCPU({...INPUT, parameters: Float32Array.of(0, 1, 1, 1, 1, 0)})
-      .status[0]
+      .summary[0]
   ).toBe(0);
   expect(() => computeNetworkRationalAccessOnCPU({...INPUT, costs: new Float32Array(3)})).toThrow(
     /costs/

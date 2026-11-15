@@ -37,13 +37,67 @@ a singleton block. Invalid neighbor IDs are ignored; CSR offsets must remain mon
 within capacity. Isolated nodes are separate SCCs and are not articulation points.
 
 `strongComponents` uses an exact mutual-reachability kernel with O(V²) scratch and O(V(V+E))
-work, for at most 1024 nodes and 65536 slots. Published luma.gl has no iterative strongly connected
-components, so there is no large-graph SCC here.
+work, for at most 1024 nodes and 65536 slots. For larger graphs, use
+work, for at most 1024 nodes and 65536 slots. For larger directed graphs, use
+`GPUNetworkStronglyConnectedComponents` below.
 
 The bounds of 1024 nodes and 65536 slots apply to the resilience outputs and to the
 SCC path. Resilience uses an iterative Tarjan traversal in one GPU invocation. These
 are exact bounded subgraph implementations; large-graph throughput and a lower-level generic graph
 adapter for resilience remain future optimization work.
+
+## Large-graph strongly connected components
+
+`GPUNetworkStronglyConnectedComponents` takes forward CSR `topology` and caller-owned
+`output.strongComponents` (`uint32`, one minimum vertex ID per SCC member). It uses O(V)
+scratch: GPU trimming, minimum-colour propagation and backward marking within each colour class.
+It does not require reverse adjacency. Weights are ignored, invalid neighbour IDs are skipped,
+self-loops leave singleton SCCs intact, and isolated vertices label themselves. Offsets must be
+monotone and within slot capacity; unused slots beyond the final offset are ignored.
+
+`maximumIterations` is a compile-time state-machine step budget, default 256, range 1–4096.
+`output.status` requires three distinct caller-owned single-row `uint32` views: `converged`,
+`iterationCount` (executed steps), and `iterationLimitReached`. Inspect convergence before using
+labels: an exhausted budget publishes `0xffffffff` for **every** vertex, including resolved ones,
+with `converged = 0` and `iterationLimitReached = 1`. Deep cycles, long DAGs and chains of SCCs
+may need a larger budget. Finished vertex phases are GPU dispatch-gated; there is no readback.
+All buffer shapes and the step budget are compile-time; there are no numeric per-frame props.
+
+Node and CSR slot counts must fit uint32 indexing (maximum 4294967294) and each packed binding
+must fit the device's storage binding limit. Two vertex-sized scratch columns replace the exact
+reference's quadratic reachability table. `computeNetworkStructureOnCPU({offsets, neighbors})`
+is the independent iterative Tarjan reference for the same minimum-ID label layout; it has no
+GPU step budget. The new class keeps this iterative SCC contract separate from
+`GPUNetworkStructure`'s bounded resilience outputs. The algorithm is adapted from the user's
+luma.gl fork at `e0ed33791`, independently implemented for WebGPU and inspired by cuGraph.
+## Large-graph directed components
+
+{/* lens:GPUNetworkStronglyConnectedComponents */}
+
+::lens{scenario=gpu-network.network-strongly-connected-components rung=result caption="The cycle 0↔1 shares label 0; the outgoing singleton and isolated node keep labels 2 and 3."}
+
+::lens{scenario=gpu-network.network-strongly-connected-components rung=graph caption="Follow GPU-gated trim, colour propagation, backward marking and convergence publication."}
+
+`GPUNetworkStronglyConnectedComponents` takes forward CSR `topology`; weights are ignored.
+It uses O(V) scratch and vertex-parallel outgoing-neighbour visits, with GPU gates selecting
+trim, minimum-colour propagation, backward marking and component finalization. Each exact
+component label is its minimum vertex ID. Invalid neighbors and unused CSR slots are ignored;
+isolated vertices and self-loops are supported. CSR offsets must be monotone and within capacity.
+
+Caller-owned `output.strongComponents` holds one `uint32` per vertex. All three scalar `uint32`
+views in `output.status` are required: `converged`, `iterationCount`, `iterationLimitReached`.
+`maximumIterations` is a compiled state-machine step budget (default 256, range 1–4096), not
+an edge-traversal count. Deep cycles, long chains and chains of components can exhaust it.
+On exhaustion every label is `0xffffffff`, including labels resolved earlier; `converged` is 0
+and `iterationLimitReached` is 1. Inspect status before using labels. `iterationCount` counts
+executed state-machine steps, and finished vertex passes are gated off. The graph contains
+`2 + 6 * maximumIterations` command nodes; storage bindings must fit the device. The old
+1024-vertex bound of `GPUNetworkStructure` does not apply to this contributor.
+
+The synthetic lens includes a two-node cycle, an outgoing singleton with a self-loop, an
+isolated vertex and an unused CSR slot. Its hand-derived labels are `[0, 0, 2, 3]`. This is a
+correctness illustration, not a large-graph throughput measurement. Its recorded result is
+pending the GPU capture run (`VITE_CAPTURE_LENS_RECORDS=1`); no result is fabricated here.
 
 ## Alternative routes
 

@@ -8,6 +8,7 @@ import {
   type GPUSpatialEllipsoid
 } from '../../analysis-core/contracts/spatial-context';
 import {
+  doGraphDataViewsOverlap,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -20,6 +21,9 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateFiniteNumber,
+  validateRequirement,
+  validateViewLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -34,11 +38,15 @@ import {GEODESIC_WGSL} from './geodesic-wgsl';
 import {
   getVincentyWGSL,
   GPU_GEODESIC_DEFAULT_ITERATIONS,
+  GPU_GEODESIC_MAXIMUM_ITERATIONS,
+  GPU_GEODESIC_INVERSE_ANTIPODAL_MARGIN,
   SPHERE_PAIR_WGSL,
   type GPUGeodesicModel
 } from './geodesic-kernels';
 
 const OPERATION = 'GPUGeodesicPairs';
+// WebGPU guarantees eight storage bindings per stage; reserve two for the input columns.
+const MAXIMUM_OUTPUT_BINDINGS = 6;
 
 /** Per-pair outputs of {@link GPUGeodesicPairs}; each optional, one row per pair. */
 export type GPUGeodesicPairsOutput = {
@@ -57,8 +65,15 @@ export type GPUGeodesicPairsOutput = {
   midpoints?: GraphDataView<'float32x2'>;
   /** Per-pair status scalars. */
   status?: {
-    /** `'wgs84'` only: `1` when Vincenty converged, `0` for near-antipodal pairs (sphere fallback). */
+    /** `'wgs84'` only: `1` when Vincenty resolved outside the antipodal exclusion;
+     * `0` for a sphere fallback, including a numerically stopped but uncertifiable inverse. */
     converged?: GraphDataView<'uint32'>;
+    /** One for an ellipsoidal sphere fallback or a spherical bearing/midpoint within
+     * 0.02 radians of an antipode. Zero does not certify arbitrary custom ellipsoids. */
+    approximation?: GraphDataView<'uint32'>;
+    /** One if Vincenty used its entire iteration budget without stopping.
+     * A singular inverse rejected before iteration reports zero. */
+    iterationLimitReached?: GraphDataView<'uint32'>;
   };
 };
 
@@ -90,8 +105,8 @@ export type GPUGeodesicPairsProps = {
  * `'sphere'` uses the shared haversine helpers, which subtract coordinates in degrees before any
  * trigonometry, so meter-scale pairs keep their precision. `'wgs84'` runs Vincenty's inverse in f32
  * with the short-line rewrites described on `getVincentyWGSL` and a compile-time iteration cap;
- * pairs that do not converge (within about 0.5 degrees of antipodal) fall back to the sphere result
- * with `converged = 0`. `'rhumb'` evaluates the Mercator-stretched closed form in `rhumb-wgsl.ts`
+ * pairs that do not converge, or lie within 0.02 radians of an antipode, fall back to the sphere
+ * result with `converged = 0` and `approximation = 1`. `'rhumb'` evaluates the Mercator-stretched closed form in `rhumb-wgsl.ts`
  * (east-west limit, antimeridian short way, latitudes clamped at 89.9999 degrees). One invocation per pair; no reductions, so results are deterministic.
  *
  * Every model takes longitude differences with `geodesicLongitudeDelta`, so a pair a few
@@ -139,27 +154,44 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
       validateSinglePackedView(view, ['float32x2'], `${id} ${name}`);
     }
     const pairCount = props.origins.length;
-    if (pairCount < 1 || props.targets.length !== pairCount) {
-      throw new Error(`${id} needs at least one pair and targets aligned with origins`);
-    }
+    validateCapacity(id, 'origins.length', pairCount);
+    validateViewLength(id, 'targets', props.targets, pairCount);
     const formats = {
       distances: 'float32',
       initialBearings: 'float32',
       finalBearings: 'float32',
       midpoints: 'float32x2',
-      'status.converged': 'uint32'
+      'status.converged': 'uint32',
+      'status.approximation': 'uint32',
+      'status.iterationLimitReached': 'uint32'
     } as const;
     validateGeodesicColumns(id, output, formats, pairCount);
-    if (output.status?.converged && this.model !== 'wgs84') {
-      throw new Error(`${id} output.status.converged requires model 'wgs84'`);
+    validateRequirement(
+      id,
+      !output.status?.converged || this.model === 'wgs84',
+      "output.status.converged requires model 'wgs84'"
+    );
+    const outputEntries = Object.entries(flattenGeodesicOutput(output)).filter(
+      (entry): entry is [string, GraphDataView] => entry[1] !== undefined
+    );
+    // Validate the entire output contract before splitting it across dispatches.
+    for (const [index, [name, view]] of outputEntries.entries()) {
+      for (const [previousName, previousView] of outputEntries.slice(0, index)) {
+        validateRequirement(
+          id,
+          !doGraphDataViewsOverlap(previousView, view),
+          `output.${name} must not overlap output.${previousName}`
+        );
+      }
     }
-    validateGraphOutputsDisjointFromInputs(id, Object.values(flattenGeodesicOutput(output)), [
-      props.origins,
-      props.targets
-    ]);
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      outputEntries.map(([, view]) => view),
+      [props.origins, props.targets]
+    );
   }
 
-  /** Returns the single per-pair node. */
+  /** Returns bounded per-pair nodes, split when optional outputs exceed eight bindings. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -177,11 +209,18 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
     const statements: string[] = [];
     const rhumb = this.model === 'rhumb';
     const add = (
-      name: Exclude<keyof GPUGeodesicPairsOutput, 'status'> | 'converged',
+      name:
+        | Exclude<keyof GPUGeodesicPairsOutput, 'status'>
+        | 'converged'
+        | 'approximation'
+        | 'iterationLimitReached',
       type: 'f32' | 'u32',
       statement: string
     ) => {
-      const view = name === 'converged' ? output.status?.converged : output[name];
+      const view =
+        name === 'converged' || name === 'approximation' || name === 'iterationLimitReached'
+          ? output.status?.[name]
+          : output[name];
       if (view) {
         bindings.push({name, view, type, access: 'read_write'});
         statements.push(statement);
@@ -206,13 +245,29 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
   midpoints[midpointsOffset + 2u * index + 1u] = midpoint.y;`
     );
     add('converged', 'u32', 'converged[convergedOffset + index] = select(0u, 1u, isConverged);');
+    add(
+      'approximation',
+      'u32',
+      'approximation[approximationOffset + index] = select(0u, 1u, isApproximation);'
+    );
+    add(
+      'iterationLimitReached',
+      'u32',
+      'iterationLimitReached[iterationLimitReachedOffset + index] = select(0u, 1u, isIterationLimitReached);'
+    );
     const wgs84 = this.model === 'wgs84';
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-pairs`,
+    const outputBindings = bindings.slice(2);
+    const outputGroups = Math.ceil(outputBindings.length / MAXIMUM_OUTPUT_BINDINGS);
+    return Array.from({length: outputGroups}, (_, groupIndex) => {
+      const firstOutput = groupIndex * MAXIMUM_OUTPUT_BINDINGS;
+      return createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-pairs${groupIndex === 0 ? '' : `-${groupIndex}`}`,
         operation: OPERATION,
         variant: this.model,
-        bindings,
+        bindings: [
+          ...bindings.slice(0, 2),
+          ...outputBindings.slice(firstOutput, firstOutput + MAXIMUM_OUTPUT_BINDINGS)
+        ],
         invocationCount: props.origins.length,
         declarations: `${GEODESIC_WGSL}
 ${wgs84 ? getVincentyWGSL(this.maximumIterations, this.ellipsoid) : ''}
@@ -232,11 +287,16 @@ const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
   var finalBearing = ${
     rhumb ? 'initialBearing' : 'sphereFinalBearingDegrees(origin, targetPosition)'
   };
+  let antipodal = GEODESIC_PI - geodesicCentralAngle(origin, targetPosition) < ${getWGSLFloatLiteral(GPU_GEODESIC_INVERSE_ANTIPODAL_MARGIN)};
+  var isApproximation = ${rhumb ? 'false' : 'antipodal'};
   var isConverged = true;
+  var isIterationLimitReached = false;
   ${
     wgs84
       ? `let inverse = vincentyInverse(origin, targetPosition);
-  isConverged = inverse.converged;
+  isConverged = inverse.converged && !antipodal;
+  isApproximation = !isConverged;
+  isIterationLimitReached = inverse.iterationLimitReached;
   if (isConverged) {
     distance = inverse.distance;
     initialBearing = inverse.initialBearing;
@@ -244,9 +304,9 @@ const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
   }`
       : ''
   }
-  ${statements.join('\n  ')}`
-      })
-    ];
+  ${statements.slice(firstOutput, firstOutput + MAXIMUM_OUTPUT_BINDINGS).join('\n  ')}`
+      });
+    });
   }
 }
 
@@ -294,13 +354,14 @@ export function validateGeodesicOptions(
   radius: number,
   maximumIterations: number
 ): void {
-  if (model !== 'sphere' && model !== 'wgs84' && model !== 'rhumb') {
-    throw new Error(`${id} model must be 'sphere', 'wgs84' or 'rhumb'`);
-  }
-  if (!Number.isFinite(radius) || radius <= 0) {
-    throw new Error(`${id} radius must be a positive finite number`);
-  }
-  validateCapacity(id, 'maximumIterations', maximumIterations, 1, 200);
+  validateRequirement(
+    id,
+    model === 'sphere' || model === 'wgs84' || model === 'rhumb',
+    "model must be 'sphere', 'wgs84' or 'rhumb'"
+  );
+  validateFiniteNumber(id, 'radius', radius);
+  validateRequirement(id, radius > 0, 'radius must be positive');
+  validateCapacity(id, 'maximumIterations', maximumIterations, 1, GPU_GEODESIC_MAXIMUM_ITERATIONS);
 }
 
 /**
@@ -308,20 +369,34 @@ export function validateGeodesicOptions(
  * for the per-row convergence flags). @internal
  */
 export function flattenGeodesicOutput(output: {
-  status?: {converged?: GraphDataView};
+  status?: {
+    converged?: GraphDataView;
+    approximation?: GraphDataView;
+    iterationLimitReached?: GraphDataView;
+  };
   [name: string]: unknown;
 }): Record<string, GraphDataView | undefined> {
   const {status, ...columns} = output;
   return {
     ...(columns as Record<string, GraphDataView | undefined>),
-    'status.converged': status?.converged
+    'status.converged': status?.converged,
+    ...(status?.approximation ? {'status.approximation': status.approximation} : {}),
+    ...(status?.iterationLimitReached
+      ? {'status.iterationLimitReached': status.iterationLimitReached}
+      : {})
   };
 }
 
 /** Validates optional per-row output columns against their formats and row count. @internal */
 export function validateGeodesicColumns(
   id: string,
-  output: {status?: {converged?: GraphDataView}} & Record<string, unknown>,
+  output: {
+    status?: {
+      converged?: GraphDataView;
+      approximation?: GraphDataView;
+      iterationLimitReached?: GraphDataView;
+    };
+  } & Record<string, unknown>,
   formats: Record<string, 'float32' | 'float32x2' | 'uint32'>,
   rowCount: number
 ): void {
@@ -331,16 +406,10 @@ export function validateGeodesicColumns(
       continue;
     }
     const format = formats[name];
-    if (!format) {
-      throw new Error(`${id} output.${name} is not a known column`);
-    }
+    validateRequirement(id, Boolean(format), `output.${name} is not a known column`);
     validateSinglePackedView(view, [format], `${id} output.${name}`);
-    if (view.length !== rowCount) {
-      throw new Error(`${id} output.${name} must hold ${rowCount} rows`);
-    }
+    validateViewLength(id, `output.${name}`, view, rowCount);
     columnCount++;
   }
-  if (columnCount === 0) {
-    throw new Error(`${id} requires at least one output column`);
-  }
+  validateRequirement(id, columnCount > 0, 'output requires at least one column');
 }

@@ -8,10 +8,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLActiveCountDispatch,
-  createWGSLKernelNode
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
 import {
   FIXED_POINT_WGSL,
@@ -28,7 +25,14 @@ import {
 } from './group-statistics-common';
 import type {GroupStructure} from './group-statistics-sort';
 
-const MOMENT_WORKGROUP_SIZE = 256;
+import {getGroupMomentTreeNodes} from './group-statistics-moment-tree';
+
+/**
+ * With at most 2^31 rows (the published sort limit), bound each scaled value below 2^31
+ * and each scaled deviation below 2^32. Cubic absolute sums then stay below 2^127, even
+ * before opposite signs cancel. Values below this exponent need no scaling.
+ */
+const MAXIMUM_SCALED_VALUE_EXPONENT = 30;
 
 /** Output views of one column that the reductions in this file write. @internal */
 export type GroupColumnReductionOutput = {
@@ -119,8 +123,7 @@ const ACCUMULATE_WORKGROUP_SIZE = 256;
  * Per-column reductions over the sorted group layout: finite counts, exact fixed-point sums and
  * means (a 96-bit accumulator with a data-derived unit for the float outputs, and the 64-bit
  * `1 / sumScale` words for `output.sums`), ordered-key extremes (integer atomics, order
- * independent), fixed-order moment sums (one
- * 256-thread workgroup per group: strided partial sums then a fixed binary tree, so bitwise
+ * independent), fixed-order moment sums (a row-parallel binary tree with logarithmic depth, so bitwise
  * reproducible), derived moments, and per-row z-scores.
  *
  * Returns the graph-owned finite-count view, which order statistics reuse.
@@ -168,11 +171,13 @@ export function getColumnReductionNodes<Parameters>(
 const SUM_SCALE_INDEX: u32 = ${FIXED_POINT_WORD_COUNT * capacity}u;
 const FIXED_POINT_HEADROOM_BITS: u32 = ${getFixedPointHeadroomBits(rowCount)}u;
 ${FIXED_POINT_WGSL}`;
-  const minimumKeys = needs.minimum ? u32('minimum-keys', capacity) : undefined;
-  const maximumKeys = needs.maximum ? u32('maximum-keys', capacity) : undefined;
   const needsMoments = needs.moments || needs.zScore;
+  // Moments also use the extremes to select a separate power-of-two scale for each group.
+  const minimumKeys = needs.minimum || needsMoments ? u32('minimum-keys', capacity) : undefined;
+  const maximumKeys = needs.maximum || needsMoments ? u32('maximum-keys', capacity) : undefined;
   const needsMeans = Boolean(output.means) || needsMoments;
-  const meanScratch = needsMoments ? f32('means', capacity) : undefined;
+  // Interleaved [mean, scaleExponent]; one binding keeps the terms kernel within eight bindings.
+  const meanScratch = needsMoments ? f32('means', 2 * capacity) : undefined;
 
   // 1. Clear accumulators.
   nodes.push(
@@ -411,7 +416,13 @@ ${sumWordsDeclarations}`,
           ...(output.counts ? [writeBinding('countsOut', output.counts)] : []),
           ...(output.sumValues ? [writeBinding('sumValuesOut', output.sumValues, 'f32')] : []),
           ...(output.means ? [writeBinding('meansOut', output.means, 'f32')] : []),
-          ...(meanScratch ? [writeBinding('meanScratch', meanScratch, 'f32')] : [])
+          ...(meanScratch && minimumKeys && maximumKeys
+            ? [
+                writeBinding('meanScratch', meanScratch, 'f32'),
+                readBinding('minimumKeys', minimumKeys),
+                readBinding('maximumKeys', maximumKeys)
+              ]
+            : [])
         ],
         invocationCount: capacity,
         declarations: `${ORDERED_KEY_WGSL}
@@ -429,7 +440,17 @@ ${sumWords ? fixedPointDeclarations : ''}`,
   ${output.sumValues ? 'sumValuesOut[sumValuesOutOffset + index] = total;' : ''}
   ${needsMeans ? `let mean = select(getNaN(), total / f32(count), count > 0u);` : ''}
   ${output.means ? 'meansOut[meansOutOffset + index] = mean;' : ''}
-  ${meanScratch ? 'meanScratch[meanScratchOffset + index] = mean;' : ''}`
+  ${
+    meanScratch
+      ? `meanScratch[meanScratchOffset + 2u * index] = mean;
+  let magnitudeBits = max(
+    bitcast<u32>(decodeOrderedKey(minimumKeys[minimumKeysOffset + index])) & 0x7fffffffu,
+    bitcast<u32>(decodeOrderedKey(maximumKeys[maximumKeysOffset + index])) & 0x7fffffffu
+  );
+  let scaleExponent = max(i32(magnitudeBits >> 23u) - 127 - ${MAXIMUM_SCALED_VALUE_EXPONENT}, 0);
+  meanScratch[meanScratchOffset + 2u * index + 1u] = f32(select(0, scaleExponent, count > 0u));`
+      : ''
+  }`
       : ''
   }`
       })
@@ -437,7 +458,7 @@ ${sumWords ? fixedPointDeclarations : ''}`,
   }
 
   // 5. Extremes (NaN for groups without finite values).
-  if (minimumKeys || maximumKeys) {
+  if (output.minimums || output.maximums) {
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finish-extremes`,
@@ -463,90 +484,17 @@ ${sumWords ? fixedPointDeclarations : ''}`,
     return {nodes, finiteCounts};
   }
 
-  // 6. Shifted power sums in fixed order, one workgroup per group. The dispatch is sized from the
-  // group total the sort stage wrote on the GPU, so unoccupied capacity launches no workgroups.
-  // Groups past the total keep unwritten `momentSums`; every reader skips groups whose finite
-  // count is zero, and those groups have a zero count.
-  //
-  // Scaling limit: one 256-lane workgroup reduces a whole group, strided over its sorted range, so
-  // a group of g rows costs about g / 256 sequential loop trips per lane while the rest of the
-  // device idles. Past roughly 2^20 rows in one group (a few thousand trips per lane, about 100
-  // times the work of an average group when thousands of groups are occupied) that group is the
-  // bottleneck. The fix is to split such groups into fixed-size row chunks with
-  // `load-balanced-for-each` and merge the chunk partials in fixed order (or reduce the sorted
-  // values with `sorted-segment-sums`' segment tree), which keeps the result deterministic.
+  // 6. Shifted power sums in a fixed binary tree over sorted row blocks. Empty groups never
+  // read momentSums: the finishing and z-score kernels test their finite count first.
   const momentSums = f32('moment-sums', 4 * capacity);
-  const momentDispatch = createWGSLActiveCountDispatch<Parameters>(graph, {
-    id: `${id}-moments-dispatch`,
-    operation,
-    count: structure.groupTotal,
-    maximumItemCount: capacity,
-    workgroupSize: MOMENT_WORKGROUP_SIZE,
-    invocationsPerItem: MOMENT_WORKGROUP_SIZE
-  });
-  nodes.push(momentDispatch.updateNode);
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-moments`,
+    ...getGroupMomentTreeNodes(graph, {
+      id,
       operation,
-      variant: 'moments',
-      bindings: [
-        readBinding('offsets', structure.offsets),
-        readBinding('permutation', structure.permutation),
-        readBinding('valueBits', valueBits),
-        readBinding('means', meanScratch, 'f32'),
-        readBinding('finiteCounts', finiteCounts),
-        writeBinding('momentSums', momentSums, 'f32')
-      ],
-      workgroupSize: MOMENT_WORKGROUP_SIZE,
-      invocationCount: capacity * MOMENT_WORKGROUP_SIZE,
-      guardIndex: false,
-      condition: momentDispatch.condition,
-      declarations: `var<workgroup> partials: array<f32, ${4 * MOMENT_WORKGROUP_SIZE}>;
-fn isFiniteBits(bits: u32) -> bool {
-  return (bits & 0x7f800000u) != 0x7f800000u;
-}`,
-      // No early return: every invocation of a workgroup must reach the barriers.
-      body: `let group = index / ${MOMENT_WORKGROUP_SIZE}u;
-  let isInRange = index < INVOCATION_COUNT;
-  var s1 = 0.0;
-  var s2 = 0.0;
-  var s3 = 0.0;
-  var s4 = 0.0;
-  if (isInRange && finiteCounts[finiteCountsOffset + group] > 0u) {
-    let begin = offsets[offsetsOffset + group];
-    let end = offsets[offsetsOffset + group + 1u];
-    let mean = means[meansOffset + group];
-    for (var position = begin + localInvocationIndex; position < end; position += ${MOMENT_WORKGROUP_SIZE}u) {
-      let bits = valueBits[valueBitsOffset + permutation[permutationOffset + position]];
-      if (isFiniteBits(bits)) {
-        let d = bitcast<f32>(bits) - mean;
-        let d2 = d * d;
-        s1 += d;
-        s2 += d2;
-        s3 += d2 * d;
-        s4 += d2 * d2;
-      }
-    }
-  }
-  partials[4u * localInvocationIndex] = s1;
-  partials[4u * localInvocationIndex + 1u] = s2;
-  partials[4u * localInvocationIndex + 2u] = s3;
-  partials[4u * localInvocationIndex + 3u] = s4;
-  workgroupBarrier();
-  for (var stride = ${MOMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
-    if (localInvocationIndex < stride) {
-      for (var component = 0u; component < 4u; component++) {
-        partials[4u * localInvocationIndex + component] += partials[4u * (localInvocationIndex + stride) + component];
-      }
-    }
-    workgroupBarrier();
-  }
-  if (isInRange && localInvocationIndex == 0u) {
-    for (var component = 0u; component < 4u; component++) {
-      momentSums[momentSumsOffset + 4u * group + component] = partials[component];
-    }
-  }`
+      structure,
+      valueBits,
+      means: meanScratch,
+      output: momentSums
     })
   );
 
@@ -639,7 +587,7 @@ fn isFiniteBits(bits: u32) -> bool {
     let delta = sums.x / f32(count);
     let runtimeZero = group >> 31u;
     let deviation = bitcast<f32>(
-      bitcast<u32>(bitcast<f32>(bits) - means[meansOffset + group]) | runtimeZero
+      bitcast<u32>(bitcast<f32>(bits) - means[meansOffset + 2u * group]) | runtimeZero
     );
     let centered = deviation - delta;
     z = select(centered / sqrt(variance), 0.0, m2 == 0.0 || !(variance > 0.0));

@@ -71,3 +71,9 @@ export const GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK = 2 ** 27;
  * 4,800 times that, which is a cylinder 100 cells across on every axis.
  */
 export const GPU_POINT_CLOUD_MAXIMUM_CHANGE_CELLS_PER_CORE = 2 ** 20;
+
+/** Each normal scale adds support, covariance and selection kernels; bound graph construction cost. */
+export const GPU_POINT_CLOUD_MAXIMUM_NORMAL_SCALE_COUNT = 32;
+
+/** Conservative upper bound for one published grid sort/build, including radix passes at uint32 lengths. */
+export const GPU_POINT_CLOUD_NORMAL_SCALE_INDEX_NODE_ALLOWANCE = 512;

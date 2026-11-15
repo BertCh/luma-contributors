@@ -2,12 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  getRasterAlgebraInputNodes,
+  getRasterAlgebraInputViews,
+  isRasterAlgebraBand,
+  validateRasterAlgebraInput
+} from './raster-algebra-input';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {validateRasterBandBelongsToGraph} from '../raster-band-utils';
 import {GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH} from './local-operations-parameters';
 import {
   getRasterAlgebraValueWGSL,
@@ -37,12 +45,14 @@ export type GPURasterArithmeticProps = {
   id?: string;
   /** Cells to evaluate. */
   cellCount: number;
-  /** First operand raster. NaN cells are nodata. */
-  a: GraphDataView<'float32'>;
+  /** Raster grid, required for published bands. Band metadata and grid shape are compile-time. */
+  grid?: GPURasterMetadata;
+  /** First operand: published band or legacy float values. */
+  a: GraphDataView<'float32'> | GPURasterBand;
   /** Optional second operand raster; the per-frame `constantB` is used when absent. */
-  b?: GraphDataView<'float32'>;
+  b?: GraphDataView<'float32'> | GPURasterBand;
   /**
-   * Optional finite sentinel treated as nodata in the `a` and `b` rasters. It never applies to the
+   * Optional finite sentinel for legacy values. Bands use their own sentinel, validity and calibration. It never applies to the
    * per-frame `constantB`: `maximum(a, 0)` with `noDataValue: 0` is defined wherever `a` is.
    */
   noDataValue?: number;
@@ -84,8 +94,8 @@ export class GPURasterArithmetic implements GPUCommandNodeProducer {
     if (!props.a) {
       throw new Error(`${id} needs a`);
     }
-    validateRasterAlgebraView(id, 'a', props.a, 'float32', cellCount);
-    validateRasterAlgebraView(id, 'b', props.b, 'float32', cellCount);
+    validateRasterAlgebraInput(id, 'a', props.a, props.grid, cellCount);
+    if (props.b) validateRasterAlgebraInput(id, 'b', props.b, props.grid, cellCount);
     validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', cellCount);
     validateRasterAlgebraView(
       id,
@@ -101,7 +111,12 @@ export class GPURasterArithmetic implements GPUCommandNodeProducer {
     validateRasterAlgebraAliasing(
       id,
       [output.values],
-      [props.a, props.b, props.mask, props.parameters]
+      [
+        ...getRasterAlgebraInputViews(props.a),
+        ...getRasterAlgebraInputViews(props.b),
+        props.mask,
+        props.parameters
+      ]
     );
   }
 
@@ -111,15 +126,27 @@ export class GPURasterArithmetic implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     validateRasterAlgebraGraph(id, graph, [
-      props.a,
-      props.b,
+      ...getRasterAlgebraInputViews(props.a),
+      ...getRasterAlgebraInputViews(props.b),
       props.mask,
       props.parameters,
       props.output.values
     ]);
+    // Buffer-view checks above do not include textures. Validate both before either conversion
+    // allocates scratch, so a rejected operand leaves the graph available for a corrected retry.
+    for (const input of [props.a, props.b]) {
+      if (input && isRasterAlgebraBand(input))
+        validateRasterBandBelongsToGraph(id, graph, input, []);
+    }
+    const aSource = getRasterAlgebraInputNodes(graph, `${id}-a`, props.a, props.grid);
+    const bSource = props.b
+      ? getRasterAlgebraInputNodes(graph, `${id}-b`, props.b, props.grid)
+      : undefined;
     const bindings: WGSLKernelBinding[] = [
-      {name: 'aValues', view: props.a, type: 'f32', access: 'read'},
-      ...(props.b ? [{name: 'bValues', view: props.b, type: 'f32', access: 'read'} as const] : []),
+      {name: 'aValues', view: aSource.values, type: 'f32', access: 'read'},
+      ...(props.b
+        ? [{name: 'bValues', view: bSource!.values, type: 'f32', access: 'read'} as const]
+        : []),
       ...(props.mask
         ? [{name: 'mask', view: props.mask, type: 'u32', access: 'read'} as const]
         : []),
@@ -127,6 +154,8 @@ export class GPURasterArithmetic implements GPUCommandNodeProducer {
       {name: 'valuesOut', view: props.output.values, type: 'f32', access: 'read_write'}
     ];
     return [
+      ...aSource.nodes,
+      ...(bSource?.nodes ?? []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-evaluate`,
         operation: OPERATION,
@@ -148,8 +177,8 @@ fn getPower(base: f32, exponent: f32) -> f32 {
   let bRaw = ${props.b ? 'bValues[bValuesOffset + index]' : 'params[paramsOffset + 5u]'};
   let isUnary = operation >= 16u;
   // The sentinel marks raster cells only; a constant second operand that equals it is a value.
-  let bMissing = ${props.b ? 'isNoDataValue(bRaw)' : 'isNaNValue(bRaw)'};
-  let isDefined = !isNoDataValue(aRaw) && (isUnary || !bMissing)${props.mask ? ' && mask[maskOffset + index] != 0u' : ''};
+  let bMissing = ${props.b ? `${isRasterAlgebraBand(props.b) ? 'isNaNValue' : 'isNoDataValue'}(bRaw)` : 'isNaNValue(bRaw)'};
+  let isDefined = !${isRasterAlgebraBand(props.a) ? 'isNaNValue' : 'isNoDataValue'}(aRaw) && (isUnary || !bMissing)${props.mask ? ' && mask[maskOffset + index] != 0u' : ''};
   let a = aRaw * params[paramsOffset + 1u] + params[paramsOffset + 2u];
   let b = bRaw * params[paramsOffset + 3u] + params[paramsOffset + 4u];
   let nan = getNaN();

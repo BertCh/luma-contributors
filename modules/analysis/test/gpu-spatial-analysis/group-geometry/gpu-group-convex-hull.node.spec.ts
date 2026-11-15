@@ -121,8 +121,8 @@ it('GPUGroupConvexHull runs the extreme-point filter between the lattice and the
     'hull-extreme-ties',
     'hull-extreme-points',
     'hull-filter-rows',
-    'hull-sort-y',
-    'hull-gather-group'
+    'hull-sort-pass-0-sort',
+    'hull-sort-primary-gather'
   ].map(prefix => ids.findIndex(id => id.startsWith(prefix)));
   expect(order.every(position => position >= 0)).toBe(true);
   expect([...order].sort((left, right) => left - right)).toEqual(order);

@@ -57,6 +57,7 @@ async function runGlobal(
     rowStandardized: boolean;
     statistic: 'moran' | 'geary';
     stopAfterExceedances?: number;
+    permutationBatchSize?: number;
   }
 ) {
   const rows = options.values.length;
@@ -135,6 +136,7 @@ async function runGlobal(
       statistic: options.statistic,
       maximumPermutations,
       stopAfterExceedances: options.stopAfterExceedances,
+      permutationBatchSize: options.permutationBatchSize,
       output: {
         summary: importGraphBuffer(graph, 'summary', outputs.summary, 'float32', R.length),
         referenceDistribution: importGraphBuffer(
@@ -192,6 +194,17 @@ it('stopAfterExceedances is invariant to the chunk (tile) size of the weights', 
           stopAfterExceedances: 12,
           chunkRowCounts: plan.map(chunk => chunk.rowCount)
         });
+        const materialized = await runGlobal(device, {
+          values,
+          weights,
+          rowStandardized,
+          statistic,
+          stopAfterExceedances: 12,
+          permutationBatchSize: 3,
+          chunkRowCounts: plan.map(chunk => chunk.rowCount)
+        });
+        expect(materialized.summary).toEqual(chunked.summary);
+        expect(materialized.reference).toEqual(chunked.reference);
         const label = `${statistic} ${rowStandardized} chunks=${plan.length}`;
         expect(chunked.summary[R.permutationCount], label).toBe(whole.summary[R.permutationCount]);
         expect(chunked.summary[R.exceedances], label).toBe(whole.summary[R.exceedances]);

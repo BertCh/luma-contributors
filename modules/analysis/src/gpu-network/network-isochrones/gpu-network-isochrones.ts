@@ -13,11 +13,13 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createFillNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
+  getCoreDefaultBuffer,
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
@@ -199,6 +201,12 @@ export type GPUNetworkIsochronesOutput = {
      * (the caller's costs carry their own status).
      */
     converged?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row complement of converged: 1 when the search exhausted a cost or label
+     * round budget, otherwise 0. May be requested alone; requires startNodes. Search incumbents
+     * and their derived geometry are still published on a budget exit.
+     */
+    iterationLimitReached?: GraphDataView<'uint32'>;
   };
 };
 
@@ -414,15 +422,14 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
         validateCapacity(id, 'startCount', props.startCount, 0, props.startNodes.length);
       }
     }
-    if (props.output?.status?.converged) {
-      validateSinglePackedView(
-        props.output.status.converged,
-        ['uint32'],
-        `${id} output.status.converged`
+    for (const [name, view] of Object.entries(props.output?.status ?? {})) {
+      if (!view) continue;
+      validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
+      validateRequirement(
+        id,
+        view.length === 1,
+        `output.status.${name} must contain exactly one row`
       );
-      if (props.output.status.converged.length !== 1) {
-        throw new Error(`${id} output.status.converged must contain exactly one row`);
-      }
     }
     if (props.assignments) {
       validateSinglePackedView(props.assignments, ['uint32'], `${id} assignments`);
@@ -542,19 +549,39 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       props.costLimit,
       ...(props.startNodes ? [] : [props.costs, props.assignments])
     ];
-    validateGraphOutputsDisjointFromInputs(
-      id,
-      [
-        ...(props.startNodes ? [props.costs, props.assignments] : []),
-        cellOutline?.cellFacilities,
-        ...collectGraphViews(raster?.output),
-        ...collectGraphViews(cellOutline?.output),
-        ...getRingOutputViews(cellOutline?.rings?.output),
-        ...getRingOutputViews(raster?.rings?.output),
-        ...collectGraphViews(cellOutline?.table)
-      ],
-      inputs
+    const geometryOutputs = [
+      ...(props.startNodes ? [props.costs, props.assignments] : []),
+      cellOutline?.cellFacilities,
+      ...collectGraphViews(raster?.output),
+      ...collectGraphViews(cellOutline?.output),
+      ...getRingOutputViews(cellOutline?.rings?.output),
+      ...getRingOutputViews(raster?.rings?.output),
+      ...collectGraphViews(cellOutline?.table)
+    ];
+    const searchStatus = Object.values(props.output?.status ?? {}).filter(
+      view => view !== undefined
     );
+    const searchStatusBuffers = searchStatus.map(view =>
+      view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
+    );
+    const reservedBuffers = new Set(
+      [...inputs, ...geometryOutputs]
+        .filter(view => view !== undefined)
+        .map(view =>
+          view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
+        )
+    );
+    validateRequirement(
+      id,
+      new Set(searchStatusBuffers).size === searchStatusBuffers.length,
+      'output.status views must use separate buffers'
+    );
+    validateRequirement(
+      id,
+      searchStatusBuffers.every(buffer => !reservedBuffers.has(buffer)),
+      'output.status views must not share buffers with inputs or geometry outputs'
+    );
+    validateGraphOutputsDisjointFromInputs(id, [...geometryOutputs, ...searchStatus], inputs);
   }
 
   /**
@@ -575,7 +602,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       props.startCosts,
       typeof props.startCount === 'object' ? props.startCount : undefined,
       props.costLimit,
-      props.output?.status?.converged,
+      ...Object.values(props.output?.status ?? {}),
       props.costBreaks,
       props.parameters,
       props.assignments,
@@ -602,7 +629,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           output: {
             assignments: props.assignments,
             costs: props.costs,
-            status: {converged: props.output?.status?.converged}
+            status: props.output?.status
           }
         }).getCommandNodes(graph)
       );
@@ -617,7 +644,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           costLimit: props.costLimit,
           maximumIterations: props.maximumIterations,
           localIterations: props.localIterations,
-          output: {costs: props.costs, status: {converged: props.output?.status?.converged}}
+          output: {costs: props.costs, status: props.output?.status}
         }).getCommandNodes(graph)
       );
     }

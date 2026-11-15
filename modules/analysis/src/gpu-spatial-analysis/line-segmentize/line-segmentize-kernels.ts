@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {SCAN_TOTAL_WGSL} from '../../analysis-core/kernels/scan-total';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {LON_LAT_RING_WGSL} from '../../analysis-core/lon-lat-ring-wgsl';
 import type {GPUStatusScalar} from '../../analysis-core/contracts/index';
@@ -973,9 +974,10 @@ export function createLineOffsetsPublishNode<Parameters>(
     variant: 'publish',
     bindings,
     invocationCount: props.lineCount + 1,
-    declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;
+    declarations: `${SCAN_TOTAL_WGSL}
+const ROW_COUNT: u32 = ${props.rowCount}u;
 const CAPACITY: u32 = ${props.capacity}u;`,
-    body: /* wgsl */ `let total = starts[startsOffset + ROW_COUNT - 1u] + counts[countsOffset + ROW_COUNT - 1u];
+    body: /* wgsl */ `let total = getSaturatedScanSum(starts[startsOffset + ROW_COUNT - 1u], counts[countsOffset + ROW_COUNT - 1u]);
   let row = ${lineRow};
   var start = total;
   if (row < ROW_COUNT) {

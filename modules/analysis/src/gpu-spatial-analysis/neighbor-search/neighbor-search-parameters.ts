@@ -113,9 +113,8 @@ export type GPUNeighborSearchSettings = {
    * `[minX, minY, maxX, maxY]` extent of the search lattice. Targets and self-join rows outside
    * it (or with non-finite coordinates) are excluded: they become isolates and never a neighbor,
    * so it must cover every target of interest (count the dropped rows with `invalidCount`). The
-   * planar queries of a cross join are not clipped by it: a query outside the bounds still finds
-   * its exact neighbors. For a
-   * great-circle search these are degrees `[minLongitude, minLatitude, maxLongitude,
+   * queries of a cross join are not clipped by it: a query outside the bounds still finds
+   * its exact neighbors (great-circle latitude must be within +-90). For a great-circle search these are degrees `[minLongitude, minLatitude, maxLongitude,
    * maxLatitude]` with a longitude span of at most 360 (`[-180, -90, 180, 90]` for the world).
    */
   bounds: readonly [number, number, number, number];

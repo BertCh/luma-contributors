@@ -9,10 +9,13 @@ import type {
   GPUAnalysisOperatorQuery,
   GPUSpatialAnalysisCapability
 } from '../spatial-analysis-ontology';
+import {FITTING_KERNEL_CAPABILITY, FITTING_KERNEL_OPERATORS} from '../fitting-kernel-catalog';
 import {ENTRY_POINT_CAPABILITIES} from './entry-point-capabilities';
 import {ENTRY_POINT_OPERATOR_DETAILS} from './entry-point-operator-details';
 import {OPERATOR_ANNOTATIONS} from './operator-annotations';
 import {SPATIOTEMPORAL_REVIEW_OPERATORS} from '../spatiotemporal-review-catalog';
+
+import {REUSED_ANALYSIS_OPERATORS} from '../reused-analysis-catalog';
 
 const DOCUMENTATION_FALLBACK = 'docs/api/analysis-catalog.md';
 
@@ -56,16 +59,19 @@ function makeEntryPointOperator(
 /** Every capability family of every entry point: the original families followed by the new ones. */
 const ALL_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] = [
   ...GPU_SPATIAL_ANALYSIS_CAPABILITIES,
-  ...ENTRY_POINT_CAPABILITIES
+  ...ENTRY_POINT_CAPABILITIES,
+  FITTING_KERNEL_CAPABILITY
 ];
 
 const ALL_OPERATORS: readonly GPUAnalysisOperator[] = [
   ...GPU_SPATIAL_ANALYSIS_OPERATORS,
+  ...REUSED_ANALYSIS_OPERATORS,
   ...ENTRY_POINT_CAPABILITIES.flatMap(capability =>
     capability.operators.map(exportName => makeEntryPointOperator(capability, exportName))
   ),
   // Operators of `gpu-spatial-analysis` added after the original 261; their families are original.
-  ...SPATIOTEMPORAL_REVIEW_OPERATORS
+  ...SPATIOTEMPORAL_REVIEW_OPERATORS,
+  ...FITTING_KERNEL_OPERATORS
 ];
 
 const OPERATOR_BY_NAME = new Map(ALL_OPERATORS.map(operator => [operator.exportName, operator]));

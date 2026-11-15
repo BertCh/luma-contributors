@@ -17,16 +17,27 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {CELL_KEY_WGSL, getCellKeyLayout, type GPUCellFamily} from '../cell-aggregation/cell-keys';
+import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
+import {
+  validateCellIndexResolution,
+  type GPUCellIndexFamily
+} from '../cell-indexing/cell-index-families';
 import type {GPUCellWordOrder} from '../cell-aggregation/gpu-cell-aggregation';
 import {H3_NEIGHBOR_WGSL} from './h3-neighbor-wgsl';
-import {H3_TOPOLOGY_WGSL, QUADBIN_TOPOLOGY_WGSL} from './cell-topology-wgsl';
+import {
+  H3_TOPOLOGY_WGSL,
+  QUADBIN_TOPOLOGY_WGSL,
+  CELL_TOPOLOGY_NEIGHBORHOOD_WGSL
+} from './cell-topology-wgsl';
+import {S2_NEIGHBORS_WGSL} from './s2-neighbor-wgsl';
+import {S2_TOPOLOGY_WGSL} from './s2-topology-wgsl';
 
 const OPERATION = 'GPUCellTopology';
 
-/** Largest `k` of a disk or ring (stride `3k(k+1)+1` for H3, `(2k+1)^2` for Quadbin). */
+/** Largest bounded neighborhood radius, shared by H3, Quadbin and S2. */
 export const GPU_CELL_TOPOLOGY_MAXIMUM_RADIUS = 8;
 
 /** Largest per-row output stride of a `children` operation. */
@@ -36,11 +47,11 @@ export const GPU_CELL_TOPOLOGY_MAXIMUM_CHILDREN_STRIDE = 4096;
  * One per-cell topology operation.
  *
  * - `disk`: cells within grid distance `k` (`gridDisk` / `gridDiskDistances`), sorted by
- *   (distance, key) ascending. Stride `3k(k+1)+1` (H3) or `(2k+1)^2` (Quadbin).
- * - `ring`: cells at grid distance exactly `k`, sorted by key. Stride `6k` (H3), `8k` (Quadbin), 1 for `k = 0`.
+ *   (distance, key) ascending. Stride `3k(k+1)+1` (H3), `(2k+1)^2` (Quadbin), `2k(k+1)+1` (S2).
+ * - `ring`: cells at grid distance exactly `k`, sorted by key. Stride `6k` (H3), `8k` (Quadbin), `4k` (S2), 1 for `k = 0`.
  * - `parent`: the ancestor at `resolution`; stride 1. Input cells coarser than `resolution` give zero.
  * - `children`: all descendants at `resolution` of cells at exactly `inputResolution`, ascending
- *   key order (`cellToChildren`). Stride `4^d` (Quadbin) or `7^d` (H3) for `d = resolution - inputResolution`,
+ *   key order (`cellToChildren`). Stride `4^d` (Quadbin/S2) or `7^d` (H3) for `d = resolution - inputResolution`,
  *   at most {@link GPU_CELL_TOPOLOGY_MAXIMUM_CHILDREN_STRIDE}. Pentagons have fewer children
  *   (`(5 * 7^d + 1) / 6`), padded with zeros. Input cells at another resolution give zero rows.
  *
@@ -48,7 +59,9 @@ export const GPU_CELL_TOPOLOGY_MAXIMUM_CHILDREN_STRIDE = 4096;
  * antimeridian, rows do not (tiles outside `[0, 2^z)` are dropped), so a neighborhood near a pole
  * is clipped. When the wrap makes the square overlap itself at tiny zoom, every tile appears once
  * at its smallest circular distance. H3 distance is the grid distance of `gridDiskDistances`,
- * exact across faces and pentagons.
+ * exact across faces and pentagons. S2 distance counts steps over its four edge neighbors,
+ * including cube-face transitions; diagonal contacts are not steps. Its disk and ring strides
+ * bound the flat square-grid sizes: cube corners reduce the number of reachable cells.
  */
 export type GPUCellTopologyOperation =
   | {type: 'disk'; k: number}
@@ -76,7 +89,7 @@ export type GPUCellTopologyProps = {
   /** Prefix for generated node IDs. Defaults to `'cell-topology'`. */
   id?: string;
   /** Cell family. */
-  family: GPUCellFamily;
+  family: Extract<GPUCellIndexFamily, 'quadbin' | 'h3' | 's2'>;
   /** Operation, fixing the output stride. */
   operation: GPUCellTopologyOperation;
   /** Input `uint32x2` cell keys. Zero or invalid keys produce zero rows. */
@@ -100,9 +113,14 @@ function getH3DiskSize(k: number): number {
  * @throws if `k`, resolutions or the stride are out of range.
  */
 export function getCellTopologyStride(
-  family: GPUCellFamily,
+  family: Extract<GPUCellIndexFamily, 'quadbin' | 'h3' | 's2'>,
   operation: GPUCellTopologyOperation
 ): number {
+  validateRequirement(
+    'GPUCellTopology',
+    ['quadbin', 'h3', 's2'].includes(family),
+    "family must be 'quadbin', 'h3' or 's2'"
+  );
   if (operation.type === 'disk' || operation.type === 'ring') {
     const {k} = operation;
     if (!Number.isInteger(k) || k < 0 || k > GPU_CELL_TOPOLOGY_MAXIMUM_RADIUS) {
@@ -111,15 +129,19 @@ export function getCellTopologyStride(
       );
     }
     if (operation.type === 'disk') {
-      return family === 'h3' ? getH3DiskSize(k) : (2 * k + 1) ** 2;
+      return family === 'h3'
+        ? getH3DiskSize(k)
+        : family === 's2'
+          ? 2 * k * (k + 1) + 1
+          : (2 * k + 1) ** 2;
     }
-    return k === 0 ? 1 : (family === 'h3' ? 6 : 8) * k;
+    return k === 0 ? 1 : (family === 'h3' ? 6 : family === 's2' ? 4 : 8) * k;
   }
-  getCellKeyLayout(family, operation.resolution);
+  validateCellIndexResolution('GPUCellTopology', family, operation.resolution);
   if (operation.type === 'parent') {
     return 1;
   }
-  getCellKeyLayout(family, operation.inputResolution);
+  validateCellIndexResolution('GPUCellTopology', family, operation.inputResolution);
   const depth = operation.resolution - operation.inputResolution;
   if (depth < 0) {
     throw new Error('children resolution must not be below inputResolution');
@@ -134,7 +156,7 @@ export function getCellTopologyStride(
 }
 
 /**
- * Per-cell fixed fan-out topology of Quadbin and H3 cells: `gridDisk`, `gridDiskDistances`,
+ * Per-cell fixed fan-out topology of Quadbin, H3 and S2 cells: `gridDisk`, `gridDiskDistances`,
  * `gridRing`, `cellToParent` and `cellToChildren`.
  *
  * One kernel; each output row `i` occupies entries `[i * stride, (i + 1) * stride)` of the output
@@ -142,7 +164,9 @@ export function getCellTopologyStride(
  * input cells produce all-zero rows with count 0. H3 disks and rings run a bounded breadth-first
  * search over {@link H3_NEIGHBOR_WGSL} in private arrays, so they are exact across icosahedron
  * faces and pentagons; use `k <= 8`. Everything is integer arithmetic, so results are identical
- * on every device and equal the h3-js and BigInt Quadbin references.
+ * on every device and equal the h3-js and BigInt Quadbin references. S2 uses the same bounded
+ * breadth-first search over four exact integer edge steps; parents and multi-level children
+ * are exact at levels 0–30, with children in ascending Hilbert-key order.
  *
  * Consumes cell keys only, so it takes no `spatialContext`.
  */
@@ -158,9 +182,16 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
     this.id = props.id ?? 'cell-topology';
     this.props = props;
     const id = this.id;
-    if (props.family !== 'quadbin' && props.family !== 'h3') {
-      throw new Error(`${id} family must be 'quadbin' or 'h3'`);
-    }
+    validateRequirement(
+      id,
+      ['quadbin', 'h3', 's2'].includes(props.family),
+      "family must be 'quadbin', 'h3' or 's2'"
+    );
+    validateRequirement(
+      id,
+      props.wordOrder === undefined || ['little-endian', 'high-low'].includes(props.wordOrder),
+      "wordOrder must be 'little-endian' or 'high-low'"
+    );
     try {
       this.stride = getCellTopologyStride(props.family, props.operation);
     } catch (error) {
@@ -221,6 +252,7 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
       'reduce the rows or the disk k'
     );
     const isH3 = family === 'h3';
+    const isS2 = family === 's2';
     const bindings: WGSLKernelBinding[] = [
       {name: 'cells', view: props.cells, type: 'u32', access: 'read'},
       ...(props.mask
@@ -255,8 +287,16 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
     const inputResolution = operation.type === 'children' ? operation.inputResolution : 0;
     const depth = operation.type === 'children' ? operation.resolution - inputResolution : 0;
 
-    const resolutionOf = isH3 ? 'dggs_h3_get_resolution(key)' : '((key.x >> 20u) & 0x1fu)';
-    const validity = isH3 ? 'dggs_h3_is_valid_cell_id(key)' : 'cellIsValidQuadbin(key)';
+    const resolutionOf = isH3
+      ? 'dggs_h3_get_resolution(key)'
+      : isS2
+        ? 'dggs_s2_get_level(key)'
+        : '((key.x >> 20u) & 0x1fu)';
+    const validity = isH3
+      ? 'dggs_h3_is_valid_cell_id(key)'
+      : isS2
+        ? 'dggs_s2_is_valid_cell_id(key)'
+        : 'cellIsValidQuadbin(key)';
     let resolutionCheck = 'true';
     if (operation.type === 'parent') {
       resolutionCheck = `${resolutionOf} >= TARGET_RESOLUTION`;
@@ -278,7 +318,7 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
       body = `${readRow('index')}
   var written = 0u;
   if (isValid) {
-    written = ${isH3 ? 'cellTopologyH3Neighborhood' : 'cellTopologyQuadbinNeighborhood'}(key, ${operation.type === 'ring'});
+    written = ${isH3 || isS2 ? 'cellTopologyNeighborhood' : 'cellTopologyQuadbinNeighborhood'}(key, ${operation.type === 'ring'});
   }
   for (var j = 0u; j < STRIDE; j++) {
     let slot = index * STRIDE + j;
@@ -290,7 +330,9 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
     } else if (operation.type === 'parent') {
       const parent = isH3
         ? 'dggs_h3_get_parent(key, TARGET_RESOLUTION)'
-        : 'cellTopologyQuadbinGetParent(key, TARGET_RESOLUTION)';
+        : isS2
+          ? 'cellTopologyS2GetParent(key, TARGET_RESOLUTION)'
+          : 'cellTopologyQuadbinGetParent(key, TARGET_RESOLUTION)';
       body = `${readRow('index')}
   var parent = vec2u(0u);
   if (isValid) {
@@ -300,7 +342,9 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
     } else {
       const child = isH3
         ? 'cellTopologyH3GetChild(key, TARGET_RESOLUTION, DEPTH, slotInRow)'
-        : 'cellTopologyQuadbinGetChild(key, TARGET_RESOLUTION, DEPTH, slotInRow)';
+        : isS2
+          ? 'cellTopologyS2GetChild(key, TARGET_RESOLUTION, DEPTH, slotInRow)'
+          : 'cellTopologyQuadbinGetChild(key, TARGET_RESOLUTION, DEPTH, slotInRow)';
       const count = isH3 ? 'cellTopologyH3GetChildCount(key, DEPTH)' : 'STRIDE';
       body = `let row = index / STRIDE;
   let slotInRow = index % STRIDE;${readRow('row')}
@@ -324,11 +368,22 @@ const CELL_TOPOLOGY_CAPACITY: u32 = ${capacity}u;
 const TARGET_RESOLUTION: u32 = ${targetResolution}u;
 const INPUT_RESOLUTION: u32 = ${inputResolution}u;
 const DEPTH: u32 = ${depth}u;
-${isH3 ? dggs.source : ''}
+${isH3 || isS2 ? dggs.source : ''}
 ${CELL_KEY_WGSL}
 ${isH3 ? H3_NEIGHBOR_WGSL : ''}
 ${QUADBIN_TOPOLOGY_WGSL}
-${isH3 ? H3_TOPOLOGY_WGSL : ''}`,
+${isH3 ? H3_TOPOLOGY_WGSL : ''}
+${isS2 ? `${S2_NEIGHBORS_WGSL}\n${S2_TOPOLOGY_WGSL}` : ''}
+${
+  isH3 || isS2
+    ? `
+const CELL_TOPOLOGY_NEIGHBOR_COUNT: u32 = ${isH3 ? 6 : 4}u;
+fn cellTopologyNeighbor(cell: vec2u, direction: u32) -> vec2u {
+  return ${isH3 ? 'cellTopologyH3Neighbor(cell, direction + 1u)' : 's2Neighbor(cell, direction)'};
+}
+${CELL_TOPOLOGY_NEIGHBORHOOD_WGSL}`
+    : ''
+}`,
         body
       })
     ];

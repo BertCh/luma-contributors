@@ -12,12 +12,14 @@ import {GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH} from '../../../src/gpu-spatial-
 import {GPUSpaceTimeKriging} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-space-time-kriging';
 import {getGPULocalKrigingParameterLength} from '../../../src/gpu-spatial-analysis/spatial-interpolation/prediction-covariance';
 import {GPUVariogramModelFit} from '@luma-contributors/analysis/dataframe-analysis';
+import {GAUSSIAN_RANDOM_FIELD_KERNEL_CASES} from './cases-gaussian-random-field';
 import type {KernelAuditCase} from './kernel-audit-context';
 
 const COVARIANCE = {model: 'exponential' as const, range: 1, sill: 1};
 
 /** Maximal option combinations, including all optional output bindings and bounded private arrays. */
 export const COVERAGE_INTERPOLATION_KERNEL_CASES: KernelAuditCase[] = [
+  ...GAUSSIAN_RANDOM_FIELD_KERNEL_CASES,
   ...(['simple', 'ordinary', 'universal', 'external-drift', 'co-kriging'] as const).map(
     mode =>
       ({

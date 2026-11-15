@@ -4,11 +4,11 @@
 
 import {
   createTransientView,
-  GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
 import {
   createWGSLKernelNode,
   createPublishNode,
@@ -25,7 +25,13 @@ import {
   validateRasterAlgebraView
 } from '../raster-algebra/raster-algebra-utils';
 import {validateRasterGrid} from '../raster-band-utils';
-import type {GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  getRasterAlgebraInputNodes,
+  getRasterAlgebraInputViews,
+  isRasterAlgebraBand,
+  validateRasterAlgebraInput
+} from '../raster-algebra/raster-algebra-input';
 import {GPU_ISOBANDS_PARAMETER_LENGTH} from './isobands-parameters';
 import {getIsobandsCellWGSL} from './isobands-wgsl';
 
@@ -89,20 +95,20 @@ export type GPUIsobandsStatus = {
 /**
  * Properties for {@link GPUIsobands}.
  *
- * Per-frame (no recompile): the contents of `values`, `validity`, `breaks` and `parameters` (active
+ * Per-frame (no recompile): the contents of `values`, band validity, `mask`, `breaks` and `parameters` (active
  * break count, extent, optional band window). Topology: `grid` size, `breaks.length` (the
- * maximum break count), `noDataValue`, the optional views and the output capacity.
+ * maximum break count), `noDataValue`, band metadata, the optional views and the output capacity.
  */
 export type GPUIsobandsProps = {
   /** Prefix for generated node IDs. Defaults to `'isobands'`. */
   id?: string;
   /** Raster grid: its width and height (each at least 2) size the kernels. */
   grid: GPURasterMetadata;
-  /** Packed row-major float32 raster, at least `width * height` rows. NaN and infinite samples are nodata. */
-  values: GraphDataView<'float32'>;
+  /** Published band or packed row-major float32 raster. Non-finite samples are nodata. */
+  values: GraphDataView<'float32'> | GPURasterBand;
   /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
   mask?: GraphDataView<'uint32'>;
-  /** Optional finite nodata sentinel compared exactly against sample values. */
+  /** Optional finite sentinel for legacy values only; bands use their native sentinel. */
   noDataValue?: number;
   /**
    * Break values. The view length is the compile-time maximum break count; the first
@@ -127,7 +133,7 @@ export type GPUIsobandsProps = {
  * segment partners (saddles by the bilinear decider of `GPUIsolines`), so at most two convex pieces per cell and
  * band, fan-triangulated. Every vertex is a sample position or a crossing computed exactly like
  * `GPUIsolines`, so band boundaries coincide with isolines of the same breaks. Cells with a nodata
- * corner emit nothing. Infinite sample values give unspecified geometry.
+ * corner emit nothing.
  *
  * Triangles are ordered by cell, band, piece and fan index (per-cell counts, `GPUScan`, scatter), so
  * output is deterministic. Changing breaks, `breakCount`, the extent or the band window never
@@ -141,8 +147,8 @@ export type GPUIsobandsProps = {
  * origin.
  *
  * Row direction: row 0 of the raster is placed at `minY` of the per-frame extent and rows advance
- * toward larger y. Only the width and height of `grid` are read; `grid.affine` is not, and nothing
- * is checked at construction. A north-up grid (row 0 at the top, the default of
+ * toward larger y. Placement uses only the width and height of `grid`; `grid.affine` is checked
+ * for finite values at construction but is not used for placement. A north-up grid (row 0 at the top, the default of
  * `makeGPURasterMetadata`) therefore comes out mirrored north to south unless the caller reverses
  * the row order of the raster before upload. Mirroring the output instead (`y' = minY + maxY - y`)
  * also swaps the documented side: high values are then on the right of a segment, and ring
@@ -175,7 +181,7 @@ export class GPUIsobands implements GPUCommandNodeProducer, GPURasterHaloStage {
     validateRasterAlgebraCount(id, 'grid width', width, 2, 0x7fffffff);
     validateRasterAlgebraCount(id, 'grid height', height, 2, 0x7fffffff);
     this.cellCount = (width - 1) * (height - 1);
-    validateRasterAlgebraView(id, 'values', props.values, 'float32', sampleCount);
+    validateRasterAlgebraInput(id, 'values', props.values, props.grid, sampleCount);
     validateRasterAlgebraNoData(id, props.noDataValue);
     validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', sampleCount);
     validateRasterAlgebraView(id, 'breaks', props.breaks, 'float32', 1);
@@ -284,7 +290,7 @@ export class GPUIsobands implements GPUCommandNodeProducer, GPURasterHaloStage {
     validateRasterAlgebraAliasing(
       id,
       [...writable, output.triangles, output.edges] as (GraphDataView | undefined)[],
-      [props.values, props.mask, props.breaks, props.parameters]
+      [...getRasterAlgebraInputViews(props.values), props.mask, props.breaks, props.parameters]
     );
   }
 
@@ -296,7 +302,7 @@ export class GPUIsobands implements GPUCommandNodeProducer, GPURasterHaloStage {
     const {output} = props;
     const {width, height} = props.grid;
     validateRasterAlgebraGraph(id, graph, [
-      props.values,
+      ...getRasterAlgebraInputViews(props.values),
       props.mask,
       props.breaks,
       props.parameters,
@@ -313,6 +319,7 @@ export class GPUIsobands implements GPUCommandNodeProducer, GPURasterHaloStage {
       output.status?.edgeOverflow,
       output.status?.edgeRequiredCount
     ]);
+    const source = getRasterAlgebraInputNodes(graph, `${id}-source`, props.values, props.grid);
     const noEdges = `const EMIT_EDGES: bool = false;
 fn writeEdge(index: u32, start: vec2<f32>, end: vec2<f32>, band: u32) {}`;
     const noTriangles = `fn writeTriangle(index: u32, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, band: u32) {}`;
@@ -320,17 +327,17 @@ fn writeEdge(index: u32, start: vec2<f32>, end: vec2<f32>, band: u32) {}`;
 const HEIGHT: u32 = ${height}u;
 const MAXIMUM_BREAK_COUNT: u32 = ${maximumBreakCount}u;
 const NO_DATA_CLASS: u32 = 0xffffffffu;
-${getRasterAlgebraValueWGSL(props.noDataValue)}
+${getRasterAlgebraValueWGSL(isRasterAlgebraBand(props.values) ? undefined : props.noDataValue)}
 ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`;
     const inputs: WGSLKernelBinding[] = [
-      {name: 'values', view: props.values, type: 'f32', access: 'read'},
+      {name: 'values', view: source.values, type: 'f32', access: 'read'},
       {name: 'breaks', view: props.breaks, type: 'f32', access: 'read'},
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
     ];
     if (props.mask) {
       inputs.push({name: 'validity', view: props.mask, type: 'u32', access: 'read'});
     }
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
 
     if (output.bandClasses) {
       nodes.push(
@@ -383,24 +390,13 @@ ${cellWGSL}`,
         })
       );
       nodes.push(
-        ...new GPUScan({
+        ...createSaturatedCountScanNodes<Parameters>(graph, {
           id: `${id}-scan`,
-          input: cellCounts,
-          output: cellOffsets
-        }).getCommandNodes(graph)
-      );
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-total`,
           operation: OPERATION,
-          variant: 'total',
-          bindings: [
-            {name: 'cellCountsIn', view: cellCounts, type: 'u32', access: 'read'},
-            {name: 'cellOffsets', view: cellOffsets, type: 'u32', access: 'read'},
-            {name: 'totalOut', view: total, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: 1,
-          body: `totalOut[totalOutOffset] = cellOffsets[cellOffsetsOffset + ${cellCount - 1}u] + cellCountsIn[cellCountsInOffset + ${cellCount - 1}u];`
+          counts: cellCounts,
+          offsets: cellOffsets,
+          rowCount: cellCount,
+          total: total
         })
       );
       nodes.push(
@@ -432,7 +428,8 @@ fn writeTriangle(index: u32, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, band: u32
   bandsOut[bandsOutOffset + index] = band;
 }
 ${cellWGSL}`,
-          body: 'processCell(index, true, cellOffsets[cellOffsetsOffset + index]);'
+          body: `let start = cellOffsets[cellOffsetsOffset + index];
+  if (start < CAPACITY) { processCell(index, true, start); }`
         })
       );
       nodes.push(
@@ -507,24 +504,13 @@ ${cellWGSL}`,
         })
       );
       nodes.push(
-        ...new GPUScan({
+        ...createSaturatedCountScanNodes<Parameters>(graph, {
           id: `${id}-edge-scan`,
-          input: edgeCounts,
-          output: edgeOffsets
-        }).getCommandNodes(graph)
-      );
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-edge-total`,
           operation: OPERATION,
-          variant: 'edge-total',
-          bindings: [
-            {name: 'cellCountsIn', view: edgeCounts, type: 'u32', access: 'read'},
-            {name: 'cellOffsets', view: edgeOffsets, type: 'u32', access: 'read'},
-            {name: 'totalOut', view: edgeTotal, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: 1,
-          body: `totalOut[totalOutOffset] = cellOffsets[cellOffsetsOffset + ${cellCount - 1}u] + cellCountsIn[cellCountsInOffset + ${cellCount - 1}u];`
+          counts: edgeCounts,
+          offsets: edgeOffsets,
+          rowCount: cellCount,
+          total: edgeTotal
         })
       );
       nodes.push(
@@ -556,7 +542,7 @@ fn writeEdge(index: u32, start: vec2<f32>, end: vec2<f32>, band: u32) {
 }
 ${cellWGSL}`,
           body: `edgeBase = cellOffsets[cellOffsetsOffset + index];
-  processCell(index, true, 0u);`
+  if (edgeBase < EDGE_CAPACITY) { processCell(index, true, 0u); }`
         })
       );
       nodes.push(

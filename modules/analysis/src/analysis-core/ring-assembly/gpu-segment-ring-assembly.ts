@@ -18,6 +18,7 @@ import {
   type WGSLKernelBinding
 } from '../kernels/wgsl-kernel-nodes';
 import {
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -35,6 +36,7 @@ import {
 } from '../contracts/spatial-context';
 import {IS_FINITE_VALUE_WGSL} from '../kernels/wgsl-common';
 import {getRingQuantizerWGSL} from './ring-vertex-quantizer';
+import {getRingShellIndexNodes, RING_SHELL_RECORD_WORDS} from './ring-shell-index';
 import {EXACT_ORIENTATION_WGSL} from '../kernels/exact-orientation-wgsl';
 import {EXACT_GEOMETRY_WGSL, getExactRingWindingWGSL} from '../kernels/exact-geometry-wgsl';
 
@@ -51,11 +53,12 @@ const RING_LANES = 64;
 /**
  * Exact turn classification for the planar successor choice (`match` kernel).
  *
- * `ringExactTurnClass(origin, vertex, end)` places the turn from `vertex - origin` to
+ * `ringExactTurnClass(origin, vertex, end, side)` places the turn from `vertex - origin` to
  * `end - vertex` in the order of its angle toward the interior side, in (-pi, pi]: 0 for a turn
  * away from the interior side, 1 for straight on (also a zero-length incoming or outgoing
- * segment), 2 for a turn toward the interior side or a u-turn, and -1 when the exact orientation
- * cannot be certified. It agrees with the sign classes of `ringTurnKey`, so the exact order
+ * segment), 2 for a turn toward the interior side or a u-turn. The caller supplies `side` through
+ * its single `exactOrientSigns` call chain and disables exact choice when it cannot be certified.
+ * It agrees with the sign classes of `ringTurnKey`, so the exact order
  * (class, then `orientSign` between two candidates of one open half-plane) is the f32 key order
  * without its rounding. The collinear case compares coordinates only.
  *
@@ -89,9 +92,8 @@ const RING_LANES = 64;
  * by the cosine of the latitude.
  */
 const RING_EXACT_TURN_WGSL = /* wgsl */ `${EXACT_ORIENTATION_WGSL}
-fn ringExactTurnClass(origin: vec2f, vertex: vec2f, end: vec2f) -> i32 {
-  let side = orientSign(origin, vertex, end);
-  if (side == 2) { return -1; }
+${EXACT_GEOMETRY_WGSL}
+fn ringExactTurnClass(origin: vec2f, vertex: vec2f, end: vec2f, side: i32) -> i32 {
   // Positive toward the interior side.
   let toward = side * SIDE_ORDER;
   if (toward < 0) { return 0; }
@@ -316,8 +318,8 @@ export type GPUSegmentRingAssemblyOutput = {
    * (exact for a planar boundary, whose rings do not cross); only shells whose boxes are equal or
    * do not nest are ordered by float32 area (smaller first, lowest index on ties). Float32 areas
    * are not otherwise used: a thin shell and its hole can have areas that round to the same value
-   * or the wrong order. Each hole tests every shell's bounding box against its own box and its
-   * probe point (eight comparisons) and walks the vertices only of shells that pass.
+   * or the wrong order. A full-coordinate Morton-sorted BVH supplies shells whose boxes contain
+   * the hole box; only those candidates receive the exact vertex walk.
    */
   ringShells?: GraphDataView<'uint32'>;
   /** Optional group label per ring (needs the `groups` input). */
@@ -469,8 +471,8 @@ export type GPUSegmentRingAssemblyProps = {
  *
  * Rings are written as GeoArrow-style `ringOffsets` plus `positions`. The exact orientation at each
  * ring's lowest vertex identifies shells and holes (library rule 1); `ringShells` assigns each hole to its innermost enclosing shell by
- * ray casting a point of the hole's first edge against every shell whose bounding box contains it
- * (`holes * shells` box tests plus the vertices of the shells that pass; ring statistics give each
+ * ray casting a point of the hole's first edge against shells found through a full-coordinate Morton-sorted BVH
+ * (only nodes whose boxes contain the hole box are visited; ring statistics give each
  * lane its own ring and sum rings above 64 vertices cooperatively, so a single huge ring does not serialize them). `polygons` regroups the rings into polygon topology for
  * `GPUPointInPolygonJoin`. Output order and results are deterministic (integer atomics only).
  *
@@ -629,6 +631,30 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
     const segments = props.endpoints.length;
     const ringCapacity = output.ringOffsets.length - 1;
     const vertexCapacity = output.positions.length;
+    if (output.ringShells || output.polygons) {
+      const leafCapacity = 2 ** Math.ceil(Math.log2(ringCapacity));
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'shell records',
+        ringCapacity * RING_SHELL_RECORD_WORDS * Uint32Array.BYTES_PER_ELEMENT,
+        'reduce output.ringOffsets.length'
+      );
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'shell bounds',
+        ringCapacity * 4 * Float32Array.BYTES_PER_ELEMENT,
+        'reduce output.ringOffsets.length'
+      );
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'shell BVH nodes',
+        (2 * leafCapacity - 1) * 2 * Float32Array.BYTES_PER_ELEMENT,
+        'reduce output.ringOffsets.length'
+      );
+    }
     // Without an explicit tolerance, vertices match within 4 ulps of the frame extent (derived on
     // the GPU from the measured extent, rule 4), so separately rounded copies of one vertex meet.
     const tolerance = props.vertexTolerance ?? 0;
@@ -1049,8 +1075,33 @@ fn findReverse(index: u32) -> u32 {
         }
         let turnEnd = ringEnd(candidate);
         if (exactUsable) {
-          let turnClass = ringExactTurnClass(origin, vertex, turnEnd);
-          if (any(candidateStart != vertex) || turnClass < 0) {
+          // Both exact decisions share one call chain. The second sign is evaluated only when
+          // the classes tie, preserving the original uncertainty and fallback choices.
+          var turnClass = -1;
+          var candidateSide = 0;
+          var orientationStep = 0u;
+          loop {
+            var signStart = origin;
+            var signEnd = vertex;
+            var signPoint = turnEnd;
+            if (orientationStep == 1u) {
+              signStart = vertex;
+              signEnd = turnEnd;
+              signPoint = exactBestEnd;
+            }
+            let exact = exactOrientSigns(
+              1u,
+              array<vec2f, 4>(signStart, vec2f(0.0), vec2f(0.0), vec2f(0.0)),
+              array<vec2f, 4>(signEnd, vec2f(0.0), vec2f(0.0), vec2f(0.0)),
+              array<vec2f, 4>(signPoint, vec2f(0.0), vec2f(0.0), vec2f(0.0))
+            );
+            if (exact.uncertain) { exactUsable = false; break; }
+            if (orientationStep == 1u) { candidateSide = exact.signs.x; break; }
+            turnClass = ringExactTurnClass(origin, vertex, turnEnd, exact.signs.x);
+            if (any(candidateStart != vertex) || exactBest == ${none} || turnClass != exactBestClass || turnClass == 1) { break; }
+            orientationStep = 1u;
+          }
+          if (any(candidateStart != vertex) || !exactUsable) {
             exactUsable = false;
           } else if (exactBest == ${none}) {
             exactBest = candidate;
@@ -1061,9 +1112,7 @@ fn findReverse(index: u32) -> u32 {
             if (order == 0 && turnClass != 1) {
               // Same half-plane: the direction further round toward the interior side turns
               // further (counter-clockwise for the interior on the left).
-              let side = orientSign(vertex, turnEnd, exactBestEnd);
-              if (side == 2) { exactUsable = false; }
-              order = -side * SIDE_ORDER;
+              order = -candidateSide * SIDE_ORDER;
             }
             if (order > 0 || (order == 0 && candidate < exactBest)) {
               exactBest = candidate;
@@ -1687,24 +1736,36 @@ fn getRingVertex(row: u32) -> vec2f {
     const ringShells =
       output.ringShells ?? (output.polygons ? u32('ring-shells', ringCapacity) : undefined);
     if (ringShells) {
+      const shellIndex = getRingShellIndexNodes<Parameters>(graph, {
+        id: `${id}-shell-index`,
+        operation: OPERATION,
+        bounds: ringBounds as GraphDataView<'float32'>,
+        areas: ringAreas,
+        isHole: ringIsHole,
+        count: ringCount,
+        groups: ringGroups
+      });
+      const {bvh} = shellIndex;
       nodes.push(
+        ...shellIndex.nodes,
         kernel(
           'ring-shells',
           [
             read('ringOffsets', output.ringOffsets),
             read('positions', output.positions, 'f32'),
-            read('ringCount', ringCount),
-            read('areas', ringAreas, 'f32'),
-            read('isHole', ringIsHole),
             read('ringBounds', ringBounds as GraphDataView<'float32'>, 'f32'),
-            write('shells', ringShells),
-            ...(ringGroups ? [read('ringGroups', ringGroups)] : [])
+            read('records', shellIndex.records),
+            read('nodeMinima', bvh.nodeMinima, 'f32'),
+            read('nodeMaxima', bvh.nodeMaxima, 'f32'),
+            read('leafIds', bvh.leafIds),
+            write('shells', ringShells)
           ],
           ringCapacity,
           `shells[shellsOffset + index] = ${none};
-  let rings = ringCount[ringCountOffset];
-  if (index >= rings) { return; }
-  if (isHole[isHoleOffset + index] == 0u) {
+  // The records pass marks rows beyond the live count, freeing the count binding for bounds.
+  let kind = records[recordsOffset + RECORD_WORDS * index + 1u];
+  if (kind == 2u) { return; }
+  if (kind == 0u) {
     shells[shellsOffset + index] = index;
     return;
   }
@@ -1721,16 +1782,21 @@ fn getRingVertex(row: u32) -> vec2f {
   var bestArea = 0.0;
   var bestBounds = vec4f(0.0);
   let holeBounds = getRingBounds(index);
-  for (var shell = 0u; shell < rings; shell++) {
-    if (isHole[isHoleOffset + shell] != 0u) { continue; }
-    ${ringGroups ? 'if (ringGroups[ringGroupsOffset + shell] != ringGroups[ringGroupsOffset + index]) { continue; }' : ''}
+  var node = 0u;
+  loop {
+    let hit = findShell(node, holeBounds);
+    let shell = hit.x;
+    if (shell == ${none}) { break; }
+    node = hit.y;
+    if (shell >= RING_CAPACITY || records[recordsOffset + RECORD_WORDS * shell + 1u] != 0u) { continue; }
+    if (records[recordsOffset + RECORD_WORDS * shell + 2u] != records[recordsOffset + RECORD_WORDS * index + 2u]) { continue; }
     // A shell around the hole is around the hole's bounding box. The boxes are exact (minima and
     // maxima of stored vertices), where the f32 areas of a thin shell and its hole can come out
     // equal or in the wrong order. A bidirected boundary produces a reverse walk of the same box
     // for the unbounded side: the probe, which lies outside that walk, keeps it from owning itself.
     let shellBounds = getRingBounds(shell);
     if (!boundsContain(shellBounds, holeBounds)) { continue; }
-    let area = abs(areas[areasOffset + shell]);
+    let area = abs(bitcast<f32>(records[recordsOffset + RECORD_WORDS * shell]));
     if (best != ${none}) {
       // Two shells around one point of a planar boundary are nested, and the inner one has its box
       // inside the other's. Only shells whose boxes are equal or do not nest are ordered by their
@@ -1738,7 +1804,7 @@ fn getRingVertex(row: u32) -> vec2f {
       let insideBest = boundsContain(bestBounds, shellBounds);
       let aroundBest = boundsContain(shellBounds, bestBounds);
       if (aroundBest && !insideBest) { continue; }
-      if (insideBest == aroundBest && area >= bestArea) { continue; }
+      if (insideBest == aroundBest && (area > bestArea || (area == bestArea && shell > best))) { continue; }
     }
     // A probe outside the shell's bounding box (or left of it, where a closed ring crosses the ray
     // an even number of times) cannot be inside: skip the vertex walk.
@@ -1754,7 +1820,10 @@ fn getRingVertex(row: u32) -> vec2f {
     }
   }
   shells[shellsOffset + index] = best;`,
-          `${EXACT_ORIENTATION_WGSL}
+          `const RECORD_WORDS: u32 = ${RING_SHELL_RECORD_WORDS}u;
+const RING_CAPACITY: u32 = ${ringCapacity}u;
+const INTERNAL_NODE_COUNT: u32 = ${bvh.internalNodeCount}u;
+${EXACT_ORIENTATION_WGSL}
 ${EXACT_GEOMETRY_WGSL}
 fn getRingVertex(row: u32) -> vec2f {
   return vec2f(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
@@ -1768,6 +1837,29 @@ fn getRingBounds(ring: u32) -> vec4f {
 // Whether box 'outer' contains box 'inner' (edges may coincide).
 fn boundsContain(outer: vec4f, inner: vec4f) -> bool {
   return outer.x <= inner.x && outer.y <= inner.y && outer.z >= inner.z && outer.w >= inner.w;
+}
+// Stackless traversal: return a leaf and the cursor immediately after it. Rejected candidates
+// can continue the caller's loop without revisiting a node, including the final leaf.
+fn findShell(startNode: u32, holeBounds: vec4f) -> vec2u {
+  var node = startNode;
+  while (node != ${none}) {
+    let minimum = vec2f(nodeMinima[nodeMinimaOffset + 2u * node], nodeMinima[nodeMinimaOffset + 2u * node + 1u]);
+    let maximum = vec2f(nodeMaxima[nodeMaximaOffset + 2u * node], nodeMaxima[nodeMaximaOffset + 2u * node + 1u]);
+    let contains = boundsContain(vec4f(minimum, maximum), holeBounds);
+    if (contains && node < INTERNAL_NODE_COUNT) {
+      node = 2u * node + 1u;
+      continue;
+    }
+    var shell = ${none};
+    if (contains) { shell = leafIds[leafIdsOffset + node - INTERNAL_NODE_COUNT]; }
+    loop {
+      if (node == 0u || (node & 1u) == 1u) { break; }
+      node = (node - 1u) / 2u;
+    }
+    node = select(node + 1u, ${none}, node == 0u);
+    if (shell != ${none}) { return vec2u(shell, node); }
+  }
+  return vec2u(${none});
 }
 ${getExactRingWindingWGSL('getShellWinding', 'getRingVertex')}`
         )

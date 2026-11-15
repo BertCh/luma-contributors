@@ -100,6 +100,7 @@ export function createHierarchicalDensityInitNode<Parameters>(
     id: string;
     shape: HierarchicalDensityShape;
     positions: GraphDataView<'float32x2'>;
+    timeData?: GraphDataView<'float32'>;
     /**
      * CSR of the `minimumSamples - 1` nearest other points, whose largest distance is the
      * self-inclusive core distance. Omitted when `minimumSamples` is 1, which needs no search.
@@ -119,6 +120,9 @@ export function createHierarchicalDensityInitNode<Parameters>(
     variant: 'init',
     bindings: [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      ...(props.timeData
+        ? [{name: 'timeData', view: props.timeData, type: 'f32' as const, access: 'read' as const}]
+        : []),
       ...(props.neighborOffsets && props.neighborDistances
         ? [
             {
@@ -145,7 +149,7 @@ export function createHierarchicalDensityInitNode<Parameters>(
     declarations: getConstants(props.shape),
     body: `let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
-  let isValid = isFiniteNumber(x) && isFiniteNumber(y);
+  let isValid = isFiniteNumber(x) && isFiniteNumber(y)${props.timeData ? ' && isFiniteNumber(timeData[timeDataOffset + index])' : ''};
   parents[parentsOffset + index] = index;
   var core = bitcast<f32>(0x7f800000u | (index & 0u));
   if (isValid) {
@@ -247,6 +251,7 @@ export function createHierarchicalDensityResolveNode<Parameters>(
     id: string;
     shape: HierarchicalDensityShape;
     positions: GraphDataView<'float32x2'>;
+    timeData?: GraphDataView<'float32'>;
     parents: GraphDataView<'uint32'>;
     components: GraphDataView<'uint32'>;
     componentBest: GraphDataView<'uint32'>;
@@ -259,6 +264,9 @@ export function createHierarchicalDensityResolveNode<Parameters>(
     variant: 'resolve',
     bindings: [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      ...(props.timeData
+        ? [{name: 'timeData', view: props.timeData, type: 'f32' as const, access: 'read' as const}]
+        : []),
       {name: 'parents', view: props.parents, type: 'atomic<u32>', access: 'read_write'},
       {name: 'components', view: props.components, type: 'u32', access: 'read_write'},
       {name: 'componentBest', view: props.componentBest, type: 'u32', access: 'read_write'}
@@ -267,7 +275,7 @@ export function createHierarchicalDensityResolveNode<Parameters>(
     declarations: `${getConstants(props.shape)}
 ${FIND_ROOT_WGSL}`,
     body: `let isValid = isFiniteNumber(positions[positionsOffset + index * 2u]) &&
-    isFiniteNumber(positions[positionsOffset + index * 2u + 1u]);
+    isFiniteNumber(positions[positionsOffset + index * 2u + 1u])${props.timeData ? ' && isFiniteNumber(timeData[timeDataOffset + index])' : ''};
   components[componentsOffset + index] = select(NONE, findRoot(index), isValid);
   for (var word = 0u; word < EDGE_WORDS; word++) {
     componentBest[componentBestOffset + index * EDGE_WORDS + word] = NONE;
@@ -313,6 +321,34 @@ fn getLeafComponent(slot: u32) -> u32 {
   });
 }
 
+function getDensitySearchWGSL(shape: HierarchicalDensityShape, hasTime: boolean): string {
+  return `const STACK_SIZE: u32 = ${2 * shape.levelCount}u;
+const BOUND_SLACK: f32 = 1.000001;
+fn getPoint(row: u32) -> vec2<f32> {
+  return vec2<f32>(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]);
+}
+fn getBoxDistance(node: u32, point: vec2<f32>) -> f32 {
+  let base = nodeDataOffset + node * NODE_WORDS;
+  let minimum = vec2<f32>(bitcast<f32>(nodeData[base]), bitcast<f32>(nodeData[base + 1u]));
+  let maximum = vec2<f32>(bitcast<f32>(nodeData[base + 2u]), bitcast<f32>(nodeData[base + 3u]));
+  if (minimum.x > maximum.x || minimum.y > maximum.y) { return FLOAT32_MAXIMUM; }
+  let gap = max(max(minimum - point, point - maximum), vec2<f32>(0.0));
+  return sqrt(dot(gap, gap));
+}
+
+fn getPairDistance(first: u32, second: u32) -> f32 {
+  let spatialDifference = getPoint(first) - getPoint(second);
+  ${
+    hasTime
+      ? `let scale = timeData[timeDataOffset + ROW_COUNT];
+  var timeDifference = 0.0;
+  if (scale > 0.0) { timeDifference = (timeData[timeDataOffset + first] - timeData[timeDataOffset + second]) * scale; }
+  return length(vec3<f32>(spatialDifference, timeDifference));`
+      : 'return length(spatialDifference);'
+  }
+}`;
+}
+
 /**
  * Boruvka search: every valid point walks the BVH (nearer child first) for the nearest point of
  * another component under the mutual reachability distance `max(core a, core b, |a - b|)`, with
@@ -331,6 +367,7 @@ export function createHierarchicalDensitySearchNode<Parameters>(
     nodeData: GraphDataView<'uint32'>;
     changeScan: GraphDataView<'uint32'>;
     positions: GraphDataView<'float32x2'>;
+    timeData?: GraphDataView<'float32'>;
     coreDistances: GraphDataView<'float32'>;
     components: GraphDataView<'uint32'>;
     candidates: GraphDataView<'uint32'>;
@@ -346,6 +383,9 @@ export function createHierarchicalDensitySearchNode<Parameters>(
       {name: 'nodeData', view: props.nodeData, type: 'u32', access: 'read'},
       {name: 'changeScan', view: props.changeScan, type: 'u32', access: 'read'},
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      ...(props.timeData
+        ? [{name: 'timeData', view: props.timeData, type: 'f32' as const, access: 'read' as const}]
+        : []),
       {name: 'coreDistances', view: props.coreDistances, type: 'f32', access: 'read'},
       {name: 'components', view: props.components, type: 'u32', access: 'read'},
       {name: 'candidates', view: props.candidates, type: 'u32', access: 'read_write'},
@@ -353,19 +393,7 @@ export function createHierarchicalDensitySearchNode<Parameters>(
     ],
     invocationCount: props.shape.rowCount,
     declarations: `${getConstants(props.shape)}
-const STACK_SIZE: u32 = ${2 * props.shape.levelCount}u;
-const BOUND_SLACK: f32 = 1.000001;
-fn getPoint(row: u32) -> vec2<f32> {
-  return vec2<f32>(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]);
-}
-fn getBoxDistance(node: u32, point: vec2<f32>) -> f32 {
-  let base = nodeDataOffset + node * NODE_WORDS;
-  let minimum = vec2<f32>(bitcast<f32>(nodeData[base]), bitcast<f32>(nodeData[base + 1u]));
-  let maximum = vec2<f32>(bitcast<f32>(nodeData[base + 2u]), bitcast<f32>(nodeData[base + 3u]));
-  if (minimum.x > maximum.x || minimum.y > maximum.y) { return FLOAT32_MAXIMUM; }
-  let gap = max(max(minimum - point, point - maximum), vec2<f32>(0.0));
-  return sqrt(dot(gap, gap));
-}
+${getDensitySearchWGSL(props.shape, Boolean(props.timeData))}
 // True when every leaf under the node belongs to 'component' (the node covers a contiguous range
 // of leaf slots in the flat complete tree).
 fn isNodeInComponent(node: u32, component: u32) -> bool {
@@ -436,7 +464,7 @@ fn isBetter(weight: u32, low: u32, high: u32, bestWeight: u32, bestLow: u32, bes
       if (other == NONE || other == index || components[componentsOffset + other] == component) { continue; }
       let otherCore = coreDistances[coreDistancesOffset + other];
       // The same expression from both ends gives the same f32 weight (a - b is -(b - a)).
-      let weight = bitcast<u32>(max(max(core, otherCore), length(point - getPoint(other))));
+      let weight = bitcast<u32>(max(max(core, otherCore), getPairDistance(index, other)));
       let low = min(index, other);
       let high = max(index, other);
       if (isBetter(weight, low, high, bestWeight, bestLow, bestHigh)) {
@@ -828,5 +856,81 @@ export function createHierarchicalDensityLabelsNode<Parameters>(
     }
   }
   labels[labelsOffset + index] = label;`
+  });
+}
+
+/** Exact scaled space-time top-k over the spatial BVH; spatial box distance is a lower bound. @internal */
+export function createHierarchicalDensityCoreNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    shape: HierarchicalDensityShape;
+    nodeData: GraphDataView<'uint32'>;
+    positions: GraphDataView<'float32x2'>;
+    timeData: GraphDataView<'float32'>;
+    coreDistances: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'space-time-core',
+    invocationCount: props.shape.rowCount,
+    bindings: [
+      {name: 'nodeData', view: props.nodeData, type: 'u32', access: 'read'},
+      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      {name: 'timeData', view: props.timeData, type: 'f32', access: 'read'},
+      {name: 'coreDistances', view: props.coreDistances, type: 'f32', access: 'read_write'}
+    ],
+    declarations: `${getConstants(props.shape)}
+${getDensitySearchWGSL(props.shape, true)}`,
+    body: `let infinity = bitcast<f32>(0x7f800000u | (index & 0u));
+  coreDistances[coreDistancesOffset + index] = infinity;
+  let point = getPoint(index);
+  if (!isFiniteNumber(point.x) || !isFiniteNumber(point.y) ||
+      !isFiniteNumber(timeData[timeDataOffset + index])) { return; }
+  // Only initialized slots below count are ever read; insertion writes each slot first.
+  var nearest: array<f32, MINIMUM_SAMPLES>;
+  var count = 0u;
+  var stack: array<u32, STACK_SIZE>;
+  stack[0] = 0u;
+  var top = 1u;
+  loop {
+    if (top == 0u) { break; }
+    top--;
+    let node = stack[top];
+    var bound = infinity;
+    if (count == MINIMUM_SAMPLES - 1u) { bound = nearest[count - 1u] * BOUND_SLACK; }
+    let lower = getBoxDistance(node, point);
+    if (lower >= FLOAT32_MAXIMUM || lower > bound) { continue; }
+    if (node < INTERNAL_NODE_COUNT) {
+      let first = node * 2u + 1u;
+      let second = first + 1u;
+      // Complete binary tree: DFS needs at most LEVEL_COUNT pending nodes.
+      if (getBoxDistance(first, point) <= getBoxDistance(second, point)) {
+        stack[top] = second; stack[top + 1u] = first;
+      } else {
+        stack[top] = first; stack[top + 1u] = second;
+      }
+      top += 2u;
+      continue;
+    }
+    let other = nodeData[nodeDataOffset + node * NODE_WORDS + 4u];
+    if (other == NONE || other == index || !isFiniteNumber(timeData[timeDataOffset + other])) { continue; }
+    let candidate = getPairDistance(index, other);
+    var slot = min(count, MINIMUM_SAMPLES - 2u);
+    if (count == MINIMUM_SAMPLES - 1u && candidate >= nearest[slot]) { continue; }
+    loop {
+      if (slot == 0u) { break; }
+      if (nearest[slot - 1u] <= candidate) { break; }
+      nearest[slot] = nearest[slot - 1u];
+      slot--;
+    }
+    nearest[slot] = candidate;
+    count = min(count + 1u, MINIMUM_SAMPLES - 1u);
+  }
+  if (count == MINIMUM_SAMPLES - 1u) {
+    coreDistances[coreDistancesOffset + index] = nearest[count - 1u];
+  }`
   });
 }

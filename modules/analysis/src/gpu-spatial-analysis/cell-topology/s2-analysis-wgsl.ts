@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {S2_CELL_MEASURES_WGSL} from '../cell-indexing/s2-cell-measures-wgsl';
 import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /**
@@ -31,29 +32,10 @@ fn s2AnalysisAngle(first: vec3f, second: vec3f) -> f32 {
 fn s2AnalysisTriangle(first: vec3f, second: vec3f, third: vec3f) -> f32 {
   return 2.0 * atan2(abs(dot(first, cross(second - first, third - first))), 1.0 + dot(first, second) + dot(second, third) + dot(third, first));
 }
-// Preserve the small quadratic-map increments instead of subtracting rounded unit vertices.
-// The determinant of each unnormalized corner triangle is exactly du*dv; the solid-angle
-// denominator is well conditioned even at level 30. Face rotations preserve both measures.
+${S2_CELL_MEASURES_WGSL}
 fn s2AnalysisStableMeasures(cell: vec2u) -> vec2f {
-  let level = dggs_s2_get_level(cell);
-  let step = 1.0 / f32(1u << level);
-  let surface = vec2f(dggs_s2_get_ij(cell)) * step;
-  let lower = dggs_s2_st_to_uv(surface);
-  var delta = (4.0 / 3.0) * step * select(2.0 * (vec2f(1.0) - surface) - vec2f(step), 2.0 * surface + vec2f(step), surface >= vec2f(0.5));
-  if (level == 0u) { delta = vec2f(2.0); }
-  let upper = lower + delta;
-  let first = vec3f(1.0, lower.x, lower.y);
-  let second = vec3f(1.0, upper.x, lower.y);
-  let third = vec3f(1.0, upper.x, upper.y);
-  let fourth = vec3f(1.0, lower.x, upper.y);
-  let firstLength = length(first); let secondLength = length(second);
-  let thirdLength = length(third); let fourthLength = length(fourth);
-  let determinant = delta.x * delta.y;
-  let firstDenominator = firstLength * secondLength * thirdLength + dot(first, second) * thirdLength + dot(second, third) * firstLength + dot(third, first) * secondLength;
-  let secondDenominator = firstLength * thirdLength * fourthLength + dot(first, third) * fourthLength + dot(third, fourth) * firstLength + dot(fourth, first) * thirdLength;
-  let area = 2.0 * (atan2(determinant, firstDenominator) + atan2(determinant, secondDenominator));
-  let perimeter = atan2(delta.x * sqrt(1.0 + lower.y * lower.y), dot(first, second)) + atan2(delta.y * sqrt(1.0 + upper.x * upper.x), dot(second, third)) + atan2(delta.x * sqrt(1.0 + upper.y * upper.y), dot(third, fourth)) + atan2(delta.y * sqrt(1.0 + lower.x * lower.x), dot(fourth, first));
-  return vec2f(area, perimeter);
+  let measured = cellMeasuresGetS2(cell);
+  return vec2f(measured.area, measured.perimeter);
 }
 fn s2AnalysisDistance(cell: vec2u, point: vec3f) -> f32 {
   var minimum = 3.141592653589793; var inside = true;

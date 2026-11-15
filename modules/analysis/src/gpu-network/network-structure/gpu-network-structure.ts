@@ -59,9 +59,8 @@ export type GPUNetworkStructureProps = {
  * - Strongly connected components use the mutual-reachability path. One invocation per vertex runs
  *   a breadth-first search with a private `array<u32, nodeCount>` queue and writes a row of the
  *   `nodeCount x nodeCount` reachability matrix, so work is O(V(V+E)) and scratch is O(V²) words
- *   (4 MiB at 1,024 vertices). There is no large-graph strongly connected components because
- *   published luma.gl has none; a forward-backward search with trimming on the reachability
- *   frontier is the scalable replacement.
+ *   (4 MiB at 1,024 vertices). For larger graphs, use GPUNetworkStronglyConnectedComponents
+ *   (trim/colour/backward-mark phases with O(V) scratch and a bounded step budget).
  * - Bridges, articulation points and biconnected components run an iterative Tarjan traversal in
  *   one GPU invocation (`invocationCount: 1`), so the whole traversal is sequential, O(V + E) on
  *   one thread. It is correct at every accepted size and becomes a watchdog risk on a loaded GPU

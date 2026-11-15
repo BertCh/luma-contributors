@@ -16,8 +16,9 @@ rasters.
 Reference. NumPy in binary64, written from the documented definitions
 (`test/oracles/rts03-embedding-rasters-numpy.py`). scikit-learn was not installed, so the kNN, logistic
 regression and PCA semantics are written from its documentation and nothing was run or copied from it.
-Not covered: running an encoder (TerraMind, Prithvi, Clay), training, other quantizations (the TESSERA int8
-scale is not verified), and re-quantizing an overview back to int8.
+Additional verified TESSERA int8 and binary16 decoding, masks, and AlphaEarth int8 encoding are
+described in [Embedding raster codecs](./raster-embedding-codecs.md). Model inference
+(TerraMind, Prithvi, Clay) and training are outside these codecs.
 
 ## `GPURasterEmbeddingDequantize`
 
@@ -166,4 +167,4 @@ decoded vectors and renormalize to unit length; this contributor does that for e
 footprints at odd edges, scale 1 to 16 per axis) from either `vectors` or the packed `quantized` input.
 `output.meanLength` and `validCount` say how coherent and how complete each footprint was. Build coarser
 levels from this level's output. Writing an overview back as int8 needs the inverse of the decoder,
-`q = sign(v) round(127.5 sqrt|v|)`, which is not provided.
+`q = sign(v) round(127.5 sqrt|v|)`, provided by `GPURasterEmbeddingQuantize` (nearest-even rounding with saturation).

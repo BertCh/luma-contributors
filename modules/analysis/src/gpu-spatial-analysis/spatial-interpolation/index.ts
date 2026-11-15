@@ -170,3 +170,21 @@ export {GPUVecchiaLogLikelihoodOperation} from './gpu-vecchia-log-likelihood-ope
 export type {VecchiaLogLikelihoodOperationProps} from './gpu-vecchia-log-likelihood-operation';
 export {GPUVecchiaSpaceTimeLogLikelihoodOperation} from './gpu-vecchia-space-time-log-likelihood-operation';
 export type {VecchiaSpaceTimeLogLikelihoodOperationProps} from './gpu-vecchia-space-time-log-likelihood-operation';
+
+export {
+  GPUGaussianRandomField,
+  GPU_GAUSSIAN_RANDOM_FIELD_MAXIMUM_FFT_SIDE,
+  GPU_GAUSSIAN_RANDOM_FIELD_MAXIMUM_ROW_COUNT,
+  GPU_GAUSSIAN_RANDOM_FIELD_MAXIMUM_MODE_COUNT,
+  GPU_GAUSSIAN_RANDOM_FIELD_MAXIMUM_SPECTRAL_WORK,
+  GPU_GAUSSIAN_RANDOM_FIELD_MAXIMUM_NEIGHBOR_COUNT
+} from './gpu-gaussian-random-field';
+export type {
+  GPUGaussianRandomFieldProps,
+  GPUGaussianRandomFieldOutput
+} from './gpu-gaussian-random-field';
+export {
+  getGPUGaussianRandomFieldParameterValues,
+  GPU_GAUSSIAN_RANDOM_FIELD_PARAMETER_LENGTH
+} from './gaussian-random-field-parameters';
+export type {GPUGaussianRandomFieldSettings} from './gaussian-random-field-parameters';

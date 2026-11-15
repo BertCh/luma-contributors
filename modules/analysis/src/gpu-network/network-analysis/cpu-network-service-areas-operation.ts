@@ -35,6 +35,7 @@ export type CPUNetworkServiceAreasResult = {
   facilityNodeCounts: Uint32Array;
   facilityCostSums: Float32Array;
   converged: Uint32Array;
+  iterationLimitReached: Uint32Array;
 };
 
 /**
@@ -46,7 +47,7 @@ export type CPUNetworkServiceAreasResult = {
  * - Float64 shortest paths, tight-edge tests and facility sums precede one float32 output rounding.
  *   Near ties, cutoffs, subnormals and float32-overflow paths can change assignments and parents.
  * - Cost, label and tie phases finish exactly. GPU round, local-hop, activeIterations and device
- *   limits are dropped; converged is always 1.
+ *   limits are dropped; converged is always 1 and iterationLimitReached is always 0.
  * - Unused facility aggregates are zero, including a zero-length facility input when aggregates
  *   are omitted from the graph operation. NaN costLimit disables the cutoff, like the GPU.
  *
@@ -151,7 +152,8 @@ export function computeNetworkServiceAreasOnCPU(
     predecessors,
     facilityNodeCounts,
     facilityCostSums: Float32Array.from(sums),
-    converged: Uint32Array.of(1)
+    converged: Uint32Array.of(1),
+    iterationLimitReached: Uint32Array.of(0)
   };
 }
 

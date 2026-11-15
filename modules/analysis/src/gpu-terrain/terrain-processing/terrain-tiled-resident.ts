@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {clamp} from '@math.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -11,6 +12,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {GPUTerrainBranchingFlow} from './gpu-terrain-branching-flow';
 import type {GPUTerrainTiledFlowProps} from './gpu-terrain-tiled-flow';
+import {createTerrainResolutionStatusNodes} from './terrain-resolution-status';
 import {terrainBinding, TERRAIN_FINITE_WGSL} from './terrain-processing-utils';
 
 /** Owned-cell exchange into a resident global DAG; no halo or routing recomputation. @internal */
@@ -63,17 +65,18 @@ for (var direction = 0u; direction < 8u; direction++) { fractions[fractionsOffse
       })
     );
   });
-  nodes.push(
-    ...new GPUTerrainBranchingFlow({
-      id: `${id}-dag`,
-      grid: props.grid,
-      fractions,
-      values: runoff,
-      mode: 'transport',
-      maximumIterations: props.maximumIterations,
-      output: {values: accumulation, status, unresolvedCount: unresolved}
-    }).getCommandNodes(graph)
-  );
+  const maximumIterations =
+    props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024);
+  const solver = new GPUTerrainBranchingFlow({
+    id: `${id}-dag`,
+    grid: props.grid,
+    fractions,
+    values: runoff,
+    mode: 'transport',
+    maximumIterations,
+    output: {values: accumulation, status, unresolvedCount: unresolved}
+  }).getCommandNodesWithIterationStatus(graph);
+  nodes.push(...solver.nodes);
   nodes.push(
     createWGSLKernelNode(graph, {
       id: `${id}-reach-seeds`,
@@ -143,5 +146,17 @@ accumulation[accumulationOffset + index] = value; status[statusOffset + index] =
       })
     );
   });
+  nodes.push(
+    ...createTerrainResolutionStatusNodes(graph, {
+      id,
+      operation: 'GPUTerrainTiledFlow',
+      states: status,
+      status: props.output?.status,
+      iterationLimit: {
+        source: solver.iterationStatus,
+        expression: `u32(source[sourceOffset + 2u] >= ${maximumIterations}u && source[sourceOffset + 3u] == 0u)`
+      }
+    })
+  );
   return nodes;
 }

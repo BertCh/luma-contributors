@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
@@ -237,3 +238,114 @@ it('GPUNetworkServiceAreas keeps every written view in the output bag', () => {
   expect('assignments' in props).toBe(false);
   device.destroy();
 });
+
+it('publishes iterationLimitReached independently of the converged port', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    for (const withConverged of [false, true]) {
+      const graph = new GPUCommandGraph(device);
+      const status = {
+        converged: withConverged ? createTransientView(graph, 'converged', 'uint32', 1) : undefined,
+        iterationLimitReached: createTransientView(graph, 'limit-reached', 'uint32', 1)
+      };
+      const nodes = new GPUNetworkServiceAreas({
+        ...createPropsWithOutput(graph, {status}),
+        id: 'stopping'
+      }).getCommandNodes(graph);
+      const source = getParsedKernelSources(nodes).get('stopping-finalize');
+      expect(source).toBeDefined();
+      expect(source).toContain(
+        'iterationLimitReached[iterationLimitReachedOffset] = 1u - finished;'
+      );
+      expect(source?.includes('converged[convergedOffset] = finished;')).toBe(withConverged);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('validates the stopping flag scalar, aliases and graph ownership', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const base = createProps(graph, {id: 'stopping'});
+    const withStatus = (
+      iterationLimitReached: typeof base.facilities,
+      converged?: typeof base.facilities
+    ) =>
+      new GPUNetworkServiceAreas({
+        ...base,
+        output: {...base.output, status: {iterationLimitReached, converged}}
+      });
+    for (const length of [0, 2]) {
+      expect(() =>
+        withStatus(createTransientView(graph, `bad-${length}`, 'uint32', length))
+      ).toThrow(/^stopping output.status.iterationLimitReached must contain exactly one row/);
+    }
+    expect(() =>
+      withStatus(createTransientView(graph, 'wrong-format', 'float32', 1) as never)
+    ).toThrow(/stopping output.status.iterationLimitReached/);
+    const flag = createTransientView(graph, 'flag', 'uint32', 1);
+    expect(() => withStatus(flag, flag)).toThrow(/stopping.*separate buffers/);
+    expect(
+      () =>
+        new GPUNetworkServiceAreas({
+          ...base,
+          facilities: flag,
+          output: {...base.output, status: {iterationLimitReached: flag}}
+        })
+    ).toThrow(/stopping.*separate buffers/);
+    const foreign = createTransientView(new GPUCommandGraph(device), 'foreign', 'uint32', 1);
+    expect(() => withStatus(foreign).getCommandNodes(graph)).toThrow(/stopping.*target graph/);
+  } finally {
+    device.destroy();
+  }
+});
+
+for (const alias of ['status', 'input', 'output'] as const) {
+  it(`rejects physical status aliases through duplicate imports (${alias})`, () => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const physicalBuffer = device.createBuffer({byteLength: 256, usage: Buffer.STORAGE});
+    try {
+      const firstHandle = graph.importBuffer(
+        {id: 'first-import', byteLength: 256, usage: Buffer.STORAGE},
+        physicalBuffer
+      );
+      const secondHandle = graph.importBuffer(
+        {id: 'second-import', byteLength: 256, usage: Buffer.STORAGE},
+        physicalBuffer
+      );
+      expect(firstHandle).not.toBe(secondHandle);
+      const firstView = graph.createDataView(firstHandle, {
+        format: 'uint32',
+        byteOffset: 0,
+        length: alias === 'output' ? 8 : 1
+      });
+      const secondView = graph.createDataView(secondHandle, {
+        format: 'uint32',
+        byteOffset: 0,
+        length: 1
+      });
+      const base = createProps(graph, {id: 'physical-status'});
+      expect(
+        () =>
+          new GPUNetworkServiceAreas({
+            ...base,
+            facilities: alias === 'input' ? firstView : base.facilities,
+            output: {
+              ...base.output,
+              assignments: alias === 'output' ? firstView : base.output.assignments,
+              status: {
+                converged: alias === 'status' ? firstView : undefined,
+                iterationLimitReached: secondView
+              }
+            }
+          })
+      ).toThrow(/^physical-status.*separate buffers/);
+    } finally {
+      physicalBuffer.destroy();
+      device.destroy();
+    }
+  });
+}

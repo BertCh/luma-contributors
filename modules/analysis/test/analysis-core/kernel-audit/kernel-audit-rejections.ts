@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {COREGIONALIZATION_FIT_REJECTIONS} from './rejections-coregionalization-fit';
 import type {KernelAuditRejection} from './kernel-audit-rejection-type';
 import {CELLS_AND_JOINS_REJECTIONS} from './rejections-cells-and-joins';
 import {DATAFRAME_REJECTIONS} from './rejections-dataframe';
@@ -35,6 +36,7 @@ export type {KernelAuditRejection} from './kernel-audit-rejection-type';
  */
 export const KERNEL_AUDIT_REJECTIONS: readonly KernelAuditRejection[] = [
   ...DATAFRAME_REJECTIONS,
+  ...COREGIONALIZATION_FIT_REJECTIONS,
   ...STX06_CHANGE_POINTS_STX07_SCAN_REJECTIONS,
   ...STX04_STX05_SPACE_TIME_DENSITY_AND_K_REJECTIONS,
   ...STM08_STM09_HAWKES_AND_SINKHORN_REJECTIONS,

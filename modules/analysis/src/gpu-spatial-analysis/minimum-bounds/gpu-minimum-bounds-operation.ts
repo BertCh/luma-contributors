@@ -24,7 +24,7 @@ export type MinimumBoundsOperationProps = {
     diameters?: string;
     bounds?: string;
     hullSizes?: string;
-    status: {overflow: string};
+    status: {overflow: string; groupOverflow?: string};
   };
 } & (
   | {
@@ -52,6 +52,13 @@ export class GPUMinimumBoundsOperation extends GPUContributorOperation {
     const outputs: Record<string, GPUContributorOperationOutput> = {
       overflow: {value: props.output.status.overflow, format: 'uint32', length: 1}
     };
+    if (props.output.status.groupOverflow !== undefined) {
+      outputs['groupOverflow'] = {
+        value: props.output.status.groupOverflow,
+        format: 'uint32',
+        length: 1
+      };
+    }
     for (const port of [
       'rectangleCorners',
       'rectangleSizes',
@@ -128,7 +135,13 @@ export class GPUMinimumBoundsOperation extends GPUContributorOperation {
             bounds: props.output.bounds !== undefined ? getView<'float32x4'>('bounds') : undefined,
             hullSizes:
               props.output.hullSizes !== undefined ? getView<'uint32'>('hullSizes') : undefined,
-            status: {overflow: getView<'uint32'>('overflow')}
+            status: {
+              overflow: getView<'uint32'>('overflow'),
+              groupOverflow:
+                props.output.status.groupOverflow !== undefined
+                  ? getView<'uint32'>('groupOverflow')
+                  : undefined
+            }
           }
         })
     });

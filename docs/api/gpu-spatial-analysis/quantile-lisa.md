@@ -4,7 +4,9 @@
 
 ::lens{scenario=gpu-spatial-analysis.quantile-lisa rung=graph}
 
-`GPUQuantileLISA` composes exact resident column quantiles, a selected-class indicator and
+`GPUQuantileLISA` is a spatial-autocorrelation contributor exported from
+`@luma-contributors/analysis/gpu-spatial-analysis`; the recipes barrel retains its compatibility
+export. It composes exact resident column quantiles, a selected-class indicator and
 conditional local join-count permutations for one scalar variable. Add it to a `GPUCommandGraph`
 and submit the compiled graph explicitly. It never submits work, reads buffers or transfers
 ownership of inputs.

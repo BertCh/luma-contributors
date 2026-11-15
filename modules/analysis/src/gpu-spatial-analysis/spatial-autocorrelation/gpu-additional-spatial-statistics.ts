@@ -47,6 +47,12 @@ import {
   validateSpatialAutocorrelationInputs
 } from './spatial-autocorrelation-kernels';
 
+import {
+  getSpatialAutocorrelationStatusNodes,
+  validateSpatialAutocorrelationStatus,
+  type GPUSpatialAutocorrelationStatusPort
+} from './spatial-autocorrelation-status';
+
 /** Lanes of every workgroup that reduces a global edge-association statistic. */
 const EDGE_ASSOCIATION_WORKGROUP_SIZE = 256;
 
@@ -78,6 +84,12 @@ type GPUEdgeAssociationProps = {
 
 /** Caller-owned outputs of {@link GPULocalGeary}. */
 export type GPULocalGearyOutput = {
+  /**
+   * Optional input diagnostics, overwritten on every encoding. invalidCount counts unmasked
+   * nonfinite values, excluding islands and undefined tests. overflow forwards input weights'
+   * capacity overflow as 0 or 1 (0 when the input has no overflow port).
+   */
+  status?: GPUSpatialAutocorrelationStatusPort;
   /** One local Geary value per weights row. */
   statistic: GraphDataView<'float32'>;
   /** Optional `[n, mean, variance, standardDeviation, islandCount]` used this frame. */
@@ -205,9 +217,17 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
     if (props.output.statistic.length !== rows) {
       throw new Error(`${this.id} output.statistic length must equal the row count`);
     }
+    validateSpatialAutocorrelationStatus(this.id, props.output.status, [
+      props.output.statistic,
+      props.output.globalStatistics
+    ]);
     validateGraphOutputsDisjointFromInputs(
       this.id,
-      [props.output.statistic, props.output.globalStatistics],
+      [
+        props.output.statistic,
+        props.output.globalStatistics,
+        ...Object.values(props.output.status ?? {})
+      ],
       [
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
         props.weights.status?.overflow,
@@ -230,8 +250,10 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
       props.parameters,
       props.mask,
       props.output.statistic,
-      props.output.globalStatistics
+      props.output.globalStatistics,
+      ...Object.values(props.output.status ?? {})
     ]);
+    const statusNodes = getSpatialAutocorrelationStatusNodes(graph, id, 'GPULocalGeary', props);
     const rows = props.values.length;
     const inputs = getSpatialAutocorrelationInputNodes(graph, {
       ...props,
@@ -284,7 +306,7 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(props.weights)};`
         })
       )
     );
-    return inputs.nodes;
+    return [...statusNodes, ...inputs.nodes];
   }
 }
 

@@ -95,25 +95,39 @@ it('checks adjacency-changing snaps and signed half-cells at a nonzero origin', 
   // Relative to (10.1875,20.1875), x=10.0625 is cell -0.5, rounded up to 0.
   // A grid anchored at zero incorrectly joins the positive case and separates the negative case.
   for (const scene of scenes) {
-    for (const criterion of ['queen', 'rook'] as const) {
-      for (const snapTolerance of [0, 0.25]) {
-        const joins = snapTolerance > 0 && scene.joinsAfterSnap;
-        const result = computeContiguityWeightsOnCPU(flattenPolygons(scene.polygons), {
-          criterion,
-          capacity: 2,
-          snapTolerance
-        });
-        expect(Array.from(result.offsets), scene.name).toEqual(joins ? [0, 1, 2] : [0, 0, 0]);
-        const usedCount = result.offsets[2];
-        expect(Array.from(result.neighbors.slice(0, usedCount)), scene.name).toEqual(
-          joins ? [1, 0] : []
-        );
-        expect(Array.from(result.weights.slice(0, usedCount)), scene.name).toEqual(
-          joins ? [1, 1] : []
-        );
-        expect(result.requiredCount[0]).toBe(joins ? 2 : 0);
-        expect(result.overflow[0]).toBe(0);
-        expect(result.candidateOverflow[0]).toBe(0);
+    // Prefix offsets encode contiguous ring ranges; position gaps between them are not representable.
+    for (const paddingValue of [undefined, Number.NaN, 3e20, -3e20]) {
+      const original = flattenPolygons(scene.polygons);
+      const leading = paddingValue === undefined ? 0 : 2;
+      const positions = new Float32Array(original.positions.length + (leading ? 10 : 0)).fill(
+        paddingValue ?? 0
+      );
+      positions.set(original.positions, 2 * leading);
+      const padded = {
+        ...original,
+        positions,
+        ringOffsets: Uint32Array.from(original.ringOffsets, offset => offset + leading)
+      };
+      for (const criterion of ['queen', 'rook'] as const) {
+        for (const snapTolerance of [0, 0.25]) {
+          const joins = snapTolerance > 0 && scene.joinsAfterSnap;
+          const result = computeContiguityWeightsOnCPU(padded, {
+            criterion,
+            capacity: 2,
+            snapTolerance
+          });
+          expect(Array.from(result.offsets), scene.name).toEqual(joins ? [0, 1, 2] : [0, 0, 0]);
+          const usedCount = result.offsets[2];
+          expect(Array.from(result.neighbors.slice(0, usedCount)), scene.name).toEqual(
+            joins ? [1, 0] : []
+          );
+          expect(Array.from(result.weights.slice(0, usedCount)), scene.name).toEqual(
+            joins ? [1, 1] : []
+          );
+          expect(result.requiredCount[0]).toBe(joins ? 2 : 0);
+          expect(result.overflow[0]).toBe(0);
+          expect(result.candidateOverflow[0]).toBe(0);
+        }
       }
     }
   }
@@ -411,4 +425,52 @@ it('validates construction and keeps both graph output contracts identical', () 
         coordinateExtent: 2 ** 25
       })
   ).not.toThrow();
+});
+
+it('CPU contiguity uses the zero fallback for a non-finite owned origin and supports empty rings', () => {
+  // Anchored at zero, the vertical sides x=11.125 and x=11.1875 both snap to cell 45.
+  // The bad first vertex is ignored; the two vertical sides still establish rook adjacency.
+  const input = {
+    positions: Float32Array.of(
+      3e20,
+      3e20,
+      Number.NaN,
+      20,
+      11.125,
+      20,
+      11.125,
+      21,
+      10,
+      21,
+      11.1875,
+      20,
+      12,
+      20,
+      12,
+      21,
+      11.1875,
+      21,
+      3e20,
+      3e20
+    ),
+    ringOffsets: Uint32Array.of(1, 1, 5, 9),
+    polygonOffsets: Uint32Array.of(0, 0, 2, 3),
+    featureOffsets: Uint32Array.of(0, 1, 2, 3)
+  };
+  for (const criterion of ['queen', 'rook'] as const) {
+    const result = computeContiguityWeightsOnCPU(input, {
+      criterion,
+      capacity: 2,
+      snapTolerance: 0.25
+    });
+    expect(Array.from(result.offsets)).toEqual([0, 0, 1, 2]);
+    expect(Array.from(result.neighbors)).toEqual([2, 1]);
+    expect(result.requiredCount[0]).toBe(2);
+    const empty = computeContiguityWeightsOnCPU(
+      {...input, ringOffsets: Uint32Array.of(1, 1, 1, 1)},
+      {criterion, capacity: 2, snapTolerance: 0.25}
+    );
+    expect(Array.from(empty.offsets)).toEqual([0, 0, 0, 0]);
+    expect(empty.requiredCount[0]).toBe(0);
+  }
 });

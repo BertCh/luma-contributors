@@ -358,7 +358,7 @@ it('RAAM scores agree with direct access 1.1.9 at an equilibrium', async () => {
     assignments: harness.output('float32', 4),
     scores: harness.output('float32', 2),
     unservedDemand: harness.output('float32', 2),
-    status: harness.output('uint32', 4)
+    summary: harness.output('uint32', 4)
   };
   const result = await harness.run(
     new GPUNetworkRationalAccess({
@@ -442,7 +442,7 @@ it('fractional rational access balances nonintegral demand with an absolute shif
     assignments: harness.output('float32', 2),
     scores: harness.output('float32', 1),
     unservedDemand: harness.output('float32', 1),
-    status: harness.output('uint32', 4)
+    summary: harness.output('uint32', 4)
   };
   const result = await harness.run(
     new GPUNetworkRationalAccess({
@@ -457,7 +457,7 @@ it('fractional rational access balances nonintegral demand with an absolute shif
     })
   );
   expect(result(output.assignments)).toEqual([1.25, 1.25]);
-  expect(result(output.status).slice(0, 2)).toEqual([1, 1]);
+  expect(result(output.summary).slice(0, 2)).toEqual([1, 1]);
 });
 
 it('temporal interval union merges across segments, preserves track boundaries, and counts after capacity exhaustion', async () => {
@@ -592,7 +592,7 @@ it('all three bounded facility objectives match direct spopt 0.7.0 CBC solutions
       selectedFacilities: harness.output('uint32', fixture.facilityCount),
       assignments: harness.output('uint32', fixture.demand.length),
       objective: harness.output('float32', 1),
-      status: harness.output('uint32', 4)
+      summary: harness.output('uint32', 4)
     };
     const result = await harness.run(
       new GPUNetworkFacilityOptimization({
@@ -607,7 +607,7 @@ it('all three bounded facility objectives match direct spopt 0.7.0 CBC solutions
       })
     );
     expect(result(output.objective)).toEqual([fixture.objective]);
-    expect(result(output.status).slice(0, 3)).toEqual([1, 1, 1]);
+    expect(result(output.summary).slice(0, 3)).toEqual([1, 1, 1]);
   }
 });
 

@@ -74,7 +74,7 @@ it('network candidate batches reuse pipelines and parse at the largest supported
         selectedFacilities: view('uint32', 4),
         assignments: view('uint32', 10),
         objective: view('float32', 1),
-        status: view('uint32', 4)
+        summary: view('uint32', 4)
       }
     }).getCommandNodes(graph);
   };

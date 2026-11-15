@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
@@ -196,4 +197,90 @@ it('GPUNetworkCostTable omits status kernels bindings it was not asked for', () 
   const finalize = sources.get('table-finalize') ?? '';
   expect(getStorageBindingCount(finalize)).toBe(1);
   expect(sources.get('table-batch-0-scan')).not.toContain('batchConverged');
+});
+
+for (const withConverged of [false, true]) {
+  it(`tracks cost-table round exhaustion with converged requested: ${withConverged}`, () => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    try {
+      const base = createProps(graph, 35);
+      const status = {
+        converged: withConverged ? createView(graph, 'uint32', 1) : undefined,
+        iterationLimitReached: createView(graph, 'uint32', 1)
+      };
+      const contributor = new GPUNetworkCostTable({...base, output: {...base.output, status}});
+      const nodes = contributor.getCommandNodes(graph);
+      expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
+      expect(nodes.filter(node => node.id.endsWith('-finalize'))).toHaveLength(
+        contributor.batchCount + 1
+      );
+      const sources = getParsedKernelSources(nodes);
+      for (const source of sources.values())
+        expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
+      expect(sources.get('table-finalize')).toContain(
+        'iterationLimitReached[iterationLimitReachedOffset] = 1u - state[stateOffset + CONVERGED_FLAG];'
+      );
+    } finally {
+      device.destroy();
+    }
+  });
+}
+
+it('validates cost-table stopping scalars, ownership and physical buffer separation', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const physicalBuffer = device.createBuffer({byteLength: 256, usage: Buffer.STORAGE});
+  try {
+    const base = createProps(graph, 35);
+    const withFlag = (iterationLimitReached: typeof base.output.targets) =>
+      new GPUNetworkCostTable({
+        ...base,
+        output: {...base.output, status: {iterationLimitReached}}
+      });
+    for (const length of [0, 2])
+      expect(() => withFlag(createView(graph, 'uint32', length))).toThrow(
+        /^table output.status.iterationLimitReached must contain exactly one row/
+      );
+    expect(() => withFlag(createView(graph, 'float32', 1) as never)).toThrow(
+      /table output.status.iterationLimitReached/
+    );
+    const foreign = createView(new GPUCommandGraph(device), 'uint32', 1);
+    expect(() => withFlag(foreign).getCommandNodes(graph)).toThrow(/table.*target graph/);
+    const firstHandle = graph.importBuffer(
+      {id: 'first', byteLength: 256, usage: Buffer.STORAGE},
+      physicalBuffer
+    );
+    const secondHandle = graph.importBuffer(
+      {id: 'second', byteLength: 256, usage: Buffer.STORAGE},
+      physicalBuffer
+    );
+    const firstView = graph.createDataView(firstHandle, {format: 'uint32', length: 1});
+    const secondView = graph.createDataView(secondHandle, {format: 'uint32', length: 1});
+    expect(firstHandle).not.toBe(secondHandle);
+    expect(
+      () =>
+        new GPUNetworkCostTable({
+          ...base,
+          output: {
+            ...base.output,
+            status: {
+              converged: firstView,
+              iterationLimitReached: secondView
+            }
+          }
+        })
+    ).toThrow(/table.*separate buffers/);
+    expect(
+      () =>
+        new GPUNetworkCostTable({
+          ...base,
+          costLimit: graph.createDataView(firstHandle, {format: 'float32', length: 1}),
+          output: {...base.output, status: {iterationLimitReached: secondView}}
+        })
+    ).toThrow(/table.*separate buffers/);
+  } finally {
+    physicalBuffer.destroy();
+    device.destroy();
+  }
 });

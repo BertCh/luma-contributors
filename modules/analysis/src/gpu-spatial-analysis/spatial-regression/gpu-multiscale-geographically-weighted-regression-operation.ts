@@ -22,6 +22,7 @@ export type MultiscaleGeographicallyWeightedRegressionOperationProps = Pick<
   | 'indexGridSize'
   | 'gaussianCutoff'
   | 'bandwidthCandidateCount'
+  | 'bandwidthSelection'
 > & {
   rowCount: number;
   positions: string;

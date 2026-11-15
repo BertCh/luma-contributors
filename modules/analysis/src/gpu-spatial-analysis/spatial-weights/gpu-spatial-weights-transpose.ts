@@ -5,14 +5,25 @@
 import type {
   GPUCommandGraph,
   GPUCommandNode,
-  GPUCommandNodeProducer
+  GPUCommandNodeProducer,
+  GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateSinglePackedView
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpatialWeights} from './spatial-weights';
 import {
   getSpatialWeightsTransposeNodes,
   planSpatialWeightsTranspose,
   type GPUSpatialWeightsTransposeOutput
 } from './spatial-weights-transpose-pipeline';
+
+import {
+  getGPUSpatialWeightsTransposeParameterValues,
+  GPU_SPATIAL_WEIGHTS_TRANSPOSE_PARAMETER_LENGTH
+} from './spatial-weights-parameters';
 
 export type {GPUSpatialWeightsTransposeOutput} from './spatial-weights-transpose-pipeline';
 
@@ -39,11 +50,15 @@ export type GPUSpatialWeightsTransposeProps = {
    * input. Row `j` lists the source rows `i` with `w_ij` present, ascending.
    */
   output: GPUSpatialWeightsTransposeOutput;
-  /** Absolute weight tolerance of the symmetry check. Defaults to 0 (exact). */
-  symmetryTolerance?: number;
+  /** Per-frame absolute symmetry tolerance: numeric default or one-float parameter view. Defaults to 0. */
+  symmetryTolerance?: number | GraphDataView<'float32'>;
 };
 
 /**
+ * Per-frame: CSR contents and symmetryTolerance. Compile-time: view shapes, columnCount and
+ * which optional outputs are present. Numeric tolerances use the same GPUParameterBuffer layout
+ * as getGPUSpatialWeightsTransposeParameterValues.
+ *
  * CSR transpose of a {@link GPUSpatialWeights} on the GPU (for square or rectangular weights),
  * the sparse `W.T` that libpysal `Graph` gets from swapping focal and neighbor.
  *
@@ -73,12 +88,29 @@ export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
   readonly rowCount: number;
   /** Columns of `W` (rows of the transpose). */
   readonly columnCount: number;
+  private readonly toleranceValues: Float32Array | GraphDataView<'float32'>;
   /** The `output` CSR with `information` and `status` attached, for consumers. */
   readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUSpatialWeightsTransposeProps) {
     this.id = props.id ?? 'spatial-weights-transpose';
     this.props = props;
+    const tolerance = props.symmetryTolerance ?? 0;
+    if (typeof tolerance === 'number') {
+      validateFiniteNumber(this.id, 'symmetryTolerance', tolerance, 0);
+      this.toleranceValues = getGPUSpatialWeightsTransposeParameterValues({
+        symmetryTolerance: tolerance
+      });
+    } else {
+      validateSinglePackedView(tolerance, ['float32'], `${this.id} symmetryTolerance`);
+      validateCapacity(
+        this.id,
+        'symmetryTolerance.length',
+        tolerance.length,
+        GPU_SPATIAL_WEIGHTS_TRANSPOSE_PARAMETER_LENGTH
+      );
+      this.toleranceValues = tolerance;
+    }
     const plan = planSpatialWeightsTranspose(this.id, OPERATION, props);
     this.rowCount = plan.rowCount;
     this.columnCount = plan.columnCount;
@@ -90,10 +122,17 @@ export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    return getSpatialWeightsTransposeNodes(graph, id, OPERATION, props, {
-      rowCount: this.rowCount,
-      columnCount: this.columnCount,
-      outputWeights: this.outputWeights
-    });
+    return getSpatialWeightsTransposeNodes(
+      graph,
+      id,
+      OPERATION,
+      props,
+      {
+        rowCount: this.rowCount,
+        columnCount: this.columnCount,
+        outputWeights: this.outputWeights
+      },
+      this.toleranceValues
+    );
   }
 }

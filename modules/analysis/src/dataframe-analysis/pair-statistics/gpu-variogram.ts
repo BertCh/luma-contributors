@@ -9,6 +9,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -409,17 +410,16 @@ fn getVariogramScales() -> VariogramScales {
         {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
         {name: 'unitVarianceView', view: unitVariance, type: 'f32', access: 'read'}
       ],
-      declarations: scaleWGSL,
+      declarations: `${scaleWGSL}\n${GUARDED_ATAN2_WGSL}`,
       focusPrologue: `let scales = getVariogramScales();
     let focusValue = statistics[statisticsOffset + focus];
     let azimuthOffset = readParameter(5u);`,
       pairAction: `let lag = min(u32(pairDistance / lattice.maximumDistance * f32(LAG_COUNT)), LAG_COUNT - 1u);
             var sector = 0u;
             // A coincident pair has no direction and atan2(0, 0) is indeterminate in WGSL: it
-            // stays in sector 0. A -0.0 deltaX is harmless here, because the angle is reduced
-            // modulo pi and both +pi/2 and -pi/2 reduce to pi/2.
+            // stays in sector 0. Guard either sign of zero deltaX before reducing modulo pi.
             if (DIRECTION_COUNT > 1u && (deltaX != 0.0 || deltaY != 0.0)) {
-              let angle = atan2(deltaY, deltaX) - azimuthOffset;
+              let angle = guardedAtan2(deltaY, deltaX) - azimuthOffset;
               let reduced = angle - floor(angle / PI) * PI;
               sector = min(u32(max(reduced, 0.0) / PI * f32(DIRECTION_COUNT)), DIRECTION_COUNT - 1u);
             }

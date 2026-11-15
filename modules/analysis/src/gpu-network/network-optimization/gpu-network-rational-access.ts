@@ -8,6 +8,19 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import type {
+  GPUInvalidStatusPort,
+  GPUIterationStatusPort
+} from '../../analysis-core/contracts/status';
+import {
+  createNetworkOptimizationStatusNodes,
+  getNetworkOptimizationStatusViews,
+  validateNetworkOptimizationStatus
+} from './network-optimization-status';
+import {
+  getRationalAccessCycleKernel,
+  RATIONAL_ACCESS_WORKGROUP_SIZE
+} from './network-rational-access-cycles';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
@@ -18,11 +31,11 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
-/** Largest demand (origin) row count: the single invocation keeps per-origin state in private arrays. */
+/** Largest origin count: one lane per origin in the cooperative cycle workgroup. */
 const MAXIMUM_ORIGIN_COUNT = 64;
-/** Largest supply (facility) row count: the single invocation keeps per-facility state in private arrays. */
+/** Largest facility count: one lane per facility in the cooperative cycle workgroup. */
 const MAXIMUM_FACILITY_COUNT = 32;
-/** Largest cycle count: bounds the equalization loop of the single invocation. */
+/** Largest cycle count: bounds workgroup-local equalization without growing the command graph. */
 const MAXIMUM_CYCLES = 4096;
 /** Default `maximumCycles`. */
 const DEFAULT_MAXIMUM_CYCLES = 150;
@@ -30,8 +43,21 @@ const DEFAULT_MAXIMUM_CYCLES = 150;
 const DEFAULT_INITIAL_LIMIT_CYCLES = 20;
 /** Rows of the `parameters` view: tau, rho, initial step, minimum step, half-life, gap tolerance. */
 const PARAMETER_COUNT = 6;
-/** Words of the `status` view: valid, gap within tolerance, completed cycles, maximum gap bits. */
-const STATUS_WORD_COUNT = 4;
+/** Words of the `summary` view: valid, gap within tolerance, completed cycles, maximum gap bits. */
+const SUMMARY_WORD_COUNT = 4;
+
+export type GPUNetworkRationalAccessOutput = {
+  assignments: GraphDataView<'float32'>;
+  scores: GraphDataView<'float32'>;
+  unservedDemand: GraphDataView<'float32'>;
+  /** [valid, equilibriumGapWithinTolerance, completedCycles, maximumGapBits]. */
+  summary: GraphDataView<'uint32'>;
+  /** invalidCount is 1 for a rejected problem or nonfinite arithmetic. iterationCount counts
+   * completed allocation shifts; the initial gap evaluation is cycle zero. Only the final
+   * equilibrium gap certifies convergence; a rounding stall still reaches the cycle limit.
+   */
+  status?: GPUInvalidStatusPort & GPUIterationStatusPort;
+};
 
 export type GPUNetworkRationalAccessProps = {
   id?: string;
@@ -49,26 +75,24 @@ export type GPUNetworkRationalAccessProps = {
   stepMode?: 'fraction' | 'absolute';
   /** Early-cycle destination inflow cap; default 20, zero disables. */
   initialLimitCycles?: number;
-  output: {
-    assignments: GraphDataView<'float32'>;
-    scores: GraphDataView<'float32'>;
-    unservedDemand: GraphDataView<'float32'>;
-    /** [valid, equilibriumGapWithinTolerance, completedCycles, maximumGapBits]. */
-    status: GraphDataView<'uint32'>;
-  };
+  output: GPUNetworkRationalAccessOutput;
 };
 
 /**
  * Bounded integral/fractional rational-agent allocation with RAAM's travel/supply normalization,
  * pairwise congestion equalization and decaying demand-shift cap. Final scores use the final
- * allocation. Rounding-stalled allocation is not convergence; status reports the cost gap.
+ * allocation. Rounding-stalled allocation is not convergence; summary reports the cost gap.
  * Parallel origins move simultaneously. Bounds: 64 origins, 32 facilities, 4096 cycles.
  *
- * Reference tier (contributor contract rule 2): the cycles run in one GPU invocation
- * (`invocationCount: 1`); each cycle loops over every origin and facility, O(cycles * origins *
- * facilities), at most about 8.4e6 operations at the limits (64 * 32 * 4,096), enforced at
- * construction. The shift is already a Jacobi update, so a per-cycle row-parallel kernel with
- * facility load reductions would replace it for larger problems.
+ * Reference tier: initialization preserves ordered validation and partial results in one lane.
+ * Cycles run cooperatively in one 64-lane workgroup: one lane per origin scores and shifts,
+ * one per facility sums loads and inflow in ascending origin order. Ties and float32 summation
+ * order are unchanged. Uniform workgroup exits stop at equilibrium or invalid arithmetic.
+ * Bounds remain 64 origins, 32 facilities and 4,096 cycles; larger allocations need a separate
+ * multi-workgroup design. The command graph has two kernels plus optional named-status publication.
+ * Compile-time: view lengths, demandMode, stepMode, maximumCycles, initialLimitCycles and optional
+ * status views. Per-frame: costs, demand, supply and parameter contents. Every encoding rewrites
+ * the outputs.
  */
 export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
   readonly id: string;
@@ -103,7 +127,7 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
       props.output.unservedDemand
     ])
       validateSinglePackedView(view, ['float32'], this.id);
-    validateSinglePackedView(props.output.status, ['uint32'], this.id);
+    validateSinglePackedView(props.output.summary, ['uint32'], this.id);
     validateRequirement(
       id,
       props.costs.length === props.demand.length * props.supply.length,
@@ -131,10 +155,20 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
     );
     validateRequirement(
       id,
-      props.output.status.length === STATUS_WORD_COUNT,
-      `output.status must hold ${STATUS_WORD_COUNT} rows`
+      props.output.summary.length === SUMMARY_WORD_COUNT,
+      `output.summary must hold ${SUMMARY_WORD_COUNT} rows`
     );
-    validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
+    validateNetworkOptimizationStatus(
+      id,
+      [
+        props.output.assignments,
+        props.output.scores,
+        props.output.unservedDemand,
+        props.output.summary
+      ],
+      props.output.status
+    );
+    validateGraphOutputsDisjointFromInputs(this.id, getRationalAccessOutputViews(props.output), [
       props.costs,
       props.demand,
       props.supply,
@@ -150,13 +184,13 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
       props.demand,
       props.supply,
       props.parameters,
-      ...Object.values(props.output)
+      ...getRationalAccessOutputViews(props.output)
     ]);
-    return [
+    const nodes = [
       createWGSLKernelNode<Parameters>(graph, {
         id,
         operation: 'GPUNetworkRationalAccess',
-        variant: 'integral-fractional-step',
+        variant: 'initialize',
         invocationCount: 1,
         workgroupSize: 2,
         bindings: [
@@ -167,13 +201,13 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
           {name: 'assignments', view: props.output.assignments, type: 'f32', access: 'read_write'},
           {name: 'scores', view: props.output.scores, type: 'f32', access: 'read_write'},
           {name: 'unserved', view: props.output.unservedDemand, type: 'f32', access: 'read_write'},
-          {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
+          {name: 'summary', view: props.output.summary, type: 'u32', access: 'read_write'}
         ],
         declarations: `const ORIGIN_COUNT: u32 = ${props.demand.length}u; const FACILITY_COUNT: u32 = ${props.supply.length}u;
 ${IS_FINITE_VALUE_WGSL}
-fn roundEven(value: f32) -> f32 { let lower = floor(value); let fraction = value - lower; return lower + select(0.0, 1.0, fraction > 0.5 || (fraction == 0.5 && u32(lower) % 2u == 1u)); }`,
+`,
         body: `var nanBits = 0x7fc00000u; let missing = bitcast<f32>(nanBits); var infinityBits = 0x7f800000u; let infinity = bitcast<f32>(infinityBits);
-for (var word = 0u; word < 4u; word++) { status[statusOffset + word] = 0u; }
+for (var word = 0u; word < 4u; word++) { summary[summaryOffset + word] = 0u; }
 for (var entry = 0u; entry < ORIGIN_COUNT * FACILITY_COUNT; entry++) { assignments[assignmentsOffset + entry] = 0.0; }
 for (var origin = 0u; origin < ORIGIN_COUNT; origin++) { scores[scoresOffset + origin] = missing; unserved[unservedOffset + origin] = demand[demandOffset + origin]; }
 let travelScale = parameters[parametersOffset]; let supplyScale = parameters[parametersOffset + 1u];
@@ -193,50 +227,56 @@ for (var origin = 0u; origin < ORIGIN_COUNT; origin++) {
   if (nearest != 0xffffffffu) { assignments[assignmentsOffset + origin * FACILITY_COUNT + nearest] = amount; unserved[unservedOffset + origin] = 0.0; }
 }
 if (totalDemand > 16777216.0) { return; }
-status[statusOffset] = 1u;
-var loads: array<f32, ${props.supply.length}>; var incoming: array<f32, ${props.supply.length}>;
-var minima: array<u32, ${props.demand.length}>; var maxima: array<u32, ${props.demand.length}>; var shifts: array<f32, ${props.demand.length}>;
-for (var cycle = 0u; cycle <= ${props.maximumCycles ?? 150}u; cycle++) {
-  for (var facility = 0u; facility < FACILITY_COUNT; facility++) { loads[facility] = 0.0; incoming[facility] = 0.0; }
-  for (var origin = 0u; origin < ORIGIN_COUNT; origin++) { for (var facility = 0u; facility < FACILITY_COUNT; facility++) { loads[facility] += assignments[assignmentsOffset + origin * FACILITY_COUNT + facility]; } }
-  var maximumGap = 0.0;
-  let step = max(minimumStep, initialStep * exp2(-f32(cycle) / halfLife));
-  for (var origin = 0u; origin < ORIGIN_COUNT; origin++) {
-    shifts[origin] = 0.0; var lowest = infinity; var highest = -1.0; var minimum = 0u; var maximum = 0u; var weightedCost = 0.0;
-    for (var facility = 0u; facility < FACILITY_COUNT; facility++) {
-      let travel = costs[costsOffset + origin * FACILITY_COUNT + facility]; if (!isFiniteValue(travel)) { continue; }
-      let cost = travel / travelScale + loads[facility] / capacities[facility];
-      if (!isFiniteValue(cost)) { status[statusOffset] = 0u; return; }
-      let amount = assignments[assignmentsOffset + origin * FACILITY_COUNT + facility];
-      if (cost < lowest) { lowest = cost; minimum = facility; }
-      if (amount > 0.0 && cost > highest) { highest = cost; maximum = facility; }
-      weightedCost += cost * amount;
-    }
-    let amount = demand[demandOffset + origin];
-    if (highest < 0.0 || amount == 0.0) { continue; }
-    if (!isFiniteValue(weightedCost)) { status[statusOffset] = 0u; return; }
-    scores[scoresOffset + origin] = weightedCost / amount;
-    maximumGap = max(maximumGap, highest - lowest);
-    minima[origin] = minimum; maxima[origin] = maximum;
-    if (minimum == maximum) { continue; }
-    let held = assignments[assignmentsOffset + origin * FACILITY_COUNT + maximum];
-    // Pairwise equalization before simultaneous shifts; normalization is explicit caller input.
-    let equalizingShift = (highest - lowest) / (1.0 / capacities[minimum] + 1.0 / capacities[maximum]);
-    let boundedShift = max(0.0, min(held, min(equalizingShift, ${props.stepMode === 'absolute' ? 'step' : 'step * amount'})));
-    shifts[origin] = ${props.demandMode === 'fractional' ? 'boundedShift' : 'floor(boundedShift)'};
-    incoming[minimum] += shifts[origin];
-  }
-  status[statusOffset + 2u] = cycle; status[statusOffset + 3u] = bitcast<u32>(maximumGap);
-  if (maximumGap <= tolerance) { status[statusOffset + 1u] = 1u; break; }
-  if (cycle == ${props.maximumCycles ?? 150}u) { break; }
-  for (var origin = 0u; origin < ORIGIN_COUNT; origin++) {
-    var shift = shifts[origin]; if (shift == 0.0) { continue; }
-    if (cycle < ${props.initialLimitCycles ?? 20}u) { let limited = shift / max(1.0, incoming[minima[origin]] / capacities[minima[origin]]); shift = ${props.demandMode === 'fractional' ? 'limited' : 'roundEven(limited)'}; }
-    assignments[assignmentsOffset + origin * FACILITY_COUNT + minima[origin]] += shift;
-    assignments[assignmentsOffset + origin * FACILITY_COUNT + maxima[origin]] -= shift;
-  }
-}`
+summary[summaryOffset] = 1u;
+`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-cycles`,
+        operation: 'GPUNetworkRationalAccess',
+        variant: 'cooperative-cycles',
+        invocationCount: RATIONAL_ACCESS_WORKGROUP_SIZE,
+        workgroupSize: RATIONAL_ACCESS_WORKGROUP_SIZE,
+        guardIndex: false,
+        bindings: [
+          {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
+          {name: 'demand', view: props.demand, type: 'f32', access: 'read'},
+          {name: 'supply', view: props.supply, type: 'f32', access: 'read'},
+          {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+          {name: 'assignments', view: props.output.assignments, type: 'f32', access: 'read_write'},
+          {name: 'scores', view: props.output.scores, type: 'f32', access: 'read_write'},
+          {name: 'unserved', view: props.output.unservedDemand, type: 'f32', access: 'read_write'},
+          {name: 'summary', view: props.output.summary, type: 'u32', access: 'read_write'}
+        ],
+        ...getRationalAccessCycleKernel(props)
       })
     ];
+    nodes.push(
+      ...createNetworkOptimizationStatusNodes(
+        graph,
+        id,
+        'GPUNetworkRationalAccess',
+        props.output.summary,
+        props.output.status,
+        {
+          invalidCount: '1u - summary[summaryOffset]',
+          iterationCount: 'summary[summaryOffset + 2u]',
+          converged: 'summary[summaryOffset] * summary[summaryOffset + 1u]',
+          iterationLimitReached: 'summary[summaryOffset] * (1u - summary[summaryOffset + 1u])'
+        }
+      )
+    );
+    return nodes;
   }
+}
+
+function getRationalAccessOutputViews(
+  output: GPUNetworkRationalAccessProps['output']
+): GraphDataView[] {
+  return [
+    output.assignments,
+    output.scores,
+    output.unservedDemand,
+    output.summary,
+    ...getNetworkOptimizationStatusViews(output.status)
+  ];
 }

@@ -4,9 +4,46 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {WgslReflect} from 'wgsl_reflect';
-import {createSaturatedScanTotalNodes} from '../../src/analysis-core/kernels/scan-total';
+import {WgslExec, WgslParser, WgslReflect} from 'wgsl_reflect';
+import {
+  createSaturatedCountScanNodes,
+  createSaturatedScanTotalNodes,
+  SCAN_TOTAL_WGSL
+} from '../../src/analysis-core/kernels/scan-total';
 import {createNullWebGPUDevice} from './gpu-contributor-test-utils';
+
+it('scan arithmetic WGSL matches BigInt at uint32 and resize boundaries', () => {
+  const values = [
+    0, 1, 2, 765, 768, 771, 1536, 0x1fffffff, 0x20000000, 0x80000000, 0xfffffffe, 0xffffffff
+  ];
+  const multipliers = [0, 1, 2, 3, 7, 8, 31, 0x80000000, 0xffffffff];
+  const cases = values.flatMap(offset =>
+    values.flatMap(count => multipliers.map(multiplier => [offset, count, multiplier]))
+  );
+  const input = Uint32Array.from(cases.flat());
+  const output = new Uint32Array(2 * cases.length);
+  const source = `
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+${SCAN_TOTAL_WGSL}
+@compute @workgroup_size(1)
+fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
+  let row = invocation.x;
+  let sum = getSaturatedScanSum(input[3u * row], input[3u * row + 1u]);
+  output[2u * row] = sum;
+  output[2u * row + 1u] = getSaturatedScanProduct(sum, input[3u * row + 2u]);
+}`;
+  new WgslExec(new WgslParser().parse(source)).dispatchWorkgroups('main', [cases.length, 1, 1], {
+    0: {0: input, 1: output}
+  });
+  const saturate = (value: bigint) => Number(value > 0xffffffffn ? 0xffffffffn : value);
+  expect(Array.from(output)).toEqual(
+    cases.flatMap(([offset, count, multiplier]) => {
+      const sum = BigInt(offset) + BigInt(count);
+      return [saturate(sum), saturate(BigInt(saturate(sum)) * BigInt(multiplier))];
+    })
+  );
+});
 
 /** WGSL source and constants of every pipeline that `nodes` compile. */
 function getPipelineKeys(nodes: readonly unknown[]): string[] {
@@ -97,3 +134,30 @@ it('saturated scan total rejects a rowCount past its views and a totalRow past t
     /^pairs totalRow must be at most 3/
   );
 });
+
+for (const rowCount of [0, 1, 5000]) {
+  it(`saturated count scan shifts a uint64 prefix and rewrites its total (${rowCount} rows)`, () => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device, {id: 'saturated-count-scan'});
+    try {
+      const nodes = createSaturatedCountScanNodes(graph, {
+        id: 'counts',
+        operation: 'ScanTotalTest',
+        counts: createTransientView(graph, 'input', 'uint32', rowCount),
+        offsets: createTransientView(graph, 'offsets', 'uint32', rowCount + 1),
+        rowCount,
+        total: createTransientView(graph, 'total', 'uint32', 3),
+        totalRow: 1
+      });
+      const sources = getPipelineKeys(nodes);
+      expect(nodes.at(-1)?.id).toBe('counts-saturate');
+      const source = sources.at(-1)!;
+      expect(source).toContain('high[highOffset + index - 1u] != 0u');
+      expect(source).toContain('high[highOffset + ROW_COUNT - 1u] != 0u');
+      expect(source).toContain('total[totalOffset + TOTAL_ROW] = sum;');
+      expect(source).toContain('"TOTAL_ROW":1');
+    } finally {
+      device.destroy();
+    }
+  });
+}

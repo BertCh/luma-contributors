@@ -7,7 +7,10 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import type {Buffer, Device} from '@luma.gl/core';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
-import {GPUMarkedPointStatistics} from '../../../src/dataframe-analysis/pair-statistics/gpu-marked-point-statistics';
+import {
+  GPUMarkedPointStatistics,
+  type GPUMarkedPointStatisticsProps
+} from '../../../src/dataframe-analysis/pair-statistics/gpu-marked-point-statistics';
 import {GPURipley} from '../../../src/dataframe-analysis/pair-statistics/gpu-ripley';
 import {getGPURipleyParameterValues} from '../../../src/dataframe-analysis/pair-statistics/ripley-parameters';
 import {
@@ -200,6 +203,102 @@ it('GPUMarkedPointStatistics cross-type K keeps A / (n_i n_j) and one same-type 
     );
     expect((await readFloat32(single.buffer, 4)).every(Number.isNaN)).toBe(true);
     expect(await readUint32(singleStatus.buffer, 1)).toEqual([1]);
+  } finally {
+    context.destroy();
+  }
+});
+
+for (const scene of [
+  {firstCategoryMark: 2e38, secondCategoryMark: 1e-20},
+  {firstCategoryMark: -2e38, secondCategoryMark: 1e-20},
+  {firstCategoryMark: 2e38, secondCategoryMark: 1e-20, typePair: [1, 0] as const},
+  {firstCategoryMark: 3.4028234663852886e38, secondCategoryMark: 1e-20, firstCategoryCount: 3},
+  {firstCategoryMark: -3.4028234663852886e38, secondCategoryMark: 1e-20, firstCategoryCount: 3},
+  {firstCategoryMark: 1e-35, secondCategoryMark: 1e20}
+]) {
+  it(`marked category means remain finite for constant marks ${JSON.stringify(scene)}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const firstCategoryCount = scene.firstCategoryCount ?? 2;
+    const options: Partial<GPUMarkedPointStatisticsProps>[] = [
+      {},
+      {gridSize: [4, 4]},
+      {searchStructure: 'brute-force'}
+    ];
+    for (const searchOptions of options) {
+      const context = createContext(device);
+      try {
+        const statistics = context.output('float32', 4);
+        const pairCounts = context.output('uint32', 1);
+        const status = context.output('uint32', 1);
+        context.graph.add(
+          new GPUMarkedPointStatistics({
+            ...searchOptions,
+            positions: context.input('float32x2', [
+              ...new Array(firstCategoryCount * 2).fill(0),
+              1,
+              0
+            ]),
+            types: context.input('uint32', [...new Array(firstCategoryCount).fill(0), 1]),
+            typePair: scene.typePair ?? [0, 1],
+            marks: context.input('float32', [
+              ...new Array(firstCategoryCount).fill(scene.firstCategoryMark),
+              scene.secondCategoryMark
+            ]),
+            parameters: context.input('float32', [-1, -1, 2, 1, 2, 0]),
+            radiusCount: 1,
+            edgeCorrection: 'none',
+            output: {statistics: statistics.view, pairCounts: pairCounts.view, status: status.view}
+          })
+        );
+        context.run();
+        // Each category has constant marks, so mean pair products / product of category means = 1.
+        // Every category-0 point meets the category-1 point: K = area * n / (n * 1) = 6.
+        expectClose(
+          await readFloat32(statistics.buffer, 4),
+          [6, Math.sqrt(6 / Math.PI), 6 / (4 * Math.PI), 1],
+          JSON.stringify(searchOptions)
+        );
+        expect(await readUint32(pairCounts.buffer, 1)).toEqual([firstCategoryCount]);
+        expect(await readUint32(status.buffer, 1)).toEqual([0]);
+      } finally {
+        context.destroy();
+      }
+    }
+  });
+}
+
+it('marked means retain small marks after large opposite marks cancel outside the pair neighborhood', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const context = createContext(device);
+  try {
+    const statistics = context.output('float32', 4);
+    const pairCounts = context.output('uint32', 1);
+    const status = context.output('uint32', 1);
+    context.graph.add(
+      new GPUMarkedPointStatistics({
+        positions: context.input('float32x2', [2, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        types: context.input('uint32', [0, 0, 0, 0, 0, 0, 1]),
+        typePair: [0, 1],
+        marks: context.input('float32', [2e38, -2e38, 1e-35, 1e-35, 1e-35, 1e-35, 1e20]),
+        parameters: context.input('float32', [-1, -1, 4, 1, 0.5, 0]),
+        radiusCount: 1,
+        edgeCorrection: 'none',
+        output: {statistics: statistics.view, pairCounts: pairCounts.view, status: status.view}
+      })
+    );
+    context.run();
+    // The isolated opposite marks cancel in the category mean. Four pairs have the same product;
+    // the focus mean is 4/6 of their marks, so mark correlation = 6/4, independently of magnitude.
+    const estimate = (10 * 4) / 6;
+    expectClose(
+      await readFloat32(statistics.buffer, 4),
+      [estimate, Math.sqrt(estimate / Math.PI), estimate / (Math.PI * 0.25), 1.5],
+      'cancelling isolated marks'
+    );
+    expect(await readUint32(pairCounts.buffer, 1)).toEqual([4]);
+    expect(await readUint32(status.buffer, 1)).toEqual([0]);
   } finally {
     context.destroy();
   }

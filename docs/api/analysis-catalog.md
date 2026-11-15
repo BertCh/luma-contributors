@@ -11,6 +11,8 @@ small real datasets. Click a figure to open its card: summary, example, paramete
 
 Elements still without a recorded figure are listed on their entry's overview page.
 
+The Kepler example’s [validation and regression catalog](../../examples/deck/kepler-compute/VALIDATION-CATALOG.md) binds the existing GTWR, space-time kriging, Vecchia, applicability, conformal, scoring and FDR contributors with executable forms and diagnostics tables.
+
 ## The operator catalog
 
 The figures below are generated from recorded runs. Separately, the operator catalog is a data

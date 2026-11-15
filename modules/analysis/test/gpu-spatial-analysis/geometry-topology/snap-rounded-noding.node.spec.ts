@@ -35,7 +35,7 @@ const OWN_KERNELS = [
   'crossing-terms',
   'round-crossings',
   'row-ids',
-  'gather-x',
+  'hot-sort-pass-1-gather',
   'unique-hot',
   'compact-hot',
   'build-diagonals',

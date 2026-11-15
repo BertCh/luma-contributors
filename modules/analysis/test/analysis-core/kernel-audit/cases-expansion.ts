@@ -669,6 +669,26 @@ for (const operation of ['p-center', 'capacitated-p-median'] as const)
         );
       }
     );
+add('GPUNetworkStronglyConnectedComponents', 'binding-limited CSR,4096steps,allstatus', context => {
+  const nodeCount = context.maximumRows(4) - 1;
+  context.graph.add(
+    new network.GPUNetworkStronglyConnectedComponents({
+      topology: {
+        offsets: context.view('uint32', nodeCount + 1),
+        neighbors: context.view('uint32', context.maximumRows(4))
+      },
+      maximumIterations: network.GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_MAXIMUM_ITERATIONS,
+      output: {
+        strongComponents: context.view('uint32', nodeCount),
+        status: {
+          converged: context.view('uint32', 1),
+          iterationCount: context.view('uint32', 1),
+          iterationLimitReached: context.view('uint32', 1)
+        }
+      }
+    })
+  );
+});
 add('GPUNetworkStructure', '1024vertices65536slots,allfouroutputs', context => {
   context.graph.add(
     new network.GPUNetworkStructure({

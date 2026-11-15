@@ -51,7 +51,7 @@ it('GPUNetworkFacilityOptimization distinguishes exhausted enumeration from infe
       selectedFacilities: harness.output('uint32', 3),
       assignments: harness.output('uint32', 3),
       objective: harness.output('float32', 1),
-      status: harness.output('uint32', 4)
+      summary: harness.output('uint32', 4)
     };
     const result = await harness.run(
       new GPUNetworkFacilityOptimization({
@@ -70,7 +70,7 @@ it('GPUNetworkFacilityOptimization distinguishes exhausted enumeration from infe
         output
       })
     );
-    expect(result(output.status).slice(0, 3)).toEqual([1, 1, 1]);
+    expect(result(output.summary).slice(0, 3)).toEqual([1, 1, 1]);
     expect(result(output.objective)).toEqual([operation === 'p-dispersion' ? 5 : 1]);
     expect(result(output.selectedFacilities).reduce((sum, selected) => sum + selected, 0)).toBe(2);
   }
@@ -79,7 +79,7 @@ it('GPUNetworkFacilityOptimization distinguishes exhausted enumeration from infe
     selectedFacilities: harness.output('uint32', 1),
     assignments: harness.output('uint32', 1),
     objective: harness.output('float32', 1),
-    status: harness.output('uint32', 4)
+    summary: harness.output('uint32', 4)
   };
   const result = await harness.run(
     new GPUNetworkFacilityOptimization({
@@ -93,7 +93,7 @@ it('GPUNetworkFacilityOptimization distinguishes exhausted enumeration from infe
       output
     })
   );
-  expect(result(output.status)).toEqual([1, 0, 0, 0]);
+  expect(result(output.summary)).toEqual([1, 0, 0, 0]);
   expect(result(output.objective)[0]).toBeNaN();
 });
 
@@ -369,7 +369,7 @@ it('GPUNetworkFacilityOptimization finds the feasible unsplit assignment that de
     selectedFacilities: harness.output('uint32', 2),
     assignments: harness.output('uint32', 2),
     objective: harness.output('float32', 1),
-    status: harness.output('uint32', 4)
+    summary: harness.output('uint32', 4)
   };
   const result = await harness.run(
     new GPUNetworkFacilityOptimization({
@@ -385,7 +385,7 @@ it('GPUNetworkFacilityOptimization finds the feasible unsplit assignment that de
   );
   expect(result(output.assignments)).toEqual([1, 0]);
   expect(result(output.objective)).toEqual([3]);
-  expect(result(output.status)).toEqual([1, 1, 1, 4]);
+  expect(result(output.summary)).toEqual([1, 1, 1, 4]);
 });
 
 it('GPUNetworkRationalAccess balances tied facilities while preserving integral demand and unreachable rows', async () => {
@@ -396,7 +396,7 @@ it('GPUNetworkRationalAccess balances tied facilities while preserving integral 
     assignments: harness.output('float32', 4),
     scores: harness.output('float32', 2),
     unservedDemand: harness.output('float32', 2),
-    status: harness.output('uint32', 4)
+    summary: harness.output('uint32', 4)
   };
   const result = await harness.run(
     new GPUNetworkRationalAccess({
@@ -413,5 +413,5 @@ it('GPUNetworkRationalAccess balances tied facilities while preserving integral 
   expect(result(output.unservedDemand)).toEqual([0, 3]);
   expect(result(output.scores)[0]).toBeCloseTo(1);
   expect(result(output.scores)[1]).toBeNaN();
-  expect(result(output.status).slice(0, 2)).toEqual([1, 1]);
+  expect(result(output.summary).slice(0, 2)).toEqual([1, 1]);
 });

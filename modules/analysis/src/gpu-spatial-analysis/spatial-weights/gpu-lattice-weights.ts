@@ -8,16 +8,20 @@ import {
   GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import type {GPUContributorCapacityPlan} from '../../analysis-core/contracts/capacity-planning';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
 import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+  getGPULatticeWeightsParameterValues,
+  GPU_LATTICE_WEIGHTS_PARAMETER_LENGTH
+} from './spatial-weights-parameters';
 import {
   validateCapacity,
+  validateFiniteNumber,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -35,6 +39,8 @@ import {
 
 /** uint32 transients per cell: neighbor counts and their exclusive scan. */
 const CELL_WORDS = 2;
+/** Smallest positive float32 distance scale accepted by the distance kernel. */
+const MINIMUM_CELL_SIZE = 2 ** -149;
 
 const OPERATION = 'GPULatticeWeights';
 
@@ -47,7 +53,8 @@ export type GPULatticeCriterion = 'rook' | 'queen';
 /**
  * Properties for {@link GPULatticeWeights}.
  *
- * Compile-time: every prop except the contents of `mask`.
+ * Compile-time: topology, capacities and optional views. Per-frame: contents of `mask` and
+ * a cell-size parameter view. Numeric cell sizes are uploaded defaults.
  */
 export type GPULatticeWeightsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'lattice-weights'`. */
@@ -65,8 +72,12 @@ export type GPULatticeWeightsProps = {
   radius?: number;
   /** Optional per-cell selection (`width * height` rows): zero removes the cell as a row and as a neighbor. */
   mask?: GraphDataView<'uint32'>;
-  /** Cell width and height used for `output.distances`. Defaults to `[1, 1]`. */
-  cellSize?: readonly [number, number];
+  /**
+   * Cell width and height used for `output.distances`. Defaults to `[1, 1]`. Pass a packed
+   * float32 view from `getGPULatticeWeightsParameterValues` in a GPUParameterBuffer to update
+   * the distance scale between encodings without recompiling or changing the neighbor topology.
+   */
+  cellSize?: readonly [number, number] | GraphDataView<'float32'>;
   /**
    * Caller-owned output CSR with `width * height + 1` offsets. Binary weights (1); `distances`
    * (optional) hold the Euclidean distance between cell centers. `status.overflow` (required) is
@@ -107,6 +118,7 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
   readonly props: GPULatticeWeightsProps;
   /** The output CSR with `information` and `status` attached, for consumers. */
   readonly outputWeights: GPUSpatialWeights;
+  private readonly cellSizeParameters: Float32Array | GraphDataView<'float32'>;
 
   constructor(props: GPULatticeWeightsProps) {
     const id = props.id ?? 'lattice-weights';
@@ -120,14 +132,21 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
     validateCapacity(id, 'width * height', props.width * props.height, 1, 2 ** 31 - 1);
     const radius = props.radius ?? 1;
     validateCapacity(id, 'radius', radius, 1, GPU_LATTICE_WEIGHTS_MAXIMUM_RADIUS);
-    if (
-      props.cellSize &&
-      !(
-        props.cellSize.length === 2 &&
-        props.cellSize.every(size => Number.isFinite(size) && size > 0)
-      )
-    ) {
-      throw new Error(`${id} cellSize must be two positive finite numbers`);
+    if (props.cellSize instanceof GraphDataView) {
+      validateSinglePackedView(props.cellSize, ['float32'], `${id} cellSize`);
+      validateCapacity(
+        id,
+        'cellSize.length',
+        props.cellSize.length,
+        GPU_LATTICE_WEIGHTS_PARAMETER_LENGTH
+      );
+      this.cellSizeParameters = props.cellSize;
+    } else {
+      const cellSize = props.cellSize ?? [1, 1];
+      validateRequirement(id, cellSize.length === 2, 'cellSize must have exactly 2 elements');
+      validateFiniteNumber(id, 'cellSize[0]', cellSize[0], MINIMUM_CELL_SIZE);
+      validateFiniteNumber(id, 'cellSize[1]', cellSize[1], MINIMUM_CELL_SIZE);
+      this.cellSizeParameters = getGPULatticeWeightsParameterValues({cellSize});
     }
     const rows = props.width * props.height;
     if (props.mask) {
@@ -155,17 +174,22 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
         ...getGPUSpatialWeightsViews(props.output),
         ...getGPUSpatialWeightsStatusViews(props.output)
       ],
-      [props.mask]
+      [props.mask, props.cellSize instanceof GraphDataView ? props.cellSize : undefined]
     );
   }
 
   /**
    * Plans the next slot allocation of the grow loop from the read-back `requiredCount` (or, without
-   * one, the current capacity). `estimatedPeakTransientBytes` counts the per-cell transients this
-   * contributor declares; the device-dependent gpgpu scan scratch is not included.
+   * one, the current capacity). `estimatedPeakTransientBytes` counts the per-cell transients and
+   * uploaded distance parameters this contributor declares; borrowed parameter views and the
+   * device-dependent gpgpu scan scratch are not included.
    */
   getCapacityPlan(observation: {requiredCount?: number} = {}): GPULatticeWeightsCapacityPlan {
     const rows = this.props.width * this.props.height;
+    const parameterBytes =
+      this.props.output.distances && this.cellSizeParameters instanceof Float32Array
+        ? this.cellSizeParameters.byteLength
+        : 0;
     const slots = getGPUSpatialWeightsCapacityPlan({
       rowCount: rows,
       capacity: this.props.output.neighbors.length,
@@ -176,7 +200,8 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
       slots,
       estimatedWorkItems: rows + slots.capacity,
       estimatedOutputBytes: slots.estimatedOutputBytes,
-      estimatedPeakTransientBytes: CELL_WORDS * rows * Uint32Array.BYTES_PER_ELEMENT
+      estimatedPeakTransientBytes:
+        CELL_WORDS * rows * Uint32Array.BYTES_PER_ELEMENT + parameterBytes
     };
   }
 
@@ -190,13 +215,16 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
     const {overflow, requiredCount} = weights.status;
     validateGraphViewsBelongToGraph(id, graph, [
       mask,
+      props.cellSize instanceof GraphDataView ? props.cellSize : undefined,
       ...getGPUSpatialWeightsViews(weights),
       ...getGPUSpatialWeightsStatusViews(weights)
     ]);
     const rows = width * height;
     const capacity = weights.neighbors.length;
     const radius = props.radius ?? 1;
-    const [cellWidth, cellHeight] = props.cellSize ?? [1, 1];
+    const runtime = weights.distances
+      ? createSpatialStatisticsParameterNodes(graph, `${id}-parameters`, this.cellSizeParameters)
+      : undefined;
     // CELL_WORDS views per cell.
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', rows);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', rows);
@@ -206,9 +234,7 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
     const declarations = `const WIDTH: i32 = ${width};
 const HEIGHT: i32 = ${height};
 const RADIUS: i32 = ${radius};
-const QUEEN: bool = ${props.criterion === 'queen'};
-const CELL_WIDTH: f32 = ${getWGSLFloatLiteral(cellWidth)};
-const CELL_HEIGHT: f32 = ${getWGSLFloatLiteral(cellHeight)};`;
+const QUEEN: bool = ${props.criterion === 'queen'};`;
     // Visits the in-bounds, unmasked neighbors of cell `index` by ascending ID.
     const visitWGSL = (onNeighbor: string) => `let cellX = i32(index) % WIDTH;
   let cellY = i32(index) / WIDTH;
@@ -235,6 +261,7 @@ const CELL_HEIGHT: f32 = ${getWGSLFloatLiteral(cellHeight)};`;
   }`;
     const scanTotal = createTransientView(graph, `${id}-scan-total`, 'uint32', 1);
     return [
+      ...(runtime?.nodes ?? []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-counts`,
         operation: OPERATION,
@@ -300,6 +327,16 @@ const CAPACITY: u32 = ${capacity}u;`,
         operation: OPERATION,
         variant: 'emit',
         bindings: [
+          ...(runtime
+            ? [
+                {
+                  name: 'parameters',
+                  view: runtime.parameters,
+                  type: 'f32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
           ...maskBinding,
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
           {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read_write'},
@@ -324,7 +361,7 @@ const CAPACITY: u32 = ${capacity}u;`,
             weights[weightsOffset + next] = 1.0;
             ${
               weights.distances
-                ? `distances[distancesOffset + next] = sqrt(f32(dx * dx) * CELL_WIDTH * CELL_WIDTH + f32(dy * dy) * CELL_HEIGHT * CELL_HEIGHT);`
+                ? `distances[distancesOffset + next] = sqrt(f32(dx * dx) * parameters[parametersOffset] * parameters[parametersOffset] + f32(dy * dy) * parameters[parametersOffset + 1u] * parameters[parametersOffset + 1u]);`
                 : ''
             }
             next++;

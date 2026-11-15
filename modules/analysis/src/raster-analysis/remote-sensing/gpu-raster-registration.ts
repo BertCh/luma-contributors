@@ -68,6 +68,8 @@ export type GPURasterRegistrationProps = {
     shift: GraphDataView<'float32x2'>;
     peak: GraphDataView<'float32'>;
     status: GraphDataView<'uint32'>;
+    /** Nonadjacent coarse second/first peak ratio in [0,1]; NaN without positive evidence. */
+    secondPeakRatio?: GraphDataView<'float32'>;
     /** Optional masked-mode paired-valid support at the accepted refined shift. */
     overlap?: GraphDataView<'uint32'>;
   };
@@ -118,7 +120,8 @@ function createRegistrationKernel<Parameters>(
 /** Periodic unmasked phase correlation with separable localized upsampled inverse DFT.
  * Output (column,row) is the translation to apply to moving to align reference. Dimensions
  * are radix-two 2–2048. Status 1=nonfinite/flat input or unusable spectrum,
- * 2=ambiguous nonadjacent peak.
+ * 2=ambiguous nonadjacent peak. Optional secondPeakRatio compares coarse nonadjacent peaks,
+ * including ambiguous ties (1); invalid input has a NaN ratio.
  * Masked-linear mode instead uses padded normalized cross-correlation and bilinear
  * subpixel refinement, accepts dimensions 2–512, and returns status 3 for inadequate support.
  */
@@ -398,7 +401,10 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
           rasterBinding('secondaryValue', secondaryValue),
           rasterBinding('screens', screens),
           complexBinding('coarse', coarse, true),
-          rasterBinding('status', props.output.status, true)
+          rasterBinding('status', props.output.status, true),
+          ...(props.output.secondPeakRatio
+            ? [rasterBinding('secondPeakRatio', props.output.secondPeakRatio, true)]
+            : [])
         ],
         declarations: RASTER_FINITE_WGSL,
         body: `let maximum = peakValue[peakValueOffset]; let secondary = secondaryValue[secondaryValueOffset]; let selected = peakIndex[peakIndexOffset];
@@ -408,6 +414,7 @@ let isFlat = screens[screensOffset + 1u] == 0u || screens[screensOffset + 3u] ==
 // Removing DC makes every nonempty finite correlation field have a positive maximum.
 // A zero field has no alignment evidence, even when all peaks are adjacent on a 2x2 grid.
 var code = 0u; if (!valid || isFlat || !finite(maximum) || maximum <= 0.0) { code = 1u; } else if (maximum - secondary <= abs(maximum) * ${props.ambiguityTolerance ?? 1e-4}) { code = 2u; }
+${props.output.secondPeakRatio ? 'var ratio = missing(); if (code != 1u) { ratio = clamp(max(secondary, 0.0) / maximum, 0.0, 1.0); } secondPeakRatio[secondPeakRatioOffset] = ratio;' : ''}
 status[statusOffset] = code; coarse[coarseOffset] = vec2<f32>(f32(select(i32(position.x), i32(position.x) - ${props.grid.width}, position.x > ${props.grid.width / 2}u)), f32(select(i32(position.y), i32(position.y) - ${props.grid.height}, position.y > ${props.grid.height / 2}u)));`
       })
     );

@@ -14,6 +14,21 @@ import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
 import {BIN_INDEX_WGSL} from '../shared/bin-index-wgsl';
 import {IS_FINITE_BITS_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
+import {
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_INDEXED_ROW_COUNT,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DEFAULT_GRID_DIMENSION
+} from './geographically-weighted-regression-parameters';
+
+/** Shared automatic GWR grid: about eight rows per cell, starting at 1024 rows. @internal */
+export function getDefaultGWRGridSize(rowCount: number): readonly [number, number] | undefined {
+  if (rowCount < GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_INDEXED_ROW_COUNT) return undefined;
+  const dimension = Math.min(
+    Math.max(1, Math.ceil(Math.sqrt(rowCount / 8))),
+    GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DEFAULT_GRID_DIMENSION
+  );
+  return [dimension, dimension];
+}
+
 /** Rows summed by one thread of the extent pass. */
 const BOUNDS_TILE_ROWS = 256;
 

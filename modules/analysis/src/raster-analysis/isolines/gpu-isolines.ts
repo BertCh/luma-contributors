@@ -16,14 +16,28 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateIsolinesTile,
+  validateIsolinesMaximumSegmentCount,
+  type GPUIsolinesTile
+} from './isolines-tile';
 import {
   createRasterGatedLoopNodes,
   createRasterIterationResetNode,
   createRasterIterationState
 } from '../cost-distance/raster-relaxation';
 import {validateRasterGrid} from '../raster-band-utils';
-import type {GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  getRasterAlgebraInputNodes,
+  getRasterAlgebraInputViews,
+  isRasterAlgebraBand,
+  validateRasterAlgebraInput
+} from '../raster-algebra/raster-algebra-input';
 import {GPU_ISOLINES_PARAMETER_LENGTH} from './isolines-parameters';
 import {
   getIsolinesCornersWGSL,
@@ -45,7 +59,7 @@ export type GPUIsolinesOutput = {
   segmentLevels: GraphDataView<'uint32'>;
   /**
    * Optional `[startEdge, endEdge]` per segment: the global ids of the raster edges that hold p0
-   * and p1. Horizontal edge `(c, r) -> (c + 1, r)` is `r * (width - 1) + c`; vertical edge
+   * and p1. With `tile`, width/height and coordinates below refer to the whole domain. Horizontal edge `(c, r) -> (c + 1, r)` is `r * (width - 1) + c`; vertical edge
    * `(c, r) -> (c, r + 1)` is `height * (width - 1) + r * width + c`.
    */
   segmentEdges?: GraphDataView<'uint32x2'>;
@@ -105,7 +119,7 @@ export type GPUIsolinesPolylineOutput = {
  * Properties for {@link GPUIsolines}.
  *
  * Topology: `grid` size, `levels.length` (the maximum level count), the segment and vertex
- * capacities, `noDataValue`, and which optional views exist. Per-frame (no recompile): raster and
+ * capacities, `tile`, `noDataValue`, band metadata and which optional views exist. Per-frame (no recompile): raster and
  * `levels` contents, and `parameters` (`levelCount`, extent).
  */
 export type GPUIsolinesProps = {
@@ -113,11 +127,13 @@ export type GPUIsolinesProps = {
   id?: string;
   /** Raster grid: its width and height (each at least 2) size the kernels. */
   grid: GPURasterMetadata;
-  /** Packed row-major float32 raster of at least `width * height` rows. NaN and infinities are nodata. */
-  values: GraphDataView<'float32'>;
+  /** Optional halo tile placement and half-open cell ownership; fixed for the compiled graph. */
+  tile?: GPUIsolinesTile;
+  /** Published band or packed row-major float32 raster. Non-finite samples are nodata. */
+  values: GraphDataView<'float32'> | GPURasterBand;
   /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
   mask?: GraphDataView<'uint32'>;
-  /** Optional finite sentinel treated as nodata. */
+  /** Optional finite sentinel for legacy values only; bands use their native sentinel. */
   noDataValue?: number;
   /** Level values; rows `[0, levelCount)` are active. Contents may change per frame. */
   levels: GraphDataView<'float32'>;
@@ -140,16 +156,27 @@ export type GPUIsolinesProps = {
  * polylines a link pass, a fixed number of pointer-jumping rounds, scans and a gather. Changing
  * levels, `levelCount`, or the extent never recompiles.
  *
- * Precision: vertices are `minX + (gridX + 0.5) * cellWidth` in float32 relative to the packer's
- * `localOrigin`. Absolute vertices (the default origin `[0, 0]`) are quantized to the float32 ulp,
+ * Tiling: `tile` owns cells by their lower-left sample in a half-open rectangle. Supply all four
+ * samples of every owned cell (a one-sample right/top halo at internal tile boundaries). Counts,
+ * capacity status and stitching include only owned cells. Use the SAME domain parameters and
+ * localOrigin for every tile: domain sample offsets and the shared sample anchors are combined
+ * in integer arithmetic before conversion and interpolation, so seam endpoints use the same
+ * float32 expression. `segmentEdges` then holds domain edge IDs;
+ * pair them with `segmentLevels` to join tile fragments without coordinate snapping. Polylines
+ * are stitched within each owned rectangle; cross-tile chains remain fragments. External vector
+ * overlays must use this same origin and coordinate frame (row 0 at minY).
+ *
+ * Precision: vertices are `anchorX + (gridX - columnAnchor + 0.5) * cellWidth` in float32,
+ * relative to the packer's `localOrigin`. The integer sample subtraction precedes conversion to
+ * float32; an origin near a large sample index therefore retains sub-cell coordinates. Absolute vertices (the default origin `[0, 0]`) are quantized to the float32 ulp,
  * 0.5 m at a UTM northing of 4.6e6 m (2 m at 2e7 m in EPSG:3857). With `localOrigin` set to the
  * raster or tile corner, a vertex is within about `1.2e-7` of its distance from that corner of the
  * float64 crossing (1.2 cm at 100 km); add the origin back on the CPU or as the layer's coordinate
  * origin.
  *
  * Row direction: row 0 of the raster is placed at `minY` of the per-frame extent and rows advance
- * toward larger y. Only the width and height of `grid` are read; `grid.affine` is not, and nothing
- * is checked at construction. A north-up grid (row 0 at the top, the default of
+ * toward larger y. Placement uses only the dimensions of `grid` (or the domain with `tile`);
+ * `grid.affine` is checked for finite values at construction but is not used for placement. A north-up grid (row 0 at the top, the default of
  * `makeGPURasterMetadata`) therefore comes out mirrored north to south unless the caller reverses
  * the row order of the raster before upload. Mirroring the output instead (`y' = minY + maxY - y`)
  * also swaps the documented side: high values are then on the right of a segment, and ring
@@ -175,16 +202,12 @@ export class GPUIsolines implements GPUCommandNodeProducer, GPURasterHaloStage {
     const polylines = output?.polylines;
     validateRasterGrid(id, props.grid);
     const {width, height} = props.grid;
-    if (width < 2 || height < 2) {
-      throw new Error(`${id} grid width and height must be at least 2`);
-    }
-    if (width * height > 0xffffffff / 2) {
-      throw new Error(`${id} raster is too large for 32-bit edge identifiers`);
-    }
+    validateIsolinesTile(id, props.grid, props.tile);
+    validateIsolinesMaximumSegmentCount(id, props.grid, props.tile, props.levels.length);
     if (props.noDataValue !== undefined && !Number.isFinite(props.noDataValue)) {
       throw new Error(`${id} noDataValue must be finite (NaN cells are always nodata)`);
     }
-    validateIsolinesView(id, 'values', props.values, 'float32', width * height);
+    validateRasterAlgebraInput(id, 'values', props.values, props.grid, width * height);
     validateIsolinesView(id, 'mask', props.mask, 'uint32', width * height);
     validateIsolinesView(id, 'levels', props.levels, 'float32', 1);
     validateIsolinesView(
@@ -262,7 +285,7 @@ export class GPUIsolines implements GPUCommandNodeProducer, GPURasterHaloStage {
     validateIsolinesAliasing(
       id,
       [...this.getOutputViews()],
-      [props.values, props.mask, props.levels, props.parameters]
+      [...getRasterAlgebraInputViews(props.values), props.mask, props.levels, props.parameters]
     );
   }
 
@@ -295,24 +318,44 @@ export class GPUIsolines implements GPUCommandNodeProducer, GPURasterHaloStage {
     const {polylines} = output;
     const {width, height} = props.grid;
     validateGraphViewsBelongToGraph(id, graph, [
-      props.values,
+      ...getRasterAlgebraInputViews(props.values),
       props.mask,
       props.levels,
       props.parameters,
       ...this.getOutputViews()
     ]);
-    const nodes: GPUCommandNode<Parameters>[] = [];
     const cellCount = (width - 1) * (height - 1);
+    // Check the largest row-proportional scratch binding before creating any command nodes.
+    for (const [name, byteLength] of [
+      ['cell scratch', cellCount * 4],
+      ['segment scratch', segmentCapacity * 8],
+      ['polyline scratch', (polylines?.vertices.length ?? 0) * 8]
+    ] as const) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'use smaller tiles or capacities'
+      );
+    }
+    const source = getRasterAlgebraInputNodes(graph, `${id}-source`, props.values, props.grid);
+    const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
+    const ownedCells = props.tile?.ownedCells ?? [0, 0, width - 1, height - 1];
     const hasValidity = Boolean(props.mask);
     const common = `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
 const MAXIMUM_LEVELS: u32 = ${maximumLevelCount}u;
 const CAPACITY: u32 = ${segmentCapacity}u;
-${getIsolinesCornersWGSL(hasValidity, props.noDataValue)}`;
+${getIsolinesCornersWGSL(hasValidity, isRasterAlgebraBand(props.values) ? undefined : props.noDataValue)}
+fn ownsCell(column: u32, row: u32) -> bool {
+  return column >= ${ownedCells[0]}u && column < ${ownedCells[2]}u &&
+    row >= ${ownedCells[1]}u && row < ${ownedCells[3]}u;
+}`;
     const rasterBindings: WGSLKernelBinding[] = [
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'levels', view: props.levels, type: 'f32', access: 'read'},
-      {name: 'raster', view: props.values, type: 'f32', access: 'read'},
+      {name: 'raster', view: source.values, type: 'f32', access: 'read'},
       ...(props.mask
         ? [{name: 'validity', view: props.mask, type: 'u32', access: 'read'} as const]
         : [])
@@ -343,7 +386,7 @@ ${getIsolinesCornersWGSL(hasValidity, props.noDataValue)}`;
   let cy = index / (WIDTH - 1u);
   let corners = loadCorners(cx, cy);
   var cellTotal = 0u;
-  if (corners.valid) {
+  if (ownsCell(cx, cy) && corners.valid) {
     let levelCount = min(u32(max(params[paramsOffset], 0.0)), MAXIMUM_LEVELS);
     for (var levelIndex = 0u; levelIndex < levelCount; levelIndex++) {
       let mask = getHighMask(corners.v, levels[levelsOffset + levelIndex]);
@@ -386,11 +429,11 @@ ${getIsolinesCornersWGSL(hasValidity, props.noDataValue)}`;
         ],
         invocationCount: cellCount,
         declarations: `${common}
-${getCrossingWGSL()}`,
+${getCrossingWGSL(props.tile)}`,
         body: `let cx = index % (WIDTH - 1u);
   let cy = index / (WIDTH - 1u);
   let corners = loadCorners(cx, cy);
-  if (!corners.valid) {
+  if (!ownsCell(cx, cy) || !corners.valid) {
     return;
   }
   let v = corners.v;
@@ -457,6 +500,37 @@ ${getCrossingWGSL()}`,
           edges,
           polylines,
           common: getStitchWGSL(width, height)
+        })
+      );
+    }
+    if (props.tile && output.segmentEdges) {
+      const {domainWidth, domainHeight, columnOffset, rowOffset} = props.tile;
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-domain-edges`,
+          operation: OPERATION,
+          variant: 'domain-edges',
+          bindings: [
+            {name: 'edges', view: output.segmentEdges, type: 'u32', access: 'read_write'},
+            {name: 'count', view: output.status.count, type: 'u32', access: 'read'}
+          ],
+          invocationCount: segmentCapacity,
+          body: `if (index >= count[countOffset]) { return; }
+  for (var endpoint = 0u; endpoint < 2u; endpoint++) {
+    let position = edgesOffset + 2u * index + endpoint;
+    let edge = edges[position];
+    var domainEdge = 0u;
+    if (edge < ${height * (width - 1)}u) {
+      domainEdge = (edge / ${width - 1}u + ${rowOffset}u) * ${domainWidth - 1}u +
+        edge % ${width - 1}u + ${columnOffset}u;
+    } else {
+      let vertical = edge - ${height * (width - 1)}u;
+      domainEdge = ${domainHeight * (domainWidth - 1)}u +
+        (vertical / ${width}u + ${rowOffset}u) * ${domainWidth}u +
+        vertical % ${width}u + ${columnOffset}u;
+    }
+    edges[position] = domainEdge;
+  }`
         })
       );
     }
@@ -953,7 +1027,7 @@ ${declarations}`,
 }
 
 /** WGSL `getEdgeCrossing(k, level, v, cx, cy)` in world coordinates, canonical edge direction. */
-function getCrossingWGSL(): string {
+function getCrossingWGSL(tile?: GPUIsolinesTile): string {
   return /* wgsl */ `${ISOLINES_SADDLE_WGSL}
 
 // The entry edge a segment leaving through exitEdge ends on, walking the cell boundary.
@@ -968,10 +1042,12 @@ fn getPairedEntry(exitEdge: u32, entries: u32, isJoined: bool) -> u32 {
 }
 
 fn getEdgeCrossing(k: u32, level: f32, v: vec4<f32>, cx: u32, cy: u32) -> vec2<f32> {
-  let minX = params[paramsOffset + 1u];
-  let minY = params[paramsOffset + 2u];
+  let anchorX = params[paramsOffset + 1u];
+  let anchorY = params[paramsOffset + 2u];
   let cellWidth = params[paramsOffset + 3u];
   let cellHeight = params[paramsOffset + 4u];
+  let columnAnchor = i32(params[paramsOffset + 5u]);
+  let rowAnchor = i32(params[paramsOffset + 6u]);
   // Canonical orientation: horizontal edges run +x, vertical edges run +y.
   var a = v.x;
   var b = v.y;
@@ -987,13 +1063,13 @@ fn getEdgeCrossing(k: u32, level: f32, v: vec4<f32>, cx: u32, cy: u32) -> vec2<f
   }
   let t = (level - a) / (b - a);
   if (k == 0u || k == 2u) {
-    let gridX = f32(cx) + t;
-    let gridY = f32(cy + select(0u, 1u, k == 2u));
-    return vec2<f32>(minX + (gridX + 0.5) * cellWidth, minY + (gridY + 0.5) * cellHeight);
+    let gridX = f32(i32(cx + ${tile?.columnOffset ?? 0}u) - columnAnchor) + t;
+    let gridY = f32(i32(cy + ${tile?.rowOffset ?? 0}u + select(0u, 1u, k == 2u)) - rowAnchor);
+    return vec2<f32>(anchorX + (gridX + 0.5) * cellWidth, anchorY + (gridY + 0.5) * cellHeight);
   }
-  let gridX = f32(cx + select(0u, 1u, k == 1u));
-  let gridY = f32(cy) + t;
-  return vec2<f32>(minX + (gridX + 0.5) * cellWidth, minY + (gridY + 0.5) * cellHeight);
+  let gridX = f32(i32(cx + ${tile?.columnOffset ?? 0}u + select(0u, 1u, k == 1u)) - columnAnchor);
+  let gridY = f32(i32(cy + ${tile?.rowOffset ?? 0}u) - rowAnchor) + t;
+  return vec2<f32>(anchorX + (gridX + 0.5) * cellWidth, anchorY + (gridY + 0.5) * cellHeight);
 }`;
 }
 

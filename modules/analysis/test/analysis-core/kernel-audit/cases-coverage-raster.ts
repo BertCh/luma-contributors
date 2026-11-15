@@ -7,6 +7,7 @@ import {
   GPURasterTexture,
   GPURasterTemporal,
   GPURasterRegistration,
+  GPURasterSpectralFilter,
   GPURasterRegionGraph,
   GPURasterSpectralUnmixing,
   GPURasterSeasonalBreak,
@@ -17,6 +18,31 @@ import type {KernelAuditCase} from './kernel-audit-context';
 
 /** Every bounded remote-sensing kernel variant at documented model and binding limits. */
 export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
+  ...(['low-pass', 'high-pass', 'band-pass', 'gaussian', 'notch'] as const).map(filter => ({
+    exportName: 'GPURasterSpectralFilter',
+    name: `maximum-periodic-dimensions-${filter}`,
+    build: ({graph, view}: Parameters<KernelAuditCase['build']>[0]) => {
+      const count = 2048 ** 2;
+      graph.add(
+        new GPURasterSpectralFilter({
+          grid: makeGPURasterMetadata({width: 2048, height: 2048}),
+          input: {
+            id: 'spectral-input',
+            format: 'float32',
+            storage: {kind: 'buffer', values: view('float32', count)},
+            validity: view('uint32', count)
+          },
+          filter,
+          parameters: view('float32', 8),
+          output: {
+            values: view('float32', count),
+            validity: view('uint32', count),
+            status: {invalidCount: view('uint32', 1)}
+          }
+        })
+      );
+    }
+  })),
   ...(['destination-area', 'covered-area', 'extensive'] as const).flatMap(normalization =>
     (['scratch', 'prepare', 'reuse'] as const).map(weightMode => ({
       exportName: 'GPURasterConservativeRemapping',
@@ -166,7 +192,12 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
           reference: view('float32', 2048 ** 2),
           moving: view('float32', 2048 ** 2),
           upsampleFactor: 32,
-          output: {shift: view('float32x2', 1), peak: view('float32', 1), status: view('uint32', 1)}
+          output: {
+            shift: view('float32x2', 1),
+            peak: view('float32', 1),
+            status: view('uint32', 1),
+            secondPeakRatio: view('float32', 1)
+          }
         })
       );
     }
@@ -191,7 +222,8 @@ export const COVERAGE_RASTER_KERNEL_CASES: KernelAuditCase[] = [
             shift: view('float32x2', 1),
             peak: view('float32', 1),
             status: view('uint32', 1),
-            overlap: view('uint32', 1)
+            overlap: view('uint32', 1),
+            secondPeakRatio: view('float32', 1)
           }
         })
       );

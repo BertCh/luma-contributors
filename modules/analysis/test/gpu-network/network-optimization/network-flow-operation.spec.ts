@@ -34,7 +34,18 @@ for (const scene of [
       costs: scene === 'uncosted' ? undefined : 'costs',
       parameters: 'parameters',
       maximumAugmentations: 8,
-      output: {flow: 'flow', cut: 'cut', summary: 'summary', exactCost: 'exact'}
+      output: {
+        flow: 'flow',
+        cut: 'cut',
+        summary: 'summary',
+        exactCost: 'exact',
+        status: {
+          invalidCount: 'invalidCount',
+          converged: 'converged',
+          iterationCount: 'iterationCount',
+          iterationLimitReached: 'iterationLimitReached'
+        }
+      }
     };
     const inputs = {
       edges: {
@@ -75,7 +86,16 @@ for (const scene of [
         values: Uint32Array.of(0, large ? 1 : 5, scene === 'finite-request' ? 1 : 0xffffffff)
       }
     };
-    const outputs = ['flow', 'cut', 'summary', 'exact'];
+    const outputs = [
+      'flow',
+      'cut',
+      'summary',
+      'exact',
+      'invalidCount',
+      'converged',
+      'iterationCount',
+      'iterationLimitReached'
+    ];
     const results: Record<string, Record<string, OperationGraphRows>> = {};
     for (const location of ['gpu', 'cpu'])
       results[location] = await runOperationGraph(device, {

@@ -11,12 +11,14 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {validateGPUStatusPort} from '../../analysis-core/contracts/index';
 import {
+  getCoreDefaultBuffer,
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
 } from '../../analysis-core/network-topology';
 import {
   validateCapacity,
+  validateRequirement,
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
@@ -68,6 +70,12 @@ export type GPUNetworkCostTableOutput = {
     requiredCount?: GraphDataView<'uint32'>;
     /** Optional one-row flag: 1 when every batch reached a fixpoint within `maximumIterations`. */
     converged?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row flag: 1 when any search batch exhausted its round budget, otherwise 0.
+     * The complement of converged; may be requested alone. Capacity overflow is independent.
+     * Partial CSR rows are still published; requiredCount counts entries found so far.
+     */
+    iterationLimitReached?: GraphDataView<'uint32'>;
   };
 };
 
@@ -183,16 +191,20 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
       requiredCount: output.status?.requiredCount
     });
     const converged = output.status?.converged;
+    const iterationLimitReached = output.status?.iterationLimitReached;
     for (const [name, view] of [
       ['overflow', output.status?.overflow],
       ['requiredCount', output.status?.requiredCount],
-      ['converged', converged]
+      ['converged', converged],
+      ['iterationLimitReached', iterationLimitReached]
     ] as const) {
       if (view) {
         validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
-        if (view.length !== 1) {
-          throw new Error(`${id} output.status.${name} must contain exactly one row`);
-        }
+        validateRequirement(
+          id,
+          view.length === 1,
+          `output.status.${name} must contain exactly one row`
+        );
       }
     }
     this.laneCount =
@@ -203,18 +215,34 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
     }
     this.batchCount = Math.ceil(nodeCount / this.laneCount);
     // Per batch: seeds, count, scan, fill; reachability: initialize, seed, one node per round and
-    // a finalize node when `converged` is requested.
+    // a finalize node when either stopping flag is requested.
     const reachabilityNodeCount =
-      2 + (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) + Number(Boolean(converged));
+      2 +
+      (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) +
+      Number(Boolean(converged || iterationLimitReached));
     this.estimatedCommandNodeCount = 2 + this.batchCount * (4 + reachabilityNodeCount);
     // The rounds of every batch are unrolled; lower maximumIterations or raise laneCount.
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const outputs = getOutputs(props);
     validateGraphOutputsDisjointFromInputs(id, outputs, getInputs(props));
-    const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
-    if (new Set(outputBuffers).size !== outputBuffers.length) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
+    const outputBuffers = outputs
+      .filter(view => view !== undefined)
+      .map(view =>
+        view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
+      );
+    const inputBuffers = new Set(
+      getInputs(props)
+        .filter(view => view !== undefined)
+        .map(view =>
+          view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
+        )
+    );
+    validateRequirement(
+      id,
+      new Set(outputBuffers).size === outputBuffers.length &&
+        outputBuffers.every(buffer => !inputBuffers.has(buffer)),
+      'outputs must use separate buffers from each other and from inputs'
+    );
   }
 
   /**
@@ -238,14 +266,16 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
       'lower laneCount'
     );
     const converged = output.status?.converged;
+    const iterationLimitReached = output.status?.iterationLimitReached;
     const state = createTransientView(graph, `${id}-state`, 'uint32', STATE_WORDS);
     const seeds = createTransientView(graph, `${id}-seeds`, 'uint32', laneCount);
     const scratch = createTransientView(graph, `${id}-scratch`, 'float32', batchNodeCount);
     const laneCounts = createTransientView(graph, `${id}-lane-counts`, 'uint32', laneCount);
     const laneBases = createTransientView(graph, `${id}-lane-bases`, 'uint32', laneCount);
-    const batchConverged = converged
-      ? createTransientView(graph, `${id}-batch-converged`, 'uint32', 1)
-      : undefined;
+    const batchConverged =
+      converged || iterationLimitReached
+        ? createTransientView(graph, `${id}-batch-converged`, 'uint32', 1)
+        : undefined;
     const declarations = `const NODE_COUNT: u32 = ${nodeCount}u;
 const LANE_COUNT: u32 = ${laneCount}u;
 const CAPACITY: u32 = ${capacity}u;
@@ -455,6 +485,9 @@ var<workgroup> prefix: array<u32, ${WORKGROUP_SIZE}>;`,
     if (converged) {
       finalizeBindings.push(write('converged', converged));
     }
+    if (iterationLimitReached) {
+      finalizeBindings.push(write('iterationLimitReached', iterationLimitReached));
+    }
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finalize`,
@@ -466,7 +499,8 @@ var<workgroup> prefix: array<u32, ${WORKGROUP_SIZE}>;`,
         body: `let total = state[stateOffset + ENTRY_CURSOR];
   ${output.status?.overflow ? 'overflow[overflowOffset] = select(0u, 1u, total > CAPACITY);' : ''}
   ${output.status?.requiredCount ? 'requiredCount[requiredCountOffset] = total;' : ''}
-  ${converged ? 'converged[convergedOffset] = state[stateOffset + CONVERGED_FLAG];' : ''}`
+  ${converged ? 'converged[convergedOffset] = state[stateOffset + CONVERGED_FLAG];' : ''}
+  ${iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = 1u - state[stateOffset + CONVERGED_FLAG];' : ''}`
       })
     );
     return nodes;
@@ -487,6 +521,7 @@ function getOutputs(props: GPUNetworkCostTableProps): (GraphDataView | undefined
     output.costs,
     output.status?.overflow,
     output.status?.requiredCount,
-    output.status?.converged
+    output.status?.converged,
+    output.status?.iterationLimitReached
   ];
 }

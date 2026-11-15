@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getNetworkOptimizationCPUStatus,
+  type NetworkOptimizationCPUStatus
+} from './network-optimization-status';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
@@ -33,7 +37,8 @@ export type CPUNetworkRationalAccessResult = {
   scores: Float32Array;
   unservedDemand: Float32Array;
   /** [valid, gapWithinTolerance, completedCycles, float32 maximum-gap bits]. */
-  status: Uint32Array;
+  summary: Uint32Array;
+  status: NetworkOptimizationCPUStatus;
 };
 
 /**
@@ -81,12 +86,13 @@ export function computeNetworkRationalAccessOnCPU(
   const assignments = new Float64Array(costs.length);
   const scores = new Float64Array(originCount).fill(NaN);
   const unservedDemand = Float64Array.from(demand);
-  const status = new Uint32Array(4);
+  const summary = new Uint32Array(4);
   const finishResult = (): CPUNetworkRationalAccessResult => ({
     assignments: Float32Array.from(assignments),
     scores: Float32Array.from(scores),
     unservedDemand: Float32Array.from(unservedDemand),
-    status
+    summary,
+    status: getNetworkOptimizationCPUStatus(summary, summary[2])
   });
   // The contributor has no exported parameter packer/layout. Its documented six-row layout:
   const [travelScale, supplyScale, initialStep, minimumStep, halfLife, tolerance] = parameters;
@@ -135,7 +141,7 @@ export function computeNetworkRationalAccessOnCPU(
       unservedDemand[origin] = 0;
     }
   }
-  status[0] = 1;
+  summary[0] = 1;
   for (let cycle = 0; cycle <= maximumCycles; cycle++) {
     const loads = new Float64Array(facilityCount);
     const incoming = new Float64Array(facilityCount);
@@ -158,7 +164,7 @@ export function computeNetworkRationalAccessOnCPU(
         if (!Number.isFinite(travel)) continue;
         const cost = travel / travelScale + loads[facility] / capacities[facility];
         if (!Number.isFinite(cost)) {
-          status[0] = 0;
+          summary[0] = 0;
           return finishResult();
         }
         const held = assignments[origin * facilityCount + facility];
@@ -175,7 +181,7 @@ export function computeNetworkRationalAccessOnCPU(
       const amount = demand[origin];
       if (highest < 0 || amount === 0) continue;
       if (!Number.isFinite(weightedCost)) {
-        status[0] = 0;
+        summary[0] = 0;
         return finishResult();
       }
       scores[origin] = weightedCost / amount;
@@ -193,10 +199,9 @@ export function computeNetworkRationalAccessOnCPU(
       shifts[origin] = fractional ? boundedShift : Math.floor(boundedShift);
       incoming[minimum] += shifts[origin];
     }
-    status[2] = cycle;
-    status[3] = new Uint32Array(Float32Array.of(maximumGap).buffer)[0];
+    summary[3] = new Uint32Array(Float32Array.of(maximumGap).buffer)[0];
     if (maximumGap <= tolerance) {
-      status[1] = 1;
+      summary[1] = 1;
       break;
     }
     if (cycle === maximumCycles) break;
@@ -210,6 +215,8 @@ export function computeNetworkRationalAccessOnCPU(
       assignments[origin * facilityCount + minima[origin]] += shift;
       assignments[origin * facilityCount + maxima[origin]] -= shift;
     }
+    // Count completed shifts independently of the next gap evaluation's validity.
+    summary[2] = cycle + 1;
   }
   return finishResult();
 }
@@ -256,10 +263,12 @@ export class CPUNetworkRationalAccessOperation extends GPUCPUOperation {
         if (input.supply.length !== props.facilityCount)
           throw new Error(`${id} supply length must equal facilityCount`);
         const result = computeNetworkRationalAccessOnCPU(input, props);
+        const {status, ...primaryRows} = result;
+        const outputRows = {...primaryRows, ...status};
         return Object.fromEntries(
           Object.entries(operation.outputs).map(([port, output]) => [
             output.value,
-            result[port as keyof CPUNetworkRationalAccessResult]
+            outputRows[port as keyof typeof outputRows]
           ])
         );
       }

@@ -123,7 +123,10 @@ export type {
 export {GPUChunkedSpatialWeightsValidation} from './gpu-chunked-spatial-weights-validation';
 export type {GPUChunkedSpatialWeightsValidationProps} from './gpu-chunked-spatial-weights-validation';
 export {GPUChunkedSpatialWeightsTranspose} from './gpu-chunked-spatial-weights-transpose';
-export type {GPUChunkedSpatialWeightsTransposeProps} from './gpu-chunked-spatial-weights-transpose';
+export type {
+  GPUChunkedSpatialWeightsTransposeOutput,
+  GPUChunkedSpatialWeightsTransposeProps
+} from './gpu-chunked-spatial-weights-transpose';
 export {GPUChunkedSpatialWeightsTransform} from './gpu-chunked-spatial-weights-transform';
 export type {GPUChunkedSpatialWeightsTransformProps} from './gpu-chunked-spatial-weights-transform';
 export {GPUChunkedSpatialWeightsAlgebra} from './gpu-chunked-spatial-weights-algebra';
@@ -160,3 +163,24 @@ export type {
 } from './cpu-spatial-weights-algebra-operation';
 export {GPUSpatialWeightsAlgebraOperation} from './gpu-spatial-weights-algebra-operation';
 export type {SpatialWeightsAlgebraOperationProps} from './gpu-spatial-weights-algebra-operation';
+
+export {
+  getGPUSpatialWeightsSummaryParameterValues,
+  GPU_SPATIAL_WEIGHTS_SUMMARY_PARAMETER_LENGTH,
+  getGPUSpatialWeightsTransformParameterValues,
+  GPU_SPATIAL_WEIGHTS_TRANSFORM_PARAMETER_LENGTH,
+  getGPULatticeWeightsParameterValues,
+  GPU_LATTICE_WEIGHTS_PARAMETER_LENGTH
+} from './spatial-weights-parameters';
+export type {
+  GPUSpatialWeightsSummarySettings,
+  GPUSpatialWeightsTransformSettings,
+  GPULatticeWeightsSettings
+} from './spatial-weights-parameters';
+export * from './prepare-polygon-contiguity-topology';
+
+export {
+  getGPUSpatialWeightsTransposeParameterValues,
+  GPU_SPATIAL_WEIGHTS_TRANSPOSE_PARAMETER_LENGTH
+} from './spatial-weights-parameters';
+export type {GPUSpatialWeightsTransposeSettings} from './spatial-weights-parameters';

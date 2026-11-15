@@ -73,6 +73,7 @@ it('checks inactive facilities, malformed arrays and construction-time shapes', 
   expect(empty.assignments.every(value => value === 0xffffffff)).toBe(true);
   expect(empty.facilityNodeCounts).toEqual(new Uint32Array(2));
   expect(empty.facilityCostSums).toEqual(new Float32Array(2));
+  expect(empty.iterationLimitReached).toEqual(Uint32Array.of(0));
   expect(() =>
     computeNetworkServiceAreasOnCPU({topology, facilities, facilityCosts: Float32Array.of(1)})
   ).toThrow(/facilityCosts/);
@@ -92,4 +93,30 @@ it('checks inactive facilities, malformed arrays and construction-time shapes', 
   expect(() => new CPUNetworkServiceAreasOperation({...props, facilityCount: 3})).toThrow(
     /^check-service.*facilityCount/
   );
+});
+
+it('declares the stopping flag as one uint32 row and returns zero on the exact CPU twin', () => {
+  const status = {converged: undefined, iterationLimitReached: 'limitReached'};
+  const props: NetworkServiceAreasOperationProps = {
+    nodeCount: 9,
+    facilityCapacity: 1,
+    topology: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
+    facilities: 'facilities',
+    output: {assignments: 'assignments', status}
+  };
+  for (const Operation of [GPUNetworkServiceAreasOperation, CPUNetworkServiceAreasOperation]) {
+    const operation = new Operation(props);
+    expect(Object.values(operation.outputs)).toContainEqual(
+      expect.objectContaining({
+        format: 'uint32',
+        length: 1
+      })
+    );
+  }
+  expect(
+    computeNetworkServiceAreasOnCPU({
+      topology: getRoutingTopology(),
+      facilities: Uint32Array.of(0)
+    })
+  ).toHaveProperty('iterationLimitReached', Uint32Array.of(0));
 });

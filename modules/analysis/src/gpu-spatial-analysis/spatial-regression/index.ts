@@ -2,8 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPUInstrumentalVariablesCovariance} from './gpu-instrumental-variables-covariance';
-export type {GPUInstrumentalVariablesCovarianceProps} from './gpu-instrumental-variables-covariance';
+export {
+  GPUInstrumentalVariablesCovariance,
+  GPU_INSTRUMENTAL_VARIABLES_COVARIANCE_STATUS
+} from './gpu-instrumental-variables-covariance';
+export type {
+  GPUInstrumentalVariablesCovarianceProps,
+  GPUInstrumentalVariablesCovarianceMethod
+} from './gpu-instrumental-variables-covariance';
 
 export {GPUOrdinaryLeastSquares} from './gpu-ordinary-least-squares';
 export type {
@@ -536,3 +542,11 @@ export type {
 } from './cpu-spatial-panel-lag-maximum-likelihood-operation';
 export {GPUSpatialPanelLagMaximumLikelihoodOperation} from './gpu-spatial-panel-lag-maximum-likelihood-operation';
 export type {SpatialPanelLagMaximumLikelihoodOperationProps} from './gpu-spatial-panel-lag-maximum-likelihood-operation';
+export {
+  GPU_GTWR_MAXIMUM_NEIGHBOR_COUNT,
+  GPU_GTWR_MAXIMUM_SEARCH_ITERATIONS,
+  GPU_GTWR_SEARCH_PARAMETER_LENGTH
+} from './gtwr-bandwidth-search';
+export type {GPUGTWRBandwidthSearch} from './gtwr-bandwidth-search';
+export {getGPUGTWRBandwidthSearchParameterValues} from './gpu-geographically-temporally-weighted-regression';
+export type {GPUGTWRBandwidthSearchSettings} from './gpu-geographically-temporally-weighted-regression';

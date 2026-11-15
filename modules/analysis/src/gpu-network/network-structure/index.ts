@@ -15,3 +15,14 @@ export type {
 } from './cpu-network-structure-operation';
 export {GPUNetworkStructureOperation} from './gpu-network-structure-operation';
 export type {NetworkStructureOperationProps} from './gpu-network-structure-operation';
+
+export {
+  GPUNetworkStronglyConnectedComponents,
+  GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_DEFAULT_ITERATIONS,
+  GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_MAXIMUM_ITERATIONS,
+  GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_MAXIMUM_COUNT
+} from './gpu-network-strongly-connected-components';
+export type {
+  GPUNetworkStronglyConnectedComponentsProps,
+  GPUNetworkStronglyConnectedComponentsOutput
+} from './gpu-network-strongly-connected-components';

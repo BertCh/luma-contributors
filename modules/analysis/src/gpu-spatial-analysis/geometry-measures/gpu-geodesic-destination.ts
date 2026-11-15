@@ -14,6 +14,9 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
+  validateRequirement,
+  validateViewLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -24,6 +27,7 @@ import {GEODESIC_WGSL} from './geodesic-wgsl';
 import {
   getVincentyWGSL,
   GPU_GEODESIC_DEFAULT_ITERATIONS,
+  GPU_GEODESIC_DIRECT_MINIMUM_AZIMUTH_COSINE,
   SPHERE_PAIR_WGSL,
   type GPUGeodesicModel
 } from './geodesic-kernels';
@@ -46,6 +50,11 @@ export type GPUGeodesicDestinationOutput = {
   status?: {
     /** `'wgs84'` only: `1` when Vincenty's direct iteration converged. */
     converged?: GraphDataView<'uint32'>;
+    /** One when the direct iteration exhausted maximumIterations. */
+    iterationLimitReached?: GraphDataView<'uint32'>;
+    /** One for an unconverged result, or a nonzero-distance arrival with
+     * abs(cos(latitude)) <= 0.03, where arrival azimuth conditioning is excluded. */
+    approximation?: GraphDataView<'uint32'>;
   };
 };
 
@@ -115,20 +124,26 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
       validateSinglePackedView(view, [format], `${id} ${name}`);
     }
     const rowCount = props.origins.length;
-    if (rowCount < 1 || props.bearings.length !== rowCount || props.distances.length !== rowCount) {
-      throw new Error(
-        `${id} needs at least one row and bearings and distances aligned with origins`
-      );
-    }
+    validateCapacity(id, 'origins.length', rowCount);
+    validateViewLength(id, 'bearings', props.bearings, rowCount);
+    validateViewLength(id, 'distances', props.distances, rowCount);
     validateGeodesicColumns(
       id,
       props.output,
-      {destinations: 'float32x2', finalBearings: 'float32', 'status.converged': 'uint32'},
+      {
+        destinations: 'float32x2',
+        finalBearings: 'float32',
+        'status.converged': 'uint32',
+        'status.iterationLimitReached': 'uint32',
+        'status.approximation': 'uint32'
+      },
       rowCount
     );
-    if (props.output.status?.converged && this.model !== 'wgs84') {
-      throw new Error(`${id} output.status.converged requires model 'wgs84'`);
-    }
+    validateRequirement(
+      id,
+      !props.output.status?.converged || this.model === 'wgs84',
+      "output.status.converged requires model 'wgs84'"
+    );
     validateGraphOutputsDisjointFromInputs(id, Object.values(flattenGeodesicOutput(props.output)), [
       props.origins,
       props.bearings,
@@ -182,6 +197,28 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
       });
       statements.push('converged[convergedOffset + index] = select(0u, 1u, isConverged);');
     }
+    if (output.status?.iterationLimitReached) {
+      bindings.push({
+        name: 'iterationLimitReached',
+        view: output.status.iterationLimitReached,
+        type: 'u32',
+        access: 'read_write'
+      });
+      statements.push(
+        'iterationLimitReached[iterationLimitReachedOffset + index] = select(1u, 0u, isConverged);'
+      );
+    }
+    if (output.status?.approximation) {
+      bindings.push({
+        name: 'approximation',
+        view: output.status.approximation,
+        type: 'u32',
+        access: 'read_write'
+      });
+      statements.push(
+        `approximation[approximationOffset + index] = select(0u, 1u, !isConverged || (distance != 0.0 && abs(geodesicCosLatitude(destination.y)) <= ${getWGSLFloatLiteral(GPU_GEODESIC_DIRECT_MINIMUM_AZIMUTH_COSINE)}));`
+      );
+    }
     const wgs84 = this.model === 'wgs84';
     const rhumb = this.model === 'rhumb';
     return [
@@ -211,7 +248,7 @@ const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
   let finalBearing = rhumbResult.finalBearing;
   let isConverged = true;`
         : `let destination = geodesicDestination(origin, bearing, distance / RADIUS);
-  let finalBearing = sphereFinalBearingDegrees(origin, destination);
+  let finalBearing = sphereDirectFinalBearingDegrees(origin, bearing, distance / RADIUS);
   let isConverged = true;`
   }
   ${statements.join('\n  ')}`

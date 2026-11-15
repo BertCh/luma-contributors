@@ -67,10 +67,16 @@ sample predictions/variances, residuals, standardized residuals, bias, MAE, RMSE
 Masked samples and unusable predictions are excluded. A standardized residual needs a finite,
 strictly positive variance and a finite quotient; zero-variance duplicates remain undefined.
 
-Summary means use a deterministic linear pass over samples. RMSE uses a scaled sum of squares to
-avoid overflowing squared residuals. Runtime is O(sampleCount) for this summary in addition to the
-kriging solve. Separate invalid/uncertain raster statuses and invalid validation counts remain
-visible. No variogram fitting, automatic model selection or residual significance is implied.
+Summary counts and error metrics use row contributions and published parallel reductions. Residuals
+are divided by their maximum absolute value and finite count before summing or squaring, so means
+and RMSE remain finite even for maximum finite float32 residuals. Normalization uses the shared
+scaled quotient (bounded mantissas and integer exponents) to avoid an underflowing reciprocal of a
+near-maximum residual scale. All-invalid validation sets return zero valid counts and NaN metrics;
+all-zero residuals return zero metrics. Reduction rounding can differ from the former streaming
+means (absolute tolerance `1e-6` plus `2e-6` times the maximum residual
+magnitude). Work remains O(sampleCount), with hierarchical reductions instead of a serial sample
+scan. Separate invalid/uncertain raster statuses and invalid validation counts remain visible. No
+variogram fitting, automatic model selection or residual significance is implied.
 
 ## Facility scenario evaluation
 
@@ -79,7 +85,9 @@ a live facility mask and network-accessibility parameters. Outputs are gravity a
 nearest selected facility/cost per demand row, covered/uncovered demand, and invalid-demand count.
 Equal nearest costs choose the lowest facility row. Nonfinite or negative demand is omitted and
 counted; unreachable valid demand remains uncovered. An empty selected set leaves every nearest
-cost infinite and facility ID `0xffffffff`.
+cost infinite and facility ID `0xffffffff`. Covered/uncovered demand and invalid counts use parallel
+row contributions and published reductions. Demand totals use float32 tree sums; acceptance tolerance
+is `1e-6 + 2e-6 * abs(total)` against a float64 sum.
 
 Run the recipe once per scenario with a distinct ID and the same matrix/demand to compare results.
 Changing masks or scoring parameters does not rerun routing. The caller must ensure the matrix's

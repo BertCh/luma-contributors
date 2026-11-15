@@ -112,8 +112,8 @@ export type GPUCoverageDissolveProps = GPUPolygonGeometryFields & {
    * coordinates of the lowest vertex index of that point. Defaults to `0` (exact f32 equality).
    *
    * A vertex snaps to cell `floor((coordinate - origin) / snapTolerance + 0.5)` per axis, with the
-   * first vertex of `positions` as `origin`, so the limit is on the extent of the data and not on
-   * its distance from zero: every vertex must be within `2^24 * snapTolerance` of the first vertex
+   * first ring-owned vertex (`ringOffsets[0]`) as `origin`, so the limit is on the extent of the
+   * data and not on its distance from zero: every vertex must be within `2^24 * snapTolerance` of the first vertex
    * on both axes (float32 cannot tell cells apart beyond that). Vertices outside that range are
    * counted in the optional `output.status.uncertainCount`; when it is not zero, use a larger
    * tolerance or split the data.
@@ -329,7 +329,7 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
 const POLYGON_COUNT: u32 = ${polygonCount}u;
 
 ${IS_FINITE_FLOAT_WGSL}
-${getCoverageSnapKeyWGSL(snapTolerance)}`,
+${getCoverageSnapKeyWGSL(snapTolerance, ringCount)}`,
         body: `var ring = 0u;
   var high = RING_COUNT;
   while (ring + 1u < high) {

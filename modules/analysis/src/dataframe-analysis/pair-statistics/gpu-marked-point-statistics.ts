@@ -20,6 +20,8 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
+  validateRequirement,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -46,6 +48,17 @@ export const GPU_MARKED_POINT_STATISTICS_COLUMNS = {
   PAIR_CORRELATION: 2,
   MARK_CORRELATION: 3
 } as const;
+/** Dense reference work is quadratic in rows for every radius; keep it explicitly bounded. */
+const MAXIMUM_BRUTE_FORCE_ROWS = 16384;
+/** Per-invocation shell arrays in the indexed path and per-radius reference accumulators. */
+const MAXIMUM_RADIUS_COUNT = 128;
+/** Default upper dimensions; the per-frame radius can reduce the active lattice. */
+const DEFAULT_GRID_SIZE = [256, 256] as const;
+/** Unscaled small-mark sums stay below 2^124 at the 2^24 row-ID limit. */
+const MAXIMUM_UNSCALED_MARK_MAGNITUDE = 2 ** 100;
+/** The partial-table budget keeps rows below 2^23, so large-mark sums have at least 2x headroom. */
+const LARGE_MARK_SUM_SCALE_EXPONENT = 24;
+
 /** A rectangular-window point-pattern estimator with caller-supplied intensities and marks. */
 export type GPUMarkedPointStatisticsProps = {
   id?: string;
@@ -69,16 +82,22 @@ export type GPUMarkedPointStatisticsProps = {
    * cells at least `maximumRadius` wide, so pairs come from the 3 x 3 cells around each focus
    * instead of every row and up to `2^24 / (3 * radiusCount)` rows are accepted. Pair counts are
    * unchanged; sums are added in cell order, so statistics can differ in the last float32 bits.
-   * A `maximumRadius` whose square overflows float32 gives no pairs. Omitted keeps the dense
-   * all-pairs traversal (at most 16,384 rows).
+   * Defaults to `[256, 256]`. Finite radii whose square overflows float32 use a single cell,
+   * retaining the finite-distance predicate. Requires `searchStructure: 'grid'` (the default).
    */
   gridSize?: readonly [number, number];
+  /**
+   * Compile-time candidate search: `'grid'` (default), or `'brute-force'` for the dense reference
+   * traversal, limited to 16,384 rows. Both use the same estimators and radius edges; fixed-tree
+   * grid sums can differ from the serial reference sums within float32 rounding tolerance.
+   */
+  searchStructure?: 'grid' | 'brute-force';
   output: {
     /** Row-major `[K(r), sqrt(K(r)/pi), annular pair correlation, annular mark correlation]`. */
     statistics: GraphDataView<'float32'>;
-    /** Directed pair counts in each cumulative radius, excluding self pairs. */
+    /** Directed non-self pairs per radius, clamped to 0xffffffff on overflow (status 3, NaN statistics). */
     pairCounts: GraphDataView<'uint32'>;
-    /** Per bin: 0 valid, 1 invalid window/empty category, 2 nonfinite accumulation. Empty shells give NaN correlations. */
+    /** Per bin: 0 valid, 1 invalid window/empty category, 2 nonfinite accumulation, 3 pair-count overflow. Empty shells give NaN correlations. */
     status: GraphDataView<'uint32'>;
   };
 };
@@ -94,14 +113,23 @@ export type GPUMarkedPointStatisticsProps = {
  * same-type set of one point has no K (NaN, status 1). The pair correlation shares that
  * normalization. With intensity the n² form stays. Pair correlation uses annular area,
  * not a kernel smoother. Mark correlation divides weighted mean pair products by the product of
- * the two category means. Zero mean marks and empty shells are undefined. These estimator choices
+ * the two category means. Indexed means average large marks at a power-of-two scale before
+ * restoring their magnitude; an unnormalized category mark sum need not fit float32. Small marks
+ * remain unscaled so they survive cancellation of large opposite marks.
+ * Zero mean marks and empty shells are undefined. These estimator choices
  * are explicit; they are not interchangeable with every spatstat smoothing/normalization option.
- * Without `gridSize`: dense deterministic GPU traversal, <= 16,384 rows and 128 radii,
- * O(rows²*radii) work. With `gridSize`: one pass per focus over a cell index of the window.
+ * Defaults to one pass per focus over a cell index of the window, with `[256, 256]` maximum
+ * lattice dimensions and at most 128 radii. The partial-table budget is `rows * radiusCount * 3`
+ * <= 2^24 floats, further bounded by the device. `searchStructure: 'brute-force'` explicitly
+ * selects the dense reference: <= 16,384 rows and O(rows²*radii) work. A broad radius or dense
+ * cell still requires quadratic pair work in the indexed path.
+ * Per-frame: positions, types, marks, intensities, mask and parameters. Compile-time: view
+ * lengths, optional views, typePair, radiusCount, gridSize, searchStructure and edgeCorrection.
  */
 export class GPUMarkedPointStatistics implements GPUCommandNodeProducer {
   readonly id: string;
   readonly spatialContext: GPUSpatialContext;
+  private readonly searchStructure: 'grid' | 'brute-force';
   constructor(readonly props: GPUMarkedPointStatisticsProps) {
     this.id = props.id ?? 'marked-point-statistics';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext, {
@@ -109,12 +137,27 @@ export class GPUMarkedPointStatistics implements GPUCommandNodeProducer {
       measure: 'distance'
     });
     const rows = props.positions.length;
-    validateCapacity(this.id, 'positions length', rows, 1, props.gridSize ? 2 ** 24 - 1 : 16384);
-    if (!Number.isInteger(props.radiusCount) || props.radiusCount < 1 || props.radiusCount > 128)
-      throw new Error(`${this.id}: invalid bounded pair shape`);
-    if (props.gridSize) {
-      validatePairStatisticsGridSize(this.id, props.gridSize);
-      // Six float32 partials per row and radius; the limit is counted in pairs of float32.
+    this.searchStructure = props.searchStructure ?? 'grid';
+    validateRequirement(
+      this.id,
+      this.searchStructure === 'grid' || this.searchStructure === 'brute-force',
+      'searchStructure must be grid or brute-force'
+    );
+    validateRequirement(
+      this.id,
+      this.searchStructure === 'grid' || props.gridSize === undefined,
+      'gridSize requires searchStructure grid'
+    );
+    validateCapacity(
+      this.id,
+      'positions length',
+      rows,
+      1,
+      this.searchStructure === 'brute-force' ? MAXIMUM_BRUTE_FORCE_ROWS : 2 ** 24 - 1
+    );
+    validateCapacity(this.id, 'radiusCount', props.radiusCount, 1, MAXIMUM_RADIUS_COUNT);
+    if (this.searchStructure === 'grid') {
+      validatePairStatisticsGridSize(this.id, props.gridSize ?? DEFAULT_GRID_SIZE);
       validateMaximumCount(
         this.id,
         'positions length x radiusCount x 3',
@@ -158,12 +201,30 @@ export class GPUMarkedPointStatistics implements GPUCommandNodeProducer {
     const {id, props} = this;
     const rows = props.positions.length;
     const bins = props.radiusCount;
-    const moments = createTransientView(graph, `${id}-moments`, 'float32', 4);
+    const gridSize = props.gridSize ?? DEFAULT_GRID_SIZE;
+    validatePairStatisticsRowCount(id, graph.device, rows);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'pair partials',
+      rows * bins * (this.searchStructure === 'brute-force' ? 6 : 3) * 4,
+      'reduce positions length or radiusCount'
+    );
+    if (this.searchStructure === 'grid') {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'cell offsets',
+        (gridSize[0] * gridSize[1] + 1) * 4,
+        'reduce gridSize'
+      );
+    }
     const bindings = getBindings(props);
     validateGraphViewsBelongToGraph(id, graph, [
       ...bindings.map(binding => binding.view),
       ...Object.values(props.output)
     ]);
+    const moments = createTransientView(graph, `${id}-moments`, 'float32', 4);
     const common = `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}
 fn included(row: u32) -> bool {
   if (!isFiniteBits(parameters[parametersOffset + 5u]) || parameters[parametersOffset + 5u] < 0.0) { return false; }
@@ -176,8 +237,8 @@ fn included(row: u32) -> bool {
 fn isFocus(row: u32) -> bool { return ${props.types ? `types[typesOffset + row] == ${props.typePair![0]}u` : 'true'}; }
 fn isNeighbor(row: u32) -> bool { return ${props.types ? `types[typesOffset + row] == ${props.typePair![1]}u` : 'true'}; }
 fn mark(row: u32) -> f32 { return ${props.marks ? 'marks[marksOffset + row]' : '1.0'}; }`;
-    if (props.gridSize) {
-      return getGridNodes(graph, id, props, props.gridSize, common, moments);
+    if (this.searchStructure === 'grid') {
+      return getGridNodes(graph, id, props, gridSize, common, moments);
     }
     const partials = createTransientView(graph, `${id}-partials`, 'float32', rows * bins * 6);
     return [
@@ -256,7 +317,7 @@ ${getFinishWGSL(props)}`
 }
 
 /** Writes one radius bin's statistics, count and status from its totals and the moments. */
-function getFinishWGSL(props: GPUMarkedPointStatisticsProps): string {
+function getFinishWGSL(props: GPUMarkedPointStatisticsProps, overflow = 'false'): string {
   const bins = props.radiusCount;
   // Without intensities the plug-in normalisation is area / (n_focus * n_neighbor) for two
   // different types and area / (n (n - 1)) when focus and neighbor are the same set (no types, or
@@ -269,7 +330,8 @@ function getFinishWGSL(props: GPUMarkedPointStatisticsProps): string {
       : 'moments[momentsOffset + 1u]';
   return `let width = parameters[parametersOffset + 2u] - parameters[parametersOffset]; let height = parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u]; let area = width * height;
 let upper = parameters[parametersOffset + 4u] * f32(index + 1u) / ${bins}.0; let lower = parameters[parametersOffset + 4u] * f32(index) / ${bins}.0;
-let valid = width > 0.0 && height > 0.0 && upper > 0.0 && isFiniteBits(upper) && isFiniteBits(area) && moments[momentsOffset] > 0.0 && ${neighborDivisor} > 0.0;
+let overflow = ${overflow};
+let valid = !overflow && width > 0.0 && height > 0.0 && upper > 0.0 && isFiniteBits(upper) && isFiniteBits(area) && moments[momentsOffset] > 0.0 && ${neighborDivisor} > 0.0;
 let scale = ${props.intensities ? '1.0 / area' : `area / moments[momentsOffset] / ${neighborDivisor}`};
 let estimate = cumulative * scale; let pairCorrelation = shell * scale / (3.141592653589793 * (upper * upper - lower * lower));
 let markMean = moments[momentsOffset + 2u] * moments[momentsOffset + 3u];
@@ -278,7 +340,7 @@ result[base] = select(getNaN(), estimate, valid && isFiniteBits(estimate)); resu
 result[base + 2u] = select(getNaN(), pairCorrelation, valid && shellWeight > 0.0 && isFiniteBits(pairCorrelation));
 let markCorrelation = products / shellWeight / markMean;
 result[base + 3u] = select(getNaN(), markCorrelation, valid && shellWeight > 0.0 && markMean != 0.0 && isFiniteBits(markCorrelation));
-counts[countsOffset + index] = count; status[statusOffset + index] = select(1u, select(2u, 0u, isFiniteBits(estimate) && isFiniteBits(products)), valid);`;
+counts[countsOffset + index] = count; status[statusOffset + index] = select(select(1u, select(2u, 0u, isFiniteBits(estimate) && isFiniteBits(products)), valid), 3u, overflow);`;
 }
 /**
  * Grid path: per-row roles (focus, neighbor), marks and intensities in one view, a cell index over
@@ -287,7 +349,7 @@ counts[countsOffset + index] = count; status[statusOffset + index] = select(1u, 
  * holds it (the dense pass's shell); cumulative sums and counts are prefix sums over the shells,
  * written to bin-major tables. Segment totals (at most 256 entries per invocation) reduce the
  * tables per bin; the moments come from `GPUReduction` sums (means are sums over counts, not the
- * dense pass's running means). No pass loops over every row in one invocation.
+ * dense pass's running means). Outside candidate walks, reductions have bounded work per invocation.
  */
 function getGridNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -297,15 +359,15 @@ function getGridNodes<Parameters>(
   common: string,
   moments: GraphDataView<'float32'>
 ): GPUCommandNode<Parameters>[] {
-  validatePairStatisticsRowCount(id, graph.device, props.positions.length);
   const rows = props.positions.length;
   const bins = props.radiusCount;
   // Bin-major tables: sums are [cumulative, shell, products] x bin x row; counts are bin x row.
   const binSums = createTransientView(graph, `${id}-bin-sums`, 'float32', 3 * bins * rows);
   const binCounts = createTransientView(graph, `${id}-bin-counts`, 'uint32', bins * rows);
   const totalSums = createTransientView(graph, `${id}-total-sums`, 'float32', 3 * bins);
-  const totalCounts = createTransientView(graph, `${id}-total-counts`, 'uint32', bins);
-  // Per row: focus and neighbor indicators, and their marks (0 when the role is absent).
+  const totalCounts = createTransientView(graph, `${id}-total-counts`, 'uint32', bins * 2);
+  // Keep small marks unscaled so they survive cancellation of large opposite marks. Large marks
+  // are scaled by 2^-24 before summation; divide by the category count before restoring the scale.
   const momentTerms = {
     focusCount: createTransientView(graph, `${id}-focus-indicators`, 'uint32', rows),
     neighborCount: createTransientView(graph, `${id}-neighbor-indicators`, 'uint32', rows),
@@ -316,7 +378,9 @@ function getGridNodes<Parameters>(
     focusCount: createTransientView(graph, `${id}-focus-count`, 'uint32', 1),
     neighborCount: createTransientView(graph, `${id}-neighbor-count`, 'uint32', 1),
     focusSum: createTransientView(graph, `${id}-focus-mark-sum`, 'float32', 1),
-    neighborSum: createTransientView(graph, `${id}-neighbor-mark-sum`, 'float32', 1)
+    neighborSum: createTransientView(graph, `${id}-neighbor-mark-sum`, 'float32', 1),
+    focusScaledSum: createTransientView(graph, `${id}-focus-scaled-mark-sum`, 'float32', 1),
+    neighborScaledSum: createTransientView(graph, `${id}-neighbor-scaled-mark-sum`, 'float32', 1)
   };
   const inclusion = createTransientView(graph, `${id}-inclusion`, 'uint32', rows);
   // Per row: role bits (1 focus, 2 neighbor) as float32, mark and intensity.
@@ -327,7 +391,8 @@ function getGridNodes<Parameters>(
     positions: props.positions,
     parameters: props.parameters,
     gridSize,
-    mask: inclusion
+    mask: inclusion,
+    legacyLattice: true
   });
   return [
     createWGSLKernelNode<Parameters>(graph, {
@@ -368,7 +433,8 @@ attributes[attributesOffset + index * 3u + 2u] = ${props.intensities ? 'intensit
       body: `let roles = u32(attributes[attributesOffset + index * 3u]); let rowMark = attributes[attributesOffset + index * 3u + 1u];
 let isFocusRow = (roles & 1u) != 0u; let isNeighborRow = (roles & 2u) != 0u;
 focusCounts[focusCountsOffset + index] = select(0u, 1u, isFocusRow); neighborCounts[neighborCountsOffset + index] = select(0u, 1u, isNeighborRow);
-focusMarks[focusMarksOffset + index] = select(0.0, rowMark, isFocusRow); neighborMarks[neighborMarksOffset + index] = select(0.0, rowMark, isNeighborRow);`
+let unscaledMark = select(0.0, rowMark, abs(rowMark) <= ${MAXIMUM_UNSCALED_MARK_MAGNITUDE.toExponential(17)});
+focusMarks[focusMarksOffset + index] = select(0.0, unscaledMark, isFocusRow); neighborMarks[neighborMarksOffset + index] = select(0.0, unscaledMark, isNeighborRow);`
     }),
     ...[
       new GPUReduction({
@@ -396,6 +462,40 @@ focusMarks[focusMarksOffset + index] = select(0.0, rowMark, isFocusRow); neighbo
         operation: 'sum'
       })
     ].flatMap(reduction => reduction.getCommandNodes(graph)),
+    // Reuse the two row-sized mark buffers after their unscaled sums have been reduced.
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-scaled-mark-terms`,
+      operation: 'GPUMarkedPointStatistics',
+      variant: 'scaled-mark-terms',
+      invocationCount: rows,
+      bindings: [
+        {name: 'attributes', view: attributes, type: 'f32', access: 'read'},
+        {name: 'focusMarks', view: momentTerms.focusSum, type: 'f32', access: 'read_write'},
+        {name: 'neighborMarks', view: momentTerms.neighborSum, type: 'f32', access: 'read_write'}
+      ],
+      body: `let roles = u32(attributes[attributesOffset + index * 3u]);
+let rowMark = attributes[attributesOffset + index * 3u + 1u];
+var scaledMark = 0.0;
+if (abs(rowMark) > ${MAXIMUM_UNSCALED_MARK_MAGNITUDE.toExponential(17)}) {
+  scaledMark = ldexp(rowMark, -${LARGE_MARK_SUM_SCALE_EXPONENT});
+}
+focusMarks[focusMarksOffset + index] = select(0.0, scaledMark, (roles & 1u) != 0u);
+neighborMarks[neighborMarksOffset + index] = select(0.0, scaledMark, (roles & 2u) != 0u);`
+    }),
+    ...[
+      new GPUReduction({
+        id: `${id}-focus-scaled-mark-reduction`,
+        input: momentTerms.focusSum,
+        output: momentTotals.focusScaledSum,
+        operation: 'sum'
+      }),
+      new GPUReduction({
+        id: `${id}-neighbor-scaled-mark-reduction`,
+        input: momentTerms.neighborSum,
+        output: momentTotals.neighborScaledSum,
+        operation: 'sum'
+      })
+    ].flatMap(reduction => reduction.getCommandNodes(graph)),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-moments`,
       operation: 'GPUMarkedPointStatistics',
@@ -406,12 +506,27 @@ focusMarks[focusMarksOffset + index] = select(0.0, rowMark, isFocusRow); neighbo
         {name: 'neighborCount', view: momentTotals.neighborCount, type: 'u32', access: 'read'},
         {name: 'focusSum', view: momentTotals.focusSum, type: 'f32', access: 'read'},
         {name: 'neighborSum', view: momentTotals.neighborSum, type: 'f32', access: 'read'},
+        {name: 'focusScaledSum', view: momentTotals.focusScaledSum, type: 'f32', access: 'read'},
+        {
+          name: 'neighborScaledSum',
+          view: momentTotals.neighborScaledSum,
+          type: 'f32',
+          access: 'read'
+        },
         {name: 'moments', view: moments, type: 'f32', access: 'read_write'}
       ],
+      declarations: `fn getCategoryMeanMark(unscaledSum: f32, scaledSum: f32, count: f32) -> f32 {
+  if (count == 0.0) { return 0.0; }
+  // Division may round just beyond the representable mean at the finite f32 endpoints.
+  // Clamp before restoring the power-of-two scale, keeping the restored mean finite.
+  let maximumScaledMean = ldexp(bitcast<f32>(0x7f7fffffu), -${LARGE_MARK_SUM_SCALE_EXPONENT});
+  let scaledMean = clamp(scaledSum / count, -maximumScaledMean, maximumScaledMean);
+  return unscaledSum / count + ldexp(scaledMean, ${LARGE_MARK_SUM_SCALE_EXPONENT});
+}`,
       body: `let focusTotal = f32(focusCount[focusCountOffset]); let neighborTotal = f32(neighborCount[neighborCountOffset]);
 moments[momentsOffset] = focusTotal; moments[momentsOffset + 1u] = neighborTotal;
-moments[momentsOffset + 2u] = select(0.0, focusSum[focusSumOffset] / focusTotal, focusTotal > 0.0);
-moments[momentsOffset + 3u] = select(0.0, neighborSum[neighborSumOffset] / neighborTotal, neighborTotal > 0.0);`
+moments[momentsOffset + 2u] = getCategoryMeanMark(focusSum[focusSumOffset], focusScaledSum[focusScaledSumOffset], focusTotal);
+moments[momentsOffset + 3u] = getCategoryMeanMark(neighborSum[neighborSumOffset], neighborScaledSum[neighborScaledSumOffset], neighborTotal);`
     }),
     ...inputs.nodes,
     createWGSLKernelNode<Parameters>(graph, {
@@ -429,7 +544,7 @@ moments[momentsOffset + 3u] = select(0.0, neighborSum[neighborSumOffset] / neigh
         {name: 'binSums', view: binSums, type: 'f32', access: 'read_write'},
         {name: 'binCounts', view: binCounts, type: 'u32', access: 'read_write'}
       ],
-      declarations: `${getPairStatisticsSharedWGSL(gridSize)}
+      declarations: `${getPairStatisticsSharedWGSL(gridSize, true)}
 ${IS_FINITE_BITS_WGSL}
 const BINS: u32 = ${bins}u;
 fn getUpper(bin: u32) -> f32 { return parameters[parametersOffset + 4u] * f32(bin + 1u) / ${bins}.0; }`,
@@ -482,7 +597,8 @@ for (var bin = 0u; bin < BINS; bin++) {
       segmentCount: bins,
       rowCount: rows,
       input: binCounts,
-      output: totalCounts
+      output: totalCounts,
+      detectOverflow: true
     }),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-finish`,
@@ -502,7 +618,7 @@ for (var bin = 0u; bin < BINS; bin++) {
       body: `let cumulative = totalSums[totalSumsOffset + index]; let shell = totalSums[totalSumsOffset + ${bins}u + index];
 let products = totalSums[totalSumsOffset + ${2 * bins}u + index]; let shellWeight = shell;
 let count = totalCounts[totalCountsOffset + index];
-${getFinishWGSL(props)}`
+${getFinishWGSL(props, `totalCounts[totalCountsOffset + ${bins}u + index] != 0u`)}`
     })
   ];
 }

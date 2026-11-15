@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateRecipeBoundary, getRecipeView as getOrCreateView} from './expansion-recipe-utils';
+import {validateRecipeBoundary, getRecipeView as getOrCreateView} from './recipe-utils';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUKriging, type GPUKrigingProps} from '../spatial-interpolation/gpu-kriging';
-import {createRecipeKernelNode as createWGSLKernelNode} from './expansion-recipe-utils';
+import {createRecipeKernelNode as createWGSLKernelNode} from './recipe-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {RecipeBuilder, type GPURecipeResult} from './recipe-utils';
+import {addInterpolationDiagnosticsSummaryNodes} from './interpolation-diagnostics-summary';
 
 export type GPUInterpolationDiagnosticsOutput = {
   values: GraphDataView<'float32'>;
@@ -153,54 +154,7 @@ standardized[standardizedOffset + index] = score;`
     })
   );
   const invalidCount = getOrCreateView(graph, `${id}-validation-invalid`, 'uint32', 1);
-  // Streaming means and a scaled sum of squares avoid fixed-point and squared-error overflow.
-  // This diagnostic pass is O(sampleCount), independent of output-grid size. It stays one
-  // invocation on purpose: the streaming mean and scaled sum of squares are order-dependent float
-  // recurrences, so a parallel reduction would change the results (not bit-identical). One thread
-  // reading about 10^6 samples is the size at which it starts to dominate; validation sets are
-  // normally thousands of samples. The integer counts alone could move to GPUReduction.
-  builder.addGlue(
-    'summary',
-    createWGSLKernelNode(graph, {
-      id: `${id}-summary`,
-      operation: 'GPUInterpolationDiagnostics',
-      invocationCount: 1,
-      declarations: IS_FINITE_VALUE_WGSL,
-      bindings: [
-        {name: 'residuals', view: outputs.residuals, type: 'f32', access: 'read'},
-        {name: 'standardized', view: outputs.standardizedResiduals, type: 'f32', access: 'read'},
-        {name: 'validCount', view: outputs.validCount, type: 'u32', access: 'read_write'},
-        {
-          name: 'standardizedCount',
-          view: outputs.standardizedCount,
-          type: 'u32',
-          access: 'read_write'
-        },
-        {name: 'bias', view: outputs.bias, type: 'f32', access: 'read_write'},
-        {name: 'absoluteError', view: outputs.meanAbsoluteError, type: 'f32', access: 'read_write'},
-        {name: 'rootError', view: outputs.rootMeanSquaredError, type: 'f32', access: 'read_write'},
-        {name: 'invalidCount', view: invalidCount, type: 'u32', access: 'read_write'}
-      ],
-      body: `var count = 0u; var scoreCount = 0u; var mean = 0.0; var absoluteMean = 0.0;
-var scale = 0.0; var squares = 0.0;
-for (var row = 0u; row < ${sampleCount}u; row++) {
-  let value = residuals[residualsOffset + row];
-  scoreCount += select(0u, 1u, isFiniteValue(standardized[standardizedOffset + row]));
-  if (!isFiniteValue(value)) { continue; }
-  count++; let fraction = 1.0 / f32(count); let magnitude = abs(value);
-  mean = mean * (1.0 - fraction) + value * fraction;
-  absoluteMean = absoluteMean * (1.0 - fraction) + magnitude * fraction;
-  if (magnitude > scale) { let ratio = scale / magnitude; squares = 1.0 + squares * ratio * ratio; scale = magnitude; }
-  else if (scale > 0.0) { let ratio = magnitude / scale; squares += ratio * ratio; }
-}
-let missing = bitcast<f32>(0x7fc00000u | (index & 0u));
-validCount[validCountOffset] = count; standardizedCount[standardizedCountOffset] = scoreCount;
-invalidCount[invalidCountOffset] = ${sampleCount}u - count;
-bias[biasOffset] = select(missing, mean, count > 0u);
-absoluteError[absoluteErrorOffset] = select(missing, absoluteMean, count > 0u);
-rootError[rootErrorOffset] = select(missing, scale * sqrt(squares / max(1.0, f32(count))), count > 0u);`
-    })
-  );
+  addInterpolationDiagnosticsSummaryNodes(builder, `${id}-summary`, outputs, invalidCount);
   return {
     contributors: builder.contributors,
     outputs,

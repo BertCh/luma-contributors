@@ -13,6 +13,9 @@ import {
 } from '../../../src/gpu-terrain/index';
 import type {KernelAuditCase} from './kernel-audit-context';
 
+/** Documented correlated-grid cap: the next cell exceeds a core covariance-plane binding. */
+const MAXIMUM_COREGISTRATION_CORRELATED_CELL_COUNT = 92672;
+
 const makeGrid = (width: number) => ({
   width,
   height: 1,
@@ -110,7 +113,9 @@ export const COVERAGE_TERRAIN_CASES: KernelAuditCase[] = [
     exportName: 'GPUTerrainDepressionHierarchy',
     name: 'all-node-stage-outputs-binding-limit',
     build: ({graph, view, maximumRows}) => {
-      const count = maximumRows(16);
+      // Parallel activation has nine reconstruction nodes per cell and two uint32 child slots
+      // per node: its 72-byte-per-cell scratch binding limits this case before the outputs do.
+      const count = maximumRows(72);
       graph.add(
         new GPUTerrainDepressionHierarchy({
           grid: makeGrid(count),
@@ -160,7 +165,10 @@ export const COVERAGE_TERRAIN_CASES: KernelAuditCase[] = [
         exportName: 'GPUTerrainDEMCoregistration',
         name: `correlation-${correlationLength}-binding-limit`,
         build: ({graph, view, maximumRows}) => {
-          const count = maximumRows(8);
+          const count =
+            correlationLength === 0
+              ? maximumRows(8)
+              : Math.min(maximumRows(8), MAXIMUM_COREGISTRATION_CORRELATED_CELL_COUNT);
           graph.add(
             new GPUTerrainDEMCoregistration({
               grid: makeGrid(count),

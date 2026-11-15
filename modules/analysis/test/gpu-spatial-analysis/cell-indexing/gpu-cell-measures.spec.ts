@@ -182,7 +182,7 @@ it('GPUCellMeasures validates its properties', async () => {
     () => new GPUCellMeasures({family: 'h3', cells, maximumEdgeCount: 5, output: {areas}})
   ).toThrow(/maximumEdgeCount/);
   expect(
-    () => new GPUCellMeasures({family: 'quadbin' as unknown as 'h3', cells, output: {areas}})
+    () => new GPUCellMeasures({family: 'geohash' as unknown as 'h3', cells, output: {areas}})
   ).toThrow(/family/);
   buffer.destroy();
   outBuffer.destroy();

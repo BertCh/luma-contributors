@@ -17,6 +17,23 @@ export type GPUGeodesicModel = 'sphere' | 'wgs84' | 'rhumb';
 /** Default compile-time Vincenty iteration count. */
 export const GPU_GEODESIC_DEFAULT_ITERATIONS = 16;
 
+/** Bounded per-invocation work; caps shader iteration cost rather than row count. @internal */
+export const GPU_GEODESIC_MAXIMUM_ITERATIONS = 200;
+
+/**
+ * Exclude the ill-conditioned inverse within 0.02 radians of an antipode from the
+ * pairs accuracy envelope, even if float32 fixed-point iteration stops. @internal
+ */
+export const GPU_GEODESIC_INVERSE_ANTIPODAL_MARGIN = 0.02;
+
+/**
+ * Arrival azimuth amplifies normalized position error by 1 / cos(latitude).
+ * A 2e-6 normalized position budget (12.8 m on Earth) divided by 0.03 is
+ * below the measured 0.004-degree azimuth envelope. Exclude more ill-conditioned
+ * arrivals even when the direct iteration converges. @internal
+ */
+export const GPU_GEODESIC_DIRECT_MINIMUM_AZIMUTH_COSINE = 0.03;
+
 /** Result of `vincentyInverse` in WGSL. @internal */
 const VINCENTY_INVERSE_STRUCT = /* wgsl */ `
 struct VincentyInverse {
@@ -24,12 +41,17 @@ struct VincentyInverse {
   initialBearing: f32,
   finalBearing: f32,
   converged: bool,
+  iterationLimitReached: bool,
 }
 
 struct VincentyDirect {
   destination: vec2<f32>,
   finalBearing: f32,
   converged: bool,
+  // Unrounded local quantities for short-edge area integration.
+  longitudeDelta: f32,
+  sinLatitudeDelta: f32,
+  hasLocalDelta: bool,
 }
 `;
 
@@ -57,6 +79,14 @@ const VINCENTY_F: f32 = ${getWGSLFloatLiteral(flattening)};
 // (a^2 - b^2) / b^2
 const VINCENTY_SECOND_ECCENTRICITY_SQUARED: f32 = ${getWGSLFloatLiteral((semiMajorAxis * semiMajorAxis - semiMinorAxis * semiMinorAxis) / (semiMinorAxis * semiMinorAxis))};
 const VINCENTY_ITERATIONS: u32 = ${iterations}u;
+// Below a millidegree of colatitude, the rounded-radian gap loses relative precision.
+const VINCENTY_POLAR_LATITUDE: f32 = 89.999;
+// Midpoint inversion of reduced latitude: the omitted cubic term is below 1 cm
+// on WGS84 over a 0.01-radian span. Polar spans retain the general direct solution.
+const VINCENTY_LOCAL_AREA_MAXIMUM_ANGLE: f32 = 0.01;
+const VINCENTY_LOCAL_AREA_MAXIMUM_LATITUDE: f32 = 85.0;
+// The short-span cubic estimate assumes an Earth-like flattening.
+const VINCENTY_LOCAL_AREA_MAXIMUM_FLATTENING: f32 = 0.005;
 
 fn getReducedLatitudeGap(phi: f32) -> f32 {
   let sinPhi = sin(phi);
@@ -64,9 +94,16 @@ fn getReducedLatitudeGap(phi: f32) -> f32 {
   return atan(VINCENTY_F * sinPhi * cosPhi / (cosPhi * cosPhi + (1.0 - VINCENTY_F) * sinPhi * sinPhi));
 }
 
-// cos(U) as sin(colatitude of U) = sin((90 - |lat|) degrees + gap(|phi|)), exact near the poles.
+// Keep the established colatitude-plus-gap arithmetic on ordinary paths, including
+// geometry-area integration. Only the polar singularity needs normalization: there
+// cos(phi) and gap(phi) lose relative precision after phi rounds to radians.
 fn getCosReducedLatitude(phi: f32, latitudeDegrees: f32) -> f32 {
-  return sin((90.0 - abs(latitudeDegrees)) * GEODESIC_DEGREES_TO_RADIANS + getReducedLatitudeGap(abs(phi)));
+  if (abs(latitudeDegrees) <= VINCENTY_POLAR_LATITUDE) {
+    return sin((90.0 - abs(latitudeDegrees)) * GEODESIC_DEGREES_TO_RADIANS + getReducedLatitudeGap(abs(phi)));
+  }
+  let cosine = geodesicCosLatitude(latitudeDegrees);
+  let scaledSine = (1.0 - VINCENTY_F) * sin(phi);
+  return cosine / length(vec2<f32>(cosine, scaledSine));
 }
 
 fn getReducedLatitude(phi: f32) -> f32 {
@@ -111,6 +148,13 @@ fn vincentyInverse(a: vec2<f32>, b: vec2<f32>) -> VincentyInverse {
   var lambda = longitudeDelta;
   var result: VincentyInverse;
   result.converged = false;
+  // At a pole longitude does not distinguish positions. Opposite poles are singular,
+  // not coincident; test this before the zero-sine branch below.
+  if (a.y == b.y && (longitudeDelta == 0.0 || abs(a.y) == 90.0)) {
+    result.converged = true;
+    return result;
+  }
+  if (GEODESIC_PI - geodesicCentralAngle(a, b) < 1e-6) { return result; }
   var sinSigma = 0.0;
   var cosSigma = 1.0;
   var sigma = 0.0;
@@ -131,11 +175,10 @@ fn vincentyInverse(a: vec2<f32>, b: vec2<f32>) -> VincentyInverse {
       result.distance = 0.0;
       result.initialBearing = 0.0;
       result.finalBearing = 0.0;
-      result.converged = true;
       return result;
     }
     cosSigma = sinU1 * sinU2 + cosU1 * cosU2 * (1.0 - halfVersine);
-    sigma = atan2(sinSigma, cosSigma);
+    sigma = geodesicAtan2(sinSigma, cosSigma);
     let sinAlpha = cosU1 * cosU2 * sinLambda / sinSigma;
     cosSquaredAlpha = 1.0 - sinAlpha * sinAlpha;
     cos2SigmaM = 0.0;
@@ -154,17 +197,21 @@ fn vincentyInverse(a: vec2<f32>, b: vec2<f32>) -> VincentyInverse {
       result.converged = true;
     }
   }
+  result.iterationLimitReached = !result.converged;
   let coefficients = getVincentyCoefficients(cosSquaredAlpha);
   let deltaSigma = getVincentyDeltaSigma(coefficients.y, sinSigma, cosSigma, cos2SigmaM);
   result.distance = VINCENTY_B * coefficients.x * (sigma - deltaSigma);
-  result.initialBearing = atan2(cosU2 * sinLambda, sinDeltaU + sinU1 * cosU2 * halfVersine) *
+  result.initialBearing = geodesicAtan2(cosU2 * sinLambda, sinDeltaU + sinU1 * cosU2 * halfVersine) *
     GEODESIC_RADIANS_TO_DEGREES;
-  result.finalBearing = atan2(cosU1 * sinLambda, sinDeltaU - cosU1 * sinU2 * halfVersine) *
+  result.finalBearing = geodesicAtan2(cosU1 * sinLambda, sinDeltaU - cosU1 * sinU2 * halfVersine) *
     GEODESIC_RADIANS_TO_DEGREES;
   return result;
 }
 
 fn vincentyDirect(origin: vec2<f32>, bearingDegrees: f32, distance: f32) -> VincentyDirect {
+  if (distance == 0.0) {
+    return VincentyDirect(origin, geodesicWrapLongitudeDelta(bearingDegrees), true, 0.0, 0.0, true);
+  }
   let phi1 = origin.y * GEODESIC_DEGREES_TO_RADIANS;
   let alpha1 = bearingDegrees * GEODESIC_DEGREES_TO_RADIANS;
   let sinAlpha1 = sin(alpha1);
@@ -172,7 +219,7 @@ fn vincentyDirect(origin: vec2<f32>, bearingDegrees: f32, distance: f32) -> Vinc
   let reduced1 = getReducedLatitude(phi1);
   let sinU1 = sin(reduced1);
   let cosU1 = getCosReducedLatitude(phi1, origin.y);
-  let sigma1 = atan2(sinU1, cosU1 * cosAlpha1);
+  let sigma1 = geodesicAtan2(sinU1, cosU1 * cosAlpha1);
   let sinAlpha = cosU1 * sinAlpha1;
   let cosSquaredAlpha = 1.0 - sinAlpha * sinAlpha;
   let coefficients = getVincentyCoefficients(cosSquaredAlpha);
@@ -198,11 +245,11 @@ fn vincentyDirect(origin: vec2<f32>, bearingDegrees: f32, distance: f32) -> Vinc
   cosSigma = cos(sigma);
   cos2SigmaM = cos(2.0 * sigma1 + sigma);
   let northTerm = sinU1 * sinSigma - cosU1 * cosSigma * cosAlpha1;
-  let phi2 = atan2(
+  let phi2 = geodesicAtan2(
     sinU1 * cosSigma + cosU1 * sinSigma * cosAlpha1,
     (1.0 - VINCENTY_F) * sqrt(sinAlpha * sinAlpha + northTerm * northTerm)
   );
-  let lambda = atan2(sinSigma * sinAlpha1, cosU1 * cosSigma - sinU1 * sinSigma * cosAlpha1);
+  let lambda = geodesicAtan2(sinSigma * sinAlpha1, cosU1 * cosSigma - sinU1 * sinSigma * cosAlpha1);
   let c = VINCENTY_F / 16.0 * cosSquaredAlpha * (4.0 + VINCENTY_F * (4.0 - 3.0 * cosSquaredAlpha));
   let longitudeDelta = lambda - (1.0 - c) * VINCENTY_F * sinAlpha *
     (sigma + c * sinSigma * (cos2SigmaM + c * cosSigma * (-1.0 + 2.0 * cos2SigmaM * cos2SigmaM)));
@@ -210,7 +257,24 @@ fn vincentyDirect(origin: vec2<f32>, bearingDegrees: f32, distance: f32) -> Vinc
     origin.x + longitudeDelta * GEODESIC_RADIANS_TO_DEGREES,
     phi2 * GEODESIC_RADIANS_TO_DEGREES
   );
-  result.finalBearing = atan2(sinAlpha, -northTerm) * GEODESIC_RADIANS_TO_DEGREES;
+  result.finalBearing = geodesicAtan2(sinAlpha, -northTerm) * GEODESIC_RADIANS_TO_DEGREES;
+  result.longitudeDelta = longitudeDelta * GEODESIC_RADIANS_TO_DEGREES;
+  if (abs(sigma) < VINCENTY_LOCAL_AREA_MAXIMUM_ANGLE && abs(origin.y) < VINCENTY_LOCAL_AREA_MAXIMUM_LATITUDE && abs(VINCENTY_F) <= VINCENTY_LOCAL_AREA_MAXIMUM_FLATTENING) {
+    // sin(U2) - sin(U1) directly, without subtracting two rounded sines.
+    let halfSine = sin(0.5 * sigma);
+    let sineChange = -2.0 * sinU1 * halfSine * halfSine + cosU1 * sinSigma * cosAlpha1;
+    let targetReducedLatitude = geodesicAtan2(
+      sinU1 * cosSigma + cosU1 * sinSigma * cosAlpha1,
+      sqrt(sinAlpha * sinAlpha + northTerm * northTerm)
+    );
+    let reducedChange = 2.0 * asin(clamp(sineChange / (2.0 * cos(0.5 * (reduced1 + targetReducedLatitude))), -1.0, 1.0));
+    let flatteningComplement = 1.0 - VINCENTY_F;
+    var latitudeChange = reducedChange * (cos(phi1) * cos(phi1) + flatteningComplement * flatteningComplement * sin(phi1) * sin(phi1)) / flatteningComplement;
+    let middleLatitude = phi1 + 0.5 * latitudeChange;
+    latitudeChange = reducedChange * (cos(middleLatitude) * cos(middleLatitude) + flatteningComplement * flatteningComplement * sin(middleLatitude) * sin(middleLatitude)) / flatteningComplement;
+    result.sinLatitudeDelta = 2.0 * cos(phi1 + 0.5 * latitudeChange) * sin(0.5 * latitudeChange);
+    result.hasLocalDelta = true;
+  }
   return result;
 }
 `;
@@ -218,6 +282,17 @@ fn vincentyDirect(origin: vec2<f32>, bearingDegrees: f32, distance: f32) -> Vinc
 
 /** Sphere final bearing: the reverse initial bearing turned by 180 degrees. @internal */
 export const SPHERE_PAIR_WGSL = /* wgsl */ `
+// Arrival azimuth from the direct solution, before destination coordinates round to f32.
+fn sphereDirectFinalBearingDegrees(origin: vec2<f32>, bearingDegrees: f32, angle: f32) -> f32 {
+  // Preserve the sphere contributor's existing coincident reverse-bearing convention.
+  if (angle == 0.0) { return 180.0; }
+  let bearing = bearingDegrees * GEODESIC_DEGREES_TO_RADIANS;
+  let cosine = geodesicCosLatitude(origin.y);
+  let north = sin(origin.y * GEODESIC_DEGREES_TO_RADIANS) * sin(angle) -
+    cosine * cos(angle) * cos(bearing);
+  return geodesicAtan2(cosine * sin(bearing), -north) * GEODESIC_RADIANS_TO_DEGREES;
+}
+
 fn sphereFinalBearingDegrees(a: vec2<f32>, b: vec2<f32>) -> f32 {
   var bearing = geodesicInitialBearingDegrees(b, a) + 180.0;
   if (bearing > 180.0) {
@@ -260,7 +335,7 @@ export function getSafeguardedVincentyWGSL(
   return `${source}\n${candidate}
 fn vincentyInverse(a: vec2f, b: vec2f) -> VincentyInverse {
   var result = vincentyInverseFast(a, b);
-  if (result.converged) { return result; }
+  if (result.converged || GEODESIC_PI - geodesicCentralAngle(a, b) < 1e-6) { return result; }
   let longitude = geodesicLongitudeDelta(a.x, b.x) * GEODESIC_DEGREES_TO_RADIANS;
   let lower = max(-3.141592653589793, longitude - 4.0 * abs(VINCENTY_F) - 0.001);
   let upper = min(3.141592653589793, longitude + 4.0 * abs(VINCENTY_F) + 0.001);
@@ -281,7 +356,7 @@ fn vincentyInverse(a: vec2f, b: vec2f) -> VincentyInverse {
         if (abs(trial.residual) < abs(best.residual)) { best = trial; }
         if (leftResidual * trial.residual <= 0.0) { right = middle; } else { left = middle; leftResidual = trial.residual; }
       }
-      if (abs(best.residual) <= 7e-7 && best.distance > 0.0 && best.distance < shortest) { best.converged = true; result = best; shortest = best.distance; }
+      if (abs(best.residual) <= 7e-7 && best.distance > 0.0 && best.distance < shortest) { best.converged = true; best.iterationLimitReached = false; result = best; shortest = best.distance; }
     }
     previousLongitude = nextLongitude; previous = next;
   }

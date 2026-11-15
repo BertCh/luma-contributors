@@ -55,6 +55,7 @@ type RunOptions = {
   sameFeatureOnly?: boolean;
   leafCapacity?: number;
   spatialSort?: boolean;
+  padding?: {leading: number; trailing: number; value: number};
 };
 
 async function runIntersection(
@@ -65,9 +66,9 @@ async function runIntersection(
 ): Promise<RunResult> {
   const graph = new GPUCommandGraph(device, {id: 'segment-intersection'});
   const buffers: Buffer[] = [];
-  const leftGeometry = createSegmentGeometry(device, graph, 'left', left, buffers);
+  const leftGeometry = createSegmentGeometry(device, graph, 'left', left, buffers, options.padding);
   const rightGeometry = right
-    ? createSegmentGeometry(device, graph, 'right', right, buffers)
+    ? createSegmentGeometry(device, graph, 'right', right, buffers, options.padding)
     : undefined;
   const capacity = options.capacity ?? 4096;
   const output = (name: string, length: number, format: 'uint32' | 'float32x2' = 'uint32') => {
@@ -549,5 +550,56 @@ it('GPUSegmentIntersection self mode on a shuffled multi-block scene equals the 
   for (const spatialSort of [true, false]) {
     const result = await runIntersection(device, scene, undefined, {capacity: 20000, spatialSort});
     expectMatchesOracle(result, expected, `shuffled self sort=${spatialSort}`);
+  }
+}, 120000);
+
+// Adjacent ring/line intervals share a prefix offset, so internal position gaps are not representable.
+it('standalone segment intersection ignores leading and trailing rows outside every ring or line', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scenes = [
+    [line([0, 0], [4, 4]), line([10, 0], [14, 4])],
+    [
+      polygon([
+        [0, 0],
+        [4, 0],
+        [4, 4],
+        [0, 4]
+      ]),
+      polygon([
+        [10, 0],
+        [14, 0],
+        [14, 4],
+        [10, 4]
+      ])
+    ]
+  ];
+  const right = [line([0, 4], [4, 0]), line([10, 4], [14, 0])];
+  for (const scene of scenes) {
+    const expected = intersectWithOracle(scene, right);
+    expect(expected.length).toBeGreaterThan(0);
+    for (const spatialSort of [false, true]) {
+      const reference = await runIntersection(device, scene, right, {capacity: 16, spatialSort});
+      expectMatchesOracle(reference, expected, 'unpadded');
+      for (const value of [Number.NaN, 3e30, -3e30]) {
+        const leading = 2;
+        const result = await runIntersection(device, scene, right, {
+          capacity: 16,
+          spatialSort,
+          padding: {leading, trailing: 3, value}
+        });
+        // Segment IDs reference the caller's positions: remove only the known prefix shift.
+        const normalized = {
+          ...result,
+          hits: result.hits.map(hit => ({
+            ...hit,
+            left: hit.left - leading,
+            right: hit.right - leading
+          }))
+        };
+        expectMatchesOracle(normalized, expected, 'padded');
+        expect(normalized).toEqual(reference);
+      }
+    }
   }
 }, 120000);

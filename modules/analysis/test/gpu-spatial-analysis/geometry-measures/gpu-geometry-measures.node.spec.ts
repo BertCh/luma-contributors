@@ -11,13 +11,17 @@ import {
   getSphericalTriangleArea
 } from './geometry-measures-oracle';
 import {expect, it} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
 import {
   GPUGeodesicDestination,
   GPUGeodesicPairs,
   GPUGeometryMeasures,
   type GPUGeometryMeasuresProps
 } from '../../../src/gpu-spatial-analysis/geometry-measures/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {getCentralAngle, interpolateGreatCircle} from './geodesic-oracle';
 import {
   createFlatGeometry,
@@ -154,6 +158,39 @@ it('geometry measures oracle matches closed forms', () => {
   expect(Array.from(flat.pointOffsets)).toEqual([0, 1, 1, 9]);
 });
 
+it('rhumb consumers include one guarded atan2 definition for zero latitude spans', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const spatialContext = {coordinateSpace: 'longitude-latitude', metric: 'rhumb'} as const;
+    const contributors = [
+      new GPUGeodesicPairs({
+        spatialContext,
+        origins: view(graph, 'float32x2', 1),
+        targets: view(graph, 'float32x2', 1),
+        output: {initialBearings: view(graph, 'float32', 1)}
+      }),
+      new GPUGeodesicDestination({
+        spatialContext,
+        origins: view(graph, 'float32x2', 1),
+        bearings: view(graph, 'float32', 1),
+        distances: view(graph, 'float32', 1),
+        output: {destinations: view(graph, 'float32x2', 1)}
+      })
+    ];
+    for (const contributor of contributors) {
+      const sources = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+      expect(sources).toHaveLength(1);
+      const source = sources[0].source;
+      expect(() => new WgslReflect(source)).not.toThrow();
+      expect(source).toContain('guardedAtan2(deltaLambda, deltaPsi)');
+      expect(source.match(/fn guardedAtan2\(/g)).toHaveLength(1);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
 it('GPUGeodesicPairs and GPUGeodesicDestination validate columns and models', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'geodesic'});
   const origins = view(graph, 'float32x2', 4);
@@ -204,7 +241,7 @@ it('GPUGeodesicPairs and GPUGeodesicDestination validate columns and models', ()
         targets: view(graph, 'float32x2', 3),
         output: {distances: view(graph, 'float32', 4)}
       })
-  ).toThrow(/aligned/);
+  ).toThrow(/^geodesic-pairs targets must have 4 rows/);
   expect(
     () =>
       new GPUGeodesicPairs({
@@ -244,7 +281,7 @@ it('GPUGeodesicPairs and GPUGeodesicDestination validate columns and models', ()
         distances: view(graph, 'float32', 4),
         output: {destinations: view(graph, 'float32x2', 4)}
       })
-  ).toThrow(/aligned/);
+  ).toThrow(/^geodesic-destination bearings must have 4 rows/);
 });
 
 it('vincenty oracle round-trips direct and inverse solutions', () => {

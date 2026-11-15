@@ -274,8 +274,8 @@ const EDGE_COUNT: u32 = ${csr.neighbors.length}u;`,
 }
 
 /**
- * Publishes `converged = reachabilityConverged && labelPhaseConverged`, and the predecessor level
- * phase finished when it exists. @internal
+ * Publishes convergence of cost, label and optional predecessor level phases, and its complement
+ * `iterationLimitReached`. Either port may be requested independently. @internal
  */
 export function createServiceAreasFinalizeNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -286,7 +286,8 @@ export function createServiceAreasFinalizeNode<Parameters>(
     /** Predecessor level phase, whose truncation also clears `converged`. */
     tiePhase?: FrontierPhase;
     reachabilityConverged: GraphDataView<'uint32'>;
-    converged: GraphDataView<'uint32'>;
+    converged?: GraphDataView<'uint32'>;
+    iterationLimitReached?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
@@ -301,11 +302,23 @@ export function createServiceAreasFinalizeNode<Parameters>(
         type: 'u32',
         access: 'read'
       },
-      {name: 'converged', view: props.converged, type: 'u32', access: 'read_write'}
+      ...(props.converged
+        ? [{name: 'converged', view: props.converged, type: 'u32', access: 'read_write'} as const]
+        : []),
+      ...(props.iterationLimitReached
+        ? [
+            {
+              name: 'iterationLimitReached',
+              view: props.iterationLimitReached,
+              type: 'u32',
+              access: 'read_write'
+            } as const
+          ]
+        : [])
     ],
     invocationCount: 1,
     body: `${getFrontierFinalizeSource(props.phase)}
-  converged[convergedOffset] = select(
+  let finished = select(
     0u,
     1u,
     reachabilityConverged[reachabilityConvergedOffset] != 0u && frontierConverged != 0u${
@@ -314,6 +327,8 @@ export function createServiceAreasFinalizeNode<Parameters>(
       control[controlOffset + ${props.tiePhase.controlWordOffset + FRONTIER_CONTROL_TRUNCATED}u] == 0u`
         : ''
     }
-  );`
+  );
+  ${props.converged ? 'converged[convergedOffset] = finished;' : ''}
+  ${props.iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = 1u - finished;' : ''}`
   });
 }

@@ -69,3 +69,25 @@ export {
   TILED_MULTIVARIATE_GEARY_MAXIMUM_PERMUTATIONS,
   TILED_MULTIVARIATE_GEARY_MAXIMUM_ROWS
 } from './gpu-multivariate-local-geary-permutation-test';
+
+export * from './gpu-quantile-lisa';
+
+export {
+  getGPUHotSpotAnalysisParameterValues,
+  GPU_HOT_SPOT_ANALYSIS_PARAMETER_LENGTH
+} from './hot-spot-parameters';
+export type {GPUHotSpotAnalysisSettings} from './hot-spot-parameters';
+
+export {
+  getGPULocalSpatialHeteroscedasticityParameterValues,
+  GPU_LOCAL_SPATIAL_HETEROSCEDASTICITY_PARAMETER_LENGTH
+} from './local-variability-parameters';
+export type {GPULocalSpatialHeteroscedasticitySettings} from './local-variability-parameters';
+
+export type {GPUSpatialAutocorrelationStatusPort} from './spatial-autocorrelation-status';
+
+export {
+  getGPUMultivariateLocalGearyPermutationTestParameterValues,
+  GPU_MULTIVARIATE_LOCAL_GEARY_PERMUTATION_TEST_PARAMETER_LENGTH
+} from './multivariate-geary-parameters';
+export type {GPUMultivariateLocalGearyPermutationTestSettings} from './multivariate-geary-parameters';

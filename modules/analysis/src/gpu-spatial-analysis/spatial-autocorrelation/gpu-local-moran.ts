@@ -53,6 +53,12 @@ import {
   type GPUSpatialAutocorrelationSettings
 } from './spatial-autocorrelation-parameters';
 
+import {
+  getSpatialAutocorrelationStatusNodes,
+  validateSpatialAutocorrelationStatus,
+  type GPUSpatialAutocorrelationStatusPort
+} from './spatial-autocorrelation-status';
+
 const OPERATION = 'GPULocalMoran';
 
 /**
@@ -64,6 +70,12 @@ export type GPULocalMoranQuadrantGating = 'analytic' | 'none';
 
 /** Caller-owned outputs of {@link GPULocalMoran}. */
 export type GPULocalMoranOutput = {
+  /**
+   * Optional input diagnostics. invalidCount counts unmasked nonfinite values (not islands or
+   * undefined analytic tests); overflow is one when the input weights report capacity overflow.
+   * Both scalars are overwritten on every encoding. Masked rows do not count as invalid.
+   */
+  status?: GPUSpatialAutocorrelationStatusPort;
   /** Caller-owned analytic z-score of local Moran's I per row; quiet NaN when undefined. */
   zScores: GraphDataView<'float32'>;
   /**
@@ -279,6 +291,16 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
     if (props.quadrantGating === 'none' && this.multipleTesting !== 'none') {
       throw new Error(`${id} quadrantGating 'none' cannot be combined with multipleTesting`);
     }
+    validateSpatialAutocorrelationStatus(id, props.output.status, [
+      props.output.zScores,
+      props.output.pValues,
+      props.output.adjustedPValues,
+      props.output.neighborCounts,
+      props.output.globalStatistics,
+      props.output.localI,
+      props.output.spatialLag,
+      props.output.quadrants
+    ]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -289,7 +311,8 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
         props.output.pValues,
         props.output.adjustedPValues,
         props.output.neighborCounts,
-        props.output.globalStatistics
+        props.output.globalStatistics,
+        ...Object.values(props.output.status ?? {})
       ],
       [
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
@@ -345,8 +368,10 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       props.output.pValues,
       props.output.adjustedPValues,
       props.output.neighborCounts,
-      props.output.globalStatistics
+      props.output.globalStatistics,
+      ...Object.values(props.output.status ?? {})
     ]);
+    const statusNodes = getSpatialAutocorrelationStatusNodes(graph, id, OPERATION, props);
     const rows = props.values.length;
     const inputs = getSpatialAutocorrelationInputNodes<Parameters>(graph, {
       ...props,
@@ -355,7 +380,7 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       islands: this.islands,
       operation: OPERATION
     });
-    const nodes = inputs.nodes;
+    const nodes = [...statusNodes, ...inputs.nodes];
     const getConstantsWGSL = (capacity: number, rowStart?: number) =>
       `${getSpatialAutocorrelationConstantsWGSL(rows, capacity, rowStart)}
 const MINIMUM_NEIGHBORS: u32 = ${this.minimumNeighbors}u;

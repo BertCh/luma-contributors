@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -17,6 +18,13 @@ import {
   validateRasterAlgebraNoData,
   validateRasterAlgebraView
 } from './raster-algebra-utils';
+
+import {
+  getRasterAlgebraInputNodes,
+  getRasterAlgebraInputViews,
+  isRasterAlgebraBand,
+  validateRasterAlgebraInput
+} from './raster-algebra-input';
 
 const OPERATION = 'GPURasterConditional';
 
@@ -34,24 +42,26 @@ export type GPURasterConditionalOutput = {
  *
  * Per-frame (no recompile): input contents and `parameters` (comparison, thresholds, constants).
  * Topology: `cellCount`, `noDataValue`, and which views exist (a missing `a` or `b` uses its
- * per-frame constant).
+ * per-frame constant). Band metadata and grid dimensions are compile-time.
  */
 export type GPURasterConditionalProps = {
   /** Prefix for generated node IDs. Defaults to `'raster-conditional'`. */
   id?: string;
   /** Cells to evaluate. */
   cellCount: number;
+  /** Raster grid, required when any input is a published band. */
+  grid?: GPURasterMetadata;
   /** Boolean condition raster: nonzero is true. */
   mask?: GraphDataView<'uint32'>;
-  /** Float condition raster compared per frame against thresholds. NaN cells are nodata. */
-  conditionValues?: GraphDataView<'float32'>;
-  /** Value where the condition holds. Defaults to the per-frame `constantA`. */
-  a?: GraphDataView<'float32'>;
-  /** Value where the condition fails. Defaults to the per-frame `constantB`. */
-  b?: GraphDataView<'float32'>;
+  /** Published condition band or legacy float values compared against per-frame thresholds. */
+  conditionValues?: GraphDataView<'float32'> | GPURasterBand;
+  /** Published band or legacy values where the condition holds. Defaults to the per-frame `constantA`. */
+  a?: GraphDataView<'float32'> | GPURasterBand;
+  /** Published band or legacy values where the condition fails. Defaults to the per-frame `constantB`. */
+  b?: GraphDataView<'float32'> | GPURasterBand;
   /**
-   * Optional finite sentinel treated as nodata in the `conditionValues`, `a` and `b` rasters. It
-   * never applies to the per-frame constants: `constantB: 0` with `noDataValue: 0` writes 0.
+   * Optional finite sentinel treated as nodata in the `conditionValues`, `a` and `b` legacy
+   * rasters. Bands use their own native sentinel, validity and calibration. It never applies to the per-frame constants: `constantB: 0` with `noDataValue: 0` writes 0.
    */
   noDataValue?: number;
   /** Per-frame float32 view written with `getGPURasterConditionalParameterValues`. */
@@ -84,9 +94,21 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
       throw new Error(`${id} needs exactly one of mask and conditionValues`);
     }
     validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', cellCount);
-    validateRasterAlgebraView(id, 'conditionValues', props.conditionValues, 'float32', cellCount);
-    validateRasterAlgebraView(id, 'a', props.a, 'float32', cellCount);
-    validateRasterAlgebraView(id, 'b', props.b, 'float32', cellCount);
+    if (props.conditionValues) {
+      validateRasterAlgebraInput(
+        id,
+        'conditionValues',
+        props.conditionValues,
+        props.grid,
+        cellCount
+      );
+    }
+    if (props.a) {
+      validateRasterAlgebraInput(id, 'a', props.a, props.grid, cellCount);
+    }
+    if (props.b) {
+      validateRasterAlgebraInput(id, 'b', props.b, props.grid, cellCount);
+    }
     validateRasterAlgebraView(
       id,
       'parameters',
@@ -108,7 +130,13 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
     validateRasterAlgebraAliasing(
       id,
       [output.values, output.conditionResult],
-      [props.mask, props.conditionValues, props.a, props.b, props.parameters]
+      [
+        props.mask,
+        ...getRasterAlgebraInputViews(props.conditionValues),
+        ...getRasterAlgebraInputViews(props.a),
+        ...getRasterAlgebraInputViews(props.b),
+        props.parameters
+      ]
     );
   }
 
@@ -120,13 +148,22 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
     const {output} = props;
     validateRasterAlgebraGraph(id, graph, [
       props.mask,
-      props.conditionValues,
-      props.a,
-      props.b,
+      ...getRasterAlgebraInputViews(props.conditionValues),
+      ...getRasterAlgebraInputViews(props.a),
+      ...getRasterAlgebraInputViews(props.b),
       props.parameters,
       output.values,
       output.conditionResult
     ]);
+    const conditionSource = props.conditionValues
+      ? getRasterAlgebraInputNodes(graph, `${id}-condition`, props.conditionValues, props.grid)
+      : undefined;
+    const aSource = props.a
+      ? getRasterAlgebraInputNodes(graph, `${id}-a`, props.a, props.grid)
+      : undefined;
+    const bSource = props.b
+      ? getRasterAlgebraInputNodes(graph, `${id}-b`, props.b, props.grid)
+      : undefined;
     const bindings: WGSLKernelBinding[] = [
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
     ];
@@ -136,16 +173,16 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
     if (props.conditionValues) {
       bindings.push({
         name: 'conditionValues',
-        view: props.conditionValues,
+        view: conditionSource!.values,
         type: 'f32',
         access: 'read'
       });
     }
     if (props.a) {
-      bindings.push({name: 'aValues', view: props.a, type: 'f32', access: 'read'});
+      bindings.push({name: 'aValues', view: aSource!.values, type: 'f32', access: 'read'});
     }
     if (props.b) {
-      bindings.push({name: 'bValues', view: props.b, type: 'f32', access: 'read'});
+      bindings.push({name: 'bValues', view: bSource!.values, type: 'f32', access: 'read'});
     }
     bindings.push({name: 'valuesOut', view: output.values, type: 'f32', access: 'read_write'});
     if (output.conditionResult) {
@@ -157,6 +194,9 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
       });
     }
     return [
+      ...(conditionSource?.nodes ?? []),
+      ...(aSource?.nodes ?? []),
+      ...(bSource?.nodes ?? []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-select`,
         operation: OPERATION,
@@ -170,7 +210,7 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
     props.mask
       ? 'condition = conditionMask[conditionMaskOffset + index] != 0u;'
       : `let conditionValue = conditionValues[conditionValuesOffset + index];
-  conditionDefined = !isNoDataValue(conditionValue);
+  conditionDefined = !${props.conditionValues && isRasterAlgebraBand(props.conditionValues) ? 'isNaNValue' : 'isNoDataValue'}(conditionValue);
   let comparison = u32(params[paramsOffset]);
   let threshold = params[paramsOffset + 1u];
   let upperThreshold = params[paramsOffset + 2u];
@@ -184,12 +224,13 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
     default: { condition = conditionValue >= threshold && conditionValue <= upperThreshold; }
   }`
   }
-  // The sentinel marks raster cells only. A per-frame constant that equals it is a value
+  // The legacy sentinel marks bare raster cells only; each band resolves its own sentinel.
+  // A per-frame constant that equals the sentinel is a value
   // (ArcGIS Con, numpy.where); a NaN constant still gives NaN through the select below.
   let aValue = ${props.a ? 'aValues[aValuesOffset + index]' : 'params[paramsOffset + 3u]'};
   let bValue = ${props.b ? 'bValues[bValuesOffset + index]' : 'params[paramsOffset + 4u]'};
-  let aMissing = ${props.a ? 'isNoDataValue(aValue)' : 'isNaNValue(aValue)'};
-  let bMissing = ${props.b ? 'isNoDataValue(bValue)' : 'isNaNValue(bValue)'};
+  let aMissing = ${props.a && !isRasterAlgebraBand(props.a) ? 'isNoDataValue(aValue)' : 'isNaNValue(aValue)'};
+  let bMissing = ${props.b && !isRasterAlgebraBand(props.b) ? 'isNoDataValue(bValue)' : 'isNaNValue(bValue)'};
   let chosen = select(bValue, aValue, condition);
   let isDefined = conditionDefined && !select(bMissing, aMissing, condition);
   valuesOut[valuesOutOffset + index] = select(getNaN(), chosen, isDefined);

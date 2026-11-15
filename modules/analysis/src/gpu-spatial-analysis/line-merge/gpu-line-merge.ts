@@ -5,13 +5,12 @@
 import {
   createTransientView,
   GPUScan,
-  GPUSort,
-  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -258,11 +257,6 @@ ${declarations}`,
     const keyY = transient('key-y', 'uint32', endpointCount);
     const keyX = transient('key-x', 'uint32', endpointCount);
     const endpointIds = transient('endpoint-ids', 'uint32', endpointCount);
-    const sortedY = transient('sorted-y', 'uint32', endpointCount);
-    const orderY = transient('order-y', 'uint32', endpointCount);
-    const secondKeys = transient('second-keys', 'uint32', endpointCount);
-    const sortedX = transient('sorted-x', 'uint32', endpointCount);
-    const order = transient('order', 'uint32', endpointCount);
     const partner = transient('partner', 'uint32', endpointCount);
     const leaderExit = transient('leader-exit', 'uint32', lineCount);
     const leaderVertices = transient('leader-vertices', 'uint32', lineCount);
@@ -294,6 +288,15 @@ ${declarations}`,
       .join('\n  ');
     const statusVariant = statusOutputs.map(([, view]) => (view ? 1 : 0)).join('');
     const nodes: GPUCommandNode<Parameters>[] = [];
+    const sorted = createStableLexicographicIndexSortNodes(graph, {
+      id: `${id}-sort`,
+      operation: OPERATION,
+      indices: endpointIds,
+      indicesAreIdentity: true,
+      keys: [{view: keyX}, {view: keyY}]
+    });
+    const order = sorted.sortedIndices;
+    const sortedX = sorted.sortedPrimaryKeys;
     // Bit patterns; -0 is folded to +0 so equal coordinates compare equal. Lines with fewer than
     // two vertices or a non-finite endpoint get the NaN key, which never joins.
     nodes.push(
@@ -331,27 +334,7 @@ ${declarations}`,
   }`,
         IS_FINITE_BITS_WGSL
       ),
-      ...new GPUSort({
-        id: `${id}-sort-y`,
-        keys: keyY,
-        values: endpointIds,
-        outputKeys: sortedY,
-        outputValues: orderY
-      }).getCommandNodes(graph),
-      // `orderY` is a permutation of the endpoint indices, so no index is out of range.
-      ...new GPUUint32Gather({
-        id: `${id}-gather-x`,
-        source: keyX,
-        indices: orderY,
-        output: secondKeys
-      }).getCommandNodes(graph),
-      ...new GPUSort({
-        id: `${id}-sort-x`,
-        keys: secondKeys,
-        values: orderY,
-        outputKeys: sortedX,
-        outputValues: order
-      }).getCommandNodes(graph),
+      ...sorted.nodes,
       // In the (x, y)-sorted order equal coordinates are adjacent. An end joins its partner when its
       // run has exactly two members that belong to different lines.
       kernel(

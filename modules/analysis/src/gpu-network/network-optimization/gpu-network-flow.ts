@@ -8,6 +8,15 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import type {
+  GPUInvalidStatusPort,
+  GPUIterationStatusPort
+} from '../../analysis-core/contracts/status';
+import {
+  createNetworkOptimizationStatusNodes,
+  getNetworkOptimizationStatusViews,
+  validateNetworkOptimizationStatus
+} from './network-optimization-status';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
@@ -46,6 +55,21 @@ export const GPU_NETWORK_FLOW_WORD = {
  * Directed integral flow, parallel/antiparallel edges preserved in input order.
  * At most 128 nodes and 1024 edges; intended for small exact scenarios.
  */
+export type GPUNetworkFlowOutput = {
+  flow: GraphDataView<'uint32'>;
+  /** Residual source-reachable vertices, one word per node. */
+  cut: GraphDataView<'uint32'>;
+  /** Eight words, indexed by GPU_NETWORK_FLOW_WORD; cost is f32 bits. */
+  summary: GraphDataView<'uint32'>;
+  /** Optional exact unsigned integer objective [low32,high32]. Summary cost remains f32. */
+  exactCost?: GraphDataView<'uint32x2'>;
+  /** invalidCount is 1 for a rejected problem; iterationCount counts augmentations.
+   * Convergence includes a fully solved infeasible finite request; inspect summary.unserved.
+   * Invalid problems set neither converged nor iterationLimitReached.
+   */
+  status?: GPUInvalidStatusPort & GPUIterationStatusPort;
+};
+
 export type GPUNetworkFlowProps = {
   id?: string;
   nodeCount: number;
@@ -56,15 +80,7 @@ export type GPUNetworkFlowProps = {
   /** Source, sink, required flow; 0xffffffff required flow means maximize. */
   parameters: GraphDataView<'uint32'>;
   maximumAugmentations?: number;
-  output: {
-    flow: GraphDataView<'uint32'>;
-    /** Residual source-reachable vertices, one word per node. */
-    cut: GraphDataView<'uint32'>;
-    /** Eight words, indexed by GPU_NETWORK_FLOW_WORD; cost is f32 bits. */
-    summary: GraphDataView<'uint32'>;
-    /** Optional exact unsigned integer objective [low32,high32]. Summary cost remains f32. */
-    exactCost?: GraphDataView<'uint32x2'>;
-  };
+  output: GPUNetworkFlowOutput;
 };
 
 /**
@@ -79,6 +95,8 @@ export type GPUNetworkFlowProps = {
  * The maximum size is enforced at construction: 128 nodes, 1,024 edges and 65,536 augmentations
  * (default 1,024), about 8.6e9 serial operations at the limits. A push-relabel or cost-scaling
  * formulation on a CSR would replace it for larger networks.
+ * Compile-time: node/edge counts, optional cost/exact-cost/status views and maximumAugmentations.
+ * Per-frame: edge, capacity, cost and parameter contents. Every encoding rewrites the outputs.
  */
 export class GPUNetworkFlow implements GPUCommandNodeProducer {
   readonly id: string;
@@ -145,7 +163,17 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
         'output.exactCost must hold one row'
       );
     }
-    validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
+    validateNetworkOptimizationStatus(
+      id,
+      [
+        props.output.flow,
+        props.output.cut,
+        props.output.summary,
+        ...(props.output.exactCost ? [props.output.exactCost] : [])
+      ],
+      props.output.status
+    );
+    validateGraphOutputsDisjointFromInputs(this.id, getFlowOutputViews(props.output), [
       props.edges,
       props.capacities,
       props.costs,
@@ -162,9 +190,9 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
       props.capacities,
       props.costs,
       props.parameters,
-      ...Object.values(props.output)
+      ...getFlowOutputViews(props.output)
     ]);
-    return [
+    const nodes = [
       createWGSLKernelNode<Parameters>(graph, {
         id,
         operation: 'GPUNetworkFlow',
@@ -296,5 +324,31 @@ summary[summaryOffset + 6u] = cutCapacity;
 summary[summaryOffset + 7u] = select(0u, 1u, exhausted && cutCapacity == value);`
       })
     ];
+    nodes.push(
+      ...createNetworkOptimizationStatusNodes(
+        graph,
+        id,
+        'GPUNetworkFlow',
+        props.output.summary,
+        props.output.status,
+        {
+          invalidCount: '1u - summary[summaryOffset]',
+          iterationCount: 'summary[summaryOffset + 4u]',
+          converged: 'summary[summaryOffset] * summary[summaryOffset + 1u]',
+          iterationLimitReached: 'summary[summaryOffset] * (1u - summary[summaryOffset + 1u])'
+        }
+      )
+    );
+    return nodes;
   }
+}
+
+function getFlowOutputViews(output: GPUNetworkFlowProps['output']): GraphDataView[] {
+  return [
+    output.flow,
+    output.cut,
+    output.summary,
+    ...(output.exactCost ? [output.exactCost] : []),
+    ...getNetworkOptimizationStatusViews(output.status)
+  ];
 }

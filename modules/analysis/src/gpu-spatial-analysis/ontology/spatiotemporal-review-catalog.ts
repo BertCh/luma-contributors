@@ -151,6 +151,24 @@ const TRAJECTORY_ROW_DESCRIPTOR = {
 const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
   Record<string, SpatiotemporalReviewOperatorOverride>
 > = {
+  GPUGaussianRandomField: {
+    primaryCapability: PREDICTION_FAMILY,
+    inputs: ['points', 'attributes', 'parameters'],
+    outputs: ['attributes', 'summary'],
+    coordinateModels: ['planar'],
+    dimensionality: '2d',
+    topology: 'fixed',
+    cardinality: 'source-sized',
+    semantics: 'model-based',
+    deterministic: true,
+    status: ['approximation'],
+    evidence: 'partial',
+    tests: `${TEST_ROOT}/spatial-interpolation/gaussian-random-field.spec.ts`,
+    documentation: `${DOCUMENTATION_ROOT}/gaussian-random-field.md`,
+    summary:
+      'Stationary Gaussian fields by published GPUFFT2D circulant embedding or finite spectral modes, with indexed local kriging of residuals for hard conditioning (Dietrich and Newsam; Hesse et al.).',
+    contract: 'GPUGaussianRandomFieldProps'
+  },
   GPULocationChangePoints: {
     primaryCapability: SPACE_TIME_FAMILY,
     inputs: ['time-series', 'parameters'],
@@ -458,11 +476,12 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     topology: 'fixed',
     cardinality: 'source-sized',
     semantics: 'model-based',
+    status: ['converged', 'iterationLimitReached'],
     evidence: 'partial',
-    tests: `${TEST_ROOT}/spatial-regression/gtwr-mgtwr.spec.ts`,
+    tests: `${TEST_ROOT}/spatial-regression/gtwr-bandwidth-search.spec.ts`,
     documentation: `${DOCUMENTATION_ROOT}/operators-regression.md`,
     summary:
-      'Geographically and temporally weighted regression at a fixed bandwidth: local weighted least squares with kernel weights on the space-time distance, with per-row conditioning status.',
+      'Geographically and temporally weighted regression with fixed or adaptive bandwidth and optional nested golden-section bandwidth/time-scale selection: local weighted least squares with kernel weights on the space-time distance, with per-row conditioning status.',
     contract: 'GPUGeographicallyTemporallyWeightedRegressionProps'
   },
   GPUMultiscaleGeographicallyTemporallyWeightedRegression: {
@@ -474,11 +493,12 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     topology: 'fixed',
     cardinality: 'source-sized',
     semantics: 'model-based',
+    status: ['converged', 'iterationLimitReached'],
     evidence: 'partial',
-    tests: `${TEST_ROOT}/spatial-regression/gtwr-mgtwr.spec.ts`,
+    tests: `${TEST_ROOT}/spatial-regression/gtwr-bandwidth-search.spec.ts`,
     documentation: `${DOCUMENTATION_ROOT}/operators-regression.md`,
     summary:
-      'Multiscale GTWR by backfitting: one bandwidth and time scale per covariate, a fixed number of Gauss-Seidel iterations, per-iteration convergence scores.',
+      'Multiscale GTWR by backfitting: fixed or adaptive bandwidth and time scale per covariate, optional partial-residual AICc profile search, a fixed number of Gauss-Seidel iterations, per-iteration convergence scores.',
     contract: 'GPUMultiscaleGeographicallyTemporallyWeightedRegressionProps'
   },
   addTrajectorySortCheck: {
@@ -764,6 +784,18 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
       'Moran correlogram over exactly-k-step contiguity orders: higher-order rings, row standardisation and global Moran per order.',
     contract: 'GPUContiguityOrderCorrelogramRecipeProps'
   },
+  getHealpixCellBoundary: {
+    ...RTS08_DESCRIPTOR,
+    inputs: ['cells', 'parameters'],
+    outputs: ['polygons'],
+    coordinateModels: ['spherical'],
+    cardinality: 'fixed-sized',
+    semantics: 'approximate',
+    tests: `${TEST_ROOT}/healpix-cells/healpix-cell-boundary.node.spec.ts`,
+    summary:
+      'Samples curved spherical HEALPix nested cell edges as a closed longitude/latitude display ring on a continuous longitude branch.',
+    contract: 'getHealpixCellBoundary(cell, order, edgeSegments)'
+  },
   GPUHealpixPointToCell: {
     ...RTS08_DESCRIPTOR,
     inputs: ['points', 'parameters'],
@@ -787,6 +819,22 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     summary:
       'Distinct HEALPix cells in key order with row counts and per-cell sums, minima and maxima of a value column.',
     contract: 'GPUHealpixCellAggregationProps'
+  },
+  GPUPopulationSupportAlignment: {
+    primaryCapability: 'coverage-landscape-ecology',
+    inputs: ['attributes'],
+    outputs: ['attributes', 'summary'],
+    coordinateModels: ['topological'],
+    topology: 'fixed',
+    cardinality: 'source-sized',
+    semantics: 'exact',
+    deterministic: true,
+    evidence: 'partial',
+    tests: `${TEST_ROOT}/urban-ecology/population-support-alignment-operation.spec.ts`,
+    documentation: `${DOCUMENTATION_ROOT}/landscape-ecology.md`,
+    summary:
+      'Exact population-support alignment through indexed key joins, preserving target order and reporting missing, ambiguous and excluded rows; CPU map operation available for mixed programs.',
+    contract: 'GPUPopulationSupportAlignmentProps'
   },
   addRasterResistanceConnectivityRecipe: {
     primaryCapability: 'coverage-landscape-ecology',

@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPURasterPatchMetrics} from './gpu-raster-patch-metrics';
+export {
+  GPURasterPatchMetrics,
+  getGPURasterPatchMetricsParameterValues,
+  GPU_RASTER_PATCH_METRICS_PARAMETER_LENGTH
+} from './gpu-raster-patch-metrics';
 export type {
   GPURasterPatchMetricsOutput,
   GPURasterPatchMetricsProps

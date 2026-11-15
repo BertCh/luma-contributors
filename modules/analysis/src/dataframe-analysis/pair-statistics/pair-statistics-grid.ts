@@ -14,6 +14,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {Device} from '@luma.gl/core';
+import {createPointNeighborGridIndexNodes} from '../../analysis-core/kernels/point-neighbor-grid-index';
 import {
   getStorageBindingElementLimit,
   validateCapacity,
@@ -82,6 +83,10 @@ export type PairStatisticsInputProps = {
   parameters: GraphDataView<'float32'>;
   /** Maximum `[columns, rows]` of the cell lattice. */
   gridSize: readonly [number, number];
+  /** Legacy variograms keep finite inputs when the radius square or bounds extent overflows. */
+  legacyLattice?: boolean;
+  /** Keep the point-pattern rectangle shaders byte-identical. */
+  legacyIndex?: boolean;
   /** Optional values: rows with a non-finite value are excluded and moments are computed. */
   values?: GraphDataView<'float32'>;
   /** Optional row selection: nonzero includes the row. */
@@ -188,10 +193,17 @@ fn getOrderedFloatValue(key: u32) -> f32 {
  * cell neighborhood of a point then holds every point within `maximumDistance`, so the distance
  * can change every frame without rebuilding the graph. When `maximumDistance` exceeds the extent,
  * the lattice collapses to one cell and the pair loop becomes a plain all-pairs loop.
+ * `legacyLattice` also uses one cell when finite bounds overflow on subtraction, or a finite
+ * radius overflows on squaring. Such callers must retain a finite pair-distance filter.
  *
  * @internal
  */
-export function getPairStatisticsSharedWGSL(gridSize: readonly [number, number]): string {
+export function getPairStatisticsSharedWGSL(
+  gridSize: readonly [number, number],
+  legacyLattice: boolean = false
+): string {
+  // The default WGSL text, including whitespace and assignment order, is pinned by the legacy
+  // point-pattern kernel hashes. Keep variogram changes entirely inside the opt-in fragments.
   return /* wgsl */ `
 const COLUMNS: u32 = ${gridSize[0]}u;
 const ROWS: u32 = ${gridSize[1]}u;
@@ -234,8 +246,12 @@ fn readLattice() -> Lattice {
   let cellRadius = radius * CELL_MARGIN;
   lattice.valid =
     isFiniteValue(minimumX) && isFiniteValue(minimumY) && isFiniteValue(maximumX) &&
-    isFiniteValue(maximumY) && isFiniteValue(radius) && isFiniteValue(width) &&
-    isFiniteValue(height) && isFiniteValue(radiusSquared) && isFiniteValue(cellRadius) &&
+    ${
+      legacyLattice
+        ? 'isFiniteValue(maximumY) && isFiniteValue(radius) &&'
+        : `isFiniteValue(maximumY) && isFiniteValue(radius) && isFiniteValue(width) &&
+    isFiniteValue(height) && isFiniteValue(radiusSquared) && isFiniteValue(cellRadius) &&`
+    }
     radius > 0.0 && width >= 0.0 && height >= 0.0;
   if (!lattice.valid) {
     return lattice;
@@ -243,14 +259,29 @@ fn readLattice() -> Lattice {
   lattice.minimumX = minimumX;
   lattice.minimumY = minimumY;
   lattice.maximumX = maximumX;
-  lattice.maximumY = maximumY;
+  lattice.maximumY = maximumY;${
+    legacyLattice
+      ? `
+  lattice.maximumDistance = radius;
+  lattice.radiusSquared = radiusSquared;
+  // Keep all candidates when a finite-input lattice cannot represent its extent or radius.
+  // Single-cell lookups below avoid subtracting the overflowing bounds again.
+  if (!isFiniteValue(width) || !isFiniteValue(height) || !isFiniteValue(radiusSquared)) {
+    return lattice;
+  }`
+      : ''
+  }
   lattice.cellWidth = max(width / f32(COLUMNS), cellRadius);
   lattice.cellHeight = max(height / f32(ROWS), cellRadius);
   lattice.columns = min(COLUMNS - 1u, u32(floor(width / lattice.cellWidth))) + 1u;
   lattice.rows = min(ROWS - 1u, u32(floor(height / lattice.cellHeight))) + 1u;
-  lattice.maximumDistance = radius;
+${
+  legacyLattice
+    ? ''
+    : `  lattice.maximumDistance = radius;
   lattice.radiusSquared = radiusSquared;
-  return lattice;
+`
+}  return lattice;
 }
 
 fn isPointValid(lattice: Lattice, x: f32, y: f32) -> bool {
@@ -260,11 +291,11 @@ fn isPointValid(lattice: Lattice, x: f32, y: f32) -> bool {
 }
 
 fn getCellColumn(lattice: Lattice, x: f32) -> u32 {
-  return min(u32(floor((x - lattice.minimumX) / lattice.cellWidth)), lattice.columns - 1u);
+${legacyLattice ? '  if (lattice.columns == 1u) { return 0u; }\n' : ''}  return min(u32(floor((x - lattice.minimumX) / lattice.cellWidth)), lattice.columns - 1u);
 }
 
 fn getCellRow(lattice: Lattice, y: f32) -> u32 {
-  return min(u32(floor((y - lattice.minimumY) / lattice.cellHeight)), lattice.rows - 1u);
+${legacyLattice ? '  if (lattice.rows == 1u) { return 0u; }\n' : ''}  return min(u32(floor((y - lattice.minimumY) / lattice.cellHeight)), lattice.rows - 1u);
 }
 
 ${PAIR_STATISTICS_FLOAT_WGSL}
@@ -343,15 +374,25 @@ export function getPairStatisticsInputNodes<Parameters>(
   const {id, operation, positions, values, parameters, gridSize, mask, studyWindow} = props;
   const rows = positions.length;
   const cellCount = gridSize[0] * gridSize[1];
-  const sharedWGSL = getPairStatisticsSharedWGSL(gridSize);
+  const sharedWGSL = getPairStatisticsSharedWGSL(gridSize, props.legacyLattice);
   const nodes: GPUCommandNode<Parameters>[] = [];
 
   const cellKeys = createTransientView(graph, `${id}-cell-keys`, 'uint32', rows);
   const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rows);
-  const cellCounts = createTransientView(graph, `${id}-cell-counts`, 'uint32', cellCount);
-  const cellOffsets = createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount + 1);
-  const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', rows);
-  const sortedRows = createTransientView(graph, `${id}-sorted-rows`, 'uint32', rows);
+  const sharedIndex = props.legacyIndex
+    ? undefined
+    : createPointNeighborGridIndexNodes<Parameters>(graph, {
+        id,
+        cellKeys,
+        sourceRows: rowIds,
+        cellCount,
+        rowCount: rows
+      });
+  const cellOffsets =
+    sharedIndex?.cellOffsets ??
+    createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount + 1);
+  const sortedRows =
+    sharedIndex?.sortedRows ?? createTransientView(graph, `${id}-sorted-rows`, 'uint32', rows);
   const valueTerms = values
     ? createTransientView(graph, `${id}-value-terms`, 'float32', rows)
     : undefined;
@@ -419,44 +460,51 @@ ${getStudyWindowWGSL(getStudyWindowWGSLOptions(studyWindow))}`
   rowIds[rowIdsOffset + index] = index;
   ${values ? 'valueTerms[valueTermsOffset + index] = select(0.0, value, valid);' : ''}`
     }),
-    // Excluded rows carry the key CELL_COUNT, which the aggregation ignores and the sort puts last.
-    ...new GPUGroupAggregation({
-      id: `${id}-cell-counts`,
-      keys: cellKeys,
-      output: cellCounts
-    }).getCommandNodes(graph),
-    ...new GPUScan({
-      id: `${id}-cell-scan`,
-      input: cellCounts,
-      output: cellOffsets,
-      mode: 'exclusive'
-    }).getCommandNodes(graph),
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-cell-total`,
-      operation,
-      variant: 'cell-total',
-      bindings: [
-        {name: 'counts', view: cellCounts, type: 'u32', access: 'read'},
-        {
-          name: 'cellOffsets',
-          view: cellOffsets,
-          type: 'u32',
-          access: 'read_write'
-        }
-      ],
-      invocationCount: 1,
-      declarations: `const LAST_CELL: u32 = ${cellCount - 1}u;`,
-      body: `cellOffsets[cellOffsetsOffset + LAST_CELL + 1u] =
+    ...(sharedIndex?.nodes ??
+      (() => {
+        const cellCounts = createTransientView(graph, `${id}-cell-counts`, 'uint32', cellCount);
+        const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', rows);
+        return [
+          // Excluded rows carry the key CELL_COUNT, which the aggregation ignores and the sort puts last.
+          ...new GPUGroupAggregation({
+            id: `${id}-cell-counts`,
+            keys: cellKeys,
+            output: cellCounts
+          }).getCommandNodes(graph),
+          ...new GPUScan({
+            id: `${id}-cell-scan`,
+            input: cellCounts,
+            output: cellOffsets,
+            mode: 'exclusive'
+          }).getCommandNodes(graph),
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-cell-total`,
+            operation,
+            variant: 'cell-total',
+            bindings: [
+              {name: 'counts', view: cellCounts, type: 'u32', access: 'read'},
+              {
+                name: 'cellOffsets',
+                view: cellOffsets,
+                type: 'u32',
+                access: 'read_write'
+              }
+            ],
+            invocationCount: 1,
+            declarations: `const LAST_CELL: u32 = ${cellCount - 1}u;`,
+            body: `cellOffsets[cellOffsetsOffset + LAST_CELL + 1u] =
     cellOffsets[cellOffsetsOffset + LAST_CELL] + counts[countsOffset + LAST_CELL];`
-    }),
-    ...new GPUSort({
-      id: `${id}-cell-sort`,
-      keys: cellKeys,
-      values: rowIds,
-      outputKeys: sortedKeys,
-      outputValues: sortedRows,
-      keyBits: getSortKeyBits(cellCount)
-    }).getCommandNodes(graph)
+          }),
+          ...new GPUSort({
+            id: `${id}-cell-sort`,
+            keys: cellKeys,
+            values: rowIds,
+            outputKeys: sortedKeys,
+            outputValues: sortedRows,
+            keyBits: getSortKeyBits(cellCount)
+          }).getCommandNodes(graph)
+        ];
+      })())
   );
 
   if (!values || !valueTerms) {

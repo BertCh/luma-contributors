@@ -204,3 +204,16 @@ describe('analysis entry barrels', () => {
     }
   });
 });
+
+// The extracted ingestion and profiling code must never acquire a dependency on its former host.
+it('keeps reused analysis preparation independent of the Kepler host', () => {
+  const families = ['dataframe-analysis/column-profile', 'gpu-spatial-analysis/spatial-weights'];
+  for (const family of families) {
+    for (const file of listSourceFiles(join(SOURCE_ROOT, family))) {
+      const text = readFileSync(file, 'utf8');
+      expect(text, relative(SOURCE_ROOT, file)).not.toMatch(
+        /examples\/|@luma-contributors\/kepler|PreparedKepler/
+      );
+    }
+  }
+});

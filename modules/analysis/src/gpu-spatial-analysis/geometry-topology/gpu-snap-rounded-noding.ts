@@ -6,14 +6,13 @@ import {clamp} from '@math.gl/core';
 import {
   createTransientView,
   GPUScan,
-  GPUSort,
-  GPUUint32Gather,
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import type {Device} from '@luma.gl/core';
 import {
   createWGSLKernelNode,
@@ -648,11 +647,18 @@ fn readTerms(index: u32) -> array<u32, 12> {
 
     // 5. Hot pixels: stable lexicographic sort by (x, y), unique, compact.
     const rowIds = transient('row-ids', 'uint32', hotCapacity);
-    const sortedKeysY = transient('sorted-keys-y', 'uint32', hotCapacity);
-    const orderByY = transient('order-by-y', 'uint32', hotCapacity);
-    const keysXByY = transient('keys-x-by-y', 'uint32', hotCapacity);
-    const sortedKeysX = transient('sorted-keys-x', 'uint32', hotCapacity);
-    const hotOrder = transient('hot-order', 'uint32', hotCapacity);
+    const sorted = createStableLexicographicIndexSortNodes(graph, {
+      id: `${id}-hot-sort`,
+      algorithm: 'radix',
+      operation: OPERATION,
+      indices: rowIds,
+      indicesAreIdentity: true,
+      keys: [
+        {view: keysX, keyBits: LATTICE_KEY_BITS},
+        {view: keysY, keyBits: LATTICE_KEY_BITS}
+      ]
+    });
+    const hotOrder = sorted.sortedIndices;
     const hotFlags = transient('hot-flags', 'uint32', hotCapacity);
     const hotScan = transient('hot-scan', 'uint32', hotCapacity);
     const hot = transient('hot', 'uint32x2', hotCapacity);
@@ -665,31 +671,7 @@ fn readTerms(index: u32) -> array<u32, 12> {
         invocationCount: hotCapacity,
         body: 'rowIds[rowIdsOffset + index] = index;'
       }),
-      ...new GPUSort({
-        id: `${id}-sort-y`,
-        keys: keysY,
-        values: rowIds,
-        outputKeys: sortedKeysY,
-        outputValues: orderByY,
-        algorithm: 'radix',
-        keyBits: LATTICE_KEY_BITS
-      }).getCommandNodes(graph),
-      // `orderByY` is a permutation of the hot rows, so no index is out of range.
-      ...new GPUUint32Gather({
-        id: `${id}-gather-x`,
-        source: keysX,
-        indices: orderByY,
-        output: keysXByY
-      }).getCommandNodes(graph),
-      ...new GPUSort({
-        id: `${id}-sort-x`,
-        keys: keysXByY,
-        values: orderByY,
-        outputKeys: sortedKeysX,
-        outputValues: hotOrder,
-        algorithm: 'radix',
-        keyBits: LATTICE_KEY_BITS
-      }).getCommandNodes(graph),
+      ...sorted.nodes,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-unique-hot`,
         operation: OPERATION,

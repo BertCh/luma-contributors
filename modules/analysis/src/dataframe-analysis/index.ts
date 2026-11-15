@@ -16,3 +16,4 @@ export * from './time-window-filter/index';
 export * from './time-words-relative/index';
 export * from './value-cube/index';
 export * from './variable-standardization/index';
+export * from './forest-inference/index';

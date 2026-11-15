@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createHash} from 'node:crypto';
-import {readFileSync, statSync} from 'node:fs';
+import {existsSync, readFileSync, statSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {expect, it} from 'vitest';
 import earthquake from '../../oracles/fixtures/parity-wp6-earthquake-input.json';
@@ -15,8 +15,51 @@ import {decodeParityPayload} from '../../oracles/parity-wp6-reduction-harness';
 const root = resolve(import.meta.dirname, '../../../../..');
 const fixtureDirectory = resolve(root, 'modules/analysis/test/oracles/fixtures');
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+const SOURCE_DIRECTORY = 'examples/deck/spatial-analysis-showcase/public/data';
+
+// Manifests are provenance metadata, not oracle inputs. Pin their recorded hashes even when
+// the optional example tree is absent; compare the actual files as well in a full checkout.
+const MANIFEST_HASHES: Record<string, string> = {
+  [`${SOURCE_DIRECTORY}/chicago-tracts/manifest.json`]:
+    '8dc3c174c05d3a8e47dcf6a815920948e6d2c699e1c720e9f7821ec4faec7b84',
+  [`${SOURCE_DIRECTORY}/poopdeck-earthquakes/manifest.json`]:
+    'c0cf0b19912c95a087982bb4d09bb3d58e4476103fd38c9040cfe63e6cfc215f'
+};
+
+/** Reconstruct every original binary input from the committed lossless fixture data. */
+function getEmbeddedSources(): Map<string, Uint8Array> {
+  const chicago = groupStatistics.cases.find(scene => scene.name === 'chicago-all-tracts-compact');
+  if (!chicago) {
+    throw new Error('Group statistics fixture needs the complete Chicago input');
+  }
+  const floatBytes = (values: (number | string | null)[]) => {
+    const bytes = Buffer.alloc(values.length * 4);
+    values.forEach((value, row) =>
+      bytes.writeFloatLE(value === null ? NaN : Number(value), row * 4)
+    );
+    return bytes;
+  };
+  const cells = decodeParityPayload(earthquake.cells);
+  expect(cells.every(value => Number.isInteger(value) && value >= 0 && value <= 255)).toBe(true);
+  return new Map<string, Uint8Array>([
+    [`${SOURCE_DIRECTORY}/chicago-tracts/communityArea.bin`, Uint8Array.from(chicago.keys)],
+    [`${SOURCE_DIRECTORY}/chicago-tracts/perCapitaIncome.bin`, floatBytes(chicago.columns[0])],
+    [`${SOURCE_DIRECTORY}/chicago-tracts/population.bin`, floatBytes(chicago.columns[1])],
+    [
+      `${SOURCE_DIRECTORY}/poopdeck-earthquakes/magnitude.bin`,
+      Buffer.from(earthquake.magnitude.base64, 'base64')
+    ],
+    [
+      `${SOURCE_DIRECTORY}/poopdeck-earthquakes/time.bin`,
+      Buffer.from(earthquake.seconds.base64, 'base64')
+    ],
+    // The original categories are uint8; the GPU fixture widens them to little-endian uint32.
+    [`${SOURCE_DIRECTORY}/poopdeck-earthquakes/mag_band.bin`, Uint8Array.from(cells)]
+  ]);
+}
 
 it('WP6 reduction references retain versions, original source hashes and bounded fixture sizes', () => {
+  const embeddedSources = getEmbeddedSources();
   for (const [topic, fixture] of Object.entries({
     'earthquake-input': earthquake,
     'group-statistics': groupStatistics,
@@ -28,8 +71,21 @@ it('WP6 reduction references retain versions, original source hashes and bounded
     ).toBeLessThanOrEqual(1500000);
     for (const version of Object.values(fixture.versions)) expect(version).toMatch(/^\d+\./);
     expect(fixture.generator).toBe('parity-wp6-dataframe-reductions.py');
-    for (const [source, hash] of Object.entries(fixture.sources))
-      expect(digest(readFileSync(resolve(root, source)))).toBe(hash);
+    for (const [source, hash] of Object.entries(fixture.sources)) {
+      const embedded = embeddedSources.get(source);
+      const expectedHash = embedded ? digest(embedded) : MANIFEST_HASHES[source];
+      expect(
+        expectedHash,
+        `${source} must have embedded inputs or pinned provenance`
+      ).toBeDefined();
+      expect(hash, `${topic}: ${source}`).toBe(expectedHash);
+      // Keep byte-for-byte source verification when examples are included, while the committed
+      // inputs above make the analysis package's oracle checks independent of example assets.
+      const sourcePath = resolve(root, source);
+      if (existsSync(sourcePath)) {
+        expect(digest(readFileSync(sourcePath)), source).toBe(hash);
+      }
+    }
   }
 });
 
@@ -39,21 +95,12 @@ it('WP6 full USGS payloads preserve every source row and little-endian byte', ()
     const bytes = Buffer.from(payload.base64, 'base64');
     expect(bytes.length).toBe(earthquake.rowCount * 4);
     expect(digest(bytes)).toBe(payload.sha256);
-    expect(decodeParityPayload(payload)).toHaveLength(earthquake.rowCount);
+    expect(decodeParityPayload(payload)).toEqual(
+      Array.from({length: earthquake.rowCount}, (_, row) =>
+        payload.dtype === '<f4' ? bytes.readFloatLE(row * 4) : bytes.readUInt32LE(row * 4)
+      )
+    );
   }
-  const sourceDirectory = resolve(
-    root,
-    'examples/deck/spatial-analysis-showcase/public/data/poopdeck-earthquakes'
-  );
-  expect(Buffer.from(earthquake.magnitude.base64, 'base64')).toEqual(
-    readFileSync(resolve(sourceDirectory, 'magnitude.bin'))
-  );
-  expect(Buffer.from(earthquake.seconds.base64, 'base64')).toEqual(
-    readFileSync(resolve(sourceDirectory, 'time.bin'))
-  );
-  expect(decodeParityPayload(earthquake.cells)).toEqual(
-    Array.from(readFileSync(resolve(sourceDirectory, 'mag_band.bin')))
-  );
 });
 
 it('WP6 fixtures contain complete output arrays, retained capacities and source-row scores', () => {

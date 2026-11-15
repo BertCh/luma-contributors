@@ -5,17 +5,23 @@
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
-  validateMaximumCount
+  validateMaximumCount,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {PhiloxStream} from '../../analysis-core/kernels/permutation-random';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
+import {computeSparseNetworkLouvain, type NetworkLouvainCPUCSR} from './network-louvain-sparse-cpu';
+import {getCPUOperationUint32Rows} from '../../analysis-core/operations/cpu-operation-rows';
 import {getCPUOperationFloat32Rows} from '../../analysis-core/operations/cpu-operation-rows';
 import {
   GPUNetworkLouvainOperation,
   type NetworkLouvainOperationProps
 } from './gpu-network-louvain-operation';
 
-export type CPUNetworkLouvainInput = {weights: Float32Array; parameters: Float32Array};
+export type CPUNetworkLouvainInput = {parameters: Float32Array} & (
+  | {weights: Float32Array; topology?: never}
+  | {topology: NetworkLouvainCPUCSR; weights?: never}
+);
 export type CPUNetworkLouvainOptions = Pick<
   NetworkLouvainOperationProps,
   'nodeCount' | 'directed' | 'seed' | 'maximumLevels' | 'maximumIterations'
@@ -34,6 +40,10 @@ export type CPUNetworkLouvainResult = {
  * Invalid parameters/weights return identity labels, NaN trace and valid=0.
  *
  * What differs from the GPU contributor:
+ * - Sparse CSR uses the GPU's parallel-proposal/reservation schedule in float64. It drops the
+ *   GPU pair-key/scratch/node-budget caps; near-tie labels and stopping rounds can differ.
+ *   Sparse seed uses XOR priority, whereas the legacy dense path uses Fisher-Yates visitation.
+ *   Float64 reciprocal sums can also differ near the 1e-6 undirected symmetry threshold.
  * - Float64 objective evaluation can choose different moves at near ties or tolerance boundaries.
  *   Well-separated partitions compare exactly; their objective traces use relative tolerance 2e-5.
  *   The GPU can leave a finite cancellation residual where the float64 objective is zero. For
@@ -53,6 +63,12 @@ export function computeNetworkLouvainOnCPU(
   options: CPUNetworkLouvainOptions
 ): CPUNetworkLouvainResult {
   validateLouvainOptions('computeNetworkLouvainOnCPU', options);
+  validateRequirement(
+    'computeNetworkLouvainOnCPU',
+    Boolean(input.weights) !== Boolean(input.topology),
+    'exactly one of weights or topology must be supplied'
+  );
+  if (input.topology) return computeSparseNetworkLouvain(input.topology, input.parameters, options);
   const {nodeCount} = options;
   const {weights, parameters} = input;
   const maximumLevels = options.maximumLevels ?? 8;
@@ -190,7 +206,7 @@ export function computeNetworkLouvainOnCPU(
 
 function validateLouvainOptions(id: string, options: CPUNetworkLouvainOptions): void {
   validateCapacity(id, 'nodeCount', options.nodeCount);
-  validateMaximumCount(id, 'nodeCount squared', options.nodeCount ** 2, 0xffffffff);
+
   validateCapacity(id, 'maximumLevels', options.maximumLevels ?? 8);
   validateCapacity(id, 'maximumIterations', options.maximumIterations ?? 16);
   validateMaximumCount(
@@ -220,7 +236,15 @@ export class CPUNetworkLouvainOperation extends GPUCPUOperation {
       execute({inputs}) {
         const result = computeNetworkLouvainOnCPU(
           {
-            weights: getCPUOperationFloat32Rows(id, inputs, 'weights'),
+            ...(props.topology
+              ? {
+                  topology: {
+                    offsets: getCPUOperationUint32Rows(id, inputs, 'offsets'),
+                    neighbors: getCPUOperationUint32Rows(id, inputs, 'neighbors'),
+                    weights: getCPUOperationFloat32Rows(id, inputs, 'weights')
+                  }
+                }
+              : {weights: getCPUOperationFloat32Rows(id, inputs, 'weights')}),
             parameters: getCPUOperationFloat32Rows(id, inputs, 'parameters')
           },
           props
@@ -228,7 +252,19 @@ export class CPUNetworkLouvainOperation extends GPUCPUOperation {
         return Object.fromEntries(
           Object.entries(operation.outputs).map(([port, output]) => [
             output.value,
-            result[port as keyof CPUNetworkLouvainResult]
+            port in result
+              ? result[port as keyof CPUNetworkLouvainResult]
+              : Uint32Array.of(
+                  {
+                    iterationCount: result.summary[3],
+                    converged: result.summary[1],
+                    iterationLimitReached: Number(
+                      result.summary[0] !== 0 && result.summary[1] === 0
+                    ),
+                    invalidCount: Number(result.summary[0] === 0),
+                    approximation: 1
+                  }[port]!
+                )
           ])
         );
       }

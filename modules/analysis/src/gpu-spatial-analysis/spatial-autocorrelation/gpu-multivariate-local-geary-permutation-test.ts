@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -11,15 +12,22 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
-  getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
+import {
+  getGPUMultivariateLocalGearyPermutationTestParameterValues,
+  GPU_MULTIVARIATE_LOCAL_GEARY_PERMUTATION_TEST_PARAMETER_LENGTH,
+  validateMultivariateGearySettings
+} from './multivariate-geary-parameters';
 import {IS_FINITE_BITS_WGSL, GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
@@ -59,8 +67,16 @@ export type GPUMultivariateLocalGearyPermutationTestProps = {
   variableCount: number;
   mask?: GraphDataView<'uint32'>;
   maximumPermutations?: number;
+  /** Numeric default when parameters is omitted. */
   seed?: readonly [number, number];
+  /** Numeric default when parameters is omitted. */
   significance?: number;
+  /**
+   * Per-frame [seedLow, seedHigh, float32 bits of significance], packed with
+   * getGPUMultivariateLocalGearyPermutationTestParameterValues in a uint32 GPUParameterBuffer.
+   * When present, overrides seed and significance. Numeric defaults use the same layout.
+   */
+  parameters?: GraphDataView<'uint32'>;
   /** Bonferroni family is every included row (including islands); default no adjustment. */
   correction?: 'none' | 'bonferroni';
   /**
@@ -106,6 +122,10 @@ export type GPUMultivariateLocalGearyPermutationTestProps = {
 };
 
 /**
+ * Per-frame: values, mask, weights and parameter contents (seed and significance).
+ * Compile-time: view shapes, variableCount, maximumPermutations, strategy, tile sizes,
+ * maximumNeighbors, tail/correction choices and which optional outputs are present.
+ *
  * Mean multivariate local Geary using population-standardized variables and row-standardized
  * active weights. Conditional randomization fixes the focal vector and samples distinct whole
  * neighbor vectors without replacement from all other complete rows. It never permutes columns
@@ -117,8 +137,21 @@ export type GPUMultivariateLocalGearyPermutationTestProps = {
  */
 export class GPUMultivariateLocalGearyPermutationTest implements GPUCommandNodeProducer {
   readonly id: string;
+  private readonly parameterValues?: Uint32Array;
   constructor(readonly props: GPUMultivariateLocalGearyPermutationTestProps) {
     this.id = props.id ?? 'multivariate-local-geary-permutation-test';
+    validateMultivariateGearySettings(this.id, props);
+    if (props.parameters) {
+      validateSinglePackedView(props.parameters, ['uint32'], `${this.id} parameters`);
+      validateCapacity(
+        this.id,
+        'parameters.length',
+        props.parameters.length,
+        GPU_MULTIVARIATE_LOCAL_GEARY_PERMUTATION_TEST_PARAMETER_LENGTH
+      );
+    } else {
+      this.parameterValues = getGPUMultivariateLocalGearyPermutationTestParameterValues(props);
+    }
     const rows = validateGPUSpatialWeightsOrChunks(this.id, props.weights);
     const tiled = this.getStrategy(rows) === 'tiled';
     validateCapacity(
@@ -160,15 +193,11 @@ export class GPUMultivariateLocalGearyPermutationTest implements GPUCommandNodeP
     }
     if (props.tail && !['equal-tail', 'esda-min-tail'].includes(props.tail))
       throw new Error(`${this.id}: invalid tail convention`);
-    if (
-      (props.seed ?? [0, 0]).length !== 2 ||
-      !(props.seed ?? [0, 0]).every(
-        value => Number.isInteger(value) && value >= 0 && value <= 0xffffffff
-      ) ||
-      !((props.significance ?? 0.05) > 0 && (props.significance ?? 0.05) < 1) ||
-      !['none', 'bonferroni'].includes(props.correction ?? 'none')
-    )
-      throw new Error(`${this.id}: invalid inference settings`);
+    validateRequirement(
+      this.id,
+      ['none', 'bonferroni'].includes(props.correction ?? 'none'),
+      'correction must be none or bonferroni'
+    );
     for (const [view, format, length] of [
       [props.values, 'float32', rows * props.variableCount],
       [props.mask, 'uint32', rows],
@@ -184,6 +213,7 @@ export class GPUMultivariateLocalGearyPermutationTest implements GPUCommandNodeP
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.values,
       props.mask,
+      props.parameters,
       ...getGPUSpatialWeightsOrChunksViews(props.weights),
       props.weights.status?.overflow
     ]);
@@ -207,13 +237,32 @@ export class GPUMultivariateLocalGearyPermutationTest implements GPUCommandNodeP
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const rows = this._getRowCount();
-    const columns = props.variableCount;
-    const permutations = props.maximumPermutations ?? 999;
+    validateGraphViewsBelongToGraph(id, graph, [
+      props.values,
+      props.mask,
+      props.parameters,
+      ...getGPUSpatialWeightsOrChunksViews(props.weights),
+      props.weights.status?.overflow,
+      ...Object.values(props.output)
+    ]);
+    if (props.parameters) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'parameters binding',
+        getViewBindingRange(props.parameters).size,
+        'use a smaller packed parameter view'
+      );
+    }
+    const runtime = createSpatialStatisticsParameterNodes(
+      graph,
+      `${id}-parameters`,
+      this.parameterValues ?? props.parameters!
+    );
     const method = resolveGPUMultipleTestingMethod(id, props.multipleTesting);
     if (method !== 'none') {
       // Uncorrected test with every finite row classified in its direction (significance just
       // below 1), then the family adjustment, then the classes at the requested level.
-      const significance = props.significance ?? 0.05;
       const rawPValues = createTransientView(graph, `${id}-raw-p-values`, 'float32', rows);
       const directions = createTransientView(graph, `${id}-directions`, 'uint32', rows);
       const inner = new GPUMultivariateLocalGearyPermutationTest({
@@ -222,10 +271,12 @@ export class GPUMultivariateLocalGearyPermutationTest implements GPUCommandNodeP
         multipleTesting: undefined,
         correction: 'none',
         significance: 0.999999,
+        parameters: undefined,
         output: {...props.output, pValues: rawPValues, classes: directions}
       });
       return [
-        ...inner.getCommandNodes(graph),
+        ...runtime.nodes,
+        ...inner.getInferenceNodes(graph, runtime.parameters, true),
         ...new GPUMultipleTestingAdjustment({
           id: `${id}-multiple-testing`,
           pValues: rawPValues,
@@ -240,21 +291,35 @@ export class GPUMultivariateLocalGearyPermutationTest implements GPUCommandNodeP
           bindings: [
             {name: 'directions', view: directions, type: 'u32', access: 'read'},
             {name: 'adjusted', view: props.output.pValues, type: 'f32', access: 'read'},
-            {name: 'classes', view: props.output.classes, type: 'u32', access: 'read_write'}
+            {name: 'classes', view: props.output.classes, type: 'u32', access: 'read_write'},
+            {name: 'parameters', view: runtime.parameters, type: 'u32', access: 'read'}
           ],
           body: `let direction = directions[directionsOffset + index];
   classes[classesOffset + index] = select(
     direction,
-    select(0u, direction, adjusted[adjustedOffset + index] <= ${getWGSLFloatLiteral(significance)}),
+    select(0u, direction, adjusted[adjustedOffset + index] <= bitcast<f32>(parameters[parametersOffset + 2u])),
     direction != 0xffffffffu
   );`
         })
       ];
     }
+    return [...runtime.nodes, ...this.getInferenceNodes(graph, runtime.parameters)];
+  }
+
+  private getInferenceNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    parameters: GraphDataView<'uint32'>,
+    classifyDirections = false
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {props, id} = this;
+    const rows = this._getRowCount();
+    const columns = props.variableCount;
+    const permutations = props.maximumPermutations ?? 999;
     if (this.getStrategy(rows) === 'tiled') {
       validateGraphViewsBelongToGraph(id, graph, [
         props.values,
         props.mask,
+        parameters,
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
         props.weights.status?.overflow,
         ...Object.values(props.output)
@@ -264,8 +329,8 @@ export class GPUMultivariateLocalGearyPermutationTest implements GPUCommandNodeP
         rows,
         columns,
         permutations,
-        seed: props.seed ?? [0, 0],
-        significance: props.significance ?? 0.05,
+        parameters,
+        classifyDirections,
         correction: props.correction ?? 'none',
         tail: props.tail ?? 'equal-tail',
         rowTileSize: Math.min(props.rowTileSize ?? DEFAULT_GEARY_ROW_TILE_SIZE, rows),
@@ -315,6 +380,7 @@ export class GPUMultivariateLocalGearyPermutationTest implements GPUCommandNodeP
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       props.mask,
+      parameters,
       ...getGPUSpatialWeightsOrChunksViews(props.weights),
       props.weights.status?.overflow,
       ...Object.values(props.output)
@@ -361,7 +427,8 @@ for (var row = 0u; row < ${rows}u; row++) { var value = getNaN(); if (count > 1u
             binding('neighbors', dispatch.weights.neighbors, 'read', 'u32'),
             binding('weights', dispatch.weights.weights),
             binding('observed', props.output.statistic, 'read_write'),
-            binding('simulations', simulations, 'read_write')
+            binding('simulations', simulations, 'read_write'),
+            binding('parameters', parameters, 'read', 'u32')
           ],
           `let row = index / ${permutations + 1}u${dispatch.isWhole ? '' : ' + WEIGHTS_ROW_START'}; let replicate = index % ${permutations + 1}u;
 var candidates: array<u32, ${rows}>; var count = 0u;
@@ -369,7 +436,7 @@ for (var other = 0u; other < ${rows}u; other++) { if (other != row && valid[vali
 var value = getNaN();
 if (valid[validOffset + row] != 0u && count > 0u) {
  var total = 0.0; var weightSum = 0.0; var chosen = 0u;
- var stream = createPhiloxStream(vec2<u32>(${props.seed?.[0] ?? 0}u, ${props.seed?.[1] ?? 0}u), row, replicate, ${PHILOX_PURPOSES.localPermutationTest.id}u);
+ var stream = createPhiloxStream(vec2<u32>(parameters[parametersOffset], parameters[parametersOffset + 1u]), row, replicate, ${PHILOX_PURPOSES.localPermutationTest.id}u);
  for (var slot = offsets[offsetsOffset + ${localRow(dispatch)}]; slot < offsets[offsetsOffset + ${localRow(dispatch)} + 1u]; slot++) {
   let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot];
   if (neighbor >= ${rows}u || neighbor == row || !(weight > 0.0)) { continue; }
@@ -394,7 +461,8 @@ if (replicate == 0u) { observed[observedOffset + row] = value; } else { simulati
           binding('simulations', simulations),
           binding('valid', valid, 'read', 'u32'),
           binding('pValues', props.output.pValues, 'read_write'),
-          binding('classes', props.output.classes, 'read_write', 'u32')
+          binding('classes', props.output.classes, 'read_write', 'u32'),
+          binding('parameters', parameters, 'read', 'u32')
         ],
         `let observed = observed[observedOffset + index]; var lower = 0u; var upper = 0u; var average = 0.0; var finite = isFiniteBits(observed);
 for (var replicate = 0u; replicate < ${permutations}u; replicate++) { let value = simulations[simulationsOffset + index * ${permutations}u + replicate]; finite = finite && isFiniteBits(value); lower += select(0u, 1u, value <= observed); upper += select(0u, 1u, value >= observed); average += value / ${permutations}.0; }
@@ -402,7 +470,7 @@ var probability = getNaN(); var classification = 0xffffffffu;
 if (finite) { probability = ${props.tail === 'esda-min-tail' ? `f32(min(upper, ${permutations}u - upper) + 1u) / ${permutations + 1}.0` : `min(1.0, 2.0 * f32(min(lower, upper) + 1u) / ${permutations + 1}.0)`}; var family = 1u;
 ${props.correction === 'bonferroni' ? `family = 0u; for (var row = 0u; row < ${rows}u; row++) { family += valid[validOffset + row]; }` : ''}
 probability = min(1.0, probability * f32(family)); classification = 0u;
-if (probability <= ${getWGSLFloatLiteral(props.significance ?? 0.05)}) { classification = select(2u, 1u, observed < average); }
+if (probability <= ${classifyDirections ? '0.999999' : 'bitcast<f32>(parameters[parametersOffset + 2u])'}) { classification = select(2u, 1u, observed < average); }
 }
 pValues[pValuesOffset + index] = probability; classes[classesOffset + index] = classification;`
       )

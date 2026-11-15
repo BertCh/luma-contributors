@@ -20,7 +20,8 @@ export const SPATIAL_DWITHIN_WORKGROUP_SIZE = 64;
  *
  * Lanes take every 64th edge of the left feature and stop at the first right edge within reach,
  * skipping edges whose bounding box is farther than `distance` from the right feature (the skip
- * threshold has a 0.1% margin so rounding never turns a match into a miss). Every lane of the
+ * threshold has a 0.1% margin so rounding never turns a match into a miss). Thresholds above
+ * 2^63 use scaled linear distances without squared-box pruning. Every lane of the
  * workgroup must call it with the same arguments from uniform control flow (it contains a
  * barrier); only lane 0 receives the merged result.
  *
@@ -44,9 +45,12 @@ fn boxGapSq(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
 fn dwithinWorkgroupPair(l: u32, r: u32, valid: bool, lane: u32) -> bool {
   relateLane = lane;
   relateStride = ${size}u;
+  let limit = distanceLimit();
+  let useLinearDistance = limit > PLANAR_MAXIMUM_SQUAREABLE_DISTANCE;
   let limitSq = distanceLimitSq();
-  let reachSq = limitSq * 1.001 + 1e-30;
-  if (valid && limitSq >= 0.0 && !(leftFirst(l).z == 0.0 || rightFirst(r).z == 0.0)) {
+  var reachSq = 0.0;
+  if (!useLinearDistance) { reachSq = limitSq * 1.001 + 1e-30; }
+  if (valid && limit >= 0.0 && !(leftFirst(l).z == 0.0 || rightFirst(r).z == 0.0)) {
     // Bounding box of the right feature.
     var rightLow = vec2f(FLOAT32_MAXIMUM);
     var rightHigh = vec2f(-FLOAT32_MAXIMUM);
@@ -65,21 +69,33 @@ fn dwithinWorkgroupPair(l: u32, r: u32, valid: bool, lane: u32) -> bool {
       'a',
       'b',
       `if (matched) { break; }
-    if (boxGapSq(a, b, rightLow, rightHigh) > reachSq) { continue; }
+    ${right.kind === 'polygons' ? 'if (rightLocate(a, r) != 0u) { matched = true; break; }' : ''}
+    if (!useLinearDistance && boxGapSq(a, b, rightLow, rightHigh) > reachSq) { continue; }
     ${forEachEdge(
       right,
       'r',
       'c',
       'd',
-      `if (boxGapSq(a, b, c, d) > reachSq) { continue; }
-      if (segmentDistanceSq(a, b, c, d) <= limitSq) { matched = true; break; }`
+      `if (!useLinearDistance && boxGapSq(a, b, c, d) > reachSq) { continue; }
+      if ((useLinearDistance && segmentDistance(a, b, c, d) <= limit) ||
+          (!useLinearDistance && segmentDistanceSq(a, b, c, d) <= limitSq)) { matched = true; break; }`
     )}`,
       true
     )}
-    // Containment without an edge within reach (one polygon inside the other, or a point in one).
-    if (lane == 0u && !matched) {
-      ${right.kind === 'polygons' ? 'if (rightLocate(leftFirst(l).xy, r) != 0u) { matched = true; }' : ''}
-      ${left.kind === 'polygons' ? 'if (leftLocate(rightFirst(r).xy, l) != 0u) { matched = true; }' : ''}
+    // Right components can also lie inside the left polygon without a boundary crossing.
+    // Visit every component, with the same lane-strided distribution as the distance pass.
+    ${
+      left.kind === 'polygons'
+        ? forEachEdge(
+            right,
+            'r',
+            'c',
+            'd',
+            `if (matched) { break; }
+    if (leftLocate(c, l) != 0u) { matched = true; break; }`,
+            true
+          )
+        : ''
     }
     if (matched) { atomicOr(&dwithinMatched, 1u); }
   }

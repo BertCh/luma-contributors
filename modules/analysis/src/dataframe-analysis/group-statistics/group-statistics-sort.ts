@@ -5,12 +5,12 @@
 import {
   createTransientView,
   GPUScan,
-  GPUSort,
   GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import type {
   GPUCardinalityPort,
   GPUOverflowStatusPort
@@ -83,63 +83,15 @@ export function getKeyOrderNodes<Parameters>(
   sortedKeyLow?: GraphDataView<'uint32'>;
 } {
   const {id, keyLow, keyHigh, rowIds} = props;
-  const rowCount = keyLow.length;
-  const nodes: GPUCommandNode<Parameters>[] = [];
-  const u32 = (name: string) => createTransientView(graph, `${id}-${name}`, 'uint32', rowCount);
-
-  let rows = props.initialRows ?? rowIds;
-  let lowKeys = keyLow;
-  if (props.initialRows) {
-    lowKeys = u32('low-by-rows');
-    nodes.push(
-      ...new GPUUint32Gather({
-        id: `${id}-gather-low`,
-        source: keyLow,
-        indices: props.initialRows,
-        output: lowKeys
-      }).getCommandNodes(graph)
-    );
-  }
-  const afterLow = u32('rows-by-low');
-  const sortedLowKeys = u32('sorted-low-scratch');
-  nodes.push(
-    ...new GPUSort({
-      id: `${id}-sort-low`,
-      keys: lowKeys,
-      values: rows,
-      outputKeys: sortedLowKeys,
-      outputValues: afterLow,
-      keyBits: props.lowKeyBits ?? 32
-    }).getCommandNodes(graph)
-  );
-  rows = afterLow;
-  if (keyHigh) {
-    const highKeys = u32('high-by-rows');
-    nodes.push(
-      ...new GPUUint32Gather({
-        id: `${id}-gather-high`,
-        source: keyHigh,
-        indices: rows,
-        output: highKeys
-      }).getCommandNodes(graph)
-    );
-    const afterHigh = u32('rows-by-high');
-    nodes.push(
-      ...new GPUSort({
-        id: `${id}-sort-high`,
-        keys: highKeys,
-        values: rows,
-        outputKeys: u32('sorted-high-scratch'),
-        outputValues: afterHigh,
-        keyBits: 32
-      }).getCommandNodes(graph)
-    );
-    rows = afterHigh;
-  }
-  // Without a high word or a starting order, the low sort's key output already equals
-  // `keyLow` gathered by the final permutation.
-  const sortedKeyLow = keyHigh || props.initialRows ? undefined : sortedLowKeys;
-  return {nodes, permutation: rows, sortedKeyLow};
+  const sorted = createStableLexicographicIndexSortNodes(graph, {
+    id,
+    operation: 'GPUGroupStatistics',
+    indices: props.initialRows ?? rowIds,
+    indicesAreIdentity: !props.initialRows,
+    keys: [...(keyHigh ? [{view: keyHigh}] : []), {view: keyLow, keyBits: props.lowKeyBits ?? 32}]
+  });
+  const sortedKeyLow = keyHigh || props.initialRows ? undefined : sorted.sortedPrimaryKeys;
+  return {nodes: [...sorted.nodes], permutation: sorted.sortedIndices, sortedKeyLow};
 }
 
 /**

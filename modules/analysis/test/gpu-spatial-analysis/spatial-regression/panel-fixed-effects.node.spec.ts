@@ -42,8 +42,13 @@ it('panel effects construct GPU nodes and preserve pooled default', () => {
     id: 'unit',
     effects: 'unit'
   }).getCommandNodes(graph);
-  expect(within.length).toBe(pooled.length + 2);
+  expect(within.length).toBe(pooled.length + 3);
   expect(within.some(node => node.id === 'unit-within')).toBe(true);
+  const sources = getGPUCommandNodeKernelSources(within);
+  expect(sources.find(kernel => kernel.id === 'unit-unit-means')?.source).toContain(
+    'responseMean +='
+  );
+  expect(sources.find(kernel => kernel.id === 'unit-within')?.source).not.toContain('var period');
   expect(() => new GPUSpatialPanelRegression({...props, response: view('float32', 19)})).toThrow(
     /balanced/
   );
@@ -93,6 +98,43 @@ it('maximal unit panel kernels parse within eight storage bindings', () => {
       const reflection = new WgslReflect(source);
       expect(reflection.storage.length, id).toBeLessThanOrEqual(8);
     }
+    device.destroy();
+  }
+});
+
+it('unit panel residual failure publication dispatches a row kernel', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    let serial = 0;
+    const view = <Format extends 'float32' | 'uint32'>(format: Format, length: number) =>
+      createTransientView(graph, `short-panel-${serial++}`, format, length);
+    const sources = getGPUCommandNodeKernelSources(
+      new GPUSpatialPanelRegression({
+        effects: 'unit',
+        periodCount: 2,
+        predictorCount: 1,
+        weights: {
+          offsets: view('uint32', 3),
+          neighbors: view('uint32', 2),
+          weights: view('float32', 2)
+        },
+        predictors: view('float32', 4),
+        response: view('float32', 4),
+        output: {
+          table: view('float32', 12),
+          summary: view('float32', 16),
+          residuals: view('float32', 4),
+          status: {code: view('uint32', 1)}
+        }
+      }).getCommandNodes(graph)
+    );
+    expect(sources.find(kernel => kernel.id.endsWith('-within-finish'))?.source).not.toContain(
+      'var row = 0u; row < 4u'
+    );
+    const clear = sources.find(kernel => kernel.id.endsWith('-within-clear-residuals'));
+    expect(clear?.source).toContain('residuals[residualsOffset + index] = getNaN();');
+  } finally {
     device.destroy();
   }
 });

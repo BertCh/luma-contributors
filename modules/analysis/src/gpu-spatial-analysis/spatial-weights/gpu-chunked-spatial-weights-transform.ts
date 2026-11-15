@@ -47,7 +47,8 @@ export type GPUChunkedSpatialWeightsTransformProps = {
   output?: readonly (GraphDataView<'float32'> | undefined)[];
   doubleSum?: 'one' | 'rows';
   kernel?: GPUSpatialWeightsKernel;
-  bandwidth?: number | 'adaptive';
+  /** Numeric default, adaptive mode, or a shared per-frame fixed-bandwidth parameter view. */
+  bandwidth?: number | 'adaptive' | GraphDataView<'float32'>;
   spatialContext?: GPUSpatialContext;
 };
 
@@ -59,6 +60,9 @@ export type GPUChunkedSpatialWeightsTransformProps = {
  * whole scratch CSR (linear in the chunk count, see {@link GPUChunkedSpatialWeightsTranspose}) and
  * looks the reverse weight up there. Results equal the whole transform at any chunking; `double` and
  * `variance` sums can differ from the whole sum only by float32 association of the partials.
+ *
+ * Per-frame: weight/output contents and a shared bandwidth parameter view. Compile-time:
+ * operation, kernel, adaptive versus fixed bandwidth, chunk topology and optional views.
  *
  * `symmetrize` allocates a scratch CSR sized by the summed chunk capacity and so requires that to
  * fit one storage binding.
@@ -108,7 +112,7 @@ export class GPUChunkedSpatialWeightsTransform implements GPUCommandNodeProducer
       props.operation === 'binary' ||
       props.operation === 'double' ||
       props.operation === 'symmetrize' ||
-      (props.operation === 'kernel' && typeof props.bandwidth === 'number');
+      (props.operation === 'kernel' && props.bandwidth !== 'adaptive');
     const information: GPUSpatialWeightsInformation = {
       rowCount: rows,
       transform: props.operation === 'symmetrize' ? 'symmetric' : props.operation,

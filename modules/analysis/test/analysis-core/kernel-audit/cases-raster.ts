@@ -36,7 +36,8 @@ import {
   getGPURasterExtremaPyramidLayout,
   makeGPURasterBand,
   makeGPURasterMetadata,
-  type GPURasterCellStatisticsOutput
+  type GPURasterCellStatisticsOutput,
+  type GPUIsolinesTile
 } from '@luma-contributors/analysis/raster-analysis';
 import {
   type GPURasterBand,
@@ -44,6 +45,7 @@ import {
   type GPURasterScalarFormat
 } from '@luma.gl/graph/gpu-raster';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import {RASTER_CONTRAST_EQUALIZATION_CASES} from './cases-raster-contrast-equalization';
 import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
 
 const MODERATE = {width: 100, height: 80};
@@ -805,6 +807,7 @@ function addIsolines(
     segmentCapacity: number;
     vertexCapacity: number;
     polylines: boolean;
+    tile?: GPUIsolinesTile;
   }
 ): void {
   const {segmentCapacity} = options;
@@ -812,6 +815,7 @@ function addIsolines(
   graph.add(
     new GPUIsolines({
       grid: makeGrid(options.width, options.height),
+      tile: options.tile,
       values: view('float32', cellCount),
       mask: view('uint32', cellCount),
       noDataValue: -9999,
@@ -843,6 +847,42 @@ function addIsolines(
 }
 
 const ISOLINES_CASES: KernelAuditCase[] = [
+  // The former 256-level whole-domain maxima remain below as explicit uint32-count rejections.
+  ...[false, true].map(polylines => ({
+    exportName: 'GPUIsolines',
+    name: `uint32-safe maximum grid and capacities ${polylines ? 'with polylines' : 'segments only'}`,
+    build: (context: Context) =>
+      addIsolines(context, {
+        width: LARGE_SIDE,
+        height: LARGE_SIDE,
+        levelCount: 128,
+        segmentCapacity: context.maximumRows(16),
+        vertexCapacity: polylines ? context.maximumRows(8) : 0,
+        polylines
+      })
+  })),
+  ...[false, true].map(empty => ({
+    exportName: 'GPUIsolines',
+    name: empty
+      ? 'empty half-open tile with domain edges'
+      : 'halo tile with polylines and domain edges',
+    build: (context: Context) =>
+      addIsolines(context, {
+        width: 100,
+        height: 80,
+        levelCount: 8,
+        segmentCapacity: 4000,
+        vertexCapacity: 8000,
+        polylines: true,
+        tile: {
+          domainWidth: 200,
+          domainHeight: 150,
+          columnOffset: 50,
+          rowOffset: 25,
+          ownedCells: empty ? [1, 1, 1, 79] : [1, 1, 99, 79]
+        }
+      })
+  })),
   {
     exportName: 'GPUIsolines',
     name: 'every output with polylines',
@@ -2473,5 +2513,6 @@ export const RASTER_CASES: KernelAuditCase[] = [
   ...SAMPLING_CASES,
   ...PROFILE_CASES,
   ...STRETCH_CASES,
+  ...RASTER_CONTRAST_EQUALIZATION_CASES,
   ...ZONAL_STATISTICS_CASES
 ];

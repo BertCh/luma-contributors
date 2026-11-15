@@ -17,15 +17,15 @@ the H3 and Quadbin classes, so the gaps below are real, not omissions of this pa
 | --- | --- | --- | --- | --- | --- |
 | Point to cell | `GPUPointToCell`; extended precision exact | `GPUPointToCell`, also inside `GPUCellAggregation` | `GPUPointToCell`, f32 only, exact to about level 20 | `GPUPointToCell` | none |
 | Cell to center / boundary | `GPUCellGeometry` (6 to 10 vertices) | `GPUCellGeometry` | `GPUCellGeometry` | `GPUCellGeometry` | `GPUCellGeometry` |
-| Parent | `GPUCellTopology` | `GPUCellTopology` | `GPUS2CellHierarchy` | none | none |
-| Children | `GPUCellTopology`, any depth to stride 4096 | same | `GPUS2CellHierarchy`, one level only; `range` for leaf bounds | none | none |
-| k-ring / disk | `GPUCellTopology`, k at most 8 | `GPUCellTopology`, k at most 8 (Chebyshev) | 4 edge neighbors only | none | none |
+| Parent | `GPUCellTopology` | `GPUCellTopology` | `GPUCellTopology`; `GPUS2CellHierarchy` compatibility | none | none |
+| Children | `GPUCellTopology`, any depth to stride 4096 | same | `GPUCellTopology`, any depth to stride 4096; compatibility `GPUS2CellHierarchy` also provides leaf ranges | none | none |
+| k-ring / disk | `GPUCellTopology`, k at most 8 | `GPUCellTopology`, k at most 8 (Chebyshev) | `GPUCellTopology`, k at most 8 (edge steps) | none | none |
 | Grid distance / path | `GPUCellGridPath` | none | none | none | none |
 | Compact / uncompact | `GPUCellCompaction` | `GPUCellCompaction` | none | none | none |
 | Polyfill / cover | `GPUCellCover` (scales) | `GPUCellCover` (scales) | `GPUS2PolygonCovering` (one polygon; `refinement: 'level-synchronous'` is parallel), `GPUS2CapCovering` (level at most 8, or 15 with `refinement: 'level-synchronous'`) | none | none |
 | Aggregation, rollup, pyramid | `GPUCellAggregation` (pre-keyed only), rollup, pyramid | all, including points | none | none | none |
 | Cell set outline | `GPUCellSetOutline` | `GPUCellSetOutline` | none | none | none |
-| Cell area, perimeter | `GPUCellMeasures`, metres or km | none | `GPUS2CellMeasures`, steradians and radians | none | none |
+| Cell area, perimeter | `GPUCellMeasures`, metres or km | `GPUCellMeasures`, metres or km | `GPUCellMeasures`, metres or km; `GPUS2CellMeasures` for unit-sphere compatibility | none | none |
 | Edge / vertex identities | `GPUH3CellIdentities` | not applicable | none | not applicable | not applicable |
 
 S2 covers take unit xyz vectors and an optional `spatialContext` (longitude-latitude, great-circle
@@ -267,7 +267,8 @@ graph.add(new GPUCellGeometry({
 
 ::lens{scenario=gpu-spatial-analysis.cell-compaction rung=result caption="Grey: 49 resolution-9 cells, two masked out · blue: the merged set, resolutions 8 and 9"}
 
-Cell topology for Quadbin and H3 keys stored as `uint32x2` little-endian `(low, high)` words.
+Cell topology for Quadbin, H3 and S2 keys stored as `uint32x2` little-endian `(low, high)` words.
+`GPUCellCompaction` supports Quadbin and H3.
 This is the Arrow `Uint64` layout used by `GPUCellAggregation`. Inputs also accept
 `wordOrder: 'high-low'`. A zero key means "no cell" in every output.
 
@@ -281,7 +282,7 @@ Both consume cell keys, not positions, so neither takes a `spatialContext`.
   - `{type: 'parent', resolution}`: `cellToParent`.
   - `{type: 'children', resolution, inputResolution}`: `cellToChildren`, in ascending key order.
   - Rows are zero padded and an optional `counts` column gives the valid entries per row. `k` is at
-    most 8 and the children stride at most 4096 (H3 depth 4, Quadbin depth 6). Invalid, masked
+    most 8 and the children stride at most 4096 (H3 depth 4, Quadbin/S2 depth 6). Invalid, masked
     or wrong-resolution rows give zero rows.
 - **H3 neighbors are exact.** `H3_NEIGHBOR_WGSL` ports H3's `h3NeighborRotations`: base-cell
   neighbor and rotation tables, class II/III digit carry tables and pentagon clockwise-offset
@@ -291,6 +292,13 @@ Both consume cell keys, not positions, so neither takes a `spatialContext`.
 - **Quadbin neighborhoods** use Chebyshev distance on tile column and row (`QUADBIN_KRING`
   style). Columns wrap across the antimeridian. Rows are clipped at the poles. A tile that the wrap
   reaches twice at small zoom levels appears once.
+- **S2 neighborhoods** count steps across the four edge neighbors, including exact integer
+  cube-face transitions through level 30. A diagonal contact is not a step. Disks have stride
+  `2k(k+1)+1`, rings `4k` (both 1 at `k = 0`); these are flat square-grid upper bounds, so
+  cube corners and small levels leave zero padding. Output order is (distance, key) for disks
+  and key for rings. Parents accept mixed levels; children require the declared `inputResolution`
+  and enumerate every descendant in ascending Hilbert-key order. `GPUS2CellHierarchy` remains
+  available for its compatibility statuses, immediate children, edge-neighbor slots and leaf ranges.
 - **`GPUCellCompaction`** handles sets of cells:
   - `{type: 'compact', minimumResolution?}` (`compactCells`): input is cells at one resolution,
     which are sorted unless `sorted: true` and then deduplicated. It replaces every complete
@@ -340,11 +348,11 @@ graph.add(new GPUCellCompaction({
 
 ::lens{scenario=gpu-spatial-analysis.cell-grid-path rung=result caption="Grey: 7 origin places · blue: grid-path cell centres to the central place"}
 
-**`GPUCellMeasures`** — Computes the spherical area, perimeter, edge lengths and pentagon flag of H3 cells.
+**`GPUCellMeasures`** — Computes the spherical area, perimeter, ordered edge lengths and pentagon flag of H3, S2 and Quadbin cells.
 
 ::lens{scenario=gpu-spatial-analysis.cell-measures rung=result caption="Blue: 160 H3 resolution-9 cells by spherical area, 106,248–106,278 m², near-equal here"}
 
-H3 gap kernels (`family: 'h3'`), integer-exact where possible.
+H3 grid paths and H3/S2/Quadbin cell measures, integer-exact where possible.
 
 `GPUCellGridPath` consumes cell keys, so it takes no `spatialContext`.
 
@@ -360,18 +368,38 @@ H3 gap kernels (`family: 'h3'`), integer-exact where possible.
   (`counts = 0`) in about 6% of those cases. Distances matched h3 4.5.0 on 355 of 355 pairs, failures
   included.
 - **`GPUCellMeasures`** (h3 `cell_area`, `edge_length`, `is_pentagon`): `areas` (square meters),
-  `perimeters`, `edgeLengths` (stride `maximumEdgeCount` 6 to 10, great-circle meters between
-  consecutive `cellToBoundary` vertices), `edgeCounts` and `pentagons`. **Breaking:** outputs used to
+  `perimeters`, `edgeLengths` (stride `maximumEdgeCount` 6 to 10 for H3, 4 to 10 for S2/Quadbin;
+  defaults to 6 for H3 and 4 otherwise), `edgeCounts` and `pentagons`. H3 edges follow
+  `cellToBoundary`; S2 follows geometry face-UV order `(00, 01, 11, 10)`. Quadbin follows north, east, south,
+  west: north/south run along parallels and east/west along meridians. Invalid keys give all-zero
+  rows, valid S2/Quadbin cells have four edges and a zero pentagon flag, and edges beyond the
+  cell count are zero. `maximumEdgeCount` never truncates `edgeCounts`, areas or perimeters. **Breaking:** outputs used to
   be kilometers; meters are now the default and kilometers need an explicit `units: 'kilometers'`
   (then areas are square kilometers). The sphere is the WGS84 authalic sphere
   (`GPU_EARTH_AUTHALIC_RADIUS_METERS`, replacing the removed `GPU_CELL_MEASURES_EARTH_RADIUS_KM`), and
   the instance's `measures` field is the machine-readable description (`lengthModel: 'great-circle'`,
-  `areaModel: 'sphere-polygon'`, units). Cell identifiers carry no coordinates, so the class has no
+  `areaModel: 'sphere-polygon'`, units, for H3/S2; `lengthModel: 'sphere-parallel-meridian'` and
+  `areaModel: 'sphere-rectangle'` for Quadbin). Cell identifiers carry no coordinates, so the class has no
   `spatialContext`. Single-face hexagons are exact from lattice
   offsets, within 1e-6 relative at resolutions 0 to 15. Pentagons and cells straddling a face edge use f32
   boundary vectors, which resolve about 0.4 m on the ground: measured relative error 6e-7 at resolution 0,
   5e-5 at 3 and 4, at most 5e-4 up to resolution 8 and 2e-2 at 9 and 10 (areas alone: 2e-5 at 4, 1.5e-4 at 8,
-  5e-3 at 9 and 10), so treat them as unreliable beyond resolution 10. Open: directed edges and vertexes.
+  5e-3 at 9 and 10), so treat them as unreliable beyond resolution 10. S2 uses stable local quadratic
+  increments through level 30. Quadbin uses hyperbolic difference identities through zoom 26;
+  its root cell covers the full Mercator band and excludes the polar caps. Use a relative tolerance
+  of 3e-6 for S2/Quadbin GPU measures. The CPU twin `computeCellMeasuresOnCPU` and
+  `CPUCellMeasuresOperation` support the same families, units, word orders and output layouts;
+  binary64 vector differences serve as an independent S2 evaluation.
+  Set `precision: 'fp64'` to use the published luma.gl double-single shader module for H3
+  boundary projection, face-edge intersections and spherical-vector differences, including
+  pentagons and face-crossing cells above resolution 10. S2 uses double-single quadratic-map
+  coordinates and local increments, and Quadbin uses double-single Mercator coordinates and
+  hyperbolic functions. The option is compile-time; it changes neither ports nor float32 output
+  formats. It defaults to `'float32'`, preserving the existing evaluation. GPU/CPU parity specs
+  require relative tolerances of 2e-5 for H3 and 3e-6 for S2/Quadbin. The CPU twin accepts either option and computes
+  in binary64 for both. The fp64 path costs more arithmetic per row and should be selected when
+  the precision is needed. Both graph operation forms
+  infer the same default edge stride from `family`. Open: directed edges and vertexes.
 
 #### How it computes
 
@@ -645,8 +673,15 @@ graph.add(new GPUSegmentRingAssembly({
   for a planar boundary; float32 areas order only shells whose boxes are equal or do not nest (smaller
   first, lowest index on ties). Until 2026-11-11 the choice was the smallest float32 area among shells
   larger than the hole, which left a hole unowned, or gave it to an outer shell, when a thin shell and its
-  hole had areas that rounded to the wrong order. This costs one pass over
-  every written vertex per hole. Containment is exact: the probe is the symbolic point infinitesimally
+  hole had areas that rounded to the wrong order. A BVH over shell boxes rejects whole
+  subtrees whose bounds cannot contain the hole box. Its two-word Morton key interleaves every
+  bit of the ordered float32 centers, avoiding global-extent quantization: a distant shell cannot
+  collapse nearby shells into an unresolved key tie. The index reuses the four-float ring bounds
+  and stores area, ring kind and group in a separate
+  three-word record. At 8,388,608 rings these bindings use 128 MiB and 96 MiB respectively, retaining
+  the default device's ring capacity and eight-storage-binding traversal limit.
+  Only candidate shells receive a vertex walk; equal-area ties still select the lowest ring index,
+  independently of BVH order. Containment is exact: the probe is the symbolic point infinitesimally
   beside the midpoint of the hole's first edge, on the side away from the hole, classified with the exact
   point-in-ring rule of `utils/exact-geometry-wgsl.ts`, so a hole whose edge runs along another ring is
   still assigned correctly. A ring of area 0 is an empty walk and is left out of `polygons`; a face
@@ -743,7 +778,12 @@ These contributors form the bounded planar geometry-topology substrate:
   exactly at the symbolic point infinitesimally left of the midpoint of the first edge of each face
   shell (the shared probe of `utils/exact-geometry-wgsl.ts`; strictly inside the face, no rounded
   sample point: the ray's height is the exact midpoint of the edge's two heights, so an edge one
-  float32 step tall is handled), brute force over the noded segments, one thread per face. A face whose
+  float32 step tall is handled), one thread per face. Stable sorts order segments by height, then
+  exact uint32 source group. Each face binary-searches its group's contiguous leaf range before
+  traversing the height BVH; node ranges outside that group are pruned before testing segments.
+  Group ID gaps, outliers and float32 collisions therefore do not broaden the candidate search.
+  Inclusive height bounds retain edges on the symbolic ray. Candidates on both sides of
+  the probe are retained to preserve the uncertainty fallback. A face whose
   orientation cannot be certified is kept. `status.count` is the number of kept polygons. Rings close
   implicitly: the edge from a ring's last vertex back to its first is always part of the boundary,
   whether or not the ring repeats its first vertex. `GPULineNoding` emits no zero-length row for a

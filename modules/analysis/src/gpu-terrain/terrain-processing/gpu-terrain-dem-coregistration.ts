@@ -18,6 +18,8 @@ import {
 } from '../../raster-analysis/raster-band-utils';
 import {
   validateFiniteNumber,
+  validateMaximumCount,
+  validateGPUStorageBindingByteLength,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -29,6 +31,7 @@ import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createSegmentSumNode} from '../../analysis-core/kernels/sorted-segment-sums';
 import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {
   checkTerrainViews,
@@ -40,12 +43,23 @@ import {
   TERRAIN_FINITE_WGSL
 } from './terrain-processing-utils';
 
+/** Maximum covariance terms summed by one invocation, independent of raster size. */
+export const TERRAIN_COREGISTRATION_COVARIANCE_TILE_SIZE = 256;
+/**
+ * Largest correlated grid whose 4 * cells * ceil(cells / 256) byte partial plane fits a core
+ * 128 MiB storage binding: 92,672 cells use 362 tiles; the next cell needs 363. This also keeps
+ * partial indices below uint32. Enforced at construction even on devices with larger bindings.
+ * @internal
+ */
+const TERRAIN_COREGISTRATION_MAXIMUM_CORRELATED_CELL_COUNT = 92672;
+
 export type GPUTerrainDEMCoregistrationProps = {
   id?: string;
   /**
    * Grid. Without `cellSizeMode` the horizontal units are the affine's own (geographic degrees
    * are not ground meters): `correlationLength` is in those units and `output.volume` is in
-   * vertical units times squared affine units.
+   * vertical units times squared affine units. With nonzero `correlationLength`, at most
+   * 92,672 cells (`width * height`) are accepted at construction.
    */
   grid: GPURasterMetadata;
   /**
@@ -88,8 +102,13 @@ export type GPUTerrainDEMCoregistrationProps = {
 /**
  * Robust vertical-shift model, matching xDEM's median VerticalShift objective. No horizontal registration is implied.
  * The stable count, covariance sum, volume sums and counts are `GPUReduction` sums and the median
- * comes from a `GPUSort`, so no kernel loops over cells; `correlationLength > 0` still sums over
- * every cell pair in one thread per cell, which is quadratic (see the roadmap).
+ * comes from a `GPUSort`. With `correlationLength > 0`, every covariance row is split into
+ * 256-cell tiles and joined with a fixed-order segmented reduction. The full dense model retains
+ * quadratic arithmetic; no invocation walks an entire raster row of covariance terms. Scratch
+ * uses two float32 planes of cellCount * ceil(cellCount / 256) entries, checked against the device
+ * binding limit before graph nodes are created. Nonzero correlation is capped at 92,672 grid
+ * cells at construction so both planes fit the core 128 MiB binding limit and uint32 indices.
+ * Independent errors keep the linear path and are not subject to this correlated-grid cap.
  */
 export class GPUTerrainDEMCoregistration implements GPUCommandNodeProducer {
   readonly id: string;
@@ -108,6 +127,14 @@ export class GPUTerrainDEMCoregistration implements GPUCommandNodeProducer {
     validateViewLength(this.id, 'output.differences', props.output.differences, count * 2);
     validateViewLength(this.id, 'output.volume', props.output.volume, 3);
     validateFiniteNumber(this.id, 'correlationLength', props.correlationLength ?? 0, 0);
+    if ((props.correlationLength ?? 0) > 0) {
+      validateMaximumCount(
+        this.id,
+        'grid cell count with correlationLength > 0',
+        count,
+        TERRAIN_COREGISTRATION_MAXIMUM_CORRELATED_CELL_COUNT
+      );
+    }
     validateRequirement(
       this.id,
       Math.abs(
@@ -140,6 +167,16 @@ export class GPUTerrainDEMCoregistration implements GPUCommandNodeProducer {
       ...(props.validity ? [props.validity] : []),
       ...Object.values(props.output)
     ]);
+    const correlation = props.correlationLength ?? 0;
+    const covarianceTileCount =
+      correlation === 0 ? 1 : Math.ceil(count / TERRAIN_COREGISTRATION_COVARIANCE_TILE_SIZE);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'covariance partial plane',
+      count * covarianceTileCount * 4,
+      'reduce grid size or use independent errors (correlationLength = 0)'
+    );
     const operation = 'GPUTerrainDEMCoregistration';
     const maskedReference = createTerrainValidityMask(graph, {
       id: `${id}-reference`,
@@ -171,6 +208,28 @@ export class GPUTerrainDEMCoregistration implements GPUCommandNodeProducer {
       'float32',
       count
     );
+    const stableCovariancePartials =
+      covarianceTileCount === 1
+        ? stableCovarianceRows
+        : createTransientView(
+            graph,
+            `${id}-stable-covariance-partials`,
+            'float32',
+            count * covarianceTileCount
+          );
+    const measurementCovariancePartials =
+      covarianceTileCount === 1
+        ? measurementCovarianceRows
+        : createTransientView(
+            graph,
+            `${id}-measurement-covariance-partials`,
+            'float32',
+            count * covarianceTileCount
+          );
+    const covarianceOffsets =
+      covarianceTileCount === 1
+        ? undefined
+        : createTransientView(graph, `${id}-covariance-offsets`, 'uint32', count + 1);
     const usableCount = createTransientView(graph, `${id}-usable-count`, 'uint32', 1);
     const stableCovarianceTotal = createTransientView(graph, `${id}-stable-total`, 'float32', 1);
     const changeValues = createTransientView(graph, `${id}-change-values`, 'float32', count);
@@ -195,7 +254,6 @@ export class GPUTerrainDEMCoregistration implements GPUCommandNodeProducer {
       terrainBinding('moving', maskedMoving.values),
       terrainBinding('stable', props.stableMask)
     ];
-    const correlation = props.correlationLength ?? 0;
     const measureDeclarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}
 ${TERRAIN_FINITE_WGSL}
 ${getTerrainGroundMeasureWGSL(props.grid, props.cellSizeMode)}`;
@@ -233,34 +291,64 @@ fn correlation(first: u32, second: u32) -> f32 {
         body: 'usableFlags[usableFlagsOffset + index] = u32(usable(index));'
       }),
       createWGSLKernelNode(graph, {
-        id: `${id}-covariance-rows`,
+        id: `${id}-covariance-tiles`,
         operation,
-        invocationCount: count,
+        invocationCount: count * covarianceTileCount,
         declarations,
         bindings: [
           ...inputs,
           terrainBinding('variance', props.differenceVariance),
           terrainBinding('deviations', standardDeviations),
-          terrainBinding('stableRows', stableCovarianceRows, 'read_write'),
-          terrainBinding('measurementRows', measurementCovarianceRows, 'read_write')
+          terrainBinding('stableRows', stableCovariancePartials, 'read_write'),
+          terrainBinding('measurementRows', measurementCovariancePartials, 'read_write')
         ],
-        body: `var stableCovariance = 0.0; var measurementCovariance = 0.0;
-let firstVariance = variance[varianceOffset + index];
-let valid = isFiniteValue(residual(index)) && isFiniteValue(firstVariance) && firstVariance >= 0.0;
+        body: `let first = index / ${covarianceTileCount}u;
+var stableCovariance = 0.0; var measurementCovariance = 0.0;
+let firstVariance = variance[varianceOffset + first];
+let valid = isFiniteValue(residual(first)) && isFiniteValue(firstVariance) && firstVariance >= 0.0;
 ${
   correlation === 0
-    ? `stableCovariance = f32(usable(index));
+    ? `stableCovariance = f32(usable(first));
 measurementCovariance = select(0.0, firstVariance, valid);`
-    : `for (var second = 0u; second < ${count}u; second++) {
+    : `let begin = (index % ${covarianceTileCount}u) * ${TERRAIN_COREGISTRATION_COVARIANCE_TILE_SIZE}u;
+for (var local = 0u; local < ${TERRAIN_COREGISTRATION_COVARIANCE_TILE_SIZE}u; local++) {
+ let second = begin + local; if (second >= ${count}u) { break; }
  let secondVariance = variance[varianceOffset + second];
- let weight = correlation(index, second);
- if (usable(index) && usable(second)) { stableCovariance += weight; }
- if (valid && isFiniteValue(residual(second)) && isFiniteValue(secondVariance) && secondVariance >= 0.0) { measurementCovariance += deviations[deviationsOffset + index] * deviations[deviationsOffset + second] * weight; }
+ let weight = correlation(first, second);
+ if (usable(first) && usable(second)) { stableCovariance += weight; }
+ if (valid && isFiniteValue(residual(second)) && isFiniteValue(secondVariance) && secondVariance >= 0.0) { measurementCovariance += deviations[deviationsOffset + first] * deviations[deviationsOffset + second] * weight; }
 }`
 }
 stableRows[stableRowsOffset + index] = stableCovariance;
 measurementRows[measurementRowsOffset + index] = measurementCovariance;`
       }),
+      ...(covarianceOffsets
+        ? [
+            createWGSLKernelNode(graph, {
+              id: `${id}-covariance-offsets`,
+              operation,
+              invocationCount: count + 1,
+              bindings: [terrainBinding('offsets', covarianceOffsets, 'read_write')],
+              body: `offsets[offsetsOffset + index] = index * ${covarianceTileCount}u;`
+            }),
+            createSegmentSumNode(graph, {
+              id: `${id}-stable-covariance-rows`,
+              operation,
+              segmentCount: count,
+              input: stableCovariancePartials,
+              segmentOffsets: covarianceOffsets,
+              output: stableCovarianceRows
+            }),
+            createSegmentSumNode(graph, {
+              id: `${id}-measurement-covariance-rows`,
+              operation,
+              segmentCount: count,
+              input: measurementCovariancePartials,
+              segmentOffsets: covarianceOffsets,
+              output: measurementCovarianceRows
+            })
+          ]
+        : []),
       ...new GPUReduction({
         id: `${id}-usable-sum`,
         input: usableFlags,

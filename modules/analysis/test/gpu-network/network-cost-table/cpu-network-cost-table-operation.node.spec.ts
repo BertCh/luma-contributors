@@ -71,3 +71,12 @@ it('honors a negative cutoff and checks arrays and construction-time capacity', 
   for (const Operation of [CPUNetworkCostTableOperation, GPUNetworkCostTableOperation])
     expect(() => new Operation({...props, capacity: 0})).toThrow(/^check-table/);
 });
+
+it('reports no GPU round exhaustion from the exact CPU cost table, including overflow', () => {
+  const result = computeNetworkCostTableOnCPU(
+    {topology: getRoutingTopology(), costLimit: Float32Array.of(Infinity)},
+    {capacity: 1}
+  );
+  expect(result.overflow[0]).toBe(1);
+  expect(result).toHaveProperty('iterationLimitReached', Uint32Array.of(0));
+});

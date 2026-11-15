@@ -18,14 +18,15 @@ export const KEPLER_ANALYSIS_CAPABILITIES: readonly GPUSpatialAnalysisCapability
     status: 'available',
     domain: 'spatial-statistics',
     stage: 'infer',
-    summary: 'Selected type-5 quantile membership and conditional local join-count permutations.',
+    summary:
+      'Univariate or multivariate type-5 quantile intersection and conditional local join-count permutations.',
     inputs: ['attributes', 'spatial-weights', 'parameters'],
     outputs: ['attributes', 'summary'],
     coordinateModels: ['topological'],
     outputBound: 'source-sized',
     operators: ['GPUQuantileLISA'],
     limitation:
-      'One variable and selected class per run; lower-inclusive boundaries, islands and missing observations retain explicit labels. Uses legacy directed pseudo p-values, which can be anti-conservative; no implicit multiple-testing correction.',
+      'Up to 64 variables with one selected class each; empty intersections stay empty; lower-inclusive boundaries, islands and missing observations retain explicit labels. Uses legacy directed pseudo p-values, which can be anti-conservative; no implicit multiple-testing correction.',
     evidence: {
       representativeSourceRows: 8,
       transientMemory: 'linear-source',
@@ -81,7 +82,13 @@ export const KEPLER_ANALYSIS_CAPABILITIES: readonly GPUSpatialAnalysisCapability
 type OperatorOverride = Partial<
   Pick<
     GPUSpatialAnalysisOperator,
-    'semantics' | 'status' | 'deterministic' | 'topology' | 'cardinality' | 'dimensionality'
+    | 'semantics'
+    | 'status'
+    | 'deterministic'
+    | 'topology'
+    | 'cardinality'
+    | 'dimensionality'
+    | 'coordinateModels'
   >
 > & {tests: string; documentation: string; contract: string; evidence: 'partial'};
 
@@ -91,11 +98,12 @@ export const KEPLER_ANALYSIS_OPERATOR_OVERRIDES: Readonly<Record<string, Operato
     deterministic: true,
     topology: 'fixed',
     cardinality: 'source-sized',
-    dimensionality: '2d',
+    dimensionality: 'topology',
+    coordinateModels: ['topological'],
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: `${TEST_ROOT}/recipes/quantile-lisa.spec.ts`,
-    documentation: `${DOCUMENTATION_ROOT}/quantile-lisa.md`,
+    documentation: 'modules/analysis/docs/gpu-quantile-lisa.md',
     contract: 'GPUQuantileLISAProps'
   },
   GPUDorlingCartogram: {

@@ -20,16 +20,17 @@ import {
   type CPUCoveringVector
 } from '../cell-topology/cpu-s2-covering-geometry';
 import {parseDggsFaceTable} from './h3-index-extended-wgsl';
+import {getRectangularCellMeasures} from './rectangular-cell-measures';
 import {GPU_CELL_MEASURES_H3_MAXIMUM_EDGE_COUNT} from './gpu-cell-measures';
 import {
   GPUCellMeasuresOperation,
   type CellMeasuresOperationProps
 } from './gpu-cell-measures-operation';
 
-/** Options for packed H3 cell measures. */
+/** Options for packed H3, S2 and Quadbin cell measures. */
 export type CPUCellMeasuresOptions = Pick<
   CellMeasuresOperationProps,
-  'family' | 'wordOrder' | 'maximumEdgeCount' | 'units'
+  'family' | 'wordOrder' | 'maximumEdgeCount' | 'units' | 'precision'
 >;
 /** Row-aligned measures; edgeLengths has maximumEdgeCount entries per cell. */
 export type CPUCellMeasuresResult = {
@@ -119,13 +120,15 @@ const FACE_BASES = parseDggsFaceTable('dggs_h3_get_face_center_geo', 2).map(
 );
 
 /**
- * Decodes exact integer H3 keys and measures the spherical boundary in float64, rounding only
+ * Decodes exact integer H3, S2 and Quadbin keys and measures their boundaries in float64, rounding only
  * the returned rows. Invalid keys produce zeros; edgeCounts is never truncated by the stride.
  *
  * What differs from the GPU contributor:
+ * - Both precision options compute in binary64; 'fp64' selects double-single on the GPU only.
  * - All boundaries use binary64 face projection, including pentagons and face crossings at
  *   resolutions 11–15 where the GPU's float32 fallback is unreliable. Near-zero lengths and
  *   areas still have binary64 coordinate error; no float32 intermediate is emulated.
+ * - S2 uses binary64 unit-vector differences rather than the GPU local-increment evaluation.
  * - Empty cells arrays are accepted by the pure function; graph operations require rowCount >= 1.
  * - Nothing differs in invalid-key handling, units, boundary order, padding or stride truncation.
  *
@@ -138,7 +141,7 @@ export function computeCellMeasuresOnCPU(
   validateOptions('cell-measures', options);
   if (cells.length % 2) throw new Error('cells must contain uint32x2 rows');
   const rowCount = cells.length / 2;
-  const stride = options.maximumEdgeCount ?? 6;
+  const stride = options.maximumEdgeCount ?? (options.family === 'h3' ? 6 : 4);
   const result: CPUCellMeasuresResult = {
     areas: new Float32Array(rowCount),
     perimeters: new Float32Array(rowCount),
@@ -155,6 +158,18 @@ export function computeCellMeasuresOnCPU(
     const high = cells[row * 2 + Number(options.wordOrder !== 'high-low')];
     const low = cells[row * 2 + Number(options.wordOrder === 'high-low')];
     const key = (BigInt(high) << 32n) | BigInt(low);
+    if (options.family !== 'h3') {
+      const measured = getRectangularCellMeasures(key, options.family);
+      if (measured) {
+        result.areas[row] = measured.area * radius * radius;
+        result.perimeters[row] = measured.edges.reduce((sum, edge) => sum + edge, 0) * radius;
+        result.edgeCounts[row] = 4;
+        measured.edges.forEach((edge, index) => {
+          result.edgeLengths[row * stride + index] = edge * radius;
+        });
+      }
+      continue;
+    }
     const resolution = (high >>> 20) & 15;
     const baseCell = (high >>> 13) & 127;
     const digits = Array.from({length: 15}, (_, index) =>
@@ -247,7 +262,11 @@ export class CPUCellMeasuresOperation extends GPUCPUOperation {
 }
 
 function validateOptions(id: string, options: CPUCellMeasuresOptions): void {
-  validateRequirement(id, options.family === 'h3', "family must be 'h3'");
+  validateRequirement(
+    id,
+    ['h3', 's2', 'quadbin'].includes(options.family),
+    "family must be 'h3', 's2' or 'quadbin'"
+  );
   validateRequirement(
     id,
     options.wordOrder === undefined || ['little-endian', 'high-low'].includes(options.wordOrder),
@@ -258,11 +277,16 @@ function validateOptions(id: string, options: CPUCellMeasuresOptions): void {
     options.units === undefined || ['meters', 'kilometers'].includes(options.units),
     "units must be 'meters' or 'kilometers'"
   );
+  validateRequirement(
+    id,
+    options.precision === undefined || ['float32', 'fp64'].includes(options.precision),
+    "precision must be 'float32' or 'fp64'"
+  );
   validateCapacity(
     id,
     'maximumEdgeCount',
-    options.maximumEdgeCount ?? 6,
-    6,
+    options.maximumEdgeCount ?? (options.family === 'h3' ? 6 : 4),
+    options.family === 'h3' ? 6 : 4,
     GPU_CELL_MEASURES_H3_MAXIMUM_EDGE_COUNT
   );
 }

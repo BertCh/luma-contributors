@@ -18,6 +18,12 @@ import {
   getCPUOperationUint32Rows
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {getCPUTrajectoryDistance} from '../../analysis-core/operations/cpu-trajectory-distance';
+import {validateMultiscaleBandwidthSelection} from './mgwr-bandwidth-selection';
+import {selectGoldenSectionBandwidth} from './gwr-golden-section-nodes';
+import {
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_VARIANCE
+} from './geographically-weighted-regression-parameters';
 import {fitCPURegressionWithQR} from './cpu-regression-linear-algebra';
 import {GPU_ITERATIVE_REGRESSION_STATUS} from './gpu-generalized-geographically-weighted-regression';
 import {
@@ -50,6 +56,7 @@ export type CPUMultiscaleGeographicallyWeightedRegressionOptions = Pick<
   | 'indexGridSize'
   | 'gaussianCutoff'
   | 'bandwidthCandidateCount'
+  | 'bandwidthSelection'
 > & {inference?: {varianceConvention?: 'residual-df' | 'smoother-df'}};
 /** Same row layouts and iterative statuses as the contributor, including optional full inference. */
 export type CPUMultiscaleGeographicallyWeightedRegressionResult = {
@@ -71,6 +78,12 @@ function validateOptions(
   id: string,
   options: CPUMultiscaleGeographicallyWeightedRegressionOptions
 ): number | undefined {
+  validateMultiscaleBandwidthSelection(
+    id,
+    options.bandwidthSelection,
+    options.bandwidthCandidateCount !== undefined,
+    options.bandwidthCandidateCount
+  );
   validateCapacity(id, 'predictorCount', options.predictorCount);
   validateCapacity(id, 'maximumIterations', options.maximumIterations ?? 32);
   validateRequirement(
@@ -112,7 +125,7 @@ function validateOptions(
 
 /**
  * Cyclic additive backfitting from global OLS, with per-component leave-one-out bandwidth
- * selection, known-variance conditional errors and full response-smoother inference. Each component is replaced at all
+ * selection (finite-grid or continuous golden-section, LOO or AICc), known-variance conditional errors and full response-smoother inference. Each component is replaced at all
  * included foci before the next component starts; exclusions have code 1 and NaN rows.
  *
  * What differs from the GPU contributor:
@@ -120,7 +133,11 @@ function validateOptions(
  *   contributions are rounded once at output. Compare well-conditioned row outputs with 5e-3
  *   relative tolerance. Near-tied CV scores and tolerance boundaries can change selected
  *   bandwidths or completed sweep counts; exact score ties still choose the first candidate.
- * - Shader-only predictor, row, candidate and iteration caps are dropped. maximumIterations is
+ * - AICc selection uses each scalar partial-response smoother trace, as mgwr multi_bw;
+ *   full-model trace(S) is the sum of the coupled component operator traces (Li and Fotheringham
+ *   2020), as reported by inference.summary[0]. Golden-section uses GWR's float32 score tolerance
+ *   and also probes the upper endpoint to retain a feasible bandwidth when interiors are invalid.
+ * - Shader-only predictor, row, candidate and backfit iteration caps are dropped. maximumIterations is
  *   ignored: sweeps continue to contribution tolerance, numerical failure, or a repeated complete
  *   float64 state (code 3). An exhausted GPU fit can converge here.
  * - The CPU visits all complete-case rows in input order; indexGridSize has no computational
@@ -250,23 +267,59 @@ export function computeMultiscaleGeographicallyWeightedRegressionOnCPU(
         return denominator > 0 && Number.isFinite(denominator) ? numerator / denominator : NaN;
       };
       if (input.bandwidthCandidates) {
-        let bestScore = Infinity;
-        let best = NaN;
-        for (let candidate = 0; candidate < options.bandwidthCandidateCount!; candidate++) {
-          const bandwidth =
-            input.bandwidthCandidates[column * options.bandwidthCandidateCount! + candidate];
-          let score = 0;
+        const usesAICcCriterion = options.bandwidthSelection?.criterion === 'AICc';
+        const evaluate = (bandwidth: number) => {
+          let residualSquares = 0;
+          let trace = 0;
           for (const focus of usedRows) {
-            const coefficient = fitScalar(focus, bandwidth, true);
+            const coefficient = fitScalar(focus, bandwidth, !usesAICcCriterion);
             const residual = partial[focus] - predictor(focus, column) * coefficient;
-            score += residual * residual;
+            residualSquares += residual * residual;
+            if (usesAICcCriterion) {
+              const denominator = usedRows.reduce(
+                (sum, row) => sum + weight(focus, row, bandwidth) * predictor(row, column) ** 2,
+                0
+              );
+              trace += predictor(focus, column) ** 2 / denominator;
+            }
           }
-          if (Number.isFinite(score) && score < bestScore) {
-            best = bandwidth;
-            bestScore = score;
+          if (!usedRows.length || !Number.isFinite(residualSquares)) return NaN;
+          if (!usesAICcCriterion) return residualSquares;
+          const degrees = usedRows.length - trace - 2;
+          return degrees > 0 && Number.isFinite(trace)
+            ? usedRows.length *
+                Math.log(
+                  Math.max(
+                    residualSquares / usedRows.length,
+                    GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_VARIANCE
+                  )
+                ) +
+                usedRows.length * Math.log(2 * Math.PI) +
+                (usedRows.length * (usedRows.length + trace)) / degrees
+            : NaN;
+        };
+        if (options.bandwidthSelection?.searchMethod === 'golden-section') {
+          bandwidths[column] = selectGoldenSectionBandwidth(
+            input.bandwidthCandidates[column * 2],
+            input.bandwidthCandidates[column * 2 + 1],
+            evaluate,
+            options.bandwidthSelection.maximumSearchIterations ??
+              GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS
+          );
+        } else {
+          let bestScore = Infinity;
+          let best = NaN;
+          for (let candidate = 0; candidate < options.bandwidthCandidateCount!; candidate++) {
+            const bandwidth =
+              input.bandwidthCandidates[column * options.bandwidthCandidateCount! + candidate];
+            const score = evaluate(bandwidth);
+            if (Number.isFinite(score) && score < bestScore) {
+              best = bandwidth;
+              bestScore = score;
+            }
           }
+          bandwidths[column] = best;
         }
-        bandwidths[column] = best;
       }
       for (let focus = 0; focus < count; focus++)
         current[focus][column] = included[focus]

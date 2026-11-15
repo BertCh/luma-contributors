@@ -12,10 +12,21 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {type GPUIterationStatusPort} from '../../analysis-core/contracts/status';
+import {
+  createGTWRBandwidthSearchNodes,
+  createMGTWRComponentEvaluationNodes,
+  getGTWRBandwidthSearchNodeCount,
+  getGTWRAdaptiveBandwidthWGSL,
+  validateGTWRBandwidthSearch
+} from './gtwr-bandwidth-search';
 import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getLocalKernelWeightWGSL} from './local-weighted-least-squares-wgsl';
@@ -84,6 +95,10 @@ export type GPUMultiscaleGeographicallyTemporallyWeightedRegressionOutput = {
    * backfitting converged.
    */
   scores: GraphDataView<'float32'>;
+  /** Winning initial and component pairs, same layout as parameters. */
+  selectedParameters?: GraphDataView<'float32'>;
+  /** Aggregated search status: outer comparisons summed, convergence AND, limit flags OR. */
+  status?: GPUIterationStatusPort;
 };
 
 /** Properties for {@link GPUMultiscaleGeographicallyTemporallyWeightedRegression}. */
@@ -113,9 +128,13 @@ const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
  * intercept: the intercept is component 0), and the residual `err` is updated before the next
  * component (Gauss-Seidel order, as in mgtwr).
  *
- * The bandwidths are the caller's; mgtwr's search for them (a golden-section search per
- * component) is not ported, so profile them by rewriting `parameters` and comparing `scores` or
- * the residuals. The iteration count is compile-time and every iteration runs: mgtwr stops at its
+ * Optional `bandwidthSearch` searches the initial fit and each partial-residual component
+ * with nested golden-section AICc profiles before smoothing. `adaptive` interprets each
+ * bandwidth as a neighbour count, including self (at most 128). Search bounds, tolerances and
+ * fixed bandwidth/time scales are per-frame; shapes, kernel, adaptive mode and budgets are
+ * compile-time. Search status aggregates all component searches; `selectedParameters` holds
+ * the last selected pairs. This reference-tier algorithm is exhaustive over rows.
+ * The iteration count is compile-time and every iteration runs: mgtwr stops at its
  * tolerance, here the `scores` show where that would have happened. A row whose initial local fit
  * is singular starts from zero components. A component smoother whose weighted `x^2` sum is not
  * positive gives a NaN coefficient and contributes nothing, which keeps the rest of the fit finite.
@@ -126,10 +145,33 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
 {
   readonly id: string;
   readonly rows: number;
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUMultiscaleGeographicallyTemporallyWeightedRegressionProps) {
     this.id = props.id ?? 'multiscale-geographically-temporally-weighted-regression';
     const {id} = this;
     const columns = props.predictorCount;
+    const searchIterations = validateGTWRBandwidthSearch(
+      id,
+      props.bandwidthSearch,
+      props.output.status
+    );
+    this.estimatedCommandNodeCount =
+      7 +
+      props.iterationCount * (columns + 2) +
+      (searchIterations
+        ? getGTWRBandwidthSearchNodeCount(searchIterations, 2) +
+          1 +
+          props.iterationCount *
+            (columns + 1) *
+            (1 + getGTWRBandwidthSearchNodeCount(searchIterations, 2))
+        : 0) +
+      Number(Boolean(props.output.selectedParameters));
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    resolveGPUSpatialContext(id, props.spatialContext, {
+      coordinateSpaces: ['planar'],
+      metrics: ['native'],
+      measure: 'distance'
+    });
     validateCapacity(id, 'predictorCount', columns, 1, GPU_GTWR_MAXIMUM_PREDICTOR_COUNT);
     validateCapacity(
       id,
@@ -167,7 +209,20 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
       validateSinglePackedView(view, [format], `${id} output.${name}`);
       validateViewLength(id, `output.${name}`, view, length);
     }
-    validatePredictionViews(id, this.getInputViews(), Object.values(output));
+    if (output.selectedParameters) {
+      validateSinglePackedView(
+        output.selectedParameters,
+        ['float32'],
+        `${id} output.selectedParameters`
+      );
+      validateViewLength(
+        id,
+        'output.selectedParameters',
+        output.selectedParameters,
+        2 + 2 * (columns + 1)
+      );
+    }
+    validatePredictionViews(id, this.getInputViews(), this.getOutputViews());
   }
 
   private getInputViews(): GraphDataView[] {
@@ -178,9 +233,17 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
       props.predictors,
       props.response,
       props.mask,
-      props.parameters
+      props.parameters,
+      props.bandwidthSearch?.parameters
     ];
     return views.filter((view): view is GraphDataView => view !== undefined);
+  }
+
+  private getOutputViews(): GraphDataView[] {
+    const {status, ...output} = this.props.output;
+    return [...Object.values(output), ...Object.values(status ?? {})].filter(
+      (view): view is GraphDataView<'float32'> | GraphDataView<'uint32'> => Boolean(view)
+    );
   }
 
   getCommandNodes<Parameters>(
@@ -190,7 +253,14 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
     const {output} = props;
     const columns = props.predictorCount;
     const size = columns + 1;
-    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...Object.values(output)]);
+    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'component scratch',
+      rows * Math.max(3, size) * 4,
+      'reduce rows or predictorCount'
+    );
     const transient = <Format extends 'float32' | 'uint32'>(
       name: string,
       format: Format,
@@ -204,6 +274,9 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
       residuals: transient('initial-residuals', 'float32', rows),
       summary: transient('initial-summary', 'float32', 12)
     };
+    const selectedParameters = props.bandwidthSearch
+      ? transient('selected-parameters', 'float32', 2 + 2 * size)
+      : props.parameters;
     const spaceTime = createSpaceTimePointNodes(graph, id, props, rows);
     const components = [
       transient('components-a', 'float32', rows * size),
@@ -222,13 +295,20 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
         positions: props.positions,
         times: props.times,
         temporalContext: props.temporalContext,
+        spatialContext: props.spatialContext,
+        adaptive: props.adaptive,
+        bandwidthSearch: props.bandwidthSearch,
         predictors: props.predictors,
         predictorCount: columns,
         response: props.response,
         mask: props.mask,
         kernel: props.kernel,
         parameters: props.parameters,
-        output: initial
+        output: {
+          ...initial,
+          selectedParameters: props.bandwidthSearch ? selectedParameters : undefined,
+          status: output.status
+        }
       }).getCommandNodes(graph),
       ...spaceTime.nodes,
       createWGSLKernelNode<Parameters>(graph, {
@@ -271,6 +351,48 @@ ${designWGSL}`,
       const next = components[(iteration + 1) % 2];
       for (let component = 0; component < size; component++) {
         const step = iteration * size + component;
+        if (props.bandwidthSearch) {
+          const partial = transient(`partial-${iteration}-${component}`, 'float32', rows);
+          nodes.push(
+            createWGSLKernelNode(graph, {
+              id: `${id}-partial-${iteration}-${component}`,
+              operation: OPERATION,
+              invocationCount: rows,
+              bindings: [
+                {name: 'previous', view: previous, type: 'f32', access: 'read'},
+                {name: 'errors', view: errors[step % 2], type: 'f32', access: 'read'},
+                {name: 'partial', view: partial, type: 'f32', access: 'read_write'}
+              ],
+              body: `partial[partialOffset + index] = previous[previousOffset + index * ${size}u + ${component}u] + errors[errorsOffset + index];`
+            })
+          );
+          nodes.push(
+            ...createGTWRBandwidthSearchNodes(graph, {
+              id: `${id}-search-${iteration}-${component}`,
+              rows,
+              adaptive: props.adaptive ?? false,
+              search: props.bandwidthSearch,
+              parameters: selectedParameters,
+              parameterOffset: 2 + 2 * component,
+              status: output.status,
+              accumulateStatus: true,
+              evaluate: (parameters, gate, evaluationId) =>
+                createMGTWRComponentEvaluationNodes(graph, {
+                  id: evaluationId,
+                  rows,
+                  predictorCount: columns,
+                  component,
+                  points: spaceTime.points,
+                  predictors: props.predictors,
+                  partial,
+                  parameters,
+                  gate,
+                  adaptive: props.adaptive ?? false,
+                  bisquare: props.kernel === 'bisquare'
+                })
+            })
+          );
+        }
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
             id: `${id}-iteration-${iteration}-component-${component}`,
@@ -278,7 +400,7 @@ ${designWGSL}`,
             variant: 'backfit-component',
             invocationCount: rows,
             bindings: [
-              {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+              {name: 'parameters', view: selectedParameters, type: 'f32', access: 'read'},
               {name: 'points', view: spaceTime.points, type: 'f32', access: 'read'},
               {name: 'predictors', view: props.predictors, type: 'f32', access: 'read'},
               {name: 'previous', view: previous, type: 'f32', access: 'read'},
@@ -292,9 +414,9 @@ ${designWGSL}`,
                 access: 'read_write'
               }
             ],
-            declarations: `${IS_FINITE_BITS_WGSL}\n${GET_NAN_WGSL}\n${weightWGSL}`,
-            body: `let bandwidth = parameters[parametersOffset + ${2 + 2 * component}u];
-  let timeScale = parameters[parametersOffset + ${3 + 2 * component}u];
+            declarations: `${IS_FINITE_BITS_WGSL}\n${GET_NAN_WGSL}\n${weightWGSL}\n${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}`,
+            body: `let timeScale = parameters[parametersOffset + ${3 + 2 * component}u];
+  let bandwidth = ${props.adaptive ? `getAdaptiveBandwidth(index, parameters[parametersOffset + ${2 + 2 * component}u], timeScale)` : `parameters[parametersOffset + ${2 + 2 * component}u]`};
   let originX = points[pointsOffset + 3u * index];
   if (!isFiniteBits(originX)) {
     next[nextOffset + index * ${size}u + ${component}u] = 0.0;
@@ -329,7 +451,7 @@ ${designWGSL}`,
         : `let ownDesign = predictors[predictorsOffset + index * ${columns}u + ${component - 1}u];`
     }
     let ownPartial = previous[previousOffset + index * ${size}u + ${component}u] + errorsIn[errorsInOffset + index];
-    let ok = denominator > 0.0 && isFiniteBits(numerator) && isFiniteBits(denominator);
+    let ok = bandwidth > 0.0 && isFiniteBits(bandwidth) && timeScale >= 0.0 && isFiniteBits(timeScale) && denominator > 0.0 && isFiniteBits(numerator) && isFiniteBits(denominator);
     let beta = select(getNaN(), numerator / denominator, ok);
     let smoothed = select(0.0, ownDesign * beta, ok);
     next[nextOffset + index * ${size}u + ${component}u] = smoothed;
@@ -400,6 +522,20 @@ ${designWGSL}`,
   localStatus[localStatusOffset + index] = select(${STATUS.EXCLUDED}u, select(${STATUS.SINGULAR}u, ${STATUS.OK}u, finite), included);`
       })
     );
+    if (output.selectedParameters) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-publish-selected`,
+          operation: OPERATION,
+          invocationCount: 2 + 2 * size,
+          bindings: [
+            {name: 'selected', view: selectedParameters, type: 'f32', access: 'read'},
+            {name: 'output', view: output.selectedParameters, type: 'f32', access: 'read_write'}
+          ],
+          body: 'output[outputOffset + index] = selected[selectedOffset + index];'
+        })
+      );
+    }
     return nodes;
   }
 }

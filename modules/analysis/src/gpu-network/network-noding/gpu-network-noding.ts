@@ -6,13 +6,12 @@ import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUScan,
-  GPUSort,
-  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -473,35 +472,16 @@ fn snapKey(value: f32, origin: f32, size: f32, isOverflow: ptr<function, bool>) 
       })
     );
 
-    // Stable two-pass sort by (x cell, y cell): sort by y first, then by x.
-    const sortedKeysY = T('sorted-keys-y', 'uint32', endpointCount);
-    const orderY = T('order-y', 'uint32', endpointCount);
-    const gatheredKeysX = T('gathered-keys-x', 'uint32', endpointCount);
-    const sortedKeysX = T('sorted-keys-x', 'uint32', endpointCount);
-    const order = T('order', 'uint32', endpointCount);
-    nodes.push(
-      ...new GPUSort({
-        id: `${id}-sort-y`,
-        keys: keysY,
-        values: endpointIndices,
-        outputKeys: sortedKeysY,
-        outputValues: orderY
-      }).getCommandNodes(graph),
-      // `orderY` is a permutation of the endpoint indices, so no index is out of range.
-      ...new GPUUint32Gather({
-        id: `${id}-gather-x`,
-        source: keysX,
-        indices: orderY,
-        output: gatheredKeysX
-      }).getCommandNodes(graph),
-      ...new GPUSort({
-        id: `${id}-sort-x`,
-        keys: gatheredKeysX,
-        values: orderY,
-        outputKeys: sortedKeysX,
-        outputValues: order
-      }).getCommandNodes(graph)
-    );
+    // Stable lexicographic order by (x cell, y cell).
+    const sorted = createStableLexicographicIndexSortNodes(graph, {
+      id: `${id}-sort`,
+      operation: OPERATION,
+      indices: endpointIndices,
+      indicesAreIdentity: true,
+      keys: [{view: keysX}, {view: keysY}]
+    });
+    nodes.push(...sorted.nodes);
+    const order = sorted.sortedIndices;
 
     // Group heads, ranks (node IDs) and node positions.
     const headFlags = T('head-flags', 'uint32', endpointCount);

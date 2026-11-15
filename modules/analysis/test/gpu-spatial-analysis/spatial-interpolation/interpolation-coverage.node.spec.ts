@@ -33,6 +33,7 @@ it('interpolation expansion emits bounded parseable GPU kernels under eight stor
     ...(['simple', 'ordinary', 'universal', 'external-drift', 'co-kriging'] as const).map(
       mode =>
         new GPULocalKriging({
+          id: `local-kriging-${mode}`,
           positions,
           observations,
           supports: queries,

@@ -161,9 +161,10 @@ export type MakeValidResult = {
   requiredCount: number;
   overflow: number;
   candidateOverflow: number;
+  sourceIds: number[];
 };
 
-/** Runs `GPUMakeValid` on one polygon feature given as closed rings, and reads the faces back. */
+/** Runs `GPUMakeValid` on rings, optionally grouped into features, and reads the faces back. */
 export async function runMakeValid(
   device: Device,
   rings: readonly (readonly Point[])[],
@@ -174,7 +175,8 @@ export async function runMakeValid(
     vertices: number;
     /** Vertex identity distance of the ring assembly; defaults to 1e-5. */
     vertexTolerance?: number;
-  }
+  },
+  features?: {ringOffsets: readonly number[]; sourceIds?: readonly number[]}
 ): Promise<MakeValidResult> {
   const graph = new GPUCommandGraph(device, {id: 'make-valid-property'});
   const io = new GraphBuffers(device, graph);
@@ -250,11 +252,26 @@ export async function runMakeValid(
         ),
         polygonOffsets: io.input(
           'input-polygon-offsets',
-          Uint32Array.of(0, rings.length),
+          Uint32Array.from(features?.ringOffsets ?? [0, rings.length]),
           'uint32',
-          2
+          features?.ringOffsets.length ?? 2
         ),
-        featureOffsets: io.input('input-feature-offsets', Uint32Array.of(0, 1), 'uint32', 2)
+        featureOffsets: io.input(
+          'input-feature-offsets',
+          Uint32Array.from({length: features?.ringOffsets.length ?? 2}, (_, index) => index),
+          'uint32',
+          features?.ringOffsets.length ?? 2
+        ),
+        ...(features?.sourceIds
+          ? {
+              sourceIds: io.input(
+                'input-source-ids',
+                Uint32Array.from(features.sourceIds),
+                'uint32',
+                features.sourceIds.length
+              )
+            }
+          : {})
       },
       output: {
         nodedSegments: {
@@ -317,6 +334,7 @@ export async function runMakeValid(
   }
   const result: MakeValidResult = {
     polygons,
+    sourceIds: (await readUint32(sourceIds.buffer, capacity.rings)).slice(0, count),
     count,
     requiredCount: (await readUint32(status.requiredCount.buffer, 1))[0],
     overflow: (await readUint32(status.overflow.buffer, 1))[0],

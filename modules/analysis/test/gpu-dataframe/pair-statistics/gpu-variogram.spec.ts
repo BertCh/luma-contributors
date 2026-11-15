@@ -410,6 +410,49 @@ it('GPUVariogram counts coincident pairs in sector 0 whatever the azimuth offset
   }
 });
 
+it('GPUVariogram bins vertical pairs with either sign of zero x difference', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const targetX of [0, -0]) {
+    for (const targetY of [1, -1]) {
+      const harness = createHarness(
+        device,
+        {
+          positions: new Float32Array([0, 0, targetX, targetY]),
+          values: new Float32Array([1, 3]),
+          mask: new Uint32Array([1, 1])
+        },
+        1,
+        4,
+        [1, 1]
+      );
+      try {
+        for (const azimuthOffset of [0.2, -0.2]) {
+          const result = await harness.run(
+            getGPUVariogramParameterValues({
+              bounds: [-2, -2, 2, 2],
+              maximumDistance: 2,
+              azimuthOffset
+            })
+          );
+          // North and south share the same undirected axis pi/2. Offsets of +/-0.2 put
+          // the single pair in sector 1/2 respectively, away from sector boundaries.
+          const sector = azimuthOffset > 0 ? 1 : 2;
+          expect(result.pairCounts).toEqual(sector === 1 ? [0, 1, 0, 0] : [0, 0, 1, 0]);
+          expect(result.semivariances[sector]).toBeCloseTo((3 - 1) ** 2 / 2, 5);
+          expect(result.meanDistances[sector]).toBeCloseTo(1, 6);
+          for (let emptySector = 0; emptySector < 4; emptySector++) {
+            if (emptySector !== sector) expect(result.semivariances[emptySector]).toBeNaN();
+          }
+          expect(result.overflow).toEqual([0]);
+        }
+      } finally {
+        harness.destroy();
+      }
+    }
+  }
+});
+
 it('GPUVariogram bins are bitwise independent of the cell lattice, including direction sectors', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

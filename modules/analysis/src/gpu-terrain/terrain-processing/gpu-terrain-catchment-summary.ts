@@ -10,6 +10,7 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createRasterCountNodes} from '../../raster-analysis/remote-sensing/raster-kernel-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   validateRasterGrid,
@@ -31,9 +32,10 @@ import {
 import {createSortedSegmentOffsetsNode} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
-  FIXED_POINT_WGSL,
-  getFixedPointHeadroomBits
-} from '../../analysis-core/kernels/fixed-point-accumulator';
+  createTerrainCatchmentReductionNodes,
+  validateTerrainCatchmentReductionSizes,
+  validateTerrainCatchmentReductionBindings
+} from './terrain-catchment-reductions';
 import {
   getTerrainFlowTracingWGSL,
   validateTerrainFlowDirectionEncoding,
@@ -46,8 +48,15 @@ import {
   getTerrainGroundMeasureWGSL,
   terrainBinding,
   validateTerrainValidityView,
-  TERRAIN_FINITE_WGSL
+  TERRAIN_FINITE_WGSL,
+  validateTerrainStatusPorts
 } from './terrain-processing-utils';
+
+import {
+  createTerrainResolutionStatusNodes,
+  getTerrainResolutionStatusViews,
+  type TerrainResolutionStatusPort
+} from './terrain-resolution-status';
 
 export type GPUTerrainCatchmentSummaryProps = {
   id?: string;
@@ -97,12 +106,32 @@ export type GPUTerrainCatchmentSummaryProps = {
     profiles: GraphDataView<'float32'>;
     /** Per cell: 0 excluded/invalid, 1 complete profile, 2 cycle or exhausted walk. */
     profileStatus: GraphDataView<'uint32'>;
+    /**
+     * Optional aggregate profile diagnostics. `invalidCount` counts state 0 (excluded/invalid);
+     * `converged` is 1 if no profile remains in state 2. `iterationLimitReached` is 1 when a
+     * profile exhausts maximumSteps or the pointer-jump round budget (including cycles), not
+     * merely because a dependency is invalid. Empty/excluded domains converge.
+     */
+    status?: TerrainResolutionStatusPort;
   };
 };
 
+/** Flattens named scalar ports alongside the per-cell outputs. */
+function getOutputViews(output: GPUTerrainCatchmentSummaryProps['output']): GraphDataView[] {
+  return [
+    output.statistics,
+    output.hypsometry,
+    output.profiles,
+    output.profileStatus,
+    ...getTerrainResolutionStatusViews(output.status)
+  ];
+}
+
 /**
  * Composes sorted basin reductions and pointer-jumped stream profiles. Each edge belongs to its
- * source cell's basin.
+ * source cell's basin. Statistics and hypsometry reduce sorted runs in tiles of at most 256
+ * cells per invocation, then join partials with exact fixed-point atomic additions. No invocation
+ * walks a whole basin; a dominant basin spreads over as many tiles as it needs.
  *
  * The per-basin sums (elevation for the mean, ground area and hypsometry areas under
  * `cellSizeMode`, stream length) are fixed-point sums (`fixed-point-accumulator.ts`): every term
@@ -121,6 +150,7 @@ export class GPUTerrainCatchmentSummary implements GPUCommandNodeProducer {
     validateCapacity(this.id, 'basinCount', props.basinCount);
     validateCapacity(this.id, 'histogramBins', props.histogramBins);
     validateCapacity(this.id, 'maximumSteps', props.maximumSteps ?? count);
+    validateTerrainCatchmentReductionSizes(this.id, count, props.basinCount, props.histogramBins);
     validateRequirement(
       this.id,
       Math.abs(
@@ -142,6 +172,7 @@ export class GPUTerrainCatchmentSummary implements GPUCommandNodeProducer {
     );
     validateViewLength(this.id, 'output.profiles', props.output.profiles, count * 3);
     validateViewLength(this.id, 'output.profileStatus', props.output.profileStatus, count);
+    validateTerrainStatusPorts(this.id, {...props.output.status});
     checkTerrainViews(
       this.id,
       [
@@ -151,7 +182,7 @@ export class GPUTerrainCatchmentSummary implements GPUCommandNodeProducer {
         props.flowDirections,
         ...(props.validity ? [props.validity] : [])
       ],
-      Object.values(props.output)
+      getOutputViews(props.output)
     );
   }
   getCommandNodes<Parameters>(
@@ -165,8 +196,15 @@ export class GPUTerrainCatchmentSummary implements GPUCommandNodeProducer {
       props.basinIds,
       props.streams,
       props.flowDirections,
-      ...Object.values(props.output)
+      ...getOutputViews(props.output)
     ]);
+    validateTerrainCatchmentReductionBindings(
+      graph,
+      id,
+      count,
+      props.basinCount,
+      props.histogramBins
+    );
     const masked = createTerrainValidityMask(graph, {
       id,
       operation: 'GPUTerrainCatchmentSummary',
@@ -193,8 +231,6 @@ fn getStreamEdgeLength(cell: u32) -> f32 {
  if (isStreamWord(streams[streamsOffset + cell]) && receiver != NO_CELL && isStreamWord(streams[streamsOffset + receiver]) && isFiniteValue(elevation[elevationOffset + receiver])) { return edgeLength(cell, receiver); }
  return 0.0;
 }`;
-    // At most one term per cell enters any sum of a basin.
-    const headroomBits = getFixedPointHeadroomBits(count);
     const inputs = [
       terrainBinding('elevation', elevation),
       terrainBinding('basins', props.basinIds),
@@ -209,6 +245,10 @@ fn getStreamEdgeLength(cell: u32) -> f32 {
     const states = [0, 1].map(side =>
       createTransientView(graph, `${id}-profiles-${side}`, 'uint32', count * 4)
     );
+    const profileLimitFlags = props.output.status?.iterationLimitReached
+      ? createTransientView(graph, `${id}-profile-limit-flags`, 'uint32', count)
+      : undefined;
+    const profileLimitCount = createTransientView(graph, `${id}-profile-limit-count`, 'uint32', 1);
     const nodes: GPUCommandNode<Parameters>[] = [
       ...masked.nodes,
       createWGSLKernelNode(graph, {
@@ -240,61 +280,19 @@ fn getStreamEdgeLength(cell: u32) -> f32 {
         sortedKeys,
         segmentOffsets: ranges
       }),
-      createWGSLKernelNode(graph, {
-        id: `${id}-statistics`,
-        operation: 'GPUTerrainCatchmentSummary',
-        invocationCount: props.basinCount,
-        declarations: `${declarations}\n${FIXED_POINT_WGSL}`,
-        bindings: [
-          ...inputs,
-          terrainBinding('order', order),
-          terrainBinding('ranges', ranges),
-          terrainBinding('statistics', props.output.statistics, 'read_write'),
-          terrainBinding('hypsometry', props.output.hypsometry, 'read_write')
-        ],
-        // Two walks over the basin's cells: the first finds the count, the extrema and the largest
-        // exponent of each kind of term, which sets the fixed-point unit; the second adds the terms
-        // as integers in that unit. No float32 partial sum exists, so nothing rounds per cell.
-        body: `var sampleCount = 0u; var lower = infinity(); var upper = -lower;
-var elevationExponent = 0u; var areaExponent = 0u; var lengthExponent = 0u;
-for (var entry = ranges[rangesOffset + index]; entry < ranges[rangesOffset + index + 1u]; entry++) {
- let cell = order[orderOffset + entry];
- let value = elevation[elevationOffset + cell];
- if (basins[basinsOffset + cell] != index || !isFiniteValue(value)) { continue; }
- sampleCount++; lower = min(lower, value); upper = max(upper, value);
- elevationExponent = max(elevationExponent, getFixedPointExponentBits(value));
- ${isUniform ? '' : 'areaExponent = max(areaExponent, getFixedPointExponentBits(getGroundCellArea(cell)));'}
- lengthExponent = max(lengthExponent, getFixedPointExponentBits(getStreamEdgeLength(cell)));
-}
-let elevationUnit = getFixedPointUnitExponent(elevationExponent, ${headroomBits}u);
-let areaUnit = getFixedPointUnitExponent(areaExponent, ${headroomBits}u);
-let lengthUnit = getFixedPointUnitExponent(lengthExponent, ${headroomBits}u);
-var elevationSum = vec3<u32>(0u); var areaSum = vec3<u32>(0u); var lengthSum = vec3<u32>(0u);
-for (var entry = ranges[rangesOffset + index]; entry < ranges[rangesOffset + index + 1u]; entry++) {
- let cell = order[orderOffset + entry];
- let value = elevation[elevationOffset + cell];
- if (basins[basinsOffset + cell] != index || !isFiniteValue(value)) { continue; }
- elevationSum = addFixedPoint(elevationSum, quantizeFixedPoint(value, elevationUnit));
- ${isUniform ? '' : 'areaSum = addFixedPoint(areaSum, quantizeFixedPoint(getGroundCellArea(cell), areaUnit));'}
- lengthSum = addFixedPoint(lengthSum, quantizeFixedPoint(getStreamEdgeLength(cell), lengthUnit));
-}
-let sum = getFixedPointFloat(elevationSum, elevationUnit);
-let streamLength = getFixedPointFloat(lengthSum, lengthUnit);
-let area = ${isUniform ? `f32(sampleCount) * ${area}` : 'getFixedPointFloat(areaSum, areaUnit)'};
-let offset = statisticsOffset + index * 6u;
-statistics[offset] = area; statistics[offset + 1u] = select(getNaN(), sum / f32(max(sampleCount, 1u)), sampleCount > 0u);
-statistics[offset + 2u] = select(getNaN(), lower, sampleCount > 0u); statistics[offset + 3u] = select(getNaN(), upper, sampleCount > 0u);
-statistics[offset + 4u] = streamLength; statistics[offset + 5u] = select(getNaN(), streamLength / max(area, 1e-30), area > 0.0);
-for (var bin = 0u; bin < ${props.histogramBins}u; bin++) {
- let threshold = lower + (upper - lower) * f32(bin + 1u) / ${getWGSLFloatLiteral(props.histogramBins)};
- var belowCount = 0u; var belowArea = vec3<u32>(0u);
- for (var entry = ranges[rangesOffset + index]; entry < ranges[rangesOffset + index + 1u]; entry++) {
-  let cell = order[orderOffset + entry];
-  let value = elevation[elevationOffset + cell];
-  if (basins[basinsOffset + cell] == index && isFiniteValue(value) && (value <= threshold || bin + 1u == ${props.histogramBins}u)) { belowCount++; ${isUniform ? '' : 'belowArea = addFixedPoint(belowArea, quantizeFixedPoint(getGroundCellArea(cell), areaUnit));'} }
- }
- hypsometry[hypsometryOffset + index * ${props.histogramBins}u + bin] = ${isUniform ? `f32(belowCount) * ${area}` : 'getFixedPointFloat(belowArea, areaUnit)'};
-}`
+      ...createTerrainCatchmentReductionNodes(graph, {
+        id,
+        cellCount: count,
+        basinCount: props.basinCount,
+        histogramBins: props.histogramBins,
+        isUniform,
+        area,
+        declarations,
+        inputs,
+        order,
+        ranges,
+        statistics: props.output.statistics,
+        hypsometry: props.output.hypsometry
       }),
       createWGSLKernelNode(graph, {
         id: `${id}-profile-seeds`,
@@ -350,7 +348,10 @@ if (parent != 0xffffffffu) {
           ...inputs,
           terrainBinding('state', states[rounds % 2]),
           terrainBinding('profiles', props.output.profiles, 'read_write'),
-          terrainBinding('status', props.output.profileStatus, 'read_write')
+          terrainBinding('status', props.output.profileStatus, 'read_write'),
+          ...(profileLimitFlags
+            ? [terrainBinding('limitFlags', profileLimitFlags, 'read_write')]
+            : [])
         ],
         body: `let center = elevation[elevationOffset + index]; let offset = stateOffset + index * 4u;
 let distance = bitcast<f32>(state[offset + 1u]); var gradient = 0.0;
@@ -359,9 +360,37 @@ if (!isFiniteValue(center) || basins[basinsOffset + index] >= ${props.basinCount
 let receiver = getCellReceiver(index);
 if (receiver != NO_CELL && isStreamWord(streams[streamsOffset + receiver])) { gradient = (center - elevation[elevationOffset + receiver]) / edgeLength(index, receiver); }
 status[statusOffset + index] = result;
+${
+  profileLimitFlags
+    ? `let eligible = isFiniteValue(center) && basins[basinsOffset + index] < ${props.basinCount}u && isStreamWord(streams[streamsOffset + index]);
+let exhausted = state[offset] != NO_CELL || (state[offset + 3u] == 1u && state[offset + 2u] >= ${props.maximumSteps ?? count}u);
+limitFlags[limitFlagsOffset + index] = u32(result == 2u && eligible && exhausted);`
+    : ''
+}
 profiles[profilesOffset + index * 3u] = select(getNaN(), distance, result == 1u);
 profiles[profilesOffset + index * 3u + 1u] = center;
 profiles[profilesOffset + index * 3u + 2u] = select(getNaN(), gradient, result == 1u);`
+      })
+    );
+    if (profileLimitFlags) {
+      nodes.push(
+        ...createRasterCountNodes(graph, {
+          id: `${id}-profile-limit-count`,
+          operation: 'GPUTerrainCatchmentSummary',
+          values: profileLimitFlags,
+          count,
+          condition: 'value != 0u',
+          output: profileLimitCount
+        })
+      );
+    }
+    nodes.push(
+      ...createTerrainResolutionStatusNodes(graph, {
+        id,
+        operation: 'GPUTerrainCatchmentSummary',
+        states: props.output.profileStatus,
+        status: props.output.status,
+        iterationLimit: {source: profileLimitCount, expression: 'u32(source[sourceOffset] != 0u)'}
       })
     );
     return nodes;

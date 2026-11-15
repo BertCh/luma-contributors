@@ -731,7 +731,7 @@ fractions.write(Float32Array.of(0.1, 0.5, 0.9)); // no recompile
 - Output groups are ascending by key, capacity is `output.keys.length`, at most `getGPUGroupStatisticsMaximumGroupCount(device)` (2^23 on a default device; the 16-byte moment sums per group fit one 128 MiB binding) and, with `percentiles`, `capacity * P` at most `getGPUGroupStatisticsMaximumPercentileTotal(device)` (2^25 on a default device). When more groups exist, the smallest keys are kept, `status.overflow` is 1 and `status.requiredCount` is the unclamped number. Tail rows hold the all-ones key, count 0, sums 0 and NaN for every other float statistic.
 - `output.counts` counts valid rows (mask set, key valid); each column's `counts` counts finite values. Zero to four columns; each column lists the statistics it needs (a compile-time set) and supplies exactly the matching output views: `counts`, `sums` (signed 64-bit fixed point, `uint32x2`, the sum of `roundHalfEven(value * sumScale)`, default scale 65536: each value is rounded to `1 / sumScale` first) and/or `sumValues` (the sum of the values themselves as float32, from a 96-bit fixed-point accumulator whose unit follows the largest value of the column; it does not depend on `sumScale`) for `sum`, `means`, `minimums`, `maximums`, `variances`, `standardDeviations`, `skewness`, `kurtosis`, `medians`, `percentiles` (`capacity * P`, group-major), `modes`, `uniqueCounts`, and `zScores` (one row per source row).
 - Exactness: counts, the fixed-point `sums` words, minimum, maximum, median, percentiles, mode and unique counts are bit-identical to a CPU reference. `sumValues` is the exact sum rounded once to float32 and `means` is that divided by the count (a few float32 units in the last place), at any magnitude: values 1.0e-4, 1.2e-4, 1.4e-4 have mean 1.2e-4. A value keeps all its bits in the sum while its magnitude is at least `max * 2^(h - 71)`, where `max` is the largest value of the column in a kept group and `h` the bit length of the row count. Percentiles use the numpy `linear` rule (`h = (n - 1) p`, `lo + (hi - lo) * (h - floor h)` in f32) and the order-statistic policy shared with `GPUColumnQuantiles`, with `p` read per frame; a fraction that is NaN or outside [0, 1] gives NaN (it is no longer clamped). Mode is the longest run of equal values (ties: smallest value). `-0` is treated as `+0`; NaN and infinities are excluded.
-- Moments are corrected two-pass: `d = v - mean` is summed in a fixed order (one 256-thread workgroup per group, strided partials and a binary tree), so a second encode is bitwise identical, sized by an indirect dispatch from the GPU-written group total so that unoccupied capacity launches no workgroups; one workgroup reduces a whole group, so a single group of about 2^20 rows or more becomes the bottleneck (the replacement is chunked partials with `load-balanced-for-each`, or a segment tree from `sorted-segment-sums`), and central moments about the true mean come from the shifted power sums. Measured agreement with a float64 reference on mixed data is about 1e-7 for mean and variance, 2e-6 for skewness and kurtosis, 7e-6 for z-scores (relative). Skewness is Fisher-Pearson `g1`, kurtosis is excess `g2`; both are NaN for constant groups, a group whose variance is under 2^-19 of its shifted sum of squares is treated as constant (the shift mean is rounded to float32). Sample variance of one value is NaN; the z-score is `(v - mean) / sd` with the same corrected mean the variance uses, and is 0 when the deviation is 0 or a sample group has one value, NaN for masked, invalid-key, non-finite or capacity-dropped rows.
+- Moments are corrected two-pass: `d = v - mean` is summed in a fixed order (a binary tree over sorted row blocks), so a second encode is bitwise identical. The signed first and third powers are scaled by a power of two chosen from each group's extremes before reduction and restored afterwards, preventing same-sign branches from overflowing before opposite signs cancel. Values with binary exponent at most 30 use no scaling. Even powers retain their float32 range limits. Each level merges only the group crossing each block midpoint; the work is O(rows), the depth is O(log rows), and a dominant group spreads across workgroups. The four power sums use separate scalar scratch bindings (16 bytes per input row in total); each binding must fit the device storage limit. The row count is also bounded by the published sort maximum of 2^31. `estimatedCommandNodeCount` includes the merge levels and conservative allowances for published sorts, scans and gathers, checked against the shared command-node budget. Central moments about the true mean come from the shifted power sums. Oracle specs require relative tolerances of 1e-6 for means, 2e-5 for variance, and 1e-4 for skewness, kurtosis and z-scores, with small absolute tolerances near zero. Skewness is Fisher-Pearson `g1`, kurtosis is excess `g2`; both are NaN for constant groups, a group whose variance is under 2^-19 of its shifted sum of squares is treated as constant (the shift mean is rounded to float32). Sample variance of one value is NaN; the z-score is `(v - mean) / sd` with the same corrected mean the variance uses, and is 0 when the deviation is 0 or a sample group has one value, NaN for masked, invalid-key, non-finite or capacity-dropped rows.
 - Dense mode: `keyCount` (compile-time) requires `uint32` keys in `[0, keyCount)`. `output.keys.length` and every per-group output hold exactly `keyCount` rows, and row `k` is key `k` (`output.keys[k] = k`, `output.status.count` and `status.requiredCount` are `keyCount`, `status.overflow` is 0). Keys with no rows keep a row: `counts` 0, `sums` and `uniqueCounts` 0, and NaN for mean, minimum, maximum, variance, standard deviation, skewness, kurtosis, median, percentiles and mode. Keys outside the range and the reserved all-ones key are skipped like masked rows and are not reported as overflow. It costs one binary search per key instead of a group scan, and suits region IDs or other small dense key spaces (the choropleth recipe uses it so empty polygons keep a row). The default compact table of occupied keys is unchanged.
 - Cost: one stable key sort (two 32-bit radix sorts for 64-bit keys); each column that asks for median, percentiles, mode or unique count adds a value sort plus a key re-sort. Inputs must be single packed views. Approximate distinct counts (HyperLogLog) are not included.
 
@@ -1680,6 +1680,12 @@ Which route builds a DGGS (cell, period) cube without readback? Two compose from
 
 This executable four-point projected example captures pair counts, estimator values and validity status. See [the estimator contracts](./gpu-spatial-analysis/statistical-expansion.md) for bin edges, complete-case masks, normalization and traversal bounds.
 
+The default `[256, 256]` index accepts the same row counts as an explicit `gridSize`;
+`rows * lagCount * temporalLagCount` must fit the `2^24` partial-entry budget and the device's
+storage binding limit. The former 16,384-row cap on the default has been removed.
+If a bin's pair count exceeds `0xffffffff`, its count saturates at that value, status is 3,
+and semivariance is NaN. An exact count of `0xffffffff` remains valid.
+
 ## `GPUSpaceTimeVariogram`
 
 {/* lens:GPUSpaceTimeVariogram */}
@@ -1718,6 +1724,17 @@ Settings of `getGPUSpaceTimeVariogramParameterValues`:
 
 This executable four-point projected example captures pair counts, estimator values and validity status. See [the estimator contracts](./gpu-spatial-analysis/statistical-expansion.md) for bin edges, complete-case masks, normalization and traversal bounds.
 
+Candidate search defaults to `searchStructure: 'grid'` with `gridSize: [256, 256]` maximum
+dimensions. It accepts `rows * radiusCount * 3 <= 2^24` float32 partials, subject to the device's
+binding size. The explicit `searchStructure: 'brute-force'` reference is limited to 16,384 rows
+and cannot take `gridSize`. Both use the same estimators and radius edges; indexed sums may differ
+within float32 rounding tolerance. Finite radii whose square overflows use a single-cell fallback
+with the finite-distance predicate. Broad neighborhoods can still require quadratic pair work.
+Counts exceeding `0xffffffff` saturate, with status 3 and all four statistics NaN for that radius.
+An exact count of `0xffffffff` remains valid.
+Category means use a separate scaled sum for large marks, averaging before restoring the scale;
+the unnormalized mark sum need not fit float32. Small marks remain unscaled.
+
 ## `GPUVariogramModelFit`
 
 {/* lens:GPUVariogramModelFit */}
@@ -1727,3 +1744,76 @@ This executable four-point projected example captures pair counts, estimator val
 ::lens{scenario=gpu-dataframe.variogram-model-fit rung=graph caption="The bounded GPU range search produces fitted parameters, residual/AIC diagnostics and convergence status."}
 
 This executable example uploads bins generated from an exponential model with nugget `0.2`, partial sill `1.5` and effective range `2.2`, then fits all three candidates on the GPU with pair weights. Model rows are spherical, exponential and Gaussian. Captured parameter rows contain nugget, partial sill, effective range and weighted residual; diagnostic rows contain usable bins, unweighted residual, residual AIC and final log-range bracket. Status 0 is an interior converged fit, 1 insufficient bins, 2 numerical failure and 3 a boundary/budget result. See [the fitting contract](./gpu-spatial-analysis/interpolation-expansion.md) for identifiability, weighting and performance limitations.
+
+The fitter also supports `matern-3/2` and `matern-5/2`. With `a = factor * h / range`, their normalized semivariogram shapes are `1 - (1 + a) exp(-a)` and `1 - (1 + a + a² / 3) exp(-a)`. The factors are `4.749031386012701` and `5.924462618951797`, respectively, giving correlation `exp(-3)` at the effective range. These definitions also apply to coregionalization below. CPU evaluation uses a positive exponential-remainder series through order 18 for `a < 0.5`; GPU evaluation uses a bounded Taylor series for `a < 0.1`. These evaluations preserve the quadratic leading term at tiny lag/range ratios. CPU exponential and Gaussian shapes use `expm1` for the same cancellation concern. The mathematical model and fitting objective are unchanged by these numerical evaluations.
+
+## `GPUCoregionalizationFit`
+
+{/* lens:GPUCoregionalizationFit */}
+
+::lens{scenario=gpu-dataframe.coregionalization-fit rung=result caption="Fit a PSD two-variable structure matrix with a negative cross coefficient; exclude one zero-pair bin."}
+
+::lens{scenario=gpu-dataframe.coregionalization-fit rung=graph caption="Gated residual fits and PSD projections publish matrices, square loading factors and named convergence status."}
+
+Fits a linear model of coregionalization from complete direct/cross semivariogram matrices on common lag supports. For fixed basic semivariograms `g_s(h) = nugget_s + sill_s * shape_s(h / range_s)`, it minimizes `Σ_h N_h ||Γ_h - Σ_s B_s g_s(h)||_F² / Σ_h N_h` over positive semidefinite matrices `B_s`. Off-diagonal residuals count twice. Each sweep updates structures sequentially by fitting the residual from the other structures and clipping negative eigenvalues to zero, starting from zero matrices ([Goulard–Voltz, 1992](https://doi.org/10.1007/BF00893750)). It fits coefficients for supplied models and ranges; dependent structures can have nonunique coefficients.
+
+`distances: float32` and `pairCounts: uint32` have one row per lag. `semivariances: float32` holds one bin-major upper triangle `(0,0), (0,1), …, (1,1), …` per lag. Assemble direct and cross variograms using the same supports and complete-case sample pairs. Negative cross semivariances are retained. A nonpositive/nonfinite lag, zero pair count or any nonfinite matrix entry excludes the whole bin; missing cross entries are not imputed. No coordinates are read, and lags and ranges must share units.
+
+`getGPUCoregionalizationFitParameterValues(structures, tolerance = 1e-5)` supplies the per-frame buffer `[tolerance, modelCode, nugget, sill, range, …]`. Structures support spherical, exponential, Gaussian and Matérn 3/2 and 5/2, with the effective-range convention above. Use `sill: 1, nugget: 0` for a unit-sill basis, or `sill: 0, nugget: 1` for a pure nugget. Compile-time props are `variableCount` (2–4), `structureCount` (1–4), `maximumIterations` (0–1024, default 128) and view shapes. All view contents, including tolerance and model parameters, can change per frame. This reference-tier GPU fit accepts at most 256 lag matrices and estimates `2 * maximumIterations + 3` command nodes.
+
+Outputs `matrices` and `loadings` are `float32`, each with a result prefix of `structureCount * variableCount²` elements in structure-major, row-major order. `B_s = L_s L_sᵀ`; loading factors are square spectral factors and need not be triangular. Compare matrices or reconstructed factors across implementations because eigenvector signs and repeated-eigenvalue bases are arbitrary. `diagnostics: float32x4` holds `[weighted objective, relative coefficient change, usable bins, total pair weight]`. Relative change is the largest coefficient change divided by the largest absolute old/new coefficient over the sweep, or zero when both are zero. Views must be packed; outputs use distinct buffers disjoint from inputs. Trailing output capacity is left untouched.
+
+Required uint32 scalar status ports are `validity`, `iterationCount`, `converged`, `iterationLimitReached` and `invalidCount` (excluded lag matrices). A budget exit publishes the current PSD fit with validity 1, converged 0 and iterationLimitReached 1; zero budget publishes zero matrices and factors. No usable bins, invalid parameters, a zero-energy structure or nonfinite arithmetic gives validity 0, convergence/limit flags 0 and NaN coefficients, objective and change. Usable-bin and total-weight diagnostics remain available.
+
+Prefer `CPUCoregionalizationFitOperation` for small fits whose bins are already on the CPU. It uses the same ports as `GPUCoregionalizationFitOperation`, computes in float64 and rounds once at output, and drops the GPU bin and sweep caps. Both operations take the same graph properties; the GPU form requires `GPU_CONTRIBUTOR_OPERATION_LOWERING`. Float32 accumulation can change convergence counts and loading bases. The pure `computeCoregionalizationFitOnCPU` accepts typed arrays; `fitLinearModelOfCoregionalization` additionally returns `coregionalizationModels` ready for `GPULocalKriging`:
+
+```typescript
+import {fitLinearModelOfCoregionalization} from '@luma-contributors/analysis/dataframe-analysis';
+
+const fit = fitLinearModelOfCoregionalization(
+  {distances, semivariances, pairCounts},
+  {variableCount: 2, structures: [{model: 'spherical', range: 2, sill: 1}]}
+);
+if (!fit.validity[0]) throw new Error('Coregionalization fit is invalid');
+// Inspect fit.converged[0] and fit.iterationLimitReached[0] before using a budget result.
+const krigingModel = {
+  mode: 'co-kriging',
+  variableCount: 2,
+  covariance: fit.coregionalizationModels[0].covariance,
+  coregionalizationModels: fit.coregionalizationModels
+};
+```
+
+Invalid fits return an empty `coregionalizationModels` list. Local co-kriging requires `covariance` when no parameter buffer is supplied; use the first fitted structure after checking validity. GPU factors use the same layout: read back each square structure slice to supply its `loadings`.
+
+The lens example uses three hand-derived lag matrices from `B = [[2, -1], [-1, 3]]` and a unit-sill spherical structure of range 2. A fourth, unrelated matrix has zero pairs and is excluded. When run, the scenario uses an eight-sweep budget and records GPU matrices, factors, residual diagnostics and every named status port.
+
+{/* parameters: GPUCoregionalizationFit generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+### `GPUCoregionalizationFit` parameters
+
+- Packer: `getGPUCoregionalizationFitParameterValues(structures, tolerance?)`, writes the `float32` parameter view.
+  - `structures` (`readonly CoregionalizationStructure[]`)
+  - `tolerance` (`number`)
+
+{/* /parameters */}
+
+
+## `GPUForestInference`
+
+{/* lens:GPUForestInference */}
+
+::lens{scenario=gpu-dataframe.forest-inference rung=formula}
+
+Apply an imported random forest or boosted model to resident feature rows or co-registered raster
+bands. The synthetic raster-stack lens shows a tied classification leaf, the missing-feature branch,
+and a masked padding row. See [Forest inference](./forest-inference.md) for model import formats,
+parameters, output scores and leaf indices, limits and validation.
+## `GPUWideNumericScan`
+
+Low-level word-phase execution shared by exact Int64/Decimal128 aggregates and Float32 narrowing
+diagnostics. All rows run in parallel; validity chunks must match the packed word chunks. Its
+caller initializes the result and owns the bounded readback. See
+[the public preparation and profiling contracts](reused-analysis-preparation.md) for precision,
+row limits, CPU references and the exact bigint integer-error representation. This execution
+helper has no standalone lens; consumers use the domain aggregate and diagnostic functions.

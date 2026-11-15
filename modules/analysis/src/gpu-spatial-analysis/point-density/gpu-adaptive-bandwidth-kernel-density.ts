@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  GPUGridIndex,
   GPUReduction,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -34,6 +33,7 @@ import {
 } from '../../analysis-core/contracts/index';
 import {getRectangleScanWGSL} from '../spatial-interpolation/grid-neighbor-scan';
 import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
+import {createPointNeighborGridIndexNodes} from '../../analysis-core/kernels/point-neighbor-grid-index';
 import {GRID_COORDINATE_WGSL} from '../spatial-interpolation/gpu-inverse-distance-weighting';
 import {
   getGPUKernelDensityParameterValues,
@@ -318,28 +318,16 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
     );
     const {width, height} = grid;
     const pointCount = props.positions.length;
-    const indexCellCount = indexGridSize[0] * indexGridSize[1];
-    const cellOffsets = createTransientView(
-      graph,
-      `${id}-cell-offsets`,
-      'uint32',
-      indexCellCount + 1
-    );
-    const objectIds = createTransientView(graph, `${id}-object-ids`, 'uint32', pointCount);
-    const indexCount = createTransientView(graph, `${id}-index-count`, 'uint32', 1);
-    const indexOverflow = createTransientView(graph, `${id}-index-overflow`, 'uint32', 1);
-    const nodes: GPUCommandNode<Parameters>[] = [
-      ...new GPUGridIndex({
-        id: `${id}-index`,
-        positions: props.positions,
-        gridSize: indexGridSize,
-        bounds: indexBounds,
-        cellOffsets,
-        objectIds,
-        count: indexCount,
-        overflow: indexOverflow
-      }).getCommandNodes(graph)
-    ];
+    const index = createPointNeighborGridIndexNodes<Parameters>(graph, {
+      id,
+      indexId: `${id}-index`,
+      positions: props.positions,
+      gridSize: indexGridSize,
+      bounds: indexBounds,
+      rowCount: pointCount
+    });
+    const {cellOffsets, sortedRows: objectIds, gridCount: indexCount} = index;
+    const nodes: GPUCommandNode<Parameters>[] = [...index.nodes];
     // The grid index scatters with atomics; the stable sort restores ascending row order in a
     // cell so that float sums do not depend on thread order.
     const cellRowOrder = createGridCellRowOrderNodes(graph, {

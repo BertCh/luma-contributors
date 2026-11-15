@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {clamp} from '@math.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -12,12 +11,23 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  createNetworkOptimizationStatusNodes,
+  getNetworkOptimizationStatusViews,
+  validateNetworkOptimizationStatus
+} from './network-optimization-status';
+import type {
+  GPUInvalidStatusPort,
+  GPUIterationStatusPort
+} from '../../analysis-core/contracts/status';
+import {
   createFacilityScoreReductionNodes,
   FACILITY_SCORE_ORDER_WGSL
 } from '../../gpu-spatial-analysis/location-allocation/facility-score-reduction';
 import {
   validateCapacity,
   validateMaximumCount,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
@@ -35,8 +45,27 @@ const MAXIMUM_DEMAND_COUNT = 64;
  * real limit on demand rows of capacitated p-median (20 rows at 2 facilities, 10 at 4).
  */
 const MAXIMUM_CANDIDATE_COUNT = 1048576;
-/** Words of the `status` view: valid, feasible incumbent, enumeration complete, examined count. */
-const STATUS_WORD_COUNT = 4;
+/** Words of the `summary` view: valid, feasible incumbent, enumeration complete, examined count. */
+const SUMMARY_WORD_COUNT = 4;
+/** Fixed score scratch bounds each candidate dispatch and its hierarchical reduction. */
+const CANDIDATE_BATCH_CAPACITY = 65536;
+
+/** GPU-written exact-search result and named completion diagnostics. */
+export type GPUNetworkFacilityOptimizationOutput = {
+  selectedFacilities: GraphDataView<'uint32'>;
+  assignments: GraphDataView<'uint32'>;
+  objective: GraphDataView<'float32'>;
+  /** [valid, feasibleIncumbent, enumerationComplete, examinedCandidates]. */
+  summary: GraphDataView<'uint32'>;
+  /**
+   * invalidCount is 1 when the problem has invalid inputs or a feasible objective overflows.
+   * iterationCount counts nonempty candidate-scoring batches, at most 16, even when an
+   * overflowing objective invalidates the result. Rejected inputs execute zero scoring batches.
+   * converged certifies complete enumeration, independently of feasibility; iterationLimitReached
+   * reports incomplete enumeration of a valid problem. Invalid problems set neither stopping flag.
+   */
+  status?: GPUInvalidStatusPort & GPUIterationStatusPort;
+};
 
 export type GPUNetworkFacilityOptimizationProps = {
   id?: string;
@@ -51,13 +80,7 @@ export type GPUNetworkFacilityOptimizationProps = {
   /** One nonnegative finite catchment threshold; used only by backup coverage. */
   threshold: GraphDataView<'float32'>;
   maximumCandidates?: number;
-  output: {
-    selectedFacilities: GraphDataView<'uint32'>;
-    assignments: GraphDataView<'uint32'>;
-    objective: GraphDataView<'float32'>;
-    /** [valid, feasibleIncumbent, enumerationComplete, examinedCandidates]. */
-    status: GraphDataView<'uint32'>;
-  };
+  output: GPUNetworkFacilityOptimizationOutput;
 };
 
 /**
@@ -73,11 +96,15 @@ export type GPUNetworkFacilityOptimizationProps = {
  * p-median that means demand rows are limited by the facilities, not by the 64-row ceiling that
  * applies to every operation: 20 rows at 2 facilities, 10 at 4, 5 at 16. For larger problems use
  * `GPULocationAllocation` (greedy with swap improvement).
+ * Compile-time: operation, counts, selectCount, maximumCandidates and optional status views.
+ * Per-frame: costs, demand, capacities and threshold contents. Every encoding rewrites all outputs.
  */
 export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUNetworkFacilityOptimizationProps;
   readonly candidateCount: number;
+  /** Exact number of emitted nodes, including all candidate-reduction levels and status publication. */
+  readonly estimatedCommandNodeCount: number;
   constructor(props: GPUNetworkFacilityOptimizationProps) {
     this.id = props.id ?? 'network-facility-optimization';
     this.props = props;
@@ -118,6 +145,17 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
       0,
       MAXIMUM_CANDIDATE_COUNT
     );
+    const examined = Math.min(this.candidateCount, props.maximumCandidates ?? this.candidateCount);
+    const batchCapacity = Math.max(1, Math.min(examined, CANDIDATE_BATCH_CAPACITY));
+    let reductionNodeCount = 0;
+    for (let remaining = batchCapacity; remaining > 1; remaining = Math.ceil(remaining / 64)) {
+      reductionNodeCount++;
+    }
+    this.estimatedCommandNodeCount =
+      2 +
+      Math.ceil(Math.max(examined, 1) / batchCapacity) * (2 + reductionNodeCount) +
+      Number(Object.values(props.output.status ?? {}).some(Boolean));
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     for (const view of [
       props.costs,
       props.demand,
@@ -129,9 +167,9 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
     for (const view of [
       props.output.selectedFacilities,
       props.output.assignments,
-      props.output.status
+      props.output.summary
     ])
-      validateSinglePackedView(view, ['uint32'], this.id);
+      if (view) validateSinglePackedView(view, ['uint32'], this.id);
     validateRequirement(
       id,
       props.costs.length ===
@@ -162,10 +200,17 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
     );
     validateRequirement(
       id,
-      props.output.status.length === STATUS_WORD_COUNT,
-      `output.status must hold ${STATUS_WORD_COUNT} rows`
+      props.output.summary.length === SUMMARY_WORD_COUNT,
+      `output.summary must hold ${SUMMARY_WORD_COUNT} rows`
     );
-    validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
+    const outputViews = [
+      props.output.selectedFacilities,
+      props.output.assignments,
+      props.output.objective,
+      props.output.summary
+    ];
+    validateNetworkOptimizationStatus(id, outputViews, props.output.status);
+    validateGraphOutputsDisjointFromInputs(this.id, getFacilityOutputViews(props.output), [
       props.costs,
       props.demand,
       props.capacities,
@@ -179,16 +224,39 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
     const examined = Math.min(candidateCount, props.maximumCandidates ?? candidateCount);
     const capacitated = props.operation === 'capacitated-p-median';
     const dispersion = props.operation === 'p-dispersion';
+    const batchCapacity = Math.max(1, Math.min(examined, CANDIDATE_BATCH_CAPACITY));
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'candidate scores',
+      batchCapacity * 16,
+      'reduce maximumCandidates'
+    );
+    for (const view of [
+      props.costs,
+      props.demand,
+      props.capacities,
+      props.threshold,
+      ...getFacilityOutputViews(props.output)
+    ]) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'input/output view',
+        view.length * 4,
+        'reduce facilityCount or demand rows'
+      );
+    }
     validateGraphViewsBelongToGraph(id, graph, [
       props.costs,
       props.demand,
       props.capacities,
       props.threshold,
-      ...Object.values(props.output)
+      ...getFacilityOutputViews(props.output)
     ]);
-    // Six words: batch start, winning primary/secondary/rank, arithmetic failure, valid input.
-    const state = createTransientView(graph, `${id}-${props.operation}-state`, 'uint32', 6);
-    const batchCapacity = clamp(examined, 1, 65536);
+    // Seven words: batch start, winning primary/secondary/rank, arithmetic failure, valid input,
+    // and nonempty batches actually scored. The last counter survives result invalidation.
+    const state = createTransientView(graph, `${id}-${props.operation}-state`, 'uint32', 7);
     const scores = createTransientView(
       graph,
       `${id}-${props.operation}-scores`,
@@ -198,9 +266,19 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
     const declarations = `const FACILITY_COUNT: u32 = ${props.facilityCount}u;
 const DEMAND_COUNT: u32 = ${props.demand.length}u;
 ${IS_FINITE_VALUE_WGSL}`;
+    // Zero-row views may have zero-byte logical buffers. WebGPU storage bindings require at
+    // least one element, even when a zero-trip demand loop never dereferences the array. Keep
+    // the public views empty and bind graph-owned placeholders for these unused arrays only.
+    const demand = props.demand.length
+      ? props.demand
+      : createTransientView(graph, `${id}-empty-demand-input`, 'float32', 1);
+    const costs = props.costs.length ? props.costs : demand;
+    const assignments = props.output.assignments.length
+      ? props.output.assignments
+      : createTransientView(graph, `${id}-empty-assignments`, 'uint32', 1);
     const inputBindings = [
-      {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
-      {name: 'demand', view: props.demand, type: 'f32', access: 'read'},
+      {name: 'costs', view: costs, type: 'f32', access: 'read'},
+      {name: 'demand', view: demand, type: 'f32', access: 'read'},
       {name: 'capacities', view: props.capacities, type: 'f32', access: 'read'},
       {name: 'threshold', view: props.threshold, type: 'f32', access: 'read'}
     ] as const;
@@ -222,6 +300,7 @@ ${IS_FINITE_VALUE_WGSL}`;
   state[stateOffset + 3u] = 0xffffffffu;
   state[stateOffset + 4u] = 0u;
   state[stateOffset + 5u] = 0u;
+  state[stateOffset + 6u] = 0u;
   for (var row = 0u; row < DEMAND_COUNT; row++) {
     if (!isFiniteValue(demand[demandOffset + row]) || demand[demandOffset + row] < 0.0) { return; }
   }
@@ -318,6 +397,9 @@ ${IS_FINITE_VALUE_WGSL}`;
   let best = mergeFacilityScores(current, next);
   state[stateOffset + 1u] = best.x; state[stateOffset + 2u] = best.y;
   state[stateOffset + 3u] = best.z; state[stateOffset + 4u] = best.w;
+  if (state[stateOffset + 5u] != 0u && state[stateOffset] < ${examined}u) {
+    state[stateOffset + 6u]++;
+  }
   state[stateOffset] += ${batchCapacity}u;`
         })
       );
@@ -330,7 +412,7 @@ ${IS_FINITE_VALUE_WGSL}`;
         invocationCount: 1,
         workgroupSize: 2,
         bindings: [
-          {name: 'demand', view: props.demand, type: 'f32', access: 'read'},
+          {name: 'demand', view: demand, type: 'f32', access: 'read'},
           {name: 'state', view: state, type: 'u32', access: 'read'},
           {
             name: 'selected',
@@ -338,21 +420,21 @@ ${IS_FINITE_VALUE_WGSL}`;
             type: 'u32',
             access: 'read_write'
           },
-          {name: 'assignments', view: props.output.assignments, type: 'u32', access: 'read_write'},
+          {name: 'assignments', view: assignments, type: 'u32', access: 'read_write'},
           {name: 'objective', view: props.output.objective, type: 'f32', access: 'read_write'},
-          {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
+          {name: 'summary', view: props.output.summary, type: 'u32', access: 'read_write'}
         ],
         declarations,
-        body: `for (var word = 0u; word < 4u; word++) { status[statusOffset + word] = 0u; }
+        body: `for (var word = 0u; word < 4u; word++) { summary[summaryOffset + word] = 0u; }
   var invalidBits = 0x7fc00000u; objective[objectiveOffset] = bitcast<f32>(invalidBits);
   for (var facility = 0u; facility < FACILITY_COUNT; facility++) { selected[selectedOffset + facility] = 0u; }
   for (var row = 0u; row < DEMAND_COUNT; row++) { assignments[assignmentsOffset + row] = 0xffffffffu; }
   if (state[stateOffset + 5u] == 0u || state[stateOffset + 4u] != 0u) { return; }
   let bestCandidate = state[stateOffset + 3u];
   let haveBest = bestCandidate != 0xffffffffu;
-  status[statusOffset] = 1u; status[statusOffset + 1u] = u32(haveBest);
-  status[statusOffset + 2u] = ${examined === candidateCount ? '1u' : '0u'};
-  status[statusOffset + 3u] = ${examined}u;
+  summary[summaryOffset] = 1u; summary[summaryOffset + 1u] = u32(haveBest);
+  summary[summaryOffset + 2u] = ${examined === candidateCount ? '1u' : '0u'};
+  summary[summaryOffset + 3u] = ${examined}u;
   if (!haveBest) { return; }
   var bestMask = bestCandidate;
   ${
@@ -374,6 +456,35 @@ ${IS_FINITE_VALUE_WGSL}`;
   objective[objectiveOffset] = bitcast<f32>(${capacitated ? '' : '~'}state[stateOffset + 2u]);`
       })
     );
+    nodes.push(
+      ...createNetworkOptimizationStatusNodes(
+        graph,
+        id,
+        'GPUNetworkFacilityOptimization',
+        props.output.summary,
+        props.output.status,
+        {
+          invalidCount: '1u - summary[summaryOffset]',
+          iterationCount: 'state[stateOffset + 6u]',
+          converged: 'summary[summaryOffset] * summary[summaryOffset + 2u]',
+          iterationLimitReached: 'summary[summaryOffset] * (1u - summary[summaryOffset + 2u])'
+        },
+        props.output.status?.iterationCount
+          ? [{name: 'state', view: state, type: 'u32', access: 'read'}]
+          : []
+      )
+    );
     return nodes;
   }
+}
+
+/** Flatten optional named ports for graph ownership and alias checks. */
+function getFacilityOutputViews(output: GPUNetworkFacilityOptimizationOutput): GraphDataView[] {
+  return [
+    output.selectedFacilities,
+    output.assignments,
+    output.objective,
+    output.summary,
+    ...getNetworkOptimizationStatusViews(output.status)
+  ];
 }

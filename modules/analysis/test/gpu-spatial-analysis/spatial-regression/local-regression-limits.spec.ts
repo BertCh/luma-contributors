@@ -190,7 +190,7 @@ it('generalized GWR with great-circle distances matches a float64 haversine refe
 
 type MultiscaleOptions = {
   bandwidths: number[];
-  indexGridSize?: readonly [number, number];
+  indexGridSize?: readonly [number, number] | false;
   spatialContext?: GPUSpatialContext;
   candidates?: {values: number[]; count: number};
   maximumIterations?: number;
@@ -270,6 +270,7 @@ export async function runMultiscale(scene: LocalGlmScene, options: MultiscaleOpt
   const result = {
     coefficients: Array.from(await readFloat32(coefficients.buffer, scene.rowCount * columns)),
     codes: Array.from(await readUint32(codes.buffer, scene.rowCount)),
+    fitted: Array.from(await readFloat32(fitted.buffer, scene.rowCount)),
     selected: Array.from(await readFloat32(selected.buffer, columns)),
     iterationCount: (await readUint32(iterations.buffer, 1))[0]
   };
@@ -340,26 +341,29 @@ it('multiscale GWR with great-circle distances matches a float64 haversine backf
   );
 });
 
-it('multiscale GWR with a grid index matches the float64 backfit, with and without candidate selection', async () => {
+it('multiscale GWR automatically indexes clustered coordinates like the forced dense path', async () => {
   const scene = createGaussianScene(1500, 3, 53);
+  // Two distant clusters exercise empty grid cells and short support ranges.
+  for (let row = 0; row < scene.rowCount; row++) {
+    if (row % 2) {
+      scene.positions[2 * row] += 400;
+      scene.positions[2 * row + 1] += 200;
+    }
+  }
   const bandwidths = [30, 20, 25, 18];
-  await expectMultiscaleMatchesReference(
-    scene,
-    {bandwidths, indexGridSize: [24, 24]},
-    planar(scene),
-    5e-3
-  );
-  // Selection over a finite candidate grid picks the same bandwidths with and without the index.
-  const candidates = {
-    count: 3,
-    values: [20, 30, 45, 15, 20, 30, 18, 25, 35, 14, 18, 28]
-  };
-  const dense = await runMultiscale(scene, {bandwidths, candidates});
-  const grid = await runMultiscale(scene, {bandwidths, candidates, indexGridSize: [24, 24]});
-  expect(grid.selected).toEqual(dense.selected);
-  grid.coefficients.forEach((value, index) =>
-    expect(Math.abs(value - dense.coefficients[index])).toBeLessThan(2e-3)
-  );
+  const candidates = {count: 3, values: [20, 30, 45, 15, 20, 30, 18, 25, 35, 14, 18, 28]};
+  for (const selection of [undefined, candidates]) {
+    const options = {bandwidths, candidates: selection};
+    const dense = await runMultiscale(scene, {...options, indexGridSize: false});
+    const automatic = await runMultiscale(scene, options);
+    expect(automatic.codes.every(code => code === 0)).toBe(true);
+    expect(automatic.codes).toEqual(dense.codes);
+    expect(automatic.selected).toEqual(dense.selected);
+    expectCloseTo(automatic.coefficients, dense.coefficients, 3e-3);
+    const residuals = automatic.fitted.map((value, row) => scene.response[row] - value);
+    const denseResiduals = dense.fitted.map((value, row) => scene.response[row] - value);
+    expectCloseTo(residuals, denseResiduals, 3e-3);
+  }
 });
 
 it('multiscale GWR with a grid index fits 17000 rows (above the old limit of 16384)', async () => {

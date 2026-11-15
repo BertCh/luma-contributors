@@ -1075,3 +1075,12 @@ These scripts either write outside `fixtures/` (for example straight to the cons
 Install the pinned libraries from `requirements.txt` (and the non-pip tools listed at its end), then run the generator from the repository root. Generators that assert exact versions (`raster-round-two.py`, `nested-validation-oracle.py`) need the older environment described in `requirements.txt`.
 
 To regenerate one family and diff it against the committed fixtures without writing, run `yarn oracle-fixture <generator>` (add `--python <venv>/bin/python` for an environment with the pins; `--write` accepts the result; `--list` shows generators). It exits 2 when Python, a Python package or R is missing.
+
+### `multivariate-quantile-lisa-numpy.py`
+
+Run `/usr/bin/python3 modules/analysis/test/oracles/multivariate-quantile-lisa-numpy.py` to write
+`multivariate-quantile-lisa-numpy.json`. NumPy `hazen` quantiles independently select each
+variable's half-open class; the oracle intersects indicators and valid-row masks, computes
+joint local join counts and exhaustively enumerates the conditional without-replacement null
+distribution. Empty joint membership stays empty. Fixtures include two/three variables, ties,
+missing values in different columns, masking, islands and all-ties directed-tail degeneracy.

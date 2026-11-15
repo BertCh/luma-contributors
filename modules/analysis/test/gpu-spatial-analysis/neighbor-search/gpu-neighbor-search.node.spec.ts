@@ -257,16 +257,23 @@ it('GPUNeighborSearch great-circle node IDs match the planar ones and compile fo
   })
     .getCommandNodes(graph)
     .map(node => node.id.replace(/^a/, ''));
-  const geoIds = new GPUNeighborSearch({...createProps(graph, {spatialContext: geo}), id: 'b'})
-    .getCommandNodes(graph)
-    .map(node => node.id.replace(/^b/, ''));
+  const geodesicNodes = new GPUNeighborSearch({
+    ...createProps(graph, {spatialContext: geo}),
+    id: 'b'
+  }).getCommandNodes(graph);
+  const geoIds = geodesicNodes.map(node => node.id.replace(/^b/, ''));
   expect(geoIds).toEqual(planarIds);
-  expect(() =>
-    new GPUNeighborSearch({
-      ...createProps(graph, {mode: 'radius', spatialContext: geo}),
-      id: 'c'
-    }).getCommandNodes(graph)
-  ).not.toThrow();
+  const radiusNodes = new GPUNeighborSearch({
+    ...createProps(graph, {mode: 'radius', spatialContext: geo}),
+    id: 'c'
+  }).getCommandNodes(graph);
+  for (const nodes of [geodesicNodes, radiusNodes]) {
+    const sources = getParsedKernelSources(nodes);
+    expect(sources.size).toBeGreaterThan(0);
+    for (const source of sources.values()) {
+      expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
+    }
+  }
 });
 
 it('GPUNeighborSearch outputWeights carries rowCount, provenance, symmetry and status', () => {

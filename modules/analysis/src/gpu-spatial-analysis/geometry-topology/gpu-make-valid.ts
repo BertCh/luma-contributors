@@ -21,12 +21,15 @@ import type {
 } from '../../analysis-core/contracts/index';
 import {
   validateCapacity,
+  validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
+import {getMakeValidSegmentIndexNodes} from './make-valid-segment-index';
+import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
 import {validateLineNodingBounds} from './gpu-line-noding';
 import {GPUPolygonize, type GPUPolygonizeProps} from './gpu-polygonize';
 import {
@@ -96,9 +99,11 @@ export type GPUMakeValidProps = {
  * The point is symbolic (infinitesimally left of the edge's midpoint, the shared probe of
  * `utils/exact-geometry-wgsl.ts`), so it is strictly inside the face by construction and no
  * rounded sample coordinate is needed.
- * Every sign comes from `orientSign`; a centroid is not used because it can fall outside a
- * concave face or inside one of its holes. The probe is brute force: each face scans every noded
- * segment (`faces * nodedSegments` tests), one thread per face.
+ * Every sign comes from the shared exact helpers; a centroid is not used because it can fall
+ * outside a concave face or inside one of its holes. Segments are stably sorted by height, then
+ * by exact uint32 source group. Each face binary-searches its group's leaf range before traversing
+ * the height BVH, so unrelated groups are pruned independently of their IDs' numeric spacing.
+ * Inclusive height bounds retain edges touching the symbolic ray.
  *
  * Status: `count` is the number of kept polygons, `requiredCount` the unclamped ring-assembly
  * requirement (the ring capacity needed, an upper bound on the polygons written), `overflow` flags
@@ -159,6 +164,22 @@ export class GPUMakeValid implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {polygons} = props;
+    const parityLeafCapacity =
+      2 ** Math.ceil(Math.log2(props.output.nodedSegments.endpoints.length));
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'parity segment records',
+      props.output.nodedSegments.endpoints.length * 5 * Uint32Array.BYTES_PER_ELEMENT,
+      'reduce output.nodedSegments.endpoints.length'
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'parity BVH nodes',
+      (2 * parityLeafCapacity - 1) * 2 * Float32Array.BYTES_PER_ELEMENT,
+      'reduce output.nodedSegments.endpoints.length'
+    );
     const ringCount = polygons.ringOffsets.length - 1;
     const ringSourceIds = createTransientView(graph, `${id}-ring-source-ids`, 'uint32', ringCount);
     const sourceBinding = polygons.sourceIds
@@ -409,7 +430,9 @@ const VERTEX_COUNT: u32 = ${vertexCount}u;`,
       });
     const last = ringCapacity - 1;
 
-    const nodedGroups = u32('noded-groups', segmentCapacity);
+    // Pack endpoints and source group together so traversal stays within eight storage bindings.
+    const nodedRecords = u32('noded-records', segmentCapacity * 5);
+    const faceProbes = createTransientView(graph, `${id}-face-probes`, 'float32x4', ringCapacity);
     const keep = u32('keep', ringCapacity);
     const ringCounts = u32('ring-counts', ringCapacity);
     const vertexCounts = u32('vertex-counts', ringCapacity);
@@ -421,59 +444,135 @@ const VERTEX_COUNT: u32 = ${vertexCount}u;`,
 
     nodes.push(
       kernel(
-        'noded-groups',
+        'parity-segments',
         [
           read('count', output.nodedSegments.status.count),
+          read('endpoints', output.nodedSegments.endpoints, 'f32'),
           read('nodedRings', output.nodedSegments.sourceRingIds),
           read('ringSourceIds', ringSourceIds),
-          write('nodedGroups', nodedGroups)
+          write('records', nodedRecords)
         ],
         segmentCapacity,
         `var group = ${none};
-  if (index < count[countOffset]) { group = ringSourceIds[ringSourceIdsOffset + nodedRings[nodedRingsOffset + index]]; }
-  nodedGroups[nodedGroupsOffset + index] = group;`
+  var first = vec2f(0.0);
+  var second = vec2f(0.0);
+  if (index < count[countOffset]) {
+    group = ringSourceIds[ringSourceIdsOffset + nodedRings[nodedRingsOffset + index]];
+    first = vec2f(endpoints[endpointsOffset + 4u * index], endpoints[endpointsOffset + 4u * index + 1u]);
+    second = vec2f(endpoints[endpointsOffset + 4u * index + 2u], endpoints[endpointsOffset + 4u * index + 3u]);
+  }
+  records[recordsOffset + 5u * index] = bitcast<u32>(first.x);
+  records[recordsOffset + 5u * index + 1u] = bitcast<u32>(first.y);
+  records[recordsOffset + 5u * index + 2u] = bitcast<u32>(second.x);
+  records[recordsOffset + 5u * index + 3u] = bitcast<u32>(second.y);
+  records[recordsOffset + 5u * index + 4u] = group;
+`
       ),
       kernel(
-        'face-parity',
+        'face-probes',
         [
-          read('nodedEndpoints', output.nodedSegments.endpoints, 'f32'),
-          read('nodedGroups', nodedGroups),
           read('facePositions', faces.positions, 'f32'),
           read('faceRingOffsets', faces.ringOffsets),
           read('facePolygonOffsets', faces.polygonOffsets),
           read('faceSourceIds', faces.sourceIds),
+          write('probes', faceProbes, 'f32')
+        ],
+        ringCapacity,
+        `var first = vec2f(0.0);
+  var second = vec2f(0.0);
+  if (faceSourceIds[faceSourceIdsOffset + index] != ${none}) {
+    let shell = facePolygonOffsets[facePolygonOffsetsOffset + index];
+    let start = faceRingOffsets[faceRingOffsetsOffset + shell];
+    let end = faceRingOffsets[faceRingOffsetsOffset + shell + 1u];
+    if (end - start >= 3u) {
+      first = vec2f(facePositions[facePositionsOffset + 2u * start], facePositions[facePositionsOffset + 2u * start + 1u]);
+      second = vec2f(facePositions[facePositionsOffset + 2u * start + 2u], facePositions[facePositionsOffset + 2u * start + 3u]);
+    }
+  }
+  probes[probesOffset + 4u * index] = first.x;
+  probes[probesOffset + 4u * index + 1u] = first.y;
+  probes[probesOffset + 4u * index + 2u] = second.x;
+  probes[probesOffset + 4u * index + 3u] = second.y;`
+      )
+    );
+    const parityIndex = getMakeValidSegmentIndexNodes<Parameters>(graph, {
+      id: `${id}-parity`,
+      operation: OPERATION,
+      records: nodedRecords,
+      leafCapacity: parityLeafCapacity
+    });
+    const {bvh} = parityIndex;
+    nodes.push(
+      ...parityIndex.nodes,
+      kernel(
+        'face-parity',
+        [
+          read('records', parityIndex.records),
+          read('sortedGroups', parityIndex.groups),
+          read('probes', faceProbes, 'f32'),
+          read('faceSourceIds', faces.sourceIds),
+          read('nodeMinima', bvh.nodeMinima, 'f32'),
+          read('nodeMaxima', bvh.nodeMaxima, 'f32'),
+          read('leafIds', bvh.leafIds),
           write('keep', keep)
         ],
         ringCapacity,
         `let group = faceSourceIds[faceSourceIdsOffset + index];
   var keepFace = 0u;
   if (group != ${none}) {
-    let shell = facePolygonOffsets[facePolygonOffsetsOffset + index];
-    let start = faceRingOffsets[faceRingOffsetsOffset + shell];
-    let end = faceRingOffsets[faceRingOffsetsOffset + shell + 1u];
-    if (end - start >= 3u) {
+    let a = vec2f(probes[probesOffset + 4u * index], probes[probesOffset + 4u * index + 1u]);
+    let b = vec2f(probes[probesOffset + 4u * index + 2u], probes[probesOffset + 4u * index + 3u]);
+    if (any(a != b)) {
     // First edge of the counter-clockwise shell: the face lies on its left. The probe is the
     // symbolic point infinitesimally left of the edge's midpoint (utils/exact-geometry-wgsl.ts).
-    let a = vec2f(facePositions[facePositionsOffset + 2u * start], facePositions[facePositionsOffset + 2u * start + 1u]);
-    let b = vec2f(facePositions[facePositionsOffset + 2u * start + 2u], facePositions[facePositionsOffset + 2u * start + 3u]);
     let probe = ExactProbe(0.5 * (a + b), a, b, 1);
     var parity = 0u;
     var uncertain = false;
-    for (var segment = 0u; segment < SEGMENT_CAPACITY; segment++) {
-      if (nodedGroups[nodedGroupsOffset + segment] != group) { continue; }
-      let base = nodedEndpointsOffset + 4u * segment;
-      let first = vec2f(nodedEndpoints[base], nodedEndpoints[base + 1u]);
-      let second = vec2f(nodedEndpoints[base + 2u], nodedEndpoints[base + 3u]);
-      // The single call site of the exact helpers in this kernel.
-      let crossing = exactProbeCrossing(probe, first, second);
-      if ((u32(crossing.y) & EXACT_FLAG_UNCERTAIN) != 0u) { uncertain = true; }
-      if (crossing.x != 0) { parity = parity ^ 1u; }
+    let groupFirst = lowerBoundSortedGroups(0u, SEGMENT_CAPACITY, group);
+    let groupLast = upperBoundSortedGroups(groupFirst, SEGMENT_CAPACITY, group);
+    var node = 0u;
+    loop {
+      let level = firstLeadingBit(node + 1u);
+      let span = LEAF_CAPACITY >> level;
+      let nodeFirst = (node + 1u - (1u << level)) * span;
+      let nodeLast = nodeFirst + span;
+      let minimum = vec2f(nodeMinima[nodeMinimaOffset + 2u * node], nodeMinima[nodeMinimaOffset + 2u * node + 1u]);
+      let maximum = vec2f(nodeMaxima[nodeMaximaOffset + 2u * node], nodeMaxima[nodeMaximaOffset + 2u * node + 1u]);
+      // Use the endpoint interval, not the rounded midpoint: a one-step-tall probe may round
+      // onto either endpoint. Equality stays a candidate for the infinitesimal side decision.
+      // Keep both sides of the ray: an uncertifiable orientation left of the probe used to
+      // retain the face too. Height rejection alone preserves that conservative fallback.
+      if (nodeFirst < groupLast && nodeLast > groupFirst && minimum.y <= max(a.y, b.y) && maximum.y >= min(a.y, b.y)) {
+        if (node < INTERNAL_NODE_COUNT) {
+          node = 2u * node + 1u;
+          continue;
+        }
+        let segment = leafIds[leafIdsOffset + node - INTERNAL_NODE_COUNT];
+        if (segment < SEGMENT_CAPACITY && records[recordsOffset + 5u * segment + 4u] == group) {
+          let base = recordsOffset + 5u * segment;
+          let first = vec2f(bitcast<f32>(records[base]), bitcast<f32>(records[base + 1u]));
+          let second = vec2f(bitcast<f32>(records[base + 2u]), bitcast<f32>(records[base + 3u]));
+          // The single call site of the exact helpers in this kernel.
+          let crossing = exactProbeCrossing(probe, first, second);
+          if ((u32(crossing.y) & EXACT_FLAG_UNCERTAIN) != 0u) { uncertain = true; }
+          if (crossing.x != 0) { parity = parity ^ 1u; }
+        }
+      }
+      loop {
+        if (node == 0u || (node & 1u) == 1u) { break; }
+        node = (node - 1u) / 2u;
+      }
+      if (node == 0u) { break; }
+      node++;
     }
     keepFace = select(0u, 1u, parity == 1u || uncertain);
     }
   }
   keep[keepOffset + index] = keepFace;`,
         `const SEGMENT_CAPACITY: u32 = ${segmentCapacity}u;
+const INTERNAL_NODE_COUNT: u32 = ${bvh.internalNodeCount}u;
+const LEAF_CAPACITY: u32 = ${parityLeafCapacity}u;
+${getBinarySearchWGSL('sortedGroups')}
 ${EXACT_ORIENTATION_WGSL}
 ${EXACT_GEOMETRY_WGSL}`
       ),

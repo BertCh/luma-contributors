@@ -120,7 +120,7 @@ export * from './cell-flow-topology-recipe';
 
 export * from './dasymetric-redistribution-recipe';
 
-export * from './quantile-lisa-recipe';
+export * from '../spatial-autocorrelation/gpu-quantile-lisa';
 export * from './rate-mapping-recipes';
 export {
   addContiguityOrderCorrelogramRecipe,

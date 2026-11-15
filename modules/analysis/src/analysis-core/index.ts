@@ -51,3 +51,23 @@ export {
 
 // Contributors as GPUGraph operations and helpers for CPU twins (contract section 14).
 export * from './operations/index';
+
+// Shared, bounded model-fitting kernels (LRN-02).
+export * from './kernels/gpu-fitting-gradient-sums';
+export * from './kernels/gpu-adam-step';
+export * from './kernels/adam-step-parameters';
+export * from './kernels/gpu-fitting-minibatch-order';
+export * from './kernels/gpu-fitting-coordinate-encoder';
+export {
+  GPU_FITTING_MAXIMUM_BINDING_BYTES,
+  GPU_FITTING_MAXIMUM_PARAMETER_COUNT,
+  GPU_FITTING_MAXIMUM_ROW_COUNT,
+  GPU_FITTING_MAXIMUM_WORK
+} from './kernels/fitting-utils';
+
+export {resolveGPURasterContext} from './raster-grid';
+export type {
+  GPURasterContextOptions,
+  GPUResolvedRasterContext,
+  GPURasterCellSizeMode
+} from './raster-grid';

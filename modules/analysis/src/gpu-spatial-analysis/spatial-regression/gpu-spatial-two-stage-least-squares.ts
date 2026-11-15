@@ -16,6 +16,8 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -53,12 +55,20 @@ import {
   GPUInstrumentalVariablesCovariance,
   type GPUInstrumentalVariablesCovarianceProps
 } from './gpu-instrumental-variables-covariance';
+import {
+  getInstrumentalVariablesCovarianceStatusView,
+  getInstrumentalVariablesCovarianceCommandNodeEstimate,
+  validateInstrumentalVariablesCovarianceOptions
+} from './instrumental-variables-covariance-parameters';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
 import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {MULTIPLICATION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/multiplication-rounding-error-wgsl';
 
 const OPERATION = 'GPUSpatialTwoStageLeastSquares';
+// Fixed regression/refinement stages plus a conservative allowance for the published transpose
+// radix sort, scan and gather internals (32-bit CSR keys). Tested against the generated graph.
+const SPATIAL_TWO_STAGE_LEAST_SQUARES_BASE_NODE_ALLOWANCE = 512;
 const TILE_WORKGROUP_SIZE = 64;
 const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
 const MINIMUM_DEFAULT_TILE_ROWS = 64;
@@ -131,11 +141,15 @@ export type GPUSpatialTwoStageLeastSquaresProps = {
    */
   instrumentOrder?: 1 | 2;
   /** Optional robust inference; point estimates and classical diagnostics remain unchanged.
-   * HAC kernel is separate from model weights. Its PSD property is a caller precondition.
+   * HAC kernel is separate from model weights. The returned covariance is certified PSD to 1e-5
+   * relative tolerance. HC2/HC3 use projected-design leverage; CLUSTER uses occupied-group CR1.
+   * See GPUInstrumentalVariablesCovariance for formulas, limits and covariance status codes.
    * The robust status is separate from the point-estimate solver status. */
   robust?: {
-    method: 'HC0' | 'HC1' | 'HAC';
+    method: NonNullable<GPUInstrumentalVariablesCovarianceProps['method']>;
     kernel?: GPUSpatialWeights;
+    clusters?: GraphDataView<'uint32'>;
+    clusterCount?: number;
     output: GPUInstrumentalVariablesCovarianceProps['output'];
   };
   /** Caller-owned outputs. */
@@ -215,7 +229,7 @@ export type GPUSpatialTwoStageLeastSquaresProps = {
  *
  * `instrumentOrder: 2` adds `W^2 X` to the instruments (`w_lags = 2`). By default standard
  * errors use classical covariance. `robust` replaces table standard errors, z statistics and
- * normal p-values using HC0, HC1 or spatial HAC covariance and exposes the full covariance.
+ * normal p-values using HC0/HC1/HC2/HC3, clustered CR1 or spatial HAC covariance and exposes the full covariance.
  * Existing summary diagnostics retain their classical definitions; robust covariance does not
  * make the classical Anselin-Kelejian reference distribution robust to heteroskedasticity.
  *
@@ -250,6 +264,8 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
   readonly tileCount: number;
   /** Instrument order, 1 or 2. */
   readonly instrumentOrder: 1 | 2;
+  /** Upper bound including robust covariance and published transpose/sort internals. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUSpatialTwoStageLeastSquaresProps) {
     const id = props.id ?? 'spatial-two-stage-least-squares';
@@ -303,10 +319,44 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
         throw new Error(`${id} output.residuals must hold one row per input row`);
       }
     }
+    if (props.robust) {
+      const robust = props.robust;
+      validateInstrumentalVariablesCovarianceOptions(id, rows, robust);
+      if (robust.kernel)
+        validateRequirement(
+          id,
+          validateGPUSpatialWeights(id, robust.kernel) === rows,
+          'robust.kernel row count must equal response.length'
+        );
+      const robustStatus = getInstrumentalVariablesCovarianceStatusView(robust.output.status);
+      for (const [name, view, format, length] of [
+        [
+          'robust.output.covariance',
+          robust.output.covariance,
+          'float32',
+          (predictorCount + 2) ** 2
+        ],
+        ['robust.output.status.code', robustStatus, 'uint32', 1],
+        ...(robust.clusters ? [['robust.clusters', robust.clusters, 'uint32', rows] as const] : [])
+      ] as const) {
+        validateSinglePackedView(view, [format], `${id} ${name}`);
+        validateRequirement(id, view.length === length, `${name} length must equal ${length}`);
+      }
+    }
     this.instrumentOrder = instrumentOrder;
     if (props.tileRowCount !== undefined) {
       validateCapacity(id, 'tileRowCount', props.tileRowCount);
     }
+    this.estimatedCommandNodeCount =
+      SPATIAL_TWO_STAGE_LEAST_SQUARES_BASE_NODE_ALLOWANCE +
+      (props.robust
+        ? 2 +
+          getInstrumentalVariablesCovarianceCommandNodeEstimate(
+            predictorCount + 1,
+            Boolean(props.robust.clusters)
+          )
+        : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     this.rowCount = rows;
     this.tileRowCount =
       props.tileRowCount ??
@@ -320,7 +370,9 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
         output.status.code,
         output.residuals,
         props.robust?.output.covariance,
-        props.robust?.output.status
+        props.robust
+          ? getInstrumentalVariablesCovarianceStatusView(props.robust.output.status)
+          : undefined
       ],
       [
         props.predictors,
@@ -330,7 +382,9 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
         props.weights.weights,
         props.robust?.kernel?.offsets,
         props.robust?.kernel?.neighbors,
-        props.robust?.kernel?.weights
+        props.robust?.kernel?.weights,
+        props.robust?.kernel?.status?.overflow,
+        props.robust?.clusters
       ]
     );
   }
@@ -929,7 +983,12 @@ robustDesign[robustDesignOffset + index * Q + K] = lagResponse + workspace[works
           'robust-table',
           [
             f32('covariance', props.robust.output.covariance, 'read'),
-            {name: 'robustStatus', view: props.robust.output.status, type: 'u32', access: 'read'},
+            {
+              name: 'robustStatus',
+              view: getInstrumentalVariablesCovarianceStatusView(props.robust.output.status),
+              type: 'u32',
+              access: 'read'
+            },
             f32('table', output.table, 'read_write')
           ],
           q + 1,

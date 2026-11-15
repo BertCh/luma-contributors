@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  createTransientView,
-  GPUReduction,
-  type GPUCommandGraph,
-  type GraphDataView
-} from '@luma.gl/graph/gpu-core';
+import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
+import {RecipeBuilder} from '../recipes/recipe-utils';
+import {
+  GPUPopulationSupportAlignment,
+  type GPUPopulationSupportAlignmentProps
+} from './gpu-population-support-alignment';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
@@ -154,156 +154,42 @@ output[outputOffset+2u*unit]=select(missing,result.x,valid);output[outputOffset+
   };
 }
 
-export type GPUPopulationSupportAlignmentOutput = {
-  /** `float32x2`, one row per target ID: the matching source population, or NaN. */
-  populations: GraphDataView<'float32x2'>;
-  /** `uint32`, one row per target ID: 0 matched, 1 absent from the sources, 2 duplicated target. */
-  validity: GraphDataView<'uint32'>;
-  /** `uint32x4`, one row: `[aligned, missingCount, duplicateCount, excludedSourceCount]`. */
-  status: GraphDataView<'uint32x4'>;
-};
+export type {
+  GPUPopulationSupportAlignmentOutput,
+  GPUPopulationSupportAlignmentProps
+} from './gpu-population-support-alignment';
 
-export type GPUPopulationSupportAlignmentProps = {
-  id?: string;
-  populations: GraphDataView<'float32x2'>;
-  sourceIds: GraphDataView<'uint32'>;
-  targetIds: GraphDataView<'uint32'>;
-  /**
-   * Caller-owned result views. Any view that is absent is a graph-owned transient view, as before.
-   * Formats and lengths are those of {@link GPUPopulationSupportAlignmentOutput}.
-   */
-  output?: Partial<GPUPopulationSupportAlignmentOutput>;
-};
-/** Explicit ID join: duplicate/missing source support is invalid, never silently aggregated or interpolated. */
+/** Exact ID alignment. Prefer the CPU operation when support data is already on the host. */
 export function addPopulationSupportAlignmentRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUPopulationSupportAlignmentProps
 ) {
   const id = props.id ?? 'population-support-alignment';
+  // Preserve legacy validation order and caller-owned/transient output overrides.
   validateRequirement(id, props.populations.length > 0, 'populations must have at least 1 row');
   validateViewLength(id, 'sourceIds', props.sourceIds, props.populations.length);
   validateRequirement(id, props.targetIds.length > 0, 'targetIds must have at least 1 row');
-  const output = props.output;
   const populations = getRecipeView(
     graph,
     `${id}-populations`,
     'float32x2',
     props.targetIds.length,
-    output?.populations
+    props.output?.populations
   );
   const validity = getRecipeView(
     graph,
     `${id}-validity`,
     'uint32',
     props.targetIds.length,
-    output?.validity
+    props.output?.validity
   );
-  const status = getRecipeView(graph, `${id}-status`, 'uint32x4', 1, output?.status);
-  graph.add(
-    createRecipeKernelNode(graph, {
-      id: `${id}-align`,
-      operation: id,
-      invocationCount: props.targetIds.length,
-      bindings: [
-        {name: 'populations', view: props.populations, type: 'f32', access: 'read'},
-        {name: 'sourceIds', view: props.sourceIds, type: 'u32', access: 'read'},
-        {name: 'targetIds', view: props.targetIds, type: 'u32', access: 'read'},
-        {name: 'output', view: populations, type: 'f32', access: 'read_write'},
-        {name: 'validity', view: validity, type: 'u32', access: 'read_write'}
-      ],
-      body: `let targetId=targetIds[targetIdsOffset+index];var matches=0u;var source=0u;var duplicate=false;for(var candidate=0u;candidate<${props.sourceIds.length}u;candidate++){if(sourceIds[sourceIdsOffset+candidate]==targetId){matches++;source=candidate;}}for(var candidate=0u;candidate<${props.targetIds.length}u;candidate++){duplicate=duplicate||(candidate!=index&&targetIds[targetIdsOffset+candidate]==targetId);}let valid=matches==1u&&!duplicate;let missing=bitcast<f32>(0x7fc00000u | (index & 0u));output[outputOffset+2u*index]=select(missing,populations[populationsOffset+2u*source],valid);output[outputOffset+2u*index+1u]=select(missing,populations[populationsOffset+2u*source+1u],valid);validity[validityOffset+index]=select(select(2u,1u,matches==0u),0u,valid);`
-    })
-  );
-  // The certificate counts per-row flags with reductions: missing and duplicated targets, and
-  // sources that no target names (one search over the targets per source row).
-  const missingFlags = createTransientView(
-    graph,
-    `${id}-missing-flags`,
-    'uint32',
-    props.targetIds.length
-  );
-  const duplicateFlags = createTransientView(
-    graph,
-    `${id}-duplicate-flags`,
-    'uint32',
-    props.targetIds.length
-  );
-  const excludedFlags = createTransientView(
-    graph,
-    `${id}-excluded-flags`,
-    'uint32',
-    props.sourceIds.length
-  );
-  const missingTotal = createTransientView(graph, `${id}-missing-total`, 'uint32', 1);
-  const duplicateTotal = createTransientView(graph, `${id}-duplicate-total`, 'uint32', 1);
-  const excludedTotal = createTransientView(graph, `${id}-excluded-total`, 'uint32', 1);
-  graph.add(
-    createRecipeKernelNode(graph, {
-      id: `${id}-target-flags`,
-      operation: id,
-      invocationCount: props.targetIds.length,
-      bindings: [
-        {name: 'validity', view: validity, type: 'u32', access: 'read'},
-        {name: 'missingFlags', view: missingFlags, type: 'u32', access: 'read_write'},
-        {name: 'duplicateFlags', view: duplicateFlags, type: 'u32', access: 'read_write'}
-      ],
-      body: `let code=validity[validityOffset+index];
-missingFlags[missingFlagsOffset+index]=u32(code==1u);
-duplicateFlags[duplicateFlagsOffset+index]=u32(code==2u);`
-    })
-  );
-  graph.add(
-    createRecipeKernelNode(graph, {
-      id: `${id}-source-flags`,
-      operation: id,
-      invocationCount: props.sourceIds.length,
-      bindings: [
-        {name: 'sourceIds', view: props.sourceIds, type: 'u32', access: 'read'},
-        {name: 'targetIds', view: props.targetIds, type: 'u32', access: 'read'},
-        {name: 'excludedFlags', view: excludedFlags, type: 'u32', access: 'read_write'}
-      ],
-      body: `var found=false;
-for(var targetRow=0u;targetRow<${props.targetIds.length}u;targetRow++){
-  found=found||sourceIds[sourceIdsOffset+index]==targetIds[targetIdsOffset+targetRow];
-}
-excludedFlags[excludedFlagsOffset+index]=u32(!found);`
-    })
-  );
-  for (const [name, input, total] of [
-    ['missing', missingFlags, missingTotal],
-    ['duplicate', duplicateFlags, duplicateTotal],
-    ['excluded', excludedFlags, excludedTotal]
-  ] as const) {
-    graph.add(
-      new GPUReduction({
-        id: `${id}-${name}-count`,
-        input,
-        output: total,
-        operation: 'sum'
-      }).getCommandNodes(graph)
-    );
-  }
-  graph.add(
-    createRecipeKernelNode(graph, {
-      id: `${id}-certificate`,
-      operation: id,
-      invocationCount: 1,
-      bindings: [
-        {name: 'missingTotal', view: missingTotal, type: 'u32', access: 'read'},
-        {name: 'duplicateTotal', view: duplicateTotal, type: 'u32', access: 'read'},
-        {name: 'excludedTotal', view: excludedTotal, type: 'u32', access: 'read'},
-        {name: 'status', view: status, type: 'u32', access: 'read_write'}
-      ],
-      body: `let missing=missingTotal[missingTotalOffset];
-let duplicates=duplicateTotal[duplicateTotalOffset];
-let excluded=excludedTotal[excludedTotalOffset];
-status[statusOffset]=u32(missing==0u&&duplicates==0u&&excluded==0u);
-status[statusOffset+1u]=missing;
-status[statusOffset+2u]=duplicates;
-status[statusOffset+3u]=excluded;`
-    })
+  const status = getRecipeView(graph, `${id}-status`, 'uint32x4', 1, props.output?.status);
+  const builder = new RecipeBuilder(graph);
+  builder.add(
+    new GPUPopulationSupportAlignment({...props, id, output: {populations, validity, status}})
   );
   return {
+    contributors: builder.contributors,
     outputs: {populations, validity},
     status,
     provenance: {

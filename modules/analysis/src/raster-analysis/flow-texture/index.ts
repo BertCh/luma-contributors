@@ -42,3 +42,10 @@ export type {
 } from './cpu-streamlines-operation';
 export {GPUStreamlinesOperation} from './gpu-streamlines-operation';
 export type {StreamlinesOperationProps} from './gpu-streamlines-operation';
+
+export {
+  getFlowFieldSpawnRegion,
+  getFlowFieldViewportBounds,
+  FlowFieldViewportTracker
+} from './flow-field-viewport';
+export type {FlowFieldBounds} from './flow-field-viewport';

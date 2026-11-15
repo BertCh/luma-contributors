@@ -1086,3 +1086,180 @@ it('GPUGroupStatistics percentiles follow the shared order-statistic edge policy
     harness.destroy();
   }
 });
+
+it('GPUGroupStatistics keeps small moment terms in a dominant group and clears empty tails', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Symmetric data have exactly zero mean and skewness. In the previous strided workgroup
+  // reduction the two lanes starting at +/-4096 each lost 4096 additions of 1 to 2^24. The
+  // resulting variance error exceeds TOLERANCE.variance, even without GPU fast math.
+  const finiteCount = 2 ** 20 + 2;
+  const values = Float32Array.from({length: finiteCount + 5}, (_, row) => (row % 2 ? -1 : 1));
+  values[0] = 4096;
+  values[1] = -4096;
+  values[finiteCount] = NaN;
+  values[finiteCount + 1] = Infinity;
+  values[finiteCount + 2] = NaN;
+  const keys = Array<bigint>(values.length).fill(2n);
+  keys[finiteCount + 2] = 4n; // A populated group with no finite values.
+  keys[finiteCount + 3] = 9n; // A singleton group.
+  keys[finiteCount + 4] = 0xffffffffn;
+  const scene: Scene = {
+    keyBits: 32,
+    keys,
+    columns: [{values, statistics: ['count', 'mean', 'variance', 'skewness', 'kurtosis']}],
+    fractions: [],
+    variance: 'population',
+    capacity: 5
+  };
+  const expectedVariance = (2 * 4096 ** 2 + finiteCount - 2) / finiteCount;
+  const expectedKurtosis =
+    (2 * 4096 ** 4 + finiteCount - 2) / finiteCount / expectedVariance ** 2 - 3;
+  const harness = new Harness(device);
+  const run = await createRun(harness, scene);
+  try {
+    run.poison();
+    const actual = await run.run();
+    expect(actual.count).toBe(3);
+    expect(actual.columns[0].counts).toEqual([finiteCount, 0, 1, 0, 0]);
+    expect(actual.columns[0].means![0]).toBe(0);
+    expectClose(
+      actual.columns[0].variances![0],
+      expectedVariance,
+      TOLERANCE.variance,
+      'dominant variance'
+    );
+    expectClose(actual.columns[0].skewness![0], 0, TOLERANCE.skewness, 'dominant skewness');
+    expectClose(
+      actual.columns[0].kurtosis![0],
+      expectedKurtosis,
+      TOLERANCE.kurtosis,
+      'dominant kurtosis'
+    );
+    for (const group of [1, 3, 4]) {
+      expect(Number.isNaN(actual.columns[0].variances![group])).toBe(true);
+    }
+    expect((await run.run()).words).toEqual(actual.words);
+    // Reuse scratch with all rows excluded. Every output must describe the new empty table.
+    run.maskBuffer.write(new Uint32Array(values.length));
+    const empty = await run.run();
+    expect(empty.count).toBe(0);
+    expect(empty.columns[0].counts).toEqual([0, 0, 0, 0, 0]);
+    expect(empty.columns[0].variances!.every(Number.isNaN)).toBe(true);
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
+}, 120000);
+
+it('GPUGroupStatistics merges across unaligned group boundaries with dense gaps and overflow', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const keys = Array.from({length: 1031}, (_, row) => BigInt(row < 3 ? 0 : row < 1027 ? 2 : 4));
+  const values = Float32Array.from(keys, (_, row) => (row % 7) - 3);
+  const harness = new Harness(device);
+  try {
+    for (const dense of [false, true]) {
+      const scene: Scene = {
+        keyBits: 32,
+        keys,
+        columns: [
+          {values, statistics: ['count', 'mean', 'variance', 'skewness', 'kurtosis', 'zScore']}
+        ],
+        fractions: [],
+        capacity: dense ? 6 : 2,
+        keyCount: dense ? 6 : undefined
+      };
+      const run = await createRun(harness, scene);
+      try {
+        run.poison();
+        expectMatchesOracle(await run.run(), scene, dense ? 'dense tree' : 'overflow tree');
+      } finally {
+        run.destroy();
+      }
+    }
+  } finally {
+    harness.destroy();
+  }
+});
+
+it.each([
+  40, 41, 42
+])('GPUGroupStatistics cancels large signed cubic branches at amplitude 2^%s', async exponent => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const amplitude = 2 ** exponent;
+  const rowCount = 1024;
+  // Exactly symmetric input: mean and third central moment are zero, variance is A^2,
+  // and its skewness denominator A^3 is finite. The unscaled tree overflows the two
+  // same-sign cubic branches, producing Infinity + -Infinity instead of zero.
+  const values = Float32Array.from({length: rowCount}, (_, row) =>
+    row < rowCount / 2 ? amplitude : -amplitude
+  );
+  const harness = new Harness(device);
+  const run = await createRun(harness, {
+    keyBits: 32,
+    keys: Array<bigint>(rowCount).fill(0n),
+    columns: [{values, statistics: ['skewness']}],
+    fractions: [],
+    capacity: 1
+  });
+  try {
+    run.poison();
+    const actual = await run.run();
+    expect(actual.count).toBe(1);
+    expect(actual.columns[0].skewness![0]).toBe(0);
+    expect((await run.run()).words).toEqual(actual.words);
+    // Scale must update from the new contents, and must preserve small cubic terms.
+    // A Bernoulli population with p=1/4 has skewness (1-2p)/sqrt(p(1-p)) = 2/sqrt(3).
+    run.valueBuffers[0].write(
+      Float32Array.from({length: rowCount}, (_, row) => (row < rowCount / 4 ? 2 ** -35 : 0))
+    );
+    const small = await run.run();
+    expectClose(
+      small.columns[0].skewness![0],
+      2 / Math.sqrt(3),
+      TOLERANCE.skewness,
+      'small skewness'
+    );
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
+});
+
+it('GPUGroupStatistics chooses signed moment scales independently for each group', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rowCount = 2048;
+  const scene: Scene = {
+    keyBits: 32,
+    keys: Array.from({length: rowCount}, (_, row) => (row < 1024 ? 0n : 1n)),
+    columns: [
+      {
+        values: Float32Array.from({length: rowCount}, (_, row) =>
+          row < 512 ? 2 ** 40 : row < 1024 ? -(2 ** 40) : row < 1280 ? 2 ** -35 : 0
+        ),
+        statistics: ['skewness']
+      }
+    ],
+    fractions: [],
+    capacity: 3
+  };
+  const harness = new Harness(device);
+  const run = await createRun(harness, scene);
+  try {
+    const actual = await run.run();
+    expect(actual.columns[0].skewness![0]).toBe(0);
+    expectClose(
+      actual.columns[0].skewness![1],
+      2 / Math.sqrt(3),
+      TOLERANCE.skewness,
+      'small group'
+    );
+    expect(Number.isNaN(actual.columns[0].skewness![2])).toBe(true);
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
+});

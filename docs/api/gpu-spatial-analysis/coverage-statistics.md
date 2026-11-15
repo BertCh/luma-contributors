@@ -12,12 +12,12 @@ Monte Carlo inference, exact leave-one-out model selection and bounded continuou
 
 | Backlog | API | Delivered contract | Remaining scope |
 | --- | --- | --- | --- |
-| ST01 | `GPUInstrumentalVariablesCovariance`; `GPUSpatialTwoStageLeastSquares.robust` | Full HC0, HC1 or spatial-HAC IV covariance; integrated robust SE, z and normal p-value table | HC2/HC3, clustered covariance, automatic HAC PSD certification |
+| ST01 | `GPUInstrumentalVariablesCovariance`; `GPUSpatialTwoStageLeastSquares.robust` | HC0/HC1/HC2/HC3, one-way clustered CR1 and spatial-HAC IV covariance; robust SE/z/p table and returned-covariance PSD certification | Entire HAC-kernel PSD certification and multi-way clustering |
 | ST02 | `GPURestrictedRegimeRegression` | Any common/varying intercept and slopes; full restricted covariance; joint nested-model Chow F/degrees and coefficient/joint Wald chi-square tails | spatial/heteroskedastic restriction tests |
 | ST03 | `GPUSpatialPanelErrorMaximumLikelihood` | Balanced unit fixed-effects spatial-error Gaussian ML and pooled LM error and robust LM lag/error tests | Random/time effects, Hausman tests, clustered/serial inference |
 | ST04 | `GPUSeeminglyUnrelatedRegression` | One-step feasible SUR and Kelejian–Prucha spatial-error SUR, joint error covariance and full system coefficient covariance | iterated SUR and small-sample inference |
 | ST05 | `GPUProbitRegression` | Binary probit, expected-information standard errors, average marginal effects, tail-accurate likelihood with separation reported as a status; Pinkse, Kelejian–Prucha and Pinkse–Slade residual tests | Latent spatial probit |
-| ST06 | `GPULocalCollinearity`; `GPUGeneralizedGeographicallyWeightedRegression` | Weighted VIF, intercept-inclusive design condition/variance decomposition; exact LOO bandwidth search; Poisson/logistic local SE and influence | Multiscale backfitting uncertainty and additional selection criteria |
+| ST06 | `GPULocalCollinearity`; `GPUGeneralizedGeographicallyWeightedRegression`; `GPUMultiscaleGeographicallyWeightedRegression` | Weighted collinearity diagnostics; exact GLM LOO bandwidth search; MGWR finite-grid/golden-section LOO or AICc selection and bandwidth-conditioned backfit inference | MGWR adaptive-neighbor selection and uncertainty from bandwidth reselection |
 | ST07 | `GPUMultivariateLocalGearyPermutationTest` | Joint-vector conditional randomization, replay, equal-tail or esda minimum-tail p-values and optional Bonferroni adjustment | Exact upstream classification-label parity and additional correction families |
 | ST08 | `GPURankMarkov` | Full-rank/geographic-rank transitions, common complete panels and absolute-rank mobility | More than 64 rank states, fractional ties and incomplete-panel interpolation |
 | ST09 | `GPUFuzzyContiguity`, `GPUIslandAttachment` | Planar filled-polygon separation and nearest original-island attachment, with added-edge provenance | Geographic coordinates, topology repair and GEOS robust-predicate parity |
@@ -45,14 +45,21 @@ intercept influence is recovered with its cross terms, so the output includes th
 
 - `HC0` uses squared residual scores without a finite-sample multiplier.
 - `HC1` multiplies HC0 by `n / (n - p)`, where `p` includes the intercept.
+- `HC2` and `HC3` divide residuals by `sqrt(1-h)` and `1-h`, respectively, using projected-design
+  leverage including the intercept. A denominator at most 1e-6 or leverage below -1e-6 is invalid.
+- `CLUSTER` requires dense `uint32` `clusters` and `clusterCount` capacity; only occupied groups
+  count in the CR1 multiplier `G/(G-1) * (n-1)/(n-p)`. At least two groups must be occupied.
 - `HAC` takes a separate spatial kernel, without a finite-sample multiplier. It must be symmetric,
   nonnegative, positive semidefinite and have unit diagonal. Bounds, finite weights, symmetry
   and diagonal are checked on GPU. Positive semidefiniteness is a caller precondition.
 
+The returned covariance is certified PSD to relative tolerance 1e-5 with a shifted Cholesky
+test; zero and rank-deficient covariance are accepted. This does not certify the entire HAC kernel.
 Covariance status is `0` success, `1` singular projection, `2` insufficient observations,
-`3` nonfinite inputs/results and `4` invalid HAC kernel. Failed covariance entries are NaN.
+`3` nonfinite inputs/results, `4` invalid HAC kernel, `5` invalid leverage, `6` invalid clusters
+and `7` a failed PSD certificate. Failed covariance entries are NaN.
 
-For spatial 2SLS, set `robust: {method, kernel?, output: {covariance, status}}`. Existing point
+For spatial 2SLS, set `robust: {method, kernel?, clusters?, clusterCount?, output: {covariance, status}}`. Existing point
 estimates and classical summary diagnostics remain unchanged; the coefficient table's SE, z and
 p-value columns use the robust covariance. The robust status is separate from the estimator's
 status. A robust covariance does not change the classical Anselin–Kelejian diagnostic's assumptions.
@@ -110,7 +117,7 @@ by one full feasible-GLS solve. The output covariance is the conditional GLS inf
 using that first-stage error covariance. Singular design and singular error covariance have
 separate status codes. This is one-step FGLS, not an iterated likelihood fit.
 
-Optional `spatial` selects the `spreg.SURerrorGM` convention: equation OLS residuals estimate Kelejian–Prucha spatial-error parameters; filtering transforms responses, designs and original OLS residuals before the joint GLS solve. The intercept and full covariance are transformed back to original units, and reported residuals are structural residuals. This selected mode requires complete aligned rows and nonnegative row-standardized zero-diagonal weights without islands; it rejects a mask or caller-supplied `initialResiduals`. Each equation has its own parameter and GM status; status 4 denotes inadmissible weights. Nonspatial `initialResiduals` allows an explicit first-stage residual covariance, with the same common complete-case mask.
+Optional `spatial` selects the `spreg.SURerrorGM` convention: equation OLS residuals estimate Kelejian–Prucha spatial-error parameters; filtering transforms responses, designs and original OLS residuals before the joint GLS solve. The intercept and full covariance are transformed back to original units, and reported residuals are structural residuals. This selected mode requires complete aligned rows and nonnegative row-standardized zero-diagonal weights without islands; it rejects a mask or caller-supplied `initialResiduals`. The shared weights are checked once with bounded row tiles, and the resulting admissibility flag applies to every equation. Each equation has its own parameter and GM status; status 4 denotes inadmissible weights. Nonspatial `initialResiduals` allows an explicit first-stage residual covariance, with the same common complete-case mask.
 
 ## Probit and local collinearity
 
@@ -235,7 +242,7 @@ its maximum/minimum eigenvalue ratio. The intercept is excluded from this correl
 
 `GPUGeneralizedGeographicallyWeightedRegression.inference` returns local scale-one Poisson/logistic standard errors and diagonal influence. The covariance is `A^-1 X' V W² X A^-1`, with `A = X' V W X`; it matches mgwr GLM local uncertainty and does not assume that spatial weights are frequency weights. Failed fits retain NaN inference.
 
-`bandwidthSelection` supplies 2–32 positive candidate bandwidths and outputs their exact leave-one-out mean deviance, the selected bandwidth and status (0 selected, 1 no valid candidate). Adaptive candidates must be integer neighbor counts within `maximumNeighborCount`. Each inner fit excludes its own focus, including from adaptive neighbor selection. Every eligible training row must converge for a candidate to be valid; ties choose the first candidate. The logistic deviance of a row is taken from its leave-one-out linear predictor, `2 log(1 + exp(-eta))` for a response of 1 and `2 log(1 + exp(eta))` for 0, so a confident prediction scores finitely (the float32 fitted mean is exactly 1 from `eta` of about 17 and cannot carry it). This explicit criterion differs from mgwr `Sel_BW` AICc or approximate CV criteria. The pinned oracle executes mgwr local GLM solves with the self weight removed to verify the exact candidate scores.
+`bandwidthSelection` supplies 2–32 positive candidate bandwidths and outputs their exact leave-one-out mean deviance, the selected bandwidth and status (0 selected, 1 no valid candidate). Adaptive candidates must be integer neighbor counts within `maximumNeighborCount`. Each inner fit excludes its own focus, including from adaptive neighbor selection. Every eligible training row must converge for a candidate to be valid; ties choose the first candidate. The logistic deviance of a row is taken from its leave-one-out linear predictor, `2 log(1 + exp(-eta))` for a response of 1 and `2 log(1 + exp(eta))` for 0, so a confident prediction scores finitely (the float32 fitted mean is exactly 1 from `eta` of about 17 and cannot carry it). This is the default `criterion: 'loo-deviance'`. Optional `criterion: 'aicc'` uses in-sample fits and the mgwr Poisson/Binomial deviance/influence correction. `method: 'golden-section'` searches bounded fixed or adaptive AICc bandwidths with GPU gates and named convergence/budget status; see [Adaptive generalized GWR](./adaptive-generalized-gwr.md). The pinned oracle executes mgwr local GLM solves with the self weight removed to verify the exact candidate scores.
 
 For nested spatial evaluation, supply one outer fold's **training mask** and set `predictExcluded: true`. Bandwidth selection, centering/solves and inference use only training rows, while finite held-out predictor/position queries receive predictions without reading their responses. The direct test changes held-out counts from zero to 100,000 and verifies unchanged candidate scores, selected bandwidth, coefficients and predictions. Apply this graph separately to each fold; score held-out responses afterward. Finite query offsets remain caller inputs.
 
@@ -418,6 +425,8 @@ These small deterministic synthetic examples run the actual GPU producers and ca
 ::lens{scenario=gpu-spatial-analysis.local-collinearity rung=graph caption="Inspect the executed GPU command graph."}
 
 ### `GPUMultivariateLocalGearyPermutationTest`
+
+See [runtime parameters and inference semantics](./operators-statistics.md#gpumultivariatelocalgearypermutationtest).
 
 {/* lens:GPUMultivariateLocalGearyPermutationTest */}
 

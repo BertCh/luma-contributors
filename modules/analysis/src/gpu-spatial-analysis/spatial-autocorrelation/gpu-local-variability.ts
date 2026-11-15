@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  GPUReduction,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -14,7 +15,11 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {
+  validateCapacity,
+  validateViewLength,
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -29,6 +34,9 @@ import {
   type GPUSpatialWeights,
   type GPUSpatialWeightsChunkDispatch
 } from '../spatial-weights/index';
+
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
+import * as variabilityParameters from './local-variability-parameters';
 
 /** Per-row status: valid, excluded input, undefined statistic, incomplete weights. */
 export const GPU_LOCAL_VARIABILITY_STATUS = {
@@ -54,8 +62,12 @@ type LocalVariabilityProps = {
 
 /** LOSH inputs. Positive weights are normalized over included neighbors. Islands are excluded. */
 export type GPULocalSpatialHeteroscedasticityProps = LocalVariabilityProps & {
-  /** Absolute-deviation power; 2 (default) measures variance, 1 absolute deviation. */
-  residualPower?: 1 | 2;
+  /**
+   * Absolute-deviation power; 2 (default) measures variance, 1 absolute deviation. A packed
+   * float32 GPUParameterBuffer view from getGPULocalSpatialHeteroscedasticityParameterValues
+   * allows the power to change between encodings without recompiling.
+   */
+  residualPower?: 1 | 2 | GraphDataView<'float32'>;
   output: LocalVariabilityProps['output'] & {
     /** Optional normalized residual powers for explicit residual-label randomization. */
     normalizedResiduals?: GraphDataView<'float32'>;
@@ -64,12 +76,18 @@ export type GPULocalSpatialHeteroscedasticityProps = LocalVariabilityProps & {
 
 /**
  * LOSH H_i = weightedMean_j(|y_j - weightedMean_k(y_k)|^a) / mean(residual^a).
- * The denominator includes finite residuals, excluding islands. No inferential p-value is implied.
+ * The denominator includes finite residuals, excluding islands. A fixed-order maximum and sum
+ * reduction form the mean from residuals scaled by their maximum, avoiding overflow of their
+ * unscaled total. No invocation walks all rows. No inferential p-value is implied.
+ * Compile-time: view shapes, optional views and chunk topology. Per-frame: input/mask contents
+ * and a residual-power parameter view. Numeric powers are uploaded defaults.
+ *
  * Masked rows are removed before local means; neighbors whose residual is undefined are removed
  * before the final weighted mean. An incomplete upstream weights graph invalidates every result.
  */
 export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer {
   readonly id: string;
+  private readonly residualPowerValues?: Float32Array;
   constructor(readonly props: GPULocalSpatialHeteroscedasticityProps) {
     this.id = props.id ?? 'local-spatial-heteroscedasticity';
     validateProps(this.id, props, 1);
@@ -77,12 +95,40 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
     for (let index = 0; index < outputs.length; index++) {
       validateGraphOutputsDisjointFromInputs(this.id, [outputs[index]], outputs.slice(index + 1));
     }
-    if (
-      props.residualPower !== undefined &&
-      props.residualPower !== 1 &&
-      props.residualPower !== 2
-    ) {
-      throw new Error(`${this.id}: residualPower must be 1 or 2`);
+    const residualPower = props.residualPower ?? 2;
+    if (typeof residualPower === 'number') {
+      validateCapacity(this.id, 'residualPower', residualPower, 1, 2);
+      this.residualPowerValues =
+        variabilityParameters.getGPULocalSpatialHeteroscedasticityParameterValues({
+          residualPower
+        });
+    } else {
+      validateSinglePackedView(residualPower, ['float32'], `${this.id} residualPower`);
+      validateCapacity(
+        this.id,
+        'residualPower.length',
+        residualPower.length,
+        variabilityParameters.GPU_LOCAL_SPATIAL_HETEROSCEDASTICITY_PARAMETER_LENGTH
+      );
+      validateGraphOutputsDisjointFromInputs(this.id, outputs, [residualPower]);
+    }
+    if (props.output.normalizedResiduals) {
+      validateSinglePackedView(
+        props.output.normalizedResiduals,
+        ['float32'],
+        `${this.id} normalizedResiduals`
+      );
+      validateViewLength(
+        this.id,
+        'normalizedResiduals',
+        props.output.normalizedResiduals,
+        getRowCount(props)
+      );
+      validateGraphOutputsDisjointFromInputs(
+        this.id,
+        [props.output.normalizedResiduals],
+        getAllInputViews(props)
+      );
     }
   }
   getCommandNodes<Parameters>(
@@ -91,6 +137,18 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
     const {props, id} = this;
     const rows = getRowCount(props);
     const dispatches = getGPUSpatialWeightsChunkDispatches(props.weights);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'residual scratch',
+      rows * Float32Array.BYTES_PER_ELEMENT,
+      'reduce the row count'
+    );
+    const finiteResiduals = createTransientView(graph, `${id}-finite-residuals`, 'float32', rows);
+    const residualCounts = createTransientView(graph, `${id}-residual-counts`, 'uint32', rows);
+    const maximumResidual = createTransientView(graph, `${id}-maximum-residual`, 'float32', 1);
+    const normalizedSum = createTransientView(graph, `${id}-normalized-sum`, 'float32', 1);
+    const residualCount = createTransientView(graph, `${id}-residual-count`, 'uint32', 1);
     const residuals = createTransientView(graph, `${id}-residuals`, 'float32', rows);
     const mean = createTransientView(graph, `${id}-mean`, 'float32', 1);
     validateGraphViewsBelongToGraph(id, graph, [
@@ -99,9 +157,17 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
       ...getGPUSpatialWeightsOrChunksViews(props.weights),
       props.weights.status?.overflow,
       props.output.statistic,
-      props.output.status
+      props.output.status,
+      props.output.normalizedResiduals,
+      typeof props.residualPower === 'object' ? props.residualPower : undefined
     ]);
+    const runtime = createSpatialStatisticsParameterNodes(
+      graph,
+      `${id}-parameters`,
+      this.residualPowerValues ?? (props.residualPower as GraphDataView<'float32'>)
+    );
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...runtime.nodes,
       ...dispatches.map(dispatch =>
         createWGSLKernelNode(graph, {
           id: `${id}-residuals${dispatch.idSuffix}`,
@@ -110,6 +176,7 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
           invocationCount: dispatch.rowCount,
           bindings: [
             ...getBindings(props, dispatch.weights),
+            {name: 'parameters', view: runtime.parameters, type: 'f32', access: 'read'},
             {name: 'residuals', view: residuals, type: 'f32', access: 'read_write'}
           ],
           declarations: getCommon(props, rows, 1, dispatch),
@@ -122,7 +189,7 @@ if (included(index)) {
   ${neighborLoop(`weighted += weight * values[valuesOffset + neighbor]; total += weight;`, dispatch)}
   if (total > 0.0) {
     let deviation = abs(values[valuesOffset + index] - weighted / total);
-    result = ${props.residualPower === 1 ? 'deviation' : 'deviation * deviation'};
+    result = select(deviation * deviation, deviation, parameters[parametersOffset] == 1.0);
   }
 }
 residuals[residualsOffset + index] = result;`
@@ -130,21 +197,78 @@ residuals[residualsOffset + index] = result;`
         })
       ),
       createWGSLKernelNode(graph, {
+        id: `${id}-finite-residuals`,
+        operation: 'GPULocalSpatialHeteroscedasticity',
+        variant: 'finite-residuals',
+        invocationCount: rows,
+        bindings: [
+          {name: 'residuals', view: residuals, type: 'f32', access: 'read'},
+          {name: 'finiteResiduals', view: finiteResiduals, type: 'f32', access: 'read_write'},
+          {name: 'residualCounts', view: residualCounts, type: 'u32', access: 'read_write'}
+        ],
+        declarations: IS_FINITE_BITS_WGSL,
+        body: `let value = residuals[residualsOffset + index];
+let finite = isFiniteBits(value);
+finiteResiduals[finiteResidualsOffset + index] = select(0.0, value, finite);
+residualCounts[residualCountsOffset + index] = u32(finite);`
+      }),
+      ...new GPUReduction({
+        id: `${id}-maximum-residual`,
+        input: finiteResiduals,
+        output: maximumResidual,
+        operation: 'max'
+      }).getCommandNodes(graph),
+      ...new GPUReduction({
+        id: `${id}-residual-count`,
+        input: residualCounts,
+        output: residualCount,
+        operation: 'sum'
+      }).getCommandNodes(graph),
+      createWGSLKernelNode(graph, {
+        id: `${id}-scale-residuals`,
+        operation: 'GPULocalSpatialHeteroscedasticity',
+        variant: 'scale-residuals',
+        invocationCount: rows,
+        bindings: [
+          {name: 'finiteResiduals', view: finiteResiduals, type: 'f32', access: 'read_write'},
+          {name: 'maximumResidual', view: maximumResidual, type: 'f32', access: 'read'}
+        ],
+        declarations: SCALED_QUOTIENT_WGSL,
+        body: `let maximum = maximumResidual[maximumResidualOffset];
+var scaled = 0.0;
+if (maximum > 0.0) {
+  // A direct division can flush the reciprocal of a large maximum to zero.
+  scaled = getScaledQuotient(finiteResiduals[finiteResidualsOffset + index], maximum, 1.0, 0);
+}
+finiteResiduals[finiteResidualsOffset + index] = scaled;`
+      }),
+      ...new GPUReduction({
+        id: `${id}-normalized-sum`,
+        input: finiteResiduals,
+        output: normalizedSum,
+        operation: 'sum'
+      }).getCommandNodes(graph),
+      createWGSLKernelNode(graph, {
         id: `${id}-mean`,
         operation: 'GPULocalSpatialHeteroscedasticity',
         variant: 'mean',
         invocationCount: 1,
         bindings: [
-          {name: 'residuals', view: residuals, type: 'f32', access: 'read'},
+          {name: 'maximumResidual', view: maximumResidual, type: 'f32', access: 'read'},
+          {name: 'normalizedSum', view: normalizedSum, type: 'f32', access: 'read'},
+          {name: 'residualCount', view: residualCount, type: 'u32', access: 'read'},
           {name: 'mean', view: mean, type: 'f32', access: 'read_write'}
         ],
-        declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,
-        body: `var count = 0.0; var average = 0.0;
-for (var row = 0u; row < ${rows}u; row++) {
-  let value = residuals[residualsOffset + row];
-  if (isFiniteBits(value)) { count += 1.0; average += (value - average) / count; }
-}
-mean[meanOffset] = select(getNaN(), average, count > 0.0);`
+        declarations: `${GET_NAN_WGSL}
+// 2^126 is finite; splitting larger exponents avoids an overflowing ldexp scale.
+const MAXIMUM_MEAN_SCALE_EXPONENT: i32 = 126;`,
+        body: `let count = residualCount[residualCountOffset];
+let maximum = frexp(maximumResidual[maximumResidualOffset]);
+// Keep the maximum's exponent out of float products, including compiler reassociation.
+let fraction = maximum.fract * (normalizedSum[normalizedSumOffset] / f32(count));
+let firstExponent = min(maximum.exp, MAXIMUM_MEAN_SCALE_EXPONENT);
+let average = ldexp(ldexp(fraction, firstExponent), maximum.exp - firstExponent);
+mean[meanOffset] = select(getNaN(), average, count > 0u);`
       }),
       ...dispatches.map(dispatch =>
         createWGSLKernelNode(graph, {
@@ -172,7 +296,7 @@ mean[meanOffset] = select(getNaN(), average, count > 0.0);`
                 ]
               : [])
           ],
-          declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${dispatch.constantsWGSL}`,
+          declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${SCALED_QUOTIENT_WGSL}\n${dispatch.constantsWGSL}`,
           body: wrapGPUSpatialWeightsChunkBody(
             dispatch,
             `var resultValue = getNaN(); var state = 1u;
@@ -187,7 +311,14 @@ if (isFiniteBits(residuals[residualsOffset + index])) {
     if (isFiniteBits(residual)) { weighted += weight * residual; total += weight; }
   }
   state = 2u;
-  if (total > 0.0 && mean[meanOffset] > 0.0) { resultValue = weighted / total / mean[meanOffset]; state = 0u; }
+  if (total > 0.0 && mean[meanOffset] > 0.0) {
+    if (isFiniteBits(weighted) && isFiniteBits(total) && isFiniteBits(mean[meanOffset])) {
+      resultValue = getScaledQuotient(weighted, total, mean[meanOffset], 0);
+    } else {
+      resultValue = weighted / total / mean[meanOffset];
+    }
+    state = 0u;
+  }
 }
 ${props.weights.status?.overflow ? 'if (overflow[overflowOffset] != 0u) { state = 3u; resultValue = getNaN(); }' : ''}
 if (!isFiniteBits(resultValue) && state == 0u) { state = 2u; }
@@ -197,15 +328,6 @@ result[resultOffset + index] = resultValue; status[statusOffset + index] = state
       )
     ];
     if (props.output.normalizedResiduals) {
-      validateSinglePackedView(props.output.normalizedResiduals, ['float32'], id);
-      if (props.output.normalizedResiduals.length !== rows)
-        throw new Error(`${id}: invalid residual row count`);
-      validateGraphOutputsDisjointFromInputs(
-        id,
-        [props.output.normalizedResiduals, props.output.statistic, props.output.status],
-        getAllInputViews(props)
-      );
-      validateGraphViewsBelongToGraph(id, graph, [props.output.normalizedResiduals]);
       nodes.push(
         createWGSLKernelNode(graph, {
           id: `${id}-normalized-residuals`,
@@ -222,9 +344,17 @@ result[resultOffset + index] = resultValue; status[statusOffset + index] = state
               access: 'read_write'
             }
           ],
-          declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,
+          declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${SCALED_QUOTIENT_WGSL}`,
           body: `let average = mean[meanOffset];
-normalized[normalizedOffset + index] = select(getNaN(), residuals[residualsOffset + index] / average, average > 0.0 && isFiniteBits(average));`
+let residual = residuals[residualsOffset + index];
+var normalizedValue = getNaN();
+if (average > 0.0 && isFiniteBits(average)) {
+  normalizedValue = residual;
+  if (isFiniteBits(residual)) {
+    normalizedValue = getScaledQuotient(residual, average, 1.0, 0);
+  }
+}
+normalized[normalizedOffset + index] = normalizedValue;`
         })
       );
     }

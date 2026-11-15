@@ -14,7 +14,8 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
 import {
@@ -93,6 +94,15 @@ export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
     const entities = props.weights.offsets.length - 1;
     const rows = entities * props.periodCount;
     const capacity = props.weights.neighbors.length;
+    if (props.effects === 'unit') {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'unitMeans',
+        entities * (props.predictorCount + 1) * 4,
+        'reduce the entity count or predictorCount'
+      );
+    }
     const offsets = createTransientView(graph, `${id}-offsets`, 'uint32', rows + 1);
     const neighbors = createTransientView(
       graph,
@@ -169,7 +179,36 @@ for (var slot = start; slot < end; slot++) {
         props.predictors.length
       );
       const withinResponse = createTransientView(graph, `${id}-within-response`, 'float32', rows);
+      const means = createTransientView(
+        graph,
+        `${id}-unit-means`,
+        'float32',
+        entities * (props.predictorCount + 1)
+      );
       nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-unit-means`,
+          operation: 'GPUSpatialPanelRegression',
+          variant: 'unit-means',
+          invocationCount: entities,
+          bindings: [
+            {name: 'sourcePredictors', view: props.predictors, type: 'f32', access: 'read'},
+            {name: 'sourceResponse', view: response, type: 'f32', access: 'read'},
+            {name: 'means', view: means, type: 'f32', access: 'read_write'}
+          ],
+          body: `var responseMean = 0.0;
+for (var period = 0u; period < ${props.periodCount}u; period++) {
+  responseMean += sourceResponse[sourceResponseOffset + period * ${entities}u + index];
+}
+means[meansOffset + index * ${props.predictorCount + 1}u] = responseMean / ${props.periodCount}.0;
+for (var column = 0u; column < ${props.predictorCount}u; column++) {
+  var predictorMean = 0.0;
+  for (var period = 0u; period < ${props.periodCount}u; period++) {
+    predictorMean += sourcePredictors[sourcePredictorsOffset + (period * ${entities}u + index) * ${props.predictorCount}u + column];
+  }
+  means[meansOffset + index * ${props.predictorCount + 1}u + column + 1u] = predictorMean / ${props.periodCount}.0;
+}`
+        }),
         createWGSLKernelNode(graph, {
           id: `${id}-within`,
           operation: 'GPUSpatialPanelRegression',
@@ -178,22 +217,14 @@ for (var slot = start; slot < end; slot++) {
           bindings: [
             {name: 'sourcePredictors', view: props.predictors, type: 'f32', access: 'read'},
             {name: 'sourceResponse', view: response, type: 'f32', access: 'read'},
+            {name: 'means', view: means, type: 'f32', access: 'read'},
             {name: 'predictors', view: predictors, type: 'f32', access: 'read_write'},
             {name: 'response', view: withinResponse, type: 'f32', access: 'read_write'}
           ],
           body: `let entity = index % ${entities}u;
-var responseMean = 0.0;
-for (var period = 0u; period < ${props.periodCount}u; period++) {
-  responseMean += sourceResponse[sourceResponseOffset + period * ${entities}u + entity];
-}
-response[responseOffset + index] = sourceResponse[sourceResponseOffset + index] - responseMean / ${props.periodCount}.0;
+response[responseOffset + index] = sourceResponse[sourceResponseOffset + index] - means[meansOffset + entity * ${props.predictorCount + 1}u];
 for (var column = 0u; column < ${props.predictorCount}u; column++) {
-  var predictorMean = 0.0;
-  for (var period = 0u; period < ${props.periodCount}u; period++) {
-    predictorMean += sourcePredictors[sourcePredictorsOffset + (period * ${entities}u + entity) * ${props.predictorCount}u + column];
-  }
-  predictors[predictorsOffset + index * ${props.predictorCount}u + column] =
-    sourcePredictors[sourcePredictorsOffset + index * ${props.predictorCount}u + column] - predictorMean / ${props.periodCount}.0;
+  predictors[predictorsOffset + index * ${props.predictorCount}u + column] = sourcePredictors[sourcePredictorsOffset + index * ${props.predictorCount}u + column] - means[meansOffset + entity * ${props.predictorCount + 1}u + column + 1u];
 }`
         })
       );
@@ -222,17 +253,7 @@ for (var column = 0u; column < ${props.predictorCount}u; column++) {
           bindings: [
             {name: 'table', view: props.output.table, type: 'f32', access: 'read_write'},
             {name: 'summary', view: props.output.summary, type: 'f32', access: 'read_write'},
-            {name: 'status', view: props.output.status.code, type: 'u32', access: 'read_write'},
-            ...(props.output.residuals
-              ? [
-                  {
-                    name: 'residuals',
-                    view: props.output.residuals,
-                    type: 'f32' as const,
-                    access: 'read_write' as const
-                  }
-                ]
-              : [])
+            {name: 'status', view: props.output.status.code, type: 'u32', access: 'read_write'}
           ],
           declarations: `${GET_NAN_WGSL}
 ${ERFC_VALUE_WGSL}`,
@@ -241,7 +262,6 @@ if (${degrees} <= 0) {
   status[statusOffset] = 2u;
   for (var slot = 0u; slot < ${(props.predictorCount + 2) * 4}u; slot++) { table[tableOffset + slot] = nan; }
   for (var slot = 1u; slot < 16u; slot++) { summary[summaryOffset + slot] = nan; }
-  ${props.output.residuals ? `for (var row = 0u; row < ${rows}u; row++) { residuals[residualsOffset + row] = nan; }` : ''}
 } else if (status[statusOffset] == 0u) {
   let scale = sqrt(${rows}.0 / ${Math.max(degrees, 1)}.0);
   summary[summaryOffset + 1u] *= scale * scale;
@@ -260,6 +280,21 @@ for (var slot = 0u; slot < 4u; slot++) { table[tableOffset + slot] = nan; }
 for (var slot = 4u; slot < 7u; slot++) { summary[summaryOffset + slot] = nan; }`
         })
       );
+      if (degrees <= 0 && props.output.residuals) {
+        nodes.push(
+          createWGSLKernelNode(graph, {
+            id: `${id}-within-clear-residuals`,
+            operation: 'GPUSpatialPanelRegression',
+            variant: 'unit-clear-residuals',
+            invocationCount: rows,
+            bindings: [
+              {name: 'residuals', view: props.output.residuals, type: 'f32', access: 'read_write'}
+            ],
+            declarations: GET_NAN_WGSL,
+            body: 'residuals[residualsOffset + index] = getNaN();'
+          })
+        );
+      }
     }
     return nodes;
   }

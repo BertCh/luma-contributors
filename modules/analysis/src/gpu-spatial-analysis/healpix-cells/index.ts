@@ -33,3 +33,4 @@ export {
 } from './cpu-healpix-point-to-cell-operation';
 export {GPUHealpixPointToCellOperation} from './gpu-healpix-point-to-cell-operation';
 export type {HealpixPointToCellOperationProps} from './gpu-healpix-point-to-cell-operation';
+export {getHealpixCellBoundary} from './healpix-cell-boundary';

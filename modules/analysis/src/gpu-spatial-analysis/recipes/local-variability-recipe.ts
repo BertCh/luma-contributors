@@ -4,7 +4,7 @@
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/index';
-import {getRecipeView as getOrCreateView, validateRecipeBoundary} from './expansion-recipe-utils';
+import {getRecipeView as getOrCreateView, validateRecipeBoundary} from './recipe-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {GPULocalSpatialHeteroscedasticity} from '../spatial-autocorrelation/gpu-local-variability';
 import {GPULocalMoran} from '../spatial-autocorrelation/gpu-local-moran';

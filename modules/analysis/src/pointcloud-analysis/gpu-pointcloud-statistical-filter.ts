@@ -18,7 +18,30 @@ import {
 import {GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY} from './pointcloud-limits';
 import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 
+/** One float32 row: the standard-deviation multiplier. */
+export const GPU_POINT_CLOUD_STATISTICAL_FILTER_PARAMETER_LENGTH = 1;
+
+export type GPUPointCloudStatisticalFilterSettings = {
+  /** Nonnegative multiplier of the population standard deviation; default 2. */
+  standardDeviations?: number;
+};
+
+/** Pack per-frame outlier threshold settings for a caller-owned GPUParameterBuffer. */
+export function getGPUPointCloudStatisticalFilterParameterValues(
+  settings: GPUPointCloudStatisticalFilterSettings = {}
+): Float32Array {
+  validateFiniteNumber(
+    'gpu-pointcloud-statistical-filter',
+    'standardDeviations',
+    settings.standardDeviations ?? 2,
+    0
+  );
+  return new Float32Array([settings.standardDeviations ?? 2]);
+}
+
 export type GPUPointCloudStatisticalFilterProps = {
+  /** Per-frame multiplier; overrides standardDeviations. */
+  parameters?: GraphDataView<'float32'>;
   id?: string;
   squaredDistances: GraphDataView<'float32'>;
   counts: GraphDataView<'uint32'>;
@@ -36,6 +59,9 @@ export type GPUPointCloudStatisticalFilterProps = {
 };
 
 /**
+ * Per-frame: input contents and parameters (standardDeviations). Compile-time: capacity and
+ * view shapes. Without parameters, standardDeviations retains its constructor-time behavior.
+ *
  * Global mean-neighbor-distance outlier filter (PDAL `filters.outlier`, statistical).
  *
  * The global mean and population variance of the valid mean distances come from three published
@@ -66,12 +92,21 @@ export class GPUPointCloudStatisticalFilter implements GPUCommandNodeProducer {
     );
     validateViewLength(this.id, 'meanDistances', props.meanDistances, props.counts.length);
     validateViewLength(this.id, 'validity', this.validity, props.counts.length);
+    if (props.parameters) {
+      validateViewLength(
+        this.id,
+        'parameters',
+        props.parameters,
+        GPU_POINT_CLOUD_STATISTICAL_FILTER_PARAMETER_LENGTH
+      );
+    }
     validateFiniteNumber(this.id, 'standardDeviations', props.standardDeviations ?? 2, 0);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {squaredDistances, counts, capacity, meanDistances} = this.props;
+    const parameters = this.props.parameters;
     const mask = this.validity;
     const nodes: GPUCommandNode<Parameters>[] = getPointCloudKernelNodes(graph, {
       id: `${this.id}-means`,
@@ -144,9 +179,9 @@ writeVarianceTerms(index, select(0.0, scaledDifference * scaledDifference, readV
       ...getPointCloudKernelNodes(graph, {
         id: `${this.id}-threshold`,
         length: 1,
-        inputs: {mean, variance},
+        inputs: {mean, variance, ...(parameters ? {parameters} : {})},
         outputs: {threshold},
-        body: `writeThreshold(0u, readMean(0u) + ${Math.fround(this.props.standardDeviations ?? 2)} * sqrt(max(readVariance(0u), 0.0)));`
+        body: `writeThreshold(0u, readMean(0u) + ${parameters ? 'readParameters(0u)' : Math.fround(this.props.standardDeviations ?? 2)} * sqrt(max(readVariance(0u), 0.0)));`
       }),
       ...getPointCloudKernelNodes(graph, {
         id: `${this.id}-classify`,

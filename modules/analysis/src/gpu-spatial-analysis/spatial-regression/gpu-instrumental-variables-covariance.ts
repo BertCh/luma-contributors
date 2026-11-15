@@ -16,6 +16,8 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateRequirement,
+  validateCommandNodeBudget,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -25,6 +27,20 @@ import {
   IS_FINITE_BITS_WGSL,
   IS_FINITE_VALUE_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
+import type {GPUSolverStatusPort} from '../../analysis-core/contracts/inference';
+import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
+import {
+  getInstrumentalVariablesCovarianceStatusView,
+  getInstrumentalVariablesCovarianceCommandNodeEstimate,
+  validateInstrumentalVariablesCovarianceOptions,
+  INSTRUMENTAL_VARIABLES_COVARIANCE_MAXIMUM_COEFFICIENT_COUNT,
+  INSTRUMENTAL_VARIABLES_COVARIANCE_MAXIMUM_INSTRUMENT_COUNT,
+  INSTRUMENTAL_VARIABLES_COVARIANCE_LEVERAGE_TOLERANCE,
+  INSTRUMENTAL_VARIABLES_COVARIANCE_PSD_TOLERANCE,
+  type GPUInstrumentalVariablesCovarianceMethod
+} from './instrumental-variables-covariance-parameters';
+export {GPU_INSTRUMENTAL_VARIABLES_COVARIANCE_STATUS} from './instrumental-variables-covariance-parameters';
+export type {GPUInstrumentalVariablesCovarianceMethod} from './instrumental-variables-covariance-parameters';
 import {getCholeskyWGSL} from './spatial-regression-solve';
 import {
   getRegressionTileLayout,
@@ -46,14 +62,19 @@ export type GPUInstrumentalVariablesCovarianceProps = {
   instrumentCount: number;
   /** Structural residuals from the SAME rows and fitted IV model. All rows must be finite. */
   residuals: GraphDataView<'float32'>;
-  method?: 'HC0' | 'HC1' | 'HAC';
+  method?: GPUInstrumentalVariablesCovarianceMethod;
+  /** One key per estimation row in [0, clusterCount); no missing keys or automatic deletion. */
+  clusters?: GraphDataView<'uint32'>;
+  /** Capacity for dense cluster keys, at most the row count. Empty slots do not count in CR1. */
+  clusterCount?: number;
   /** HAC kernel, distinct from the model's spatial-lag weights. Symmetric, unit diagonal, PSD. */
   kernel?: GPUSpatialWeights;
   output: {
     /** Full row-major (coefficientCount + 1)² covariance, intercept first. */
     covariance: GraphDataView<'float32'>;
-    /** 0 success; 1 singular projection; 2 insufficient rows; 3 nonfinite input; 4 invalid kernel. */
-    status: GraphDataView<'uint32'>;
+    /** Named solver port; legacy scalar accepted. See GPU_INSTRUMENTAL_VARIABLES_COVARIANCE_STATUS.
+     * Failures publish NaN covariance: 5 invalid leverage, 6 invalid clusters, 7 non-PSD covariance. */
+    status: Pick<GPUSolverStatusPort, 'code'> | GraphDataView<'uint32'>;
   };
 };
 
@@ -61,7 +82,15 @@ export type GPUInstrumentalVariablesCovarianceProps = {
  * Centered and scaled IV sandwich covariance: A H' diag(u) K diag(u) H A', where
  * A = (Z'P_H Z)^-1 Z'H(H'H)^-1. HC0 uses identity K; HC1 multiplies by n/(n-p),
  * p including the intercept. HAC has no finite-sample correction. The kernel's diagonal,
- * symmetry, bounds and nonnegative weights are checked on GPU; PSD remains a caller precondition.
+ * symmetry, bounds and nonnegative weights are checked on GPU. The returned covariance (not the
+ * entire HAC kernel) is certified PSD to relative tolerance 1e-5 using a shifted Cholesky test.
+ * A zero or rank-deficient covariance is accepted; a failed certificate returns code 7 and NaNs.
+ * HC2/HC3 divide each structural residual by sqrt(1-h) / (1-h), respectively, where h is the
+ * diagonal of the orthogonal hat matrix of the projected design P_H Z, including the intercept.
+ * A denominator <= 1e-6, or h < -1e-6, gives code 5; leverage is never silently clipped.
+ * CLUSTER sums influence scores by cluster and uses CR1: G/(G-1) * (n-1)/(n-p), with occupied
+ * groups G (at least two) and p including the intercept. Invalid/missing keys give code 6.
+ * Compile-time: method, shapes, optional views and clusterCount. Per-frame: all buffer contents.
  * Inputs contain only estimation rows, with no automatic deletion/imputation. This is a covariance
  * stage, never a new estimator or an OLS sandwich applied incorrectly to endogenous regressors.
  *
@@ -74,38 +103,69 @@ export type GPUInstrumentalVariablesCovarianceProps = {
  */
 export class GPUInstrumentalVariablesCovariance implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly status: GraphDataView<'uint32'>;
+  /** Includes a conservative allowance for the published radix sort and per-column gathers. */
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUInstrumentalVariablesCovarianceProps) {
     this.id = props.id ?? 'instrumental-variables-covariance';
+    this.status = getInstrumentalVariablesCovarianceStatusView(props.output.status);
     const rows = props.residuals.length;
     validateCapacity(this.id, 'rows', rows, 1, REGRESSION_TILE_MAXIMUM_ROW_COUNT);
-    validateCapacity(this.id, 'coefficientCount', props.coefficientCount, 1, 15);
-    validateCapacity(this.id, 'instrumentCount', props.instrumentCount, props.coefficientCount, 16);
-    if (
-      !['HC0', 'HC1', 'HAC'].includes(props.method ?? 'HC0') ||
-      (props.method === 'HAC') !== Boolean(props.kernel)
-    )
-      throw new Error(`${this.id}: HAC requires a kernel; HC methods do not accept one`);
-    if (props.kernel && validateGPUSpatialWeights(this.id, props.kernel) !== rows)
-      throw new Error(`${this.id}: kernel row mismatch`);
-    for (const [view, format, length] of [
-      [props.design, 'float32', rows * props.coefficientCount],
-      [props.instruments, 'float32', rows * props.instrumentCount],
-      [props.residuals, 'float32', rows],
-      [props.output.covariance, 'float32', (props.coefficientCount + 1) ** 2],
-      [props.output.status, 'uint32', 1]
+    validateCapacity(
+      this.id,
+      'coefficientCount',
+      props.coefficientCount,
+      1,
+      INSTRUMENTAL_VARIABLES_COVARIANCE_MAXIMUM_COEFFICIENT_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'instrumentCount',
+      props.instrumentCount,
+      props.coefficientCount,
+      INSTRUMENTAL_VARIABLES_COVARIANCE_MAXIMUM_INSTRUMENT_COUNT
+    );
+    validateInstrumentalVariablesCovarianceOptions(this.id, rows, props);
+    if (props.kernel)
+      validateRequirement(
+        this.id,
+        validateGPUSpatialWeights(this.id, props.kernel) === rows,
+        'kernel row count must equal residuals.length'
+      );
+    // 256 nodes cover the published radix-sort passes for <=24-bit dense keys, the sort
+    // preparation and offset search, and the fixed covariance stages. Each score/count column
+    // adds an extraction, gather, segment reduction and pack (the count replaces its pack by
+    // two occupied-group reduction nodes). The node spec checks this bound at maximum shape.
+    this.estimatedCommandNodeCount = getInstrumentalVariablesCovarianceCommandNodeEstimate(
+      props.coefficientCount,
+      Boolean(props.clusters)
+    );
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    for (const [name, view, format, length] of [
+      ['design', props.design, 'float32', rows * props.coefficientCount],
+      ['instruments', props.instruments, 'float32', rows * props.instrumentCount],
+      ['residuals', props.residuals, 'float32', rows],
+      ['output.covariance', props.output.covariance, 'float32', (props.coefficientCount + 1) ** 2],
+      ['output.status.code', this.status, 'uint32', 1],
+      ...(props.clusters ? [['clusters', props.clusters, 'uint32', rows] as const] : [])
     ] as const) {
       validateSinglePackedView(view, [format], this.id);
-      if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
+      validateRequirement(this.id, view.length === length, `${name} length must equal ${length}`);
     }
-    validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
-      props.design,
-      props.instruments,
-      props.residuals,
-      props.kernel?.offsets,
-      props.kernel?.neighbors,
-      props.kernel?.weights,
-      props.kernel?.status?.overflow
-    ]);
+    validateGraphOutputsDisjointFromInputs(
+      this.id,
+      [props.output.covariance, this.status],
+      [
+        props.design,
+        props.instruments,
+        props.residuals,
+        props.clusters,
+        props.kernel?.offsets,
+        props.kernel?.neighbors,
+        props.kernel?.weights,
+        props.kernel?.status?.overflow
+      ]
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -141,15 +201,17 @@ export class GPUInstrumentalVariablesCovariance implements GPUCommandNodeProduce
       graph,
       `${id}-workspace`,
       'float32',
-      workspaceMeat + meatCount + 1
+      workspaceMeat + meatCount + 3
     );
     const projection = createTransientView(
       graph,
       `${id}-projection`,
       'float32',
-      columns * instruments
+      2 * columns * instruments
     );
     const scores = createTransientView(graph, `${id}-scores`, 'float32', rows * coefficients);
+    const rowStatus = createTransientView(graph, `${id}-row-status`, 'float32', rows);
+    const needsLeverage = props.method === 'HC2' || props.method === 'HC3';
     const kernelStatus = createTransientView(graph, `${id}-kernel-status`, 'uint32', rows);
     const smoothedScores = props.kernel
       ? createTransientView(graph, `${id}-smoothed-scores`, 'float32', rows * coefficients)
@@ -180,11 +242,13 @@ export class GPUInstrumentalVariablesCovariance implements GPUCommandNodeProduce
       props.design,
       props.instruments,
       props.residuals,
+      props.clusters,
       props.kernel?.offsets,
       props.kernel?.neighbors,
       props.kernel?.weights,
       props.kernel?.status?.overflow,
-      ...Object.values(props.output)
+      props.output.covariance,
+      this.status
     ]);
     const rowWGSL = `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}
 fn getColumn(row: u32, column: u32) -> f32 {
@@ -275,7 +339,7 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
         [
           binding('workspace', workspace),
           binding('projection', projection, 'read_write'),
-          binding('status', props.output.status, 'read_write', 'u32')
+          binding('status', this.status, 'read_write', 'u32')
         ],
         // A small dense solve over at most 16 instruments: the row sums come from the tiles above.
         `status[statusOffset] = 0u;
@@ -304,7 +368,8 @@ for (var column = 0u; column < ${columns}u; column++) {
  var right: array<f32, ${instruments}>;
  for (var instrument = 0u; instrument < ${instruments}u; instrument++) { right[instrument] = crossGram[instrument * ${columns}u + column] * instrumentScale[instrument] * designScale[column]; }
  choleskySolve_${instruments}(&instrumentGram, &right);
- for (var instrument = 0u; instrument < ${instruments}u; instrument++) { projected[instrument * ${columns}u + column] = right[instrument]; }
+ for (var instrument = 0u; instrument < ${instruments}u; instrument++) { projected[instrument * ${columns}u + column] = right[instrument];
+ projection[projectionOffset + ${columns * instruments}u + column * ${instruments}u + instrument] = right[instrument] * instrumentScale[instrument] / designScale[column]; }
 }
 var normal: array<f32, ${columns * columns}>;
 for (var first = 0u; first < ${columns}u; first++) { for (var second = 0u; second < ${columns}u; second++) {
@@ -327,17 +392,137 @@ for (var instrument = 0u; instrument < ${instruments}u; instrument++) { var righ
           binding('workspace', workspace),
           binding('projection', projection),
           binding('residuals', props.residuals),
-          binding('scores', scores, 'read_write')
+          binding('scores', scores, 'read_write'),
+          binding('rowStatus', rowStatus, 'read_write'),
+          ...(props.clusters ? [binding('clusters', props.clusters, 'read', 'u32')] : [])
         ],
-        `let residual = residuals[residualsOffset + index]; var intercept = 1.0 / ${rows}.0;
+        `var residual = residuals[residualsOffset + index]; var intercept = 1.0 / ${rows}.0;
+var influences: array<f32, ${columns}>;
+var leverage = 1.0 / ${rows}.0;
 for (var column = 0u; column < ${columns}u; column++) { var influence = 0.0;
-for (var instrument = 0u; instrument < ${instruments}u; instrument++) { influence += projection[projectionOffset + column * ${instruments}u + instrument] * (instruments[instrumentsOffset + index * ${instruments}u + instrument] - workspace[workspaceOffset + ${columns}u + instrument]); }
-intercept -= workspace[workspaceOffset + column] * influence;
-scores[scoresOffset + index * ${coefficients}u + column + 1u] = residual * influence;
+ var fitted = 0.0;
+ for (var instrument = 0u; instrument < ${instruments}u; instrument++) {
+  let centered = instruments[instrumentsOffset + index * ${instruments}u + instrument] - workspace[workspaceOffset + ${columns}u + instrument];
+  influence += projection[projectionOffset + column * ${instruments}u + instrument] * centered;
+  ${needsLeverage ? `fitted += projection[projectionOffset + ${columns * instruments}u + column * ${instruments}u + instrument] * centered;` : ''}
+ }
+ influences[column] = influence;
+ leverage += fitted * influence;
+ intercept -= workspace[workspaceOffset + column] * influence;
 }
+var code = 0.0;
+${
+  needsLeverage
+    ? `let denominator = 1.0 - leverage;
+if (!isFiniteBits(leverage) || leverage < -${INSTRUMENTAL_VARIABLES_COVARIANCE_LEVERAGE_TOLERANCE} || denominator <= ${INSTRUMENTAL_VARIABLES_COVARIANCE_LEVERAGE_TOLERANCE}) { code = 5.0; }
+residual /= ${props.method === 'HC2' ? 'sqrt(denominator)' : 'denominator'};`
+    : ''
+}
+${props.clusters ? `if (clusters[clustersOffset + index] >= ${props.clusterCount}u) { code = 6.0; }` : ''}
+rowStatus[rowStatusOffset + index] = code;
+for (var column = 0u; column < ${columns}u; column++) { scores[scoresOffset + index * ${coefficients}u + column + 1u] = residual * influences[column]; }
 scores[scoresOffset + index * ${coefficients}u] = residual * intercept;`
       )
     ];
+    nodes.push(
+      ...getRowTileSumNodes<Parameters>(graph, {
+        id: `${id}-row-status`,
+        operation: 'GPUInstrumentalVariablesCovariance',
+        variant: 'row-status',
+        rowCount: rows,
+        layout,
+        sumCount: 0,
+        maximumCount: 1,
+        bindings: [binding('rowStatus', rowStatus)],
+        declarations: `fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+        (*terms)[0] = max((*terms)[0], rowStatus[rowStatusOffset + row]);
+      }`,
+        partial: createTransientView(
+          graph,
+          `${id}-row-status-partials`,
+          'float32',
+          layout.tileCount
+        ),
+        output: workspace,
+        outputSlot: workspaceMeat + meatCount + 1
+      })
+    );
+    let meatScores = scores;
+    let meatRows = rows;
+    if (props.clusters) {
+      meatRows = props.clusterCount!;
+      meatScores = createTransientView(
+        graph,
+        `${id}-cluster-scores`,
+        'float32',
+        meatRows * coefficients
+      );
+      const contributions = Array.from({length: coefficients + 1}, (_, column) =>
+        createTransientView(graph, `${id}-contribution-${column}`, 'float32', rows)
+      );
+      const totals = contributions.map((_, column) =>
+        createTransientView(graph, `${id}-cluster-total-${column}`, 'float32', meatRows)
+      );
+      for (let column = 0; column <= coefficients; column++) {
+        nodes.push(
+          node(
+            `cluster-contribution-${column}`,
+            rows,
+            [
+              binding('scores', scores),
+              binding('contribution', contributions[column], 'read_write')
+            ],
+            `contribution[contributionOffset + index] = ${column === coefficients ? '1.0' : `scores[scoresOffset + index * ${coefficients}u + ${column}u]`};`
+          )
+        );
+      }
+      nodes.push(
+        ...getSortedSegmentSumNodes(graph, {
+          id: `${id}-clusters`,
+          operation: 'GPUInstrumentalVariablesCovariance',
+          segmentCount: meatRows,
+          segmentKeys: props.clusters,
+          reductions: contributions.map((contribution, column) => ({
+            name: `score-${column}`,
+            contributions: contribution,
+            output: totals[column]
+          }))
+        })
+      );
+      for (let column = 0; column < coefficients; column++) {
+        nodes.push(
+          node(
+            `cluster-pack-${column}`,
+            meatRows,
+            [binding('total', totals[column]), binding('scores', meatScores, 'read_write')],
+            `scores[scoresOffset + index * ${coefficients}u + ${column}u] = total[totalOffset + index];`
+          )
+        );
+      }
+      const clusterLayout = getRegressionTileLayout(meatRows);
+      nodes.push(
+        ...getRowTileSumNodes<Parameters>(graph, {
+          id: `${id}-occupied-clusters`,
+          operation: 'GPUInstrumentalVariablesCovariance',
+          variant: 'occupied-clusters',
+          rowCount: meatRows,
+          layout: clusterLayout,
+          sumCount: 1,
+          bindings: [binding('counts', totals[coefficients])],
+          declarations: `fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+          (*terms)[0] += select(0.0, 1.0, counts[countsOffset + row] > 0.0);
+        }`,
+          partial: createTransientView(
+            graph,
+            `${id}-occupied-partials`,
+            'float32',
+            clusterLayout.tileCount
+          ),
+          output: workspace,
+          outputSlot: workspaceMeat + meatCount + 2
+        })
+      );
+    }
     if (props.kernel && smoothedScores) {
       const kernel = props.kernel;
       nodes.push(
@@ -393,12 +578,12 @@ for (var second = 0u; second < ${coefficients}u; second++) { smoothed[smoothedOf
         id: `${id}-meat`,
         operation: 'GPUInstrumentalVariablesCovariance',
         variant: 'meat',
-        rowCount: rows,
-        layout,
+        rowCount: meatRows,
+        layout: getRegressionTileLayout(meatRows),
         sumCount: meatCount,
         maximumCount: props.kernel ? 1 : 0,
         bindings: [
-          binding('scores', scores),
+          binding('scores', meatScores),
           ...(smoothedScores
             ? [
                 binding('smoothed', smoothedScores),
@@ -421,7 +606,7 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
           graph,
           `${id}-meat-partials`,
           'float32',
-          layout.tileCount * (meatCount + (props.kernel ? 1 : 0))
+          getRegressionTileLayout(meatRows).tileCount * (meatCount + (props.kernel ? 1 : 0))
         ),
         output: workspace,
         outputSlot: workspaceMeat
@@ -432,14 +617,36 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
         [
           binding('workspace', workspace),
           binding('covariance', props.output.covariance, 'read_write'),
-          binding('status', props.output.status, 'read_write', 'u32')
+          binding('status', this.status, 'read_write', 'u32')
         ],
         `var code = status[statusOffset];
 ${props.kernel ? `if (workspace[workspaceOffset + ${workspaceMeat + meatCount}u] != 0.0) { code = 4u; }` : ''}
-let scale = ${props.method === 'HC1' ? `${rows}.0 / ${Math.max(rows - coefficients, 1)}.0` : '1.0'};
-for (var slot = 0u; slot < ${meatCount}u; slot++) { if (code == 0u && !isFiniteBits(workspace[workspaceOffset + ${workspaceMeat}u + slot] * scale)) { code = 3u; } }
-for (var slot = 0u; slot < ${meatCount}u; slot++) { covariance[covarianceOffset + slot] = select(getNaN(), workspace[workspaceOffset + ${workspaceMeat}u + slot] * scale, code == 0u); }
-status[statusOffset] = code;`
+if (code == 0u) { code = u32(workspace[workspaceOffset + ${workspaceMeat + meatCount + 1}u]); }
+${
+  props.clusters
+    ? `let groups = workspace[workspaceOffset + ${workspaceMeat + meatCount + 2}u];
+if (code == 0u && groups < 2.0) { code = 6u; }`
+    : ''
+}
+let scale = ${props.method === 'HC1' ? `${rows}.0 / ${Math.max(rows - coefficients, 1)}.0` : props.clusters ? `(groups / max(groups - 1.0, 1.0)) * ${rows - 1}.0 / ${Math.max(rows - coefficients, 1)}.0` : '1.0'};
+var matrix: array<f32, ${meatCount}>;
+var magnitude = 0.0;
+for (var first = 0u; first < ${coefficients}u; first++) { for (var second = 0u; second < ${coefficients}u; second++) {
+ let value = (0.5 * workspace[workspaceOffset + ${workspaceMeat}u + first * ${coefficients}u + second] + 0.5 * workspace[workspaceOffset + ${workspaceMeat}u + second * ${coefficients}u + first]) * scale;
+ matrix[first * ${coefficients}u + second] = value;
+ if (code == 0u && !isFiniteBits(value)) { code = 3u; }
+ magnitude = max(magnitude, abs(value));
+} }
+if (code == 0u && magnitude > 0.0) {
+ var shifted = matrix;
+ for (var first = 0u; first < ${coefficients}u; first++) { for (var second = 0u; second < ${coefficients}u; second++) {
+   shifted[first * ${coefficients}u + second] /= magnitude;
+ } shifted[first * ${coefficients + 1}u] += ${INSTRUMENTAL_VARIABLES_COVARIANCE_PSD_TOLERANCE}; }
+ if (!choleskyFactor_${coefficients}(&shifted)) { code = 7u; }
+}
+for (var slot = 0u; slot < ${meatCount}u; slot++) { covariance[covarianceOffset + slot] = select(getNaN(), matrix[slot], code == 0u); }
+status[statusOffset] = code;`,
+        `${IS_FINITE_VALUE_WGSL}\n${getCholeskyWGSL(coefficients)}`
       )
     );
     return nodes;

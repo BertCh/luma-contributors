@@ -67,3 +67,56 @@ it('compares every hierarchy output on merges, overflow, masked input and ground
     }
   }
 });
+
+it('preserves exact activation IDs on plateaus, multifurcations, late outlets and disconnected padding', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const scene of ['plateau', 'merges', 'barriers', 'single', 'overflow'] as const) {
+    const width = scene === 'single' ? 1 : 17;
+    const height = scene === 'single' ? 1 : 5;
+    const count = width * height;
+    const props = {
+      ...makeHierarchyProps(scene === 'overflow' ? 1 : count + 3),
+      grid: {...makeHierarchyProps().grid, width, height},
+      stageCount: 2
+    };
+    // Integer heights provide exact float32 comparisons and many equal-height activation ties.
+    const elevation = Float32Array.from({length: count}, (_, cell) =>
+      scene === 'plateau' ? 0 : ((cell * 17 + Math.floor(cell / width) * 3) % 11) - 5
+    );
+    const validity = Uint32Array.from({length: count}, (_, cell) =>
+      scene === 'barriers' && (cell % width === 8 || cell >= count - 3) ? 0 : 1
+    );
+    const outlets = Uint32Array.from({length: count}, (_, cell) => (cell % 7 === 3 ? 9 : 0));
+    const inputs = {
+      elevation: {format: 'float32' as const, values: elevation},
+      validity: {format: 'uint32' as const, values: validity},
+      outlets: {format: 'uint32' as const, values: outlets},
+      stages: {format: 'float32' as const, values: Float32Array.of(0, 6)}
+    };
+    const outputs = [
+      'nodes',
+      'levels',
+      'cellNodes',
+      'curves',
+      'status',
+      'requiredCount',
+      'overflow'
+    ];
+    const expected = await runOperationGraph(device, {
+      inputs,
+      operations: [new CPUTerrainDepressionHierarchyOperation(props)],
+      outputs
+    });
+    // Repeat the merge case to exercise scheduling-independent atomic splicing and metadata.
+    for (let repetition = 0; repetition < (scene === 'merges' ? 3 : 1); repetition++) {
+      const actual = await runOperationGraph(device, {
+        inputs,
+        operations: [new GPUTerrainDepressionHierarchyOperation(props)],
+        outputs
+      });
+      for (const port of outputs)
+        expect(Array.from(actual[port]), `${scene} ${port}`).toEqual(Array.from(expected[port]));
+    }
+  }
+});

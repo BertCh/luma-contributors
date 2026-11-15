@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLDispatchGate,
   createWGSLKernelNode,
@@ -16,22 +21,223 @@ import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE
 } from './geographically-weighted-regression-parameters';
 import {getRingNeighborDistancesWGSL} from './gwr-grid-index';
+import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+
+/** Upper bound for the generic interval search, including both boundary evaluations. @internal */
+export function getGoldenSectionIntervalNodeCount(
+  iterations: number,
+  evaluationNodes: number
+): number {
+  return 1 + (2 * iterations + 2) * (evaluationNodes + 2) + iterations;
+}
+
+/**
+ * Scalar golden-section minimization shared by the space-time profile searches. Both endpoints
+ * are tested; ties keep the smaller value. `score` is [objective, auxiliary value, converged,
+ * iterationLimitReached]. `result` is [value, objective, auxiliary, converged, iterations, active,
+ * iterationLimitReached]. A parent search enables a nested search through result[5].
+ * The callback gates its data work with `enabled`; state nodes remain ungated. @internal
+ */
+export function createGoldenSectionIntervalNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    bounds: GraphDataView<'float32'>;
+    axis: 0 | 1;
+    integer: boolean;
+    maximumValue?: number;
+    maximumIterations: number;
+    parent?: GraphDataView<'float32'>;
+    evaluate: (
+      value: GraphDataView<'float32'>,
+      score: GraphDataView<'float32'>,
+      enabled: GraphDataView<'float32'>,
+      id: string
+    ) => readonly GPUCommandNode<Parameters>[];
+  }
+): {nodes: GPUCommandNode<Parameters>[]; result: GraphDataView<'float32'>} {
+  const {id, maximumIterations} = props;
+  const state = createTransientView(graph, `${id}-interval`, 'float32', 8);
+  const result = createTransientView(graph, `${id}-result`, 'float32', 7);
+  const value = createTransientView(graph, `${id}-value`, 'float32', 1);
+  const score = createTransientView(graph, `${id}-score`, 'float32', 4);
+  const read = (name: string, view: GraphDataView<'float32'>): WGSLKernelBinding => ({
+    name,
+    view,
+    type: 'f32',
+    access: 'read'
+  });
+  const write = (name: string, view: GraphDataView<'float32'>): WGSLKernelBinding => ({
+    name,
+    view,
+    type: 'f32',
+    access: 'read_write'
+  });
+  const node = (suffix: string, bindings: WGSLKernelBinding[], body: string) =>
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-${suffix}`,
+      operation: 'GTWRBandwidthSearch',
+      variant: suffix.replace(/\d+/g, ''),
+      invocationCount: 1,
+      bindings,
+      declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,
+      body
+    });
+  const nodes = [
+    node(
+      'initialize',
+      [
+        read('bounds', props.bounds),
+        write('state', state),
+        write('result', result),
+        ...(props.parent ? [read('parent', props.parent)] : [])
+      ],
+      `
+  let lower = bounds[boundsOffset + ${props.axis * 2}u];
+  let upper = bounds[boundsOffset + ${props.axis * 2 + 1}u];
+  let absoluteTolerance = bounds[boundsOffset + 4u];
+  let relativeTolerance = bounds[boundsOffset + 5u];
+  var valid = isFiniteBits(lower) && isFiniteBits(upper) && lower <= upper
+    && lower ${props.axis === 0 ? '> 0.0' : '>= 0.0'}
+    && isFiniteBits(absoluteTolerance) && absoluteTolerance > 0.0
+    && isFiniteBits(relativeTolerance) && relativeTolerance >= 0.0;
+  ${props.integer ? 'valid = valid && lower == round(lower) && upper == round(upper);' : ''}
+  ${props.maximumValue === undefined ? '' : `valid = valid && upper <= ${props.maximumValue}.0;`}
+  ${props.parent ? 'valid = valid && parent[parentOffset + 5u] > 0.5;' : ''}
+  state[stateOffset] = lower;
+  state[stateOffset + 1u] = upper;
+  state[stateOffset + 2u] = 0.0;
+  state[stateOffset + 3u] = 0.0;
+  state[stateOffset + 4u] = 0.0;
+  state[stateOffset + 5u] = 0.0;
+  state[stateOffset + 6u] = 0.0;
+  state[stateOffset + 7u] = 0.0;
+  for (var field = 0u; field < 7u; field++) { result[resultOffset + field] = 0.0; }
+  result[resultOffset] = getNaN();
+  result[resultOffset + 1u] = getNaN();
+  result[resultOffset + 2u] = getNaN();
+  result[resultOffset + 5u] = select(0.0, 1.0, valid);`
+    )
+  ];
+  // Every round re-evaluates the interior pair, so nested objectives need no cached side effects.
+  for (let evaluation = 0; evaluation < 2 + 2 * maximumIterations; evaluation++) {
+    const boundary = evaluation < 2;
+    const side = evaluation % 2;
+    nodes.push(
+      node(
+        `prepare-${evaluation}`,
+        [
+          write('state', state),
+          read('result', result),
+          write('value', value),
+          write('score', score)
+        ],
+        `
+  if (result[resultOffset + 5u] < 0.5) { return; }
+  let lower = state[stateOffset];
+  let upper = state[stateOffset + 1u];
+  var candidate = ${
+    boundary
+      ? side === 0
+        ? 'lower'
+        : 'upper'
+      : side === 0
+        ? `lower + ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_GOLDEN_SECTION_DELTA} * (upper - lower)`
+        : `upper - ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_GOLDEN_SECTION_DELTA} * (upper - lower)`
+  };
+  ${props.integer ? 'candidate = round(candidate);' : ''}
+  ${
+    props.integer && !boundary && side === 1
+      ? `// Rounded interior points must compare different counts while the bracket has room.
+  // In a three-count bracket this visits the middle and upper counts; the lower was tested
+  // when it became a bracket endpoint. The iteration can then certify all three counts.
+  candidate = min(upper, max(candidate, state[stateOffset + 2u] + 1.0));`
+      : ''
+  }
+  value[valueOffset] = candidate;
+  state[stateOffset + ${2 + side}u] = candidate;
+  for (var field = 0u; field < 4u; field++) { score[scoreOffset + field] = getNaN(); }`
+      )
+    );
+    nodes.push(...props.evaluate(value, score, result, `${id}-evaluate-${evaluation}`));
+    nodes.push(
+      node(
+        `collect-${evaluation}`,
+        [
+          read('value', value),
+          read('score', score),
+          write('state', state),
+          write('result', result)
+        ],
+        `
+  if (result[resultOffset + 5u] < 0.5) { return; }
+  let objective = score[scoreOffset];
+  let candidate = value[valueOffset];
+  state[stateOffset + ${4 + side}u] = objective;
+  let best = result[resultOffset + 1u];
+  if (isFiniteBits(objective) && (!isFiniteBits(best) || objective < best
+      || (objective == best && candidate < result[resultOffset]))) {
+    result[resultOffset] = candidate;
+    result[resultOffset + 1u] = objective;
+    result[resultOffset + 2u] = score[scoreOffset + 1u];
+    state[stateOffset + 6u] = score[scoreOffset + 2u];
+    state[stateOffset + 7u] = score[scoreOffset + 3u];
+  }`
+      )
+    );
+    if (!boundary && side === 1) {
+      nodes.push(
+        node(
+          `iterate-${evaluation}`,
+          [read('bounds', props.bounds), write('state', state), write('result', result)],
+          `
+  if (result[resultOffset + 5u] < 0.5) { return; }
+  let firstScore = state[stateOffset + 4u];
+  let secondScore = state[stateOffset + 5u];
+  let firstWins = isFiniteBits(firstScore) && (!isFiniteBits(secondScore) || firstScore <= secondScore);
+  ${props.integer ? 'let resolvedIntegerInterval = state[stateOffset + 1u] - state[stateOffset] <= 2.0;' : ''}
+  if (firstWins) { state[stateOffset + 1u] = state[stateOffset + 3u]; }
+  else { state[stateOffset] = state[stateOffset + 2u]; }
+  let lower = state[stateOffset];
+  let upper = state[stateOffset + 1u];
+  let tolerance = max(bounds[boundsOffset + 4u], bounds[boundsOffset + 5u] * max(abs(lower), abs(upper)));
+  let finished = ${props.integer ? 'resolvedIntegerInterval || ' : ''}upper - lower <= ${props.integer ? 'max(1.0, tolerance)' : 'tolerance'};
+  result[resultOffset + 4u] += 1.0;
+  if (finished || result[resultOffset + 4u] >= ${maximumIterations}.0) {
+    result[resultOffset + 5u] = 0.0;
+    result[resultOffset + 3u] = select(0.0, state[stateOffset + 6u], finished && isFiniteBits(result[resultOffset + 1u]));
+    result[resultOffset + 6u] = max(state[stateOffset + 7u], select(0.0, 1.0, !finished));
+  }`
+        )
+      );
+    }
+  }
+  return {nodes, result};
+}
 
 /** Inputs of {@link createGoldenSectionSearchNodes}. @internal */
 export type GoldenSectionSearchProps = {
   /** Prefix of the node and transient IDs. */
   id: string;
+  /** Skip distance-derived bounds when the caller supplies both positive bounds. */
+  callerBoundsOnly?: boolean;
+  /** Evaluate the upper endpoint too, retaining it when the two interior scores are invalid. */
+  probeUpperBound?: boolean;
+  /** Override dispatch shapes for callers with different reduction passes. */
+  dispatchShapes?: readonly (readonly [number, number?])[];
+  /** Optional outer backfit state: only code 3 starts another search. */
+  runningState?: GraphDataView<'uint32'>;
   /** Operation name of the generated kernels. */
   operation: string;
   rowCount: number;
   /** Rows summed by one thread of a tile pass. */
   tileRows: number;
   tileCount: number;
-  /** Candidates evaluated together by pass 0 (2: the first iteration evaluates both interior points). */
+  /** Initial candidates: two interior points, optionally also the upper endpoint. */
   candidateWidth: number;
   /** Compile-time `maximumSearchIterations`. */
   maximumIterations: number;
-  /** Rows of the candidate table, `maximumIterations + 1`. */
+  /** Rows of the candidate table: maximumIterations + 1, or + 2 with the endpoint probe. */
   tableRowCount: number;
   /** Declarations shared by every GWR kernel (the constants and the NaN helpers). */
   common: string;
@@ -92,7 +298,7 @@ export function createGoldenSectionSearchNodes<Parameters>(
   const gate = createWGSLDispatchGate<Parameters>(graph, {
     id: `${id}-search-dispatch`,
     operation,
-    shapes: [[rowCount], [tileCount * candidateWidth], [candidateWidth]]
+    shapes: props.dispatchShapes ?? [[rowCount], [tileCount * candidateWidth], [candidateWidth]]
   });
   const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
     name,
@@ -215,7 +421,8 @@ ${stateConstants}`;
         read('tileCandidates', props.tileCandidates, 'f32'),
         write('table', props.candidateTable, 'f32'),
         write('state', props.searchState, 'f32'),
-        gate.binding
+        gate.binding,
+        ...(props.runningState ? [read('runningState', props.runningState, 'u32')] : [])
       ],
       invocationCount: 1,
       declarations: searchCommon,
@@ -230,7 +437,7 @@ ${stateConstants}`;
   var nearest = SENTINEL;
   var farthest = 0.0;
   var included = 0.0;
-  for (var tile = 0u; tile < TILE_COUNT; tile++) {
+  for (var tile = 0u; tile < ${props.callerBoundsOnly ? '0u' : 'TILE_COUNT'}; tile++) {
     let base = tileCandidatesOffset + tile * 3u;
     nearest = min(nearest, tileCandidates[base]);
     farthest = max(farthest, tileCandidates[base + 1u]);
@@ -247,7 +454,7 @@ ${stateConstants}`;
     lower = 0.5 * nearest;
     upper = 2.0 * farthest;
   }
-  let isSearch = callerCount >= 2u;
+  let isSearch = callerCount >= 2u${props.runningState ? ' && runningState[runningStateOffset] == 3u' : ''};
   if (isSearch) {
     let givenLower = params[paramsOffset + HEADER];
     let givenUpper = params[paramsOffset + HEADER + 1u];
@@ -269,9 +476,10 @@ ${stateConstants}`;
   }
   if (isSearch) {
     // Block 0 holds the caller header; it now carries the two interior points of iteration 1.
-    ladders[laddersOffset + 3u] = 2.0;
+    ladders[laddersOffset + 3u] = ${props.probeUpperBound ? '3.0' : '2.0'};
     ladders[laddersOffset + 1u + HEADER] = first;
     ladders[laddersOffset + 2u + HEADER] = second;
+    ${props.probeUpperBound ? 'ladders[laddersOffset + 3u + HEADER] = high;' : ''}
   }
   state[stateOffset + STATE_LOWER] = low;
   state[stateOffset + STATE_LOWER_INTERIOR] = first;
@@ -283,7 +491,7 @@ ${stateConstants}`;
   state[stateOffset + STATE_ACTIVE] = select(0.0, 1.0, isSearch);
   // A single caller value is a fixed bandwidth: its evaluation is table row 0.
   state[stateOffset + STATE_OPTIMUM_ROW] = select(0.0, -1.0, isSearch);
-  state[stateOffset + STATE_EVALUATION_COUNT] = select(1.0, 2.0, isSearch);
+  state[stateOffset + STATE_EVALUATION_COUNT] = select(1.0, ${props.probeUpperBound ? '3.0' : '2.0'}, isSearch);
   state[stateOffset + STATE_CONVERGED] = 0.0;
   state[stateOffset + STATE_RESERVED] = 0.0;
   if (isSearch) {
@@ -337,7 +545,7 @@ fn getRowSingular(row: u32) -> f32 {
   var first = state[stateOffset + STATE_LOWER_INTERIOR];
   var upper = state[stateOffset + STATE_UPPER];
   var second = state[stateOffset + STATE_UPPER_INTERIOR];
-  let newRow = iteration + 1u;
+  let newRow = iteration + ${props.probeUpperBound ? '2u' : '1u'};
   var optimumRow = secondRow;
   var nextFirstRow = firstRow;
   var nextSecondRow = secondRow;
@@ -366,13 +574,25 @@ fn getRowSingular(row: u32) -> f32 {
     newValue = second;
     nextSecondRow = newRow;
   }
+  ${
+    props.probeUpperBound
+      ? `// The initial upper-bound evaluation is table row 2. A finite endpoint keeps the
+  // bracket searchable even when both current interior points have invalid AICc.
+  let endpointScore = getRowScore(2u);
+  let endpointValid = isFiniteBits(endpointScore);
+  let interiorScore = getRowScore(optimumRow);
+  if (endpointValid && (!isFiniteBits(interiorScore) || endpointScore < interiorScore)) {
+    optimumRow = 2u;
+  }`
+      : ''
+  }
   // mgwr loops while |score_b - score_d| > tol; the difference is of the pair just compared.
   var keepSearching = true;
   if (isFirstValid && isSecondValid && firstSingular == secondSingular) {
     let tolerance = max(TOLERANCE_ABSOLUTE, TOLERANCE_RELATIVE * max(abs(firstScore), abs(secondScore)));
     keepSearching = abs(firstScore - secondScore) > tolerance;
   } else if (!isFirstValid && !isSecondValid) {
-    keepSearching = false;
+    keepSearching = ${props.probeUpperBound ? 'endpointValid' : 'false'};
   }
   state[stateOffset + STATE_LOWER] = lower;
   state[stateOffset + STATE_LOWER_INTERIOR] = first;
@@ -400,5 +620,63 @@ fn getRowSingular(row: u32) -> f32 {
   state[stateOffset + STATE_EVALUATION_COUNT] = f32(newRow + 1u);`
     });
 
-  return {setupNodes, gate, createIterationNode};
+  return {
+    setupNodes: props.callerBoundsOnly ? setupNodes.slice(2) : setupNodes,
+    gate,
+    createIterationNode
+  };
+}
+
+/** Float64 MGWR twin of the shared transitions, including the upper-endpoint feasibility probe. @internal */
+export function selectGoldenSectionBandwidth(
+  lower: number,
+  upper: number,
+  evaluate: (bandwidth: number) => number,
+  maximumIterations: number
+): number {
+  if (!(lower > 0) || !(upper >= lower) || !Number.isFinite(lower) || !Number.isFinite(upper))
+    return NaN;
+  const delta = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_GOLDEN_SECTION_DELTA;
+  let first = lower + delta * (upper - lower);
+  let second = upper - delta * (upper - lower);
+  let firstScore = evaluate(first);
+  let secondScore = evaluate(second);
+  const endpoint = upper;
+  const endpointScore = evaluate(endpoint);
+  const endpointValid = Number.isFinite(endpointScore);
+  let best = NaN;
+  for (let iteration = 0; iteration < maximumIterations; iteration++) {
+    const firstValid = Number.isFinite(firstScore);
+    const secondValid = Number.isFinite(secondScore);
+    const firstWins = firstValid && (!secondValid || firstScore <= secondScore);
+    best = firstWins ? first : secondValid ? second : NaN;
+    const interiorScore = firstWins ? firstScore : secondScore;
+    if (endpointValid && (!Number.isFinite(interiorScore) || endpointScore < interiorScore))
+      best = endpoint;
+    const tolerance = Math.max(
+      GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_GOLDEN_SECTION_TOLERANCE,
+      GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_GOLDEN_SECTION_RELATIVE_TOLERANCE *
+        Math.max(Math.abs(firstScore), Math.abs(secondScore))
+    );
+    if (
+      (!firstValid && !secondValid && !endpointValid) ||
+      (firstValid && secondValid && Math.abs(firstScore - secondScore) <= tolerance) ||
+      iteration + 1 === maximumIterations
+    )
+      break;
+    if (firstWins) {
+      upper = second;
+      second = first;
+      secondScore = firstScore;
+      first = lower + delta * Math.abs(upper - lower);
+      firstScore = evaluate(first);
+    } else {
+      lower = first;
+      first = second;
+      firstScore = secondScore;
+      second = upper - delta * Math.abs(upper - lower);
+      secondScore = evaluate(second);
+    }
+  }
+  return best;
 }

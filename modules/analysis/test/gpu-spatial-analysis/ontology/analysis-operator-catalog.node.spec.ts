@@ -15,6 +15,7 @@ import * as gpuTerrain from '../../../src/gpu-terrain/index';
 import * as pointcloudAnalysis from '../../../src/pointcloud-analysis/index';
 import * as rasterAnalysis from '../../../src/raster-analysis/index';
 import {
+  REUSED_ANALYSIS_OPERATORS,
   GPU_SPATIAL_ANALYSIS_AUDIT,
   GPU_SPATIAL_ANALYSIS_CAPABILITIES,
   GPU_SPATIAL_ANALYSIS_OPERATORS,
@@ -23,6 +24,7 @@ import {
   getGPUAnalysisOperatorCatalog,
   queryGPUAnalysisOperators
 } from '../../../src/gpu-spatial-analysis/ontology/index';
+import {FITTING_KERNEL_OPERATORS} from '../../../src/gpu-spatial-analysis/ontology/fitting-kernel-catalog';
 import {SPATIOTEMPORAL_REVIEW_OPERATORS} from '../../../src/gpu-spatial-analysis/ontology/spatiotemporal-review-catalog';
 
 const ENTRY_POINTS: Record<string, Record<string, unknown>> = {
@@ -85,9 +87,15 @@ it('keeps the original exports unchanged and adds the other entry points beside 
   ]);
 
   const all = getGPUAnalysisOperatorCatalog();
-  // 216 operators of the other entry points, then the operators of `gpu-spatial-analysis` added
-  // after the original 261 (SPATIOTEMPORAL_REVIEW_OPERATORS).
-  expect(all.length).toBe(261 + 216 + SPATIOTEMPORAL_REVIEW_OPERATORS.length);
+  // 225 operators of the other entry points, then the operators of `gpu-spatial-analysis` added
+  // after the original 261 (spatiotemporal review, fitting kernels, reused analysis operators).
+  expect(all.length).toBe(
+    261 +
+      225 +
+      SPATIOTEMPORAL_REVIEW_OPERATORS.length +
+      FITTING_KERNEL_OPERATORS.length +
+      REUSED_ANALYSIS_OPERATORS.length
+  );
   expect(all.slice(0, 261)).toEqual(GPU_SPATIAL_ANALYSIS_OPERATORS);
   const capabilities = getGPUAnalysisCapabilityCatalog();
   expect(capabilities.slice(0, 49)).toEqual(GPU_SPATIAL_ANALYSIS_CAPABILITIES);
@@ -238,4 +246,22 @@ it('queries operators by package, tier and capability', () => {
     'GPUPointCloudSurfaces',
     'GPUPointCloudHeight'
   ]);
+});
+
+it('classifies extracted preparation and exact summaries as operations, and their arithmetic/upload building blocks as helpers', () => {
+  for (const operator of REUSED_ANALYSIS_OPERATORS) {
+    expect(getGPUAnalysisOperator(operator.exportName)).toBe(operator);
+    expect(operator.evidence.contract).not.toBe('unaudited');
+  }
+  for (const helper of [
+    'makeDecimal128WordVectors',
+    'makeDecimal128SelectionExpression',
+    'makeInteger64RangeSelectionExpression',
+    'mergeNumericNarrowingReports',
+    'runWideNumericKernel',
+    'splitBigIntToWords'
+  ] as const) {
+    expect(dataframeAnalysis[helper]).toBeTypeOf('function');
+    expect(getGPUAnalysisOperator(helper)).toBeUndefined();
+  }
 });

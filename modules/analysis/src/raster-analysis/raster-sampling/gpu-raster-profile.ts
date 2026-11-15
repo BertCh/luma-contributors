@@ -26,7 +26,13 @@ import type {
   GPUCardinalityPort,
   GPUOverflowStatusPort
 } from '../../analysis-core/kernels/gpu-contributor-types';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  getRasterAlgebraInputNodes,
+  getRasterAlgebraInputViews,
+  isRasterAlgebraBand,
+  validateRasterAlgebraInput
+} from '../raster-algebra/raster-algebra-input';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPU_RASTER_PROFILE_PARAMETER_LENGTH} from './raster-sampling-parameters';
 import {
   getRasterSamplingWGSL,
@@ -98,11 +104,11 @@ export type GPURasterProfileProps = {
   /** Raster grid: its width and height size the kernels; its extent places the samples. */
   grid: GPURasterMetadata;
   /**
-   * Row-major raster of at least `width * height` rows (row 0 is the grid's first row). A
+   * Published band or legacy row-major float values (at least `width * height` rows). A
    * non-finite cell (NaN or an infinity) is nodata.
    */
-  values: GraphDataView<'float32'>;
-  /** Optional finite sentinel treated as nodata. */
+  values: GraphDataView<'float32'> | GPURasterBand;
+  /** Optional finite sentinel for legacy values; bands use their own validity, sentinel and calibration. */
   noDataValue?: number;
   /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
   mask?: GraphDataView<'uint32'>;
@@ -190,7 +196,7 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
     const {id} = this;
     const {output} = props;
     const pixelCount = validateRasterDescription(id, props.grid, props.noDataValue);
-    validateRasterSamplingView(id, 'values', props.values, 'float32', pixelCount);
+    validateRasterAlgebraInput(id, 'values', props.values, props.grid, pixelCount);
     if (props.mask) {
       validateRasterSamplingView(id, 'mask', props.mask, 'uint32', pixelCount);
     }
@@ -269,7 +275,13 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
       throw new Error(`${id} outputs must not share buffers`);
     }
     const inputBuffers = new Set(
-      [props.values, props.mask, props.positions, props.lineOffsets, props.parameters]
+      [
+        ...getRasterAlgebraInputViews(props.values),
+        props.mask,
+        props.positions,
+        props.lineOffsets,
+        props.parameters
+      ]
         .filter(view => view !== undefined)
         .map(view => view.buffer)
     );
@@ -285,7 +297,7 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
     const {id, props, lineCount, sampleCapacity} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      props.values,
+      ...getRasterAlgebraInputViews(props.values),
       props.mask,
       props.positions,
       props.lineOffsets,
@@ -305,7 +317,8 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
       1,
       MAXIMUM_SAMPLES_PER_LINE
     );
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const source = getRasterAlgebraInputNodes(graph, `${id}-source`, props.values, props.grid);
+    const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const vertexDistances = createTransientView(
       graph,
       `${id}-vertex-distances`,
@@ -565,7 +578,7 @@ ${GET_NAN_WGSL}`,
 
     // 4. Raster value per sample (NaN positions beyond the total give NaN).
     const valueBindings: WGSLKernelBinding[] = [
-      {name: 'raster', view: props.values, type: 'f32', access: 'read'}
+      {name: 'raster', view: source.values, type: 'f32', access: 'read'}
     ];
     if (props.mask) {
       valueBindings.push({name: 'validity', view: props.mask, type: 'u32', access: 'read'});
@@ -585,7 +598,7 @@ ${GET_NAN_WGSL}`,
         declarations: getRasterSamplingWGSL({
           width: props.grid.width,
           height: props.grid.height,
-          noDataValue: props.noDataValue,
+          noDataValue: isRasterAlgebraBand(props.values) ? undefined : props.noDataValue,
           hasValidity: Boolean(props.mask)
         }),
         body: `valuesOut[valuesOutOffset + index] = sampleRaster(

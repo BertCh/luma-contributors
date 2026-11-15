@@ -9,13 +9,24 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {validateRasterIterations} from '../../raster-analysis/cost-distance/raster-relaxation';
+import {GPU_RASTER_MAXIMUM_ITERATIONS} from '../../raster-analysis/cost-distance/raster-relaxation';
+import type {GPUIterationStatusPort} from '../../analysis-core/contracts/status';
+import {
+  createTerrainFractionalHANDNodes,
+  TERRAIN_HAND_STATE_WORDS
+} from './terrain-fractional-hand';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
+  validateCapacity,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
+  validateRequirement,
+  validateSinglePackedView,
+  validateViewLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -38,32 +49,30 @@ import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kern
 import {GPU_TERRAIN_FLOW_STREAM_UNRESOLVED} from './gpu-terrain-flow';
 
 const OPERATION = 'GPUTerrainHeightAboveDrainage';
+// getRasterBufferBandNodes uses one published neighborhood or texture conversion node.
+const RASTER_CANONICALIZATION_NODE_ALLOWANCE = 1;
 
 /** Value of `drainageCells` for cells with no stream downstream, and for invalid cells. */
 export const GPU_TERRAIN_DRAINAGE_NONE = 0xffffffff;
 
 /**
- * Value of `drainageCells` for cells whose D8 path meets a `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED`
+ * Value of `drainageCells` for cells whose path meets a `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED`
  * stream word or a `GPU_TERRAIN_FLOW_UNRESOLVED` direction before a stream cell, or whose pointer
- * jumping stopped at `maximumIterations` before reaching its fixpoint: the drainage cell is unknown, and
+ * jumping or fractional dependency sweeps stopped at `maximumIterations` before finishing: the drainage cell is unknown, and
  * HAND is NaN. A converged run on resolved inputs never writes it.
  */
 export const GPU_TERRAIN_DRAINAGE_UNRESOLVED = 0xfffffffe;
 
-/** One-row status words of {@link GPUTerrainHeightAboveDrainage}. */
-export type GPUTerrainHeightAboveDrainageStatus = {
-  /** One row set to 1 when pointer jumping reached its fixpoint. Presence is compile-time. */
-  converged?: GraphDataView<'uint32'>;
-  /** One row set to 1 when `maximumIterations` ran out before pointer jumping converged. Presence is compile-time. */
-  iterationLimitReached?: GraphDataView<'uint32'>;
-  /** One row: gated pointer-jumping rounds executed. Presence is compile-time. */
-  iterationCount?: GraphDataView<'uint32'>;
-};
+/** One-row iteration status; a round is a D8 doubling or a fractional dependency sweep. */
+export type GPUTerrainHeightAboveDrainageStatus = GPUIterationStatusPort;
+
+/** A resolved fractional path reaches more than one first stream cell. HAND is still valid. */
+export const GPU_TERRAIN_DRAINAGE_MULTIPLE = 0xfffffffd;
 
 /** Caller-owned outputs of {@link GPUTerrainHeightAboveDrainage}; at least one view is required. */
 export type GPUTerrainHeightAboveDrainageOutput = {
   /**
-   * Elevation of a cell minus the elevation of the stream cell its D8 path reaches first, in float32
+   * D8 elevation difference, or fraction-weighted average vertical drop to first streams, in float32
    * elevation units. 0 on stream cells. NaN for invalid cells, cells whose path ends without
    * reaching a stream, cells whose path first meets an unresolved stream word, and cells whose
    * elevation or drainage elevation is not finite, and cells whose drainage cell is
@@ -74,7 +83,8 @@ export type GPUTerrainHeightAboveDrainageOutput = {
    * Cell index of the stream cell each cell drains to (the cell itself for stream cells),
    * `GPU_TERRAIN_DRAINAGE_UNRESOLVED` when the path first meets an unresolved stream word or
    * direction, or pointer jumping did not converge, or `GPU_TERRAIN_DRAINAGE_NONE`. Presence is
-   * compile-time.
+   * compile-time. In fractional mode, a unique first stream gives its cell index; multiple first
+   * streams give `GPU_TERRAIN_DRAINAGE_MULTIPLE` (including upstream cells after a split).
    */
   drainageCells?: GraphDataView<'uint32'>;
   /** One-row status words. */
@@ -86,7 +96,7 @@ export type GPUTerrainHeightAboveDrainageOutput = {
  *
  * Compile-time: `grid` size, `maximumIterations`, the elevation format and calibration, and which
  * optional outputs are provided. Per-frame: the contents of `elevation`, `flowDirections` and
- * `streams`. The contributor works on D8 receiver indices only, so it has no cell-size model: the result
+ * `streams` and `flowFractions`. The routing choice is compile-time. It has no cell-size model: the result
  * is a vertical difference in elevation units, independent of `uniform`, `web-mercator` or
  * `geographic` cell spacing.
  *
@@ -111,7 +121,20 @@ export type GPUTerrainHeightAboveDrainageProps = {
    * treated as terminal. Typically `GPUTerrainFlow.flowDirections`. A grid in another numbering (a
    * default WhiteboxTools pointer, a TauDEM D8 grid) needs `directionEncoding`. Per-frame.
    */
-  flowDirections: GraphDataView<'uint32'>;
+  flowDirections?: GraphDataView<'uint32'>;
+  /**
+   * Alternative to `flowDirections`: eight flow fractions per cell, east first clockwise.
+   * Use `GPUTerrainFlowFractions` with `routing: 'd-infinity'` and the same routing surface
+   * and validity as `elevation`. Positive rows sum to one (tolerance 1e-5); zero rows are
+   * outlets. NaN/negative/malformed rows or positive out-of-grid edges are unresolved.
+   * Stream cells stop routing even when their fraction row is unresolved. Exactly one of
+   * `flowDirections` and `flowFractions` is required. Contents per-frame, presence compile-time.
+   *
+   * A cell is NaN if any positive branch has no finite drop to a stream (TauDEM's default
+   * edge-contamination check). Unknown branches propagate DRAINAGE_UNRESOLVED. Zero-weight
+   * branches do not affect the result. MFD fractions also work with the same average algebra.
+   */
+  flowFractions?: GraphDataView<'float32'>;
   /**
    * Numbering of `flowDirections`: `'esri'` (default), `'whitebox'` (the WhiteboxTools default
    * pointer) or `'taudem'`, see {@link GPUTerrainFlowDirectionEncoding}. Zero and the two
@@ -127,14 +150,15 @@ export type GPUTerrainHeightAboveDrainageProps = {
   /** Caller-owned outputs. */
   output: GPUTerrainHeightAboveDrainageOutput;
   /**
-   * Maximum gated pointer-jumping rounds in `[1, 1024]`. Defaults to 32: paths of up to 2^32 cells
-   * need at most 32 doubling rounds. Compile-time.
+   * Maximum gated rounds in `[1, 1024]`. Defaults to 32: paths of up to 2^32 cells
+   * need at most 32 doubling rounds. Fractional routing defaults to 128 dependency sweeps;
+   * a path of depth D needs D sweeps plus one to certify convergence. Compile-time.
    */
   maximumIterations?: number;
 };
 
 /**
- * Height Above the Nearest Drainage (HAND) on one raster tile, following D8 receivers.
+ * Height Above the Nearest Drainage (HAND) on one raster tile, following D8 or fractional flow.
  *
  * HAND is the elevation of a cell above the stream cell its flow path reaches (Renno et al. 2008;
  * Nobre et al. 2011). Here the drainage cell is the first stream cell on the cell's D8 path, found
@@ -144,10 +168,13 @@ export type GPUTerrainHeightAboveDrainageProps = {
  * none; it is unique, so the result does not depend on thread scheduling. Heights are one float32
  * subtraction, so they are bit-exact against a sequential walk.
  *
- * The drainage path is the D8 path. TauDEM's D-infinity `DistDown` variant (vertical drop along the
- * D-infinity path) is not implemented. The output is a vertical difference in elevation units, not
- * a path length. Receiver cycles, possible only in caller-supplied directions, leave `output.status.converged` at 0
- * and the affected cells at `GPU_TERRAIN_DRAINAGE_UNRESOLVED`.
+ * With `flowFractions`, the TauDEM DinfDistDown vertical average recurrence is
+ * `H[c] = sum(p[c,n] * (z[c] - z[n] + H[n])) / sum(p[c,n])`, stopping at streams (H = 0).
+ * Synchronous GPU sweeps finalize cells once their downstream dependencies are known; each
+ * invocation visits only eight neighbors. Separate read/write snapshots make values and budget
+ * behavior deterministic. Unfinished cells publish NaN and DRAINAGE_UNRESOLVED; completed cells
+ * remain available at the limit. Receiver cycles exhaust the budget and do not report convergence.
+ * The result is a vertical difference in elevation units, not a path length.
  *
  * Compose it with {@link GPUTerrainFlow}: pass its `filledElevation` (or the raw DEM),
  * `flowDirections` and `streams`. It is a separate contributor so grids from other tools can be
@@ -161,18 +188,60 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUTerrainHeightAboveDrainageProps;
 
+  /** Upper bound including raster canonicalization and iteration status publication. */
+  readonly estimatedCommandNodeCount: number;
+
   constructor(props: GPUTerrainHeightAboveDrainageProps) {
     this.id = props.id ?? 'terrain-height-above-drainage';
     this.props = props;
     const {id} = this;
     const {output} = props;
     const cellCount = validateRasterGrid(id, props.grid);
-    validateRasterIterations(id, 'maximumIterations', props.maximumIterations ?? 32);
+    const maximumIterations = props.maximumIterations ?? (props.flowFractions ? 128 : 32);
+    validateCapacity(id, 'maximumIterations', maximumIterations, 1, GPU_RASTER_MAXIMUM_ITERATIONS);
+    // Canonicalization uses at most one kernel. Fractional rounds use solve, copy and gate;
+    // D8 uses one round and one gate per four rounds, plus reset/slots/status and final output.
+    this.estimatedCommandNodeCount = props.flowFractions
+      ? RASTER_CANONICALIZATION_NODE_ALLOWANCE + 4 + 3 * maximumIterations
+      : RASTER_CANONICALIZATION_NODE_ALLOWANCE +
+        6 +
+        maximumIterations +
+        Math.ceil(maximumIterations / 4);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateRequirement(
+      id,
+      Boolean(props.flowDirections) !== Boolean(props.flowFractions),
+      'flowDirections and flowFractions require exactly one routing input'
+    );
+    validateRequirement(
+      id,
+      !props.flowFractions || props.directionEncoding === undefined,
+      'directionEncoding requires flowDirections'
+    );
     validateTerrainFlowDirectionEncoding(id, props.directionEncoding);
-    if (!output.heightAboveDrainage && !output.drainageCells) {
-      throw new Error(`${id} requires at least one output`);
+    validateRequirement(
+      id,
+      Boolean(output.heightAboveDrainage || output.drainageCells),
+      'output requires at least one output view'
+    );
+    if (props.flowDirections) {
+      validateTerrainTracingCellView(
+        id,
+        'flowDirections',
+        props.flowDirections,
+        'uint32',
+        cellCount
+      );
     }
-    validateTerrainTracingCellView(id, 'flowDirections', props.flowDirections, 'uint32', cellCount);
+    if (props.flowFractions) {
+      validateRequirement(
+        id,
+        props.flowFractions.format === 'float32',
+        'flowFractions must use float32'
+      );
+      validateSinglePackedView(props.flowFractions, ['float32'], `${id} flowFractions`);
+      validateViewLength(id, 'flowFractions', props.flowFractions, cellCount * 8);
+    }
     validateTerrainTracingCellView(id, 'streams', props.streams, 'uint32', cellCount);
     if (output.heightAboveDrainage) {
       validateTerrainTracingCellView(
@@ -192,12 +261,12 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
         cellCount
       );
     }
-    if (
-      props.elevation.storage.kind === 'buffer' &&
-      props.elevation.storage.values.length !== cellCount
-    ) {
-      throw new Error(`${id} elevation must contain one value per cell`);
-    }
+    validateRequirement(
+      id,
+      props.elevation.storage.kind !== 'buffer' ||
+        props.elevation.storage.values.length === cellCount,
+      'elevation must contain one value per cell'
+    );
     validateTerrainTracingStatus(id, output.status);
     const outputs = [
       output.heightAboveDrainage,
@@ -209,6 +278,7 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(id, outputs, [
       ...getRasterBandViews(props.elevation),
       props.flowDirections,
+      props.flowFractions,
       props.streams
     ]);
     validateRasterBuffersDistinct(id, outputs, []);
@@ -221,9 +291,28 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
     const {id, props} = this;
     const {output} = props;
     const {width, height} = props.grid;
+    const cellCount = width * height;
+    // The fractional snapshot packs [state, height bits, drainage cell] for each cell.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'HAND scratch',
+      cellCount * (props.flowFractions ? TERRAIN_HAND_STATE_WORDS * 4 : 4),
+      'reduce the grid dimensions'
+    );
+    if (props.flowFractions) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'flowFractions',
+        cellCount * 32,
+        'reduce the grid dimensions'
+      );
+    }
     validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
       props.flowDirections,
+      props.flowFractions,
       props.streams,
       output.heightAboveDrainage,
       output.drainageCells,
@@ -231,14 +320,29 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
       output.status?.iterationLimitReached,
       output.status?.iterationCount
     ]);
-    const cellCount = width * height;
     const nodes: GPUCommandNode<Parameters>[] = [];
     let elevation: GraphDataView<'float32'> | undefined;
-    if (output.heightAboveDrainage) {
+    if (output.heightAboveDrainage || props.flowFractions) {
       const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
       nodes.push(...source.nodes);
       elevation = source.band.storage.values as GraphDataView<'float32'>;
     }
+    if (props.flowFractions && elevation) {
+      return [
+        ...nodes,
+        ...createTerrainFractionalHANDNodes(graph, {
+          id,
+          grid: props.grid,
+          elevation,
+          fractions: props.flowFractions,
+          streams: props.streams,
+          output,
+          maximumIterations: props.maximumIterations ?? 128
+        })
+      ];
+    }
+    // Construction requires exactly one routing input; fractional mode returned above.
+    const flowDirections = props.flowDirections!;
     // The pointer stays untouched by the final kernel, which reads other cells' pointers to check
     // that each path reached its fixpoint, so drainage cells are written to their own view.
     const pointer = createTransientView(graph, `${id}-pointer`, 'uint32', cellCount);
@@ -250,7 +354,7 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
         width,
         height,
         maxIterations: props.maximumIterations ?? 32,
-        flowDirections: props.flowDirections,
+        flowDirections,
         directionEncoding: props.directionEncoding,
         pointer,
         stops: {kind: 'streams', streams: props.streams},
@@ -260,7 +364,7 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
       })
     );
     const bindings: WGSLKernelBinding[] = [
-      {name: 'flowDirections', view: props.flowDirections, type: 'u32', access: 'read'},
+      {name: 'flowDirections', view: flowDirections, type: 'u32', access: 'read'},
       {name: 'streams', view: props.streams, type: 'u32', access: 'read'},
       {name: 'pointer', view: pointer, type: 'u32', access: 'read'}
     ];

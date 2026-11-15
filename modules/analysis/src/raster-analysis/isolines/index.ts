@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+export type {GPUIsolinesTile} from './isolines-tile';
 export {GPUIsolines} from './gpu-isolines';
 export type {
   GPUIsolinesOutput,

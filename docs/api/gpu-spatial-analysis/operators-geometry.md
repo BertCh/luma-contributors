@@ -427,8 +427,11 @@ corners, and `rectangleSizes` = width, height, angle, area), the minimum boundin
 r), the longest line (`longestLines`, `diameters`) and the envelope (`bounds`). Equivalents: Shapely
 `oriented_envelope`, `minimum_rotated_rectangle`, `minimum_bounding_circle`, `minimum_bounding_radius`;
 Sedona `ST_LongestLine`, `ST_MaxDistance`. It is built on `GPUGroupConvexHull` (exact lattice hull) with one
-thread per group over the hull. Hulls over `maximumHullVertices` (default 2048) set the hull overflow bit in
-`output.status.overflow` and write NaN; `hullSizes` optionally reports the true hull vertex counts. Rectangle ties (areas
+thread per group over the hull. Hulls over `maximumHullVertices` (default 2048) set
+`output.status.overflow` to 1 and write NaN; optional `output.status.groupOverflow` names this hull-limit
+condition and has the same 0/1 value. Both are rewritten each frame. `hullSizes` optionally reports the
+true hull vertex counts. The GPU and CPU operation forms accept the optional diagnostic; the CPU twin
+computes hulls without a size limit and reports both statuses as zero. Rectangle ties (areas
 within 1e-6 relative) go to the lowest hull edge, and the circle is Welzl in a hash-shuffled fixed order
 with the radius recomputed as the largest hull distance, so it always covers. Parity is by area and radius,
 not vertex order: rectangle area within 2e-4 relative, radius 1e-4, diameter 1e-4. Cost is `O(h^2)` per
@@ -1061,11 +1064,12 @@ Dense, cap and both copies' clip streams each have capacity `output.positions.le
 only against longitude -180 and 180 because classification validates latitudes. Overflow from any
 stage, including final merge, sets `overflow = 1`; all offsets remain monotone and within capacity.
 Status is rewritten each encoding. If an intermediate stage overflowed, `requiredCount` instead
-reports the conservative bound `8 * (D + 3 * R)`, where D is the unclamped dense vertex count
+reports the conservative bound `8 * (D + 3 * R)`, saturated at `0xffffffff`, where D is the unclamped dense vertex count
 (after `maximumPieceCount`) and R is the input ring count. Capping adds at most three vertices per
-ring, each longitude boundary at most doubles a stream, and there are two copies. This bound fits
-every intermediate stream and the final output on a rerun with the same input and parameters.
-Size `output.positions` from `requiredCount`; transient memory scales with it. Additional source-row
+ring, each longitude boundary at most doubles a stream, and there are two copies. When representable,
+this bound fits every intermediate stream and the final output on a rerun with the same input and parameters.
+Size `output.positions` from `requiredCount`; transient memory scales with it. Dense scan offsets
+also saturate at `0xffffffff`, preserving the written prefix after a uint32 carry. Additional source-row
 scan arrays and topology metadata scale with input vertices and rings, without a `maximumPieceCount`
 multiplier. An overflowed intermediate result is incomplete; use the resized rerun for analysis.
 

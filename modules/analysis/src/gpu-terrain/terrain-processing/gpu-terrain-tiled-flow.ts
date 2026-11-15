@@ -18,10 +18,19 @@ import {
   validateTerrainFlowDirectionEncoding,
   type GPUTerrainFlowDirectionEncoding
 } from '../hydrology/terrain-flow-tracing';
-import {checkTerrainViews, checkTerrainGraph} from './terrain-processing-utils';
+import {
+  checkTerrainViews,
+  checkTerrainGraph,
+  validateTerrainStatusPorts
+} from './terrain-processing-utils';
 
 import {createTerrainResidentTileNodes} from './terrain-tiled-resident';
 import {validateRasterIterations} from '../../raster-analysis/cost-distance/raster-relaxation';
+
+import {
+  getTerrainResolutionStatusViews,
+  type TerrainResolutionStatusPort
+} from './terrain-resolution-status';
 
 export type GPUTerrainFlowTile = {
   /** Global origin of the input buffer, including any halo. */
@@ -69,6 +78,16 @@ export type GPUTerrainTiledFlowProps = {
   tiles: readonly GPUTerrainFlowTile[];
   /** GPU DAG sweeps, default clamps width + height to [128, 1024]; each sweep follows bounded successor walks. */
   maximumIterations?: number;
+  /** Optional aggregate diagnostics over global owned cells, never halo copies. */
+  output?: {
+    /**
+     * `invalidCount` counts invalid owned cells (state 0). `converged` is 1 when no owned cell
+     * remains unresolved (state 2). `iterationLimitReached` is 1 only when the solver exhausts
+     * maximumIterations before its no-progress stop. A stalled cycle can report both flags 0.
+     * An entirely invalid domain converges with its invalidCount.
+     */
+    status: TerrainResolutionStatusPort;
+  };
 };
 
 /**
@@ -83,6 +102,7 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
     validateRasterGrid(this.id, props.grid);
     validateTerrainFlowDirectionEncoding(this.id, props.directionEncoding);
     validateRasterIterations(this.id, 'maximumIterations', props.maximumIterations ?? 128);
+    validateTerrainStatusPorts(this.id, {...props.output?.status});
     let ownedCount = 0;
     const rectangles: number[][] = [];
     const inputs: GraphDataView[] = [],
@@ -160,23 +180,25 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
       ownedCount === props.grid.width * props.grid.height,
       'owned rectangles must cover every grid cell exactly once'
     );
-    checkTerrainViews(this.id, inputs, outputs);
+    checkTerrainViews(this.id, inputs, [
+      ...outputs,
+      ...getTerrainResolutionStatusViews(props.output?.status)
+    ]);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    checkTerrainGraph(
-      id,
-      graph,
-      props.tiles.flatMap(tile => [
+    checkTerrainGraph(id, graph, [
+      ...props.tiles.flatMap(tile => [
         tile.flowDirections,
         tile.runoff,
         tile.streams,
         ...(tile.fractions ? [tile.fractions] : []),
         ...Object.values(tile.output)
-      ])
-    );
+      ]),
+      ...getTerrainResolutionStatusViews(props.output?.status)
+    ]);
     return createTerrainResidentTileNodes(graph, props, id);
   }
 }

@@ -88,8 +88,10 @@ chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
   origin/destination pair, `segments = clamp(max(ceil(distance / maximumSegmentLength),
   minimumSegments), 1, maximumSegmentCount)`. Endpoints are exact; longitudes are unwrapped from the
   source (Tokyo to San Francisco ends at 237.6), never split. Draw with `PathLayer`
-  `wrapLongitude: true` or in a globe view. Pairs within about 1e-3 rad of antipodal have no unique
-  great circle.
+  `wrapLongitude: true` or in a globe view. Near-antipodal interpolation can be numerically unstable
+  in float32; split such arcs in the caller. There is no whole-arc rejection: counts and endpoints
+  are emitted even when the shared interpolator returns NaN for interior vertices within 1e-6
+  radians of an antipode. Exactly antipodal endpoints do not determine a unique great circle.
 - `GPULineSmooth` (Chaikin corner cutting, turf `polygonSmooth`): `iterationCount` (compile time,
   1 to 10 passes) each replace edge `(a, b)` with `mix(a, b, r)` and `mix(a, b, 1 - r)` for a per-frame
   ratio `r` (default 0.25). Open lines keep their endpoints (`n` vertices become `n * 2^k`); with
@@ -100,7 +102,10 @@ chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
   last piece ending at the line end; consecutive pieces share their boundary point. The piece
   count is data dependent: the line capacity is `output.lineOffsets.length - 1`, and
   `status.count`/`sourceLineIndices` report the pieces; `requiredCount` is the unclamped piece count,
-  a lower bound past the capacity when one line alone needs more than `lineCapacity + 1` pieces. `'substring'` extracts `[startMeasure,
+  computed independently of output capacity and saturated at `0xffffffff` when it reaches the uint32
+  limit. Per-line requirements use float32 division of the measured length by `chunkLength`.
+  Requesting `requiredCount` in chunk mode adds a per-line count scan; layout offsets remain bounded
+  even when the full requirement exceeds uint32. `'substring'` extracts `[startMeasure,
   endMeasure]` from every line (turf `lineSliceAlong`, PostGIS `ST_LineSubstring` by distance);
   measures are clamped to the line and a start past the end gives an empty line. Zero-length
   lines are copied as one piece. Both modes support a great-circle `spatialContext`.
@@ -350,11 +355,16 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
 - `GPUGeodesicPairs`: distance, initial and final bearing (degrees clockwise from north in
   `(-180, 180]`), and midpoint per pair. `'sphere'` uses a Vincenty-form central angle that is well
   conditioned from millimeters to antipodal; `'wgs84'` runs Vincenty's inverse with a compile-time
-  `maximumIterations` cap (default 16) and reports non-converged (near-antipodal) pairs, which fall
-  back to the sphere. luma.gl's `GPUHaversineDistance` computes the same sphere distance with a
+  `maximumIterations` cap (default 16). Non-converged pairs and pairs within 0.02 radians of an
+  antipode fall back to the sphere with `status.converged = 0` and `status.approximation = 1`,
+  even when Vincenty stopped numerically. Optional `status.iterationLimitReached` distinguishes
+  exhausted iterations from a singular inverse rejected before iteration. luma.gl's
+  `GPUHaversineDistance` computes the same sphere distance with a
   default radius of 6371 (kilometers); this class takes radius and unit from the spatial context
   (6371008.8 m by default) and takes longitude differences on the seam side, so short pairs across
   the antimeridian keep their precision in every model.
+  Pair outputs, including status views, must not overlap one another or either input view;
+  disjoint slices of one buffer are allowed and checked at construction.
 - `GPUGeodesicDestination`: destination and final bearing from origin, bearing and distance
   columns, on the sphere or by Vincenty's direct solution.
   No warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](./concepts.md#precision-of-longitudelatitude-positions).
@@ -363,7 +373,8 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
   `radius` units), `initialBearings` equal to `finalBearings` (constant, in `(-180, 180]`) and the rhumb
   `midpoints` (the midpoint by distance: the mean latitude, and the longitude of the loxodrome at
   that latitude, which is linear in the Mercator latitude and differs from the mean longitude
-  unless the line runs east-west). The destination longitude is continuous with the origin, and `finalBearings` flips to the
+  unless the line runs east-west). Coincident pairs have zero distance and zero initial and final
+  bearings. The destination longitude is continuous with the origin, and `finalBearings` flips to the
   opposite north-south sense when a move overshoots a pole and is reflected, as turf does (the reflected
   case is approximate). Longitude differences take the short way across the antimeridian, latitudes clamp
   at 89.9999 degrees, equal-latitude edges use the east-west limit `cos(lat)`, and the Mercator-stretched
@@ -1059,7 +1070,8 @@ playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead: 125.
   (meters by default; kilometers with `units: 'kilometers'`). Interpolated longitudes are continuous with the segment's start
   row, so a segment that crosses the antimeridian yields longitudes beyond ±180 (the end row is `b` shifted
   by a multiple of 360 degrees) rather than jumping; wrap downstream if needed. Fractions 0 and 1 return
-  the start and end row exactly (up to that shift). Other contexts throw. Ellipsoidal interpolation is a
+  the start and end row exactly (up to that shift), including antipodal endpoints. Interior
+  interpolation within 1e-6 radians of an antipode returns NaN because that path is not certified. Other contexts throw. Ellipsoidal interpolation is a
   non-goal. Both playhead and resample measure distance, so `local-lambert-equal-area` frames throw.
 - Time: comparisons are exact in both modes (Int64 words compare integer words, then the f32
   playhead fraction); differences are subtracted exactly and then rounded to f32.

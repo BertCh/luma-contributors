@@ -199,3 +199,57 @@ it('GPUDelaunayTessellation invalidates only the group with a non-finite site', 
     );
   }
 });
+
+it('grouped Delaunay excludes leading, inter-group and trailing garbage from sites and exponent ranges', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const coordinates = Float32Array.of(0, 0, 3, 0, 2, 2, 0, 2, 10, 0, 13, 0, 12, 2, 10, 2);
+  const groupIds = Uint32Array.of(0, 0, 0, 0, 1, 1, 1, 1);
+  const reference = await runDelaunay(device, coordinates, groupIds, 3);
+  // Each trapezoid has the unique diagonal from its first to its third vertex: the fourth
+  // point is strictly outside the circumcircle of (first, second, third).
+  expect(canonicalSet(reference.triangles)).toEqual(
+    canonicalSet([
+      [0, 1, 2],
+      [0, 2, 3],
+      [4, 5, 6],
+      [4, 6, 7]
+    ])
+  );
+  expect(reference.counts).toEqual([2, 2, 0]);
+  expect(reference.converged).toEqual([1, 1, 1]);
+  expect(reference.invalid).toBe(0);
+  expect(reference.duplicates).toBe(0);
+  // 2^-100 would make the exponent span uncertifiable if included. A duplicate of a real
+  // site also checks that excluded rows cannot steal ownership. Group 2 deliberately stays empty.
+  for (const value of [Number.NaN, 3e30, 2 ** -100]) {
+    const padded: number[] = [value, value, 0, 0];
+    const labels = [0xffffffff, 99];
+    const originalRows = [-1, -1];
+    for (let row = 0; row < groupIds.length; row++) {
+      if (row === 4) {
+        padded.push(value, value, 0, 0);
+        labels.push(99, 0xffffffff);
+        originalRows.push(-1, -1);
+      }
+      padded.push(coordinates[2 * row], coordinates[2 * row + 1]);
+      labels.push(groupIds[row]);
+      originalRows.push(row);
+    }
+    padded.push(value, value, 0, 0);
+    labels.push(0xffffffff, 99);
+    const result = await runDelaunay(
+      device,
+      Float32Array.from(padded),
+      Uint32Array.from(labels),
+      3
+    );
+    expect(
+      canonicalSet(result.triangles.map(triangle => triangle.map(row => originalRows[row])))
+    ).toEqual(canonicalSet(reference.triangles));
+    expect({...result, triangles: []}).toEqual({...reference, triangles: []});
+    for (const triangle of result.triangles) {
+      expect(triangle.every(row => originalRows[row] >= 0)).toBe(true);
+    }
+  }
+}, 120000);

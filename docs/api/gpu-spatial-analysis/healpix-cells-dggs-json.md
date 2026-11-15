@@ -63,3 +63,9 @@ the origin and quintant tables (`core/origin.py`), the pentagon lattice and marg
 It also has a data-dependent boundary path (`_spherical_to_cell_boundary`: up to 15 re-lookups over the three nearest faces and all five quintants, with a lowest-ID tie-break), which does not map onto one fixed-size WGSL kernel without a bounded-candidate redesign.
 A float32 port needs the per-resolution accuracy table before any export, since the curve level reaches 2^29 lattice cells per face edge; this was not measured. The Python wheel needs no environment to read (`python -m pip download pya5==1.0.0 --no-deps`); an oracle fixture would run it with the Python backend.
 Next step: a binary64 TypeScript port of the lookup checked against pya5 fixtures, then the float32 kernel.
+
+## Display boundary: `getHealpixCellBoundary`
+
+`getHealpixCellBoundary(nestedKey, order, edgeSegments = 8)` returns a closed longitude/latitude ring with `4 * edgeSegments + 1` positions. It decodes the nested face and interleaved cell coordinates and samples the inverse spherical face projection along each edge. Orders 0–29 and 1–64 segments per edge are accepted. Longitudes follow a continuous branch and can extend beyond ±180°; a polar vertex uses its face meridian. This is sampled display geometry, not an ellipsoidal boundary or OGC ZIRS identifier.
+
+The Kepler catalog's `healpix-cell-aggregation` binding uses this helper to publish GPU cell counts and optional sums/extrema as polygon geometry. The point-to-cell binding retains original point geometry and exact decimal cell ids. Node specs check face corners, seam continuity, validation and interior round trips against the existing CPU indexing twin through order 10; GPU catalog specs check cell ids, aggregate values, polygon publication and overflow refusal.

@@ -12,7 +12,6 @@ import {
   validateCapacity,
   validateFiniteNumber,
   validateGPUStorageBindingByteLength,
-  validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateRequirement,
@@ -20,6 +19,16 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+
+import {validateRasterBuffersDistinct} from '../raster-band-utils';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {
+  createLagrangianProjectionNodes,
+  resolveLagrangianSpatialContext
+} from './lagrangian-geographic-projection';
+
+/** Largest seed axis length; bounds row-major uint32 addressing. */
+export const GPU_FINITE_TIME_LYAPUNOV_EXPONENT_MAXIMUM_SEED_AXIS = 65535;
 
 const OPERATION = 'GPUFiniteTimeLyapunovExponent';
 
@@ -68,6 +77,10 @@ export function getGPUFiniteTimeLyapunovExponentParameterValues(
 export type GPUFiniteTimeLyapunovExponentProps = {
   /** Prefix for generated node IDs. Defaults to `'finite-time-lyapunov-exponent'`. */
   id?: string;
+  /** Planar (default), or longitude-latitude with metric 'none'; internally projected to Web Mercator metres. */
+  spatialContext?: GPUSpatialContext;
+  /** Optional one flag per position; zero rejects the particle and all stencils using it. */
+  validity?: GraphDataView<'uint32'>;
   /**
    * Final positions of a regular grid of seeds, row-major (`seedWidth * seedHeight` rows, row 0
    * the smallest y), for example `GPULagrangianFlowMap` output. NaN marks a lost particle.
@@ -80,7 +93,7 @@ export type GPUFiniteTimeLyapunovExponentProps = {
   /** Per-frame parameters, at least 4 float32 rows, from {@link getGPUFiniteTimeLyapunovExponentParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** One float32 per seed. NaN where the particle or a neighbour used by the difference is lost. */
-  output: {ftle: GraphDataView<'float32'>};
+  output: {ftle: GraphDataView<'float32'>; validity?: GraphDataView<'uint32'>};
 };
 
 /**
@@ -95,7 +108,13 @@ export type GPUFiniteTimeLyapunovExponentProps = {
  *
  * Reference: the FTLE definition of lcs-parcels (MIT) and the OceanParcels Lagrangian_diags
  * tutorial; tests check a linear strain field with the known exponent and a binary64 CPU
- * reference. Ridge or curve extraction (hyperbolic and elliptic LCS) is not provided.
+ * reference. GPUScalarFieldRidges extracts a raster ridge mask from the result.
+ *
+ * In longitude-latitude mode the published projection program projects final positions before
+ * differencing. Seeds must form a regular grid in Web Mercator metres, and seedSpacingX/Y are
+ * its metre spacings (a regular degree grid is not a regular projected grid). Per-frame:
+ * positions, input validity and parameters. Compile-time: spatialContext, grid dimensions and
+ * optional outputs. No-data validity rejects the center as well as its difference neighbours.
  *
  * Row direction: the seed grid is row-major, the layout `GPULagrangianFlowMap` writes, and output
  * row `r` belongs to seed row `r`. The exponent does not depend on whether rows advance toward
@@ -111,8 +130,21 @@ export class GPUFiniteTimeLyapunovExponent implements GPUCommandNodeProducer {
 
   constructor(props: GPUFiniteTimeLyapunovExponentProps) {
     const id = props.id ?? 'finite-time-lyapunov-exponent';
-    validateCapacity(id, 'seedWidth', props.seedWidth, 2, 65535);
-    validateCapacity(id, 'seedHeight', props.seedHeight, 2, 65535);
+    resolveLagrangianSpatialContext(id, props.spatialContext);
+    validateCapacity(
+      id,
+      'seedWidth',
+      props.seedWidth,
+      2,
+      GPU_FINITE_TIME_LYAPUNOV_EXPONENT_MAXIMUM_SEED_AXIS
+    );
+    validateCapacity(
+      id,
+      'seedHeight',
+      props.seedHeight,
+      2,
+      GPU_FINITE_TIME_LYAPUNOV_EXPONENT_MAXIMUM_SEED_AXIS
+    );
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateViewLength(id, 'positions', props.positions, props.seedWidth * props.seedHeight);
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
@@ -123,10 +155,19 @@ export class GPUFiniteTimeLyapunovExponent implements GPUCommandNodeProducer {
     );
     validateSinglePackedView(props.output.ftle, ['float32'], `${id} output.ftle`);
     validateViewLength(id, 'output.ftle', props.output.ftle, props.seedWidth * props.seedHeight);
-    validateGraphOutputsDisjointFromInputs(
+    for (const [name, view] of [
+      ['validity', props.validity],
+      ['output.validity', props.output.validity]
+    ] as const) {
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
+        validateViewLength(id, name, view, props.seedWidth * props.seedHeight);
+      }
+    }
+    validateRasterBuffersDistinct(
       id,
-      [props.output.ftle],
-      [props.positions, props.parameters]
+      [props.output.ftle, props.output.validity],
+      [props.positions, props.parameters, props.validity]
     );
     this.id = id;
     this.props = props;
@@ -139,6 +180,8 @@ export class GPUFiniteTimeLyapunovExponent implements GPUCommandNodeProducer {
     const {seedWidth, seedHeight} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
+      props.validity,
+      props.output.validity,
       props.parameters,
       props.output.ftle
     ]);
@@ -149,7 +192,12 @@ export class GPUFiniteTimeLyapunovExponent implements GPUCommandNodeProducer {
       seedWidth * seedHeight * 8,
       'use a smaller seed grid'
     );
+    const projection =
+      props.spatialContext?.coordinateSpace === 'longitude-latitude'
+        ? createLagrangianProjectionNodes(graph, id)
+        : undefined;
     return [
+      ...(projection?.nodes ?? []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-exponent`,
         operation: OPERATION,
@@ -157,18 +205,43 @@ export class GPUFiniteTimeLyapunovExponent implements GPUCommandNodeProducer {
         bindings: [
           {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
           {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
-          {name: 'ftle', view: props.output.ftle, type: 'f32', access: 'read_write'}
+          {name: 'ftle', view: props.output.ftle, type: 'f32', access: 'read_write'},
+          ...(props.validity
+            ? [{name: 'validity', view: props.validity, type: 'u32', access: 'read'} as const]
+            : []),
+          ...(props.output.validity
+            ? [
+                {
+                  name: 'outputValidity',
+                  view: props.output.validity,
+                  type: 'u32',
+                  access: 'read_write'
+                } as const
+              ]
+            : []),
+          ...(projection ? [projection.binding] : [])
         ],
+        modules: projection?.modules,
+        defines: projection?.defines,
         declarations: /* wgsl */ `${GET_NAN_WGSL}
+${projection?.declarations ?? ''}
 const SEED_WIDTH: u32 = ${seedWidth}u;
 const SEED_HEIGHT: u32 = ${seedHeight}u;
 fn readPosition(column: u32, row: u32) -> vec2<f32> {
   let base = positionsOffset + 2u * (row * SEED_WIDTH + column);
-  return vec2<f32>(positions[base], positions[base + 1u]);
+  ${props.validity ? 'if (validity[validityOffset + row * SEED_WIDTH + column] == 0u) { return vec2<f32>(getNaN()); }' : ''}
+  let position = vec2<f32>(positions[base], positions[base + 1u]);
+  ${
+    projection
+      ? `let projected = ${projection.forward}(position, 1u);
+  if (projected.valid == 0u) { return vec2<f32>(getNaN()); }
+  return projected.position;`
+      : 'return position;'
+  }
 }
 fn isNanPosition(value: vec2<f32>) -> bool {
-  return (bitcast<u32>(value.x) & 0x7fffffffu) > 0x7f800000u ||
-    (bitcast<u32>(value.y) & 0x7fffffffu) > 0x7f800000u;
+  return (bitcast<u32>(value.x) & 0x7fffffffu) >= 0x7f800000u ||
+    (bitcast<u32>(value.y) & 0x7fffffffu) >= 0x7f800000u;
 }`,
         body: /* wgsl */ `
   let column = index % SEED_WIDTH;
@@ -181,8 +254,9 @@ fn isNanPosition(value: vec2<f32>) -> bool {
   let east = readPosition(column1, row);
   let south = readPosition(column, row0);
   let north = readPosition(column, row1);
+  let center = readPosition(column, row);
   var exponent = getNaN();
-  if (!(isNanPosition(west) || isNanPosition(east) || isNanPosition(south) || isNanPosition(north))) {
+  if (!(isNanPosition(center) || isNanPosition(west) || isNanPosition(east) || isNanPosition(south) || isNanPosition(north))) {
     let spacingX = parameters[parametersOffset];
     let spacingY = parameters[parametersOffset + 1u];
     let time = abs(parameters[parametersOffset + 2u]);
@@ -194,7 +268,8 @@ fn isNanPosition(value: vec2<f32>) -> bool {
     let largest = 0.5 * (a + d) + sqrt(0.25 * (a - d) * (a - d) + b * b);
     exponent = 0.5 * log(largest) / time;
   }
-  ftle[ftleOffset + index] = exponent;`
+  ftle[ftleOffset + index] = exponent;
+  ${props.output.validity ? 'outputValidity[outputValidityOffset + index] = select(1u, 0u, (bitcast<u32>(exponent) & 0x7fffffffu) >= 0x7f800000u);' : ''}`
       })
     ];
   }

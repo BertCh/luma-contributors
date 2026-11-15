@@ -10,6 +10,8 @@ import {GPUTerrainPeakProminence} from '../../../src/gpu-terrain/index';
 import {GPU_SPATIAL_ANALYSIS_CONTRACT_NAMES} from '../../../src/analysis-core/contracts/index';
 import {GPUContributorOperation, GPUParameterBuffer} from '../../../src/analysis-core/index';
 import {
+  REUSED_ANALYSIS_OPERATORS,
+  getGPUAnalysisOperator,
   GPU_SPATIAL_ANALYSIS_CAPABILITIES,
   GPU_SPATIAL_ANALYSIS_AUDIT,
   GPU_SPATIAL_ANALYSIS_DATA_ONTOLOGY,
@@ -54,7 +56,8 @@ it('catalogues every public contributor and recipe exactly once', () => {
     .filter(
       ([name, value]) =>
         typeof value === 'function' &&
-        (/^GPU[A-Z]/.test(name) || /^add[A-Z]/.test(name)) &&
+        // The catalog also exposes this CPU display-boundary operation.
+        (/^GPU[A-Z]/.test(name) || /^add[A-Z]/.test(name) || name === 'getHealpixCellBoundary') &&
         !isOperationForm(value)
     )
     .map(([name]) => name)
@@ -77,7 +80,7 @@ it('describes every public contributor and recipe at operator level', () => {
     .filter(
       ([name, value]) =>
         typeof value === 'function' &&
-        (/^GPU[A-Z]/.test(name) || /^add[A-Z]/.test(name)) &&
+        (/^GPU[A-Z]/.test(name) || /^add[A-Z]/.test(name) || name === 'getHealpixCellBoundary') &&
         !isOperationForm(value)
     )
     .map(([name]) => name)
@@ -234,4 +237,23 @@ it('registers terrain prominence in its actual package with the independent refe
   expect(getGPUSpatialAnalysisCapabilityForOperator('GPUHierarchicalDensityClustering')?.id).toBe(
     'group-and-regional-analysis'
   );
+});
+
+it('discovers exact-source topology preparation beside contiguity without treating tokens as metric coordinates', () => {
+  const prepared = REUSED_ANALYSIS_OPERATORS.filter(
+    operator => operator.package === '@luma-contributors/analysis/gpu-spatial-analysis'
+  );
+  expect(prepared.map(operator => operator.exportName)).toEqual([
+    'preparePolygonContiguityTopology',
+    'computePolygonContiguityOnCPU'
+  ]);
+  for (const operator of prepared) {
+    expect(spatialAnalysis[operator.exportName as keyof typeof spatialAnalysis]).toBeTypeOf(
+      'function'
+    );
+    expect(getGPUAnalysisOperator(operator.exportName)).toBe(operator);
+    expect(operator.primaryCapability).toBe('spatial-neighborhoods');
+    expect(operator.coordinateModels).toEqual(['topological']);
+    expect(operator.limitation).toContain('zero snap tolerance');
+  }
 });

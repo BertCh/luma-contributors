@@ -49,6 +49,7 @@ function validatePolygonOffsets(name: string, offsets: Uint32Array, maximum: num
  * Constructs exact queen/rook adjacency using shared point/edge keys, including holes and parts.
  * Directed slots are sorted by (feature, neighbor), then truncated to capacity. As on the GPU,
  * offsets are clamped and the count is the terminal offset; there is no separate count port.
+ * Snapping is anchored at ringOffsets[0], falling back to zero for empty or non-finite input.
  *
  * What differs from the GPU contributor:
  * - There is no intermediate pair capacity: candidateOverflow is always 0 and requiredCount is
@@ -86,9 +87,13 @@ export function computeContiguityWeightsOnCPU(
   validatePolygonOffsets('polygonOffsets', polygonOffsets, ringOffsets.length - 1);
   validatePolygonOffsets('featureOffsets', featureOffsets, polygonOffsets.length - 1);
   const featureCount = featureOffsets.length - 1;
-  const hasOrigin = Number.isFinite(positions[0]) && Number.isFinite(positions[1]);
-  const originX = hasOrigin ? positions[0] : 0;
-  const originY = hasOrigin ? positions[1] : 0;
+  const firstVertex = ringOffsets[0];
+  const hasOrigin =
+    firstVertex < ringOffsets[ringOffsets.length - 1] &&
+    Number.isFinite(positions[2 * firstVertex]) &&
+    Number.isFinite(positions[2 * firstVertex + 1]);
+  const originX = hasOrigin ? positions[2 * firstVertex] : 0;
+  const originY = hasOrigin ? positions[2 * firstVertex + 1] : 0;
   const pointIds = new Map<string, number>();
   const getPointId = (vertex: number): number | undefined => {
     const coordinateX = positions[vertex * 2];

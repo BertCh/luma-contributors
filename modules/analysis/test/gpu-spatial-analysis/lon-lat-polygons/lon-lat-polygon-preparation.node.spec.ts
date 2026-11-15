@@ -306,3 +306,31 @@ it('the binary64 resize bound covers dense, cap, both clipped copies and the exa
     }
   }
 });
+
+it('preparation saturates dense offsets and resize bounds without limiting the input shape', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device, {id: 'preparation-scan-saturation'});
+  try {
+    const props = createProps(graph);
+    props.maximumPieceCount = 65536;
+    props.positions = createTransientView(graph, 'large-input', 'float32x2', 100000);
+    const nodes = new GPULonLatPolygonPreparation(props).getCommandNodes(graph);
+    const ids = nodes.map(node => node.id);
+    expect(ids.indexOf('prepare-dense-scan-saturate')).toBeGreaterThan(0);
+    expect(ids.indexOf('prepare-dense-emit')).toBeGreaterThan(
+      ids.indexOf('prepare-dense-scan-saturate')
+    );
+    const sources = new Map(
+      getGPUCommandNodeKernelSources(nodes).map(kernel => [kernel.id, kernel.source])
+    );
+    expect(sources.get('prepare-dense-emit')).toContain('getSaturatedScanSum(balancedStart(');
+    expect(sources.get('prepare-dense-offsets-publish')).toContain(
+      'let total = getSaturatedScanSum('
+    );
+    expect(sources.get('prepare-status')).toContain(
+      'getSaturatedScanProduct(getSaturatedScanSum(denseTotal, 12u), 8u)'
+    );
+  } finally {
+    device.destroy();
+  }
+});

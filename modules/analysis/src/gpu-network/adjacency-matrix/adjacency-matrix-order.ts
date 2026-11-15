@@ -4,12 +4,11 @@
 
 import {
   createTransientView,
-  GPUSort,
-  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -117,42 +116,15 @@ export class GPUAdjacencyMatrixOrder implements GPUCommandNodeProducer {
         body: 'identityOut[identityOutOffset + index] = index;'
       })
     );
-    let sortedVertices = identity;
-    if (props.tieKeys) {
-      const sortedKeys = transient('tie-sorted-keys');
-      const byTie = transient('tie-sorted-vertices');
-      nodes.push(
-        ...new GPUSort({
-          id: `${id}-sort-ties`,
-          keys: props.tieKeys,
-          values: identity,
-          outputKeys: sortedKeys,
-          outputValues: byTie
-        }).getCommandNodes(graph)
-      );
-      sortedVertices = byTie;
-    }
-    const groupKeys = transient('group-keys');
-    // `sortedVertices` is a permutation of the node indices, so no index is out of range.
-    nodes.push(
-      ...new GPUUint32Gather({
-        id: `${id}-gather-groups`,
-        source: props.groups,
-        indices: sortedVertices,
-        output: groupKeys
-      }).getCommandNodes(graph)
-    );
-    const sortedGroupKeys = transient('group-sorted-keys');
-    const byGroup = transient('group-sorted-vertices');
-    nodes.push(
-      ...new GPUSort({
-        id: `${id}-sort-groups`,
-        keys: groupKeys,
-        values: sortedVertices,
-        outputKeys: sortedGroupKeys,
-        outputValues: byGroup
-      }).getCommandNodes(graph)
-    );
+    const sorted = createStableLexicographicIndexSortNodes(graph, {
+      id: `${id}-sort`,
+      operation,
+      indices: identity,
+      indicesAreIdentity: true,
+      keys: [{view: props.groups}, ...(props.tieKeys ? [{view: props.tieKeys}] : [])]
+    });
+    nodes.push(...sorted.nodes);
+    const byGroup = sorted.sortedIndices;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-scatter`,

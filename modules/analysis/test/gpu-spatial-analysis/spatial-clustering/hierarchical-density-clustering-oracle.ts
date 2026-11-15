@@ -60,7 +60,9 @@ export function computeHierarchicalDensityModel(
 } {
   const rows = positions.length;
   const distance = (a: number, b: number) =>
-    Math.hypot(positions[a][0] - positions[b][0], positions[a][1] - positions[b][1]);
+    Math.hypot(
+      ...positions[a].map((coordinate, dimension) => coordinate - positions[b][dimension])
+    );
   const coreDistances = positions.map((_, row) => {
     const distances = positions.map((__, other) => distance(row, other)).sort((x, y) => x - y);
     return distances.length >= minimumSamples ? distances[minimumSamples - 1] : Infinity;

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import type {GPUInstrumentalVariablesCovarianceMethod} from './instrumental-variables-covariance-parameters';
 import {
   GPUSpatialTwoStageLeastSquares,
   type GPUSpatialTwoStageLeastSquaresProps
@@ -22,7 +23,9 @@ export type SpatialTwoStageLeastSquaresOperationProps = Pick<
   predictors: string;
   response: string;
   robust?: {
-    method: 'HC0' | 'HC1' | 'HAC';
+    method: GPUInstrumentalVariablesCovarianceMethod;
+    clusters?: string;
+    clusterCount?: number;
     kernel?: {offsets: string; neighbors: string; weights: string; overflow?: string};
     output: {covariance: string; status: string};
   };
@@ -44,6 +47,7 @@ export class GPUSpatialTwoStageLeastSquaresOperation extends GPUContributorOpera
         ...props.weights,
         predictors: props.predictors,
         response: props.response,
+        ...(robust?.clusters ? {clusters: robust.clusters} : {}),
         ...(robust?.kernel
           ? {
               kernelOffsets: robust.kernel.offsets,
@@ -99,6 +103,8 @@ export class GPUSpatialTwoStageLeastSquaresOperation extends GPUContributorOpera
           robust: robust
             ? {
                 method: robust.method,
+                clusters: robust.clusters ? getView<'uint32'>('clusters') : undefined,
+                clusterCount: robust.clusterCount,
                 kernel: robust.kernel
                   ? {
                       offsets: getView<'uint32'>('kernelOffsets'),
@@ -111,7 +117,7 @@ export class GPUSpatialTwoStageLeastSquaresOperation extends GPUContributorOpera
                   : undefined,
                 output: {
                   covariance: getView<'float32'>('robustCovariance'),
-                  status: getView<'uint32'>('robustStatus')
+                  status: {code: getView<'uint32'>('robustStatus')}
                 }
               }
             : undefined,

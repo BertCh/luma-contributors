@@ -28,6 +28,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
+import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
 import {FIND_LINE_WGSL} from './gpu-outline-geometry';
 
 /** Spatial contexts supported by this distance-measuring operation. */
@@ -367,7 +368,8 @@ fn rotateVector(v: vec2<f32>, angle: f32) -> vec2<f32> {
   return vec2<f32>(c * v.x - s * v.y, s * v.x + c * v.y);
 }
 ${FIND_LINE_WGSL}
-${EXACT_ORIENTATION_WGSL}`,
+${EXACT_ORIENTATION_WGSL}
+${EXACT_GEOMETRY_WGSL}`,
         body: /* wgsl */ `let offsetDistance = parameters[parametersOffset];
   let mitreLimit = max(parameters[parametersOffset + 1u], 1.0);
   let magnitude = abs(offsetDistance);
@@ -437,8 +439,13 @@ ${EXACT_ORIENTATION_WGSL}`,
     // reverse (the tip of a sliver thinner than one f32 step): the join then went to the wrong
     // side and a buffer lost its end cap there. The f32 sign is kept only for input the exact
     // predicate cannot certify (code 2: non-finite coordinates).
-    let exactTurn = orientSign(previousPoint, center, nextPoint);
-    let turn = select(f32(exactTurn), sign(incoming.x * outgoing.y - incoming.y * outgoing.x), exactTurn == 2);
+    let exactTurn = exactOrientSigns(
+      1u,
+      array<vec2f, 4>(previousPoint, vec2f(0.0), vec2f(0.0), vec2f(0.0)),
+      array<vec2f, 4>(center, vec2f(0.0), vec2f(0.0), vec2f(0.0)),
+      array<vec2f, 4>(nextPoint, vec2f(0.0), vec2f(0.0), vec2f(0.0))
+    );
+    let turn = select(f32(exactTurn.signs.x), sign(incoming.x * outgoing.y - incoming.y * outgoing.x), exactTurn.uncertain);
     let cosTurn = clamp(dot(incoming, outgoing), -1.0, 1.0);
     if (turn * offsetDistance > 0.0 && 1.0 + cosTurn > 1e-6) {
       // Inside of the turn: intersection of the two offset segments.

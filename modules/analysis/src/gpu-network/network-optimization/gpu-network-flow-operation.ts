@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getNetworkOptimizationStatusOutputs,
+  type NetworkOptimizationStatusValues
+} from './network-optimization-status';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUNetworkFlow, type GPUNetworkFlowProps} from './gpu-network-flow';
 
@@ -17,7 +21,13 @@ export type NetworkFlowOperationProps = Pick<
   costs?: string;
   /** uint32: source, sink, required flow (0xffffffff maximizes). */
   parameters: string;
-  output: {flow: string; cut: string; summary: string; exactCost?: string};
+  output: {
+    flow: string;
+    cut: string;
+    summary: string;
+    exactCost?: string;
+    status?: NetworkOptimizationStatusValues;
+  };
 };
 
 /** GPU flow operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
@@ -35,6 +45,7 @@ export class GPUNetworkFlowOperation extends GPUContributorOperation {
         flow: {value: props.output.flow, format: 'uint32', length: props.edgeCount},
         cut: {value: props.output.cut, format: 'uint32', length: props.nodeCount},
         summary: {value: props.output.summary, format: 'uint32', length: 8},
+        ...getNetworkOptimizationStatusOutputs(props.id ?? 'network-flow', props.output.status),
         ...(props.output.exactCost === undefined
           ? {}
           : {exactCost: {value: props.output.exactCost, format: 'uint32x2' as const, length: 1}})
@@ -50,6 +61,11 @@ export class GPUNetworkFlowOperation extends GPUContributorOperation {
             flow: getView<'uint32'>('flow'),
             cut: getView<'uint32'>('cut'),
             summary: getView<'uint32'>('summary'),
+            status: Object.fromEntries(
+              Object.entries(props.output.status ?? {}).flatMap(([name, value]) =>
+                value === undefined ? [] : [[name, getView<'uint32'>(name)]]
+              )
+            ),
             exactCost:
               props.output.exactCost === undefined ? undefined : getView<'uint32x2'>('exactCost')
           }

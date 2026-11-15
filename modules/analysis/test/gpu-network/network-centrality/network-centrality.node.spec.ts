@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
@@ -429,4 +430,97 @@ it('the CPU mirror ignores out-of-range pivots and reports zero rows for them', 
     laneCount: 2
   });
   expect(Array.from(result.betweenness)).toEqual(Array.from(without.betweenness));
+});
+
+for (const withBetweenness of [false, true]) {
+  for (const withConverged of [false, true]) {
+    it(`tracks centrality round exhaustion (betweenness: ${withBetweenness}, converged: ${withConverged})`, () => {
+      const device = createNullWebGPUDevice();
+      const graph = new GPUCommandGraph(device);
+      try {
+        const base = createProps(graph, 5);
+        const status = {
+          converged: withConverged ? createView(graph, 'uint32', 1) : undefined,
+          iterationLimitReached: createView(graph, 'uint32', 1)
+        };
+        const contributor = new GPUNetworkCentrality({
+          ...base,
+          output: {
+            betweenness: withBetweenness ? base.output.betweenness : undefined,
+            closeness: base.output.closeness,
+            status
+          }
+        });
+        const nodes = contributor.getCommandNodes(graph);
+        expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
+        const sources = getParsedKernelSources(nodes);
+        for (const source of sources.values())
+          expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
+        const source = sources.get('centrality-converged');
+        expect(source).toContain(
+          'iterationLimitReached[iterationLimitReachedOffset] = anyLimitReached;'
+        );
+      } finally {
+        device.destroy();
+      }
+    });
+  }
+}
+
+it('validates centrality stopping scalars, ownership and physical buffer separation', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const physicalBuffer = device.createBuffer({byteLength: 256, usage: Buffer.STORAGE});
+  try {
+    const base = createProps(graph, 5);
+    const withFlag = (iterationLimitReached: NonNullable<typeof base.output.reachedCounts>) =>
+      new GPUNetworkCentrality({
+        ...base,
+        output: {...base.output, status: {iterationLimitReached}}
+      });
+    for (const length of [0, 2])
+      expect(() => withFlag(createView(graph, 'uint32', length))).toThrow(
+        /^centrality output.status.iterationLimitReached must contain exactly one row/
+      );
+    expect(() => withFlag(createView(graph, 'float32', 1) as never)).toThrow(
+      /centrality output.status.iterationLimitReached/
+    );
+    const foreign = createView(new GPUCommandGraph(device), 'uint32', 1);
+    expect(() => withFlag(foreign).getCommandNodes(graph)).toThrow(/centrality.*target graph/);
+    const firstHandle = graph.importBuffer(
+      {id: 'first', byteLength: 256, usage: Buffer.STORAGE},
+      physicalBuffer
+    );
+    const secondHandle = graph.importBuffer(
+      {id: 'second', byteLength: 256, usage: Buffer.STORAGE},
+      physicalBuffer
+    );
+    const firstView = graph.createDataView(firstHandle, {format: 'uint32', length: 1});
+    const secondView = graph.createDataView(secondHandle, {format: 'uint32', length: 1});
+    expect(firstHandle).not.toBe(secondHandle);
+    expect(
+      () =>
+        new GPUNetworkCentrality({
+          ...base,
+          output: {
+            ...base.output,
+            status: {
+              converged: firstView,
+              iterationLimitReached: secondView
+            }
+          }
+        })
+    ).toThrow(/centrality.*separate buffers/);
+    expect(
+      () =>
+        new GPUNetworkCentrality({
+          ...base,
+          costLimit: graph.createDataView(firstHandle, {format: 'float32', length: 1}),
+          output: {...base.output, status: {iterationLimitReached: secondView}}
+        })
+    ).toThrow(/centrality.*separate buffers/);
+  } finally {
+    physicalBuffer.destroy();
+    device.destroy();
+  }
 });

@@ -8,7 +8,6 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {GPUMinimumBounds} from '../../../src/gpu-spatial-analysis/minimum-bounds/index';
-import {GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW} from '../../../src/gpu-spatial-analysis/group-geometry/index';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -125,6 +124,7 @@ type Result = {
   bounds: number[];
   hullSizes: number[];
   overflow: number;
+  groupOverflow: number;
 };
 
 async function runMinimumBounds(
@@ -153,7 +153,8 @@ async function runMinimumBounds(
     diameters: output(FEATURE_COUNT),
     bounds: output(FEATURE_COUNT * 4),
     hullSizes: output(FEATURE_COUNT),
-    overflow: output(1)
+    overflow: output(1),
+    groupOverflow: output(1)
   };
   const geometry =
     mode === 'geometry'
@@ -192,7 +193,16 @@ async function runMinimumBounds(
         diameters: importGraphBuffer(graph, 'o-diameters', out.diameters, 'float32', 6),
         bounds: importGraphBuffer(graph, 'o-bounds', out.bounds, 'float32x4', 6),
         hullSizes: importGraphBuffer(graph, 'o-hull-sizes', out.hullSizes, 'uint32', 6),
-        status: {overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1)}
+        status: {
+          overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
+          groupOverflow: importGraphBuffer(
+            graph,
+            'o-group-overflow',
+            out.groupOverflow,
+            'uint32',
+            1
+          )
+        }
       }
     })
   );
@@ -207,7 +217,8 @@ async function runMinimumBounds(
     diameters: await readFloat32(out.diameters, FEATURE_COUNT),
     bounds: await readFloat32(out.bounds, FEATURE_COUNT * 4),
     hullSizes: await readUint32(out.hullSizes, FEATURE_COUNT),
-    overflow: (await readUint32(out.overflow, 1))[0]
+    overflow: (await readUint32(out.overflow, 1))[0],
+    groupOverflow: (await readUint32(out.groupOverflow, 1))[0]
   };
   console.log(`GPUMinimumBounds ${mode}: ${(performance.now() - start).toFixed(1)} ms`);
   compiled.destroy();
@@ -285,9 +296,8 @@ it('GPUMinimumBounds flags hulls over maximumHullVertices and writes NaN for the
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const actual = await runMinimumBounds(device, 'geometry', 5);
-  expect(actual.overflow & GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW).toBe(
-    GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW
-  );
+  expect(actual.overflow).toBe(1);
+  expect(actual.groupOverflow).toBe(1);
   expect(actual.hullSizes[0]).toBeGreaterThan(5);
   expect(Number.isNaN(actual.circles[2])).toBe(true);
   expect(Number.isNaN(actual.diameters[0])).toBe(true);

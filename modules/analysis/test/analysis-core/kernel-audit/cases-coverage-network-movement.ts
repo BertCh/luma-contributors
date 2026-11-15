@@ -58,7 +58,7 @@ export const COVERAGE_NETWORK_MOVEMENT_CASES: readonly KernelAuditCase[] = [
             assignments: view('float32', 2048),
             scores: view('float32', 64),
             unservedDemand: view('float32', 64),
-            status: view('uint32', 4)
+            summary: view('uint32', 4)
           }
         })
       )
@@ -305,7 +305,7 @@ export const COVERAGE_NETWORK_MOVEMENT_CASES: readonly KernelAuditCase[] = [
               selectedFacilities: view('uint32', 16),
               assignments: view('uint32', demandCount),
               objective: view('float32', 1),
-              status: view('uint32', 4)
+              summary: view('uint32', 4)
             }
           })
         );
@@ -328,7 +328,7 @@ export const COVERAGE_NETWORK_MOVEMENT_CASES: readonly KernelAuditCase[] = [
             assignments: view('float32', 2048),
             scores: view('float32', 64),
             unservedDemand: view('float32', 64),
-            status: view('uint32', 4)
+            summary: view('uint32', 4)
           }
         })
       )

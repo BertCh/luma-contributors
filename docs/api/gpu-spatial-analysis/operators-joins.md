@@ -55,7 +55,20 @@ next capacities (see [Shared ports, status and planning](./concepts.md#shared-po
 
 Pass `output.weights` to also write the matches as a `GPUSpatialWeights` with left features as rows and
 weight 1; set `excludeSameRow` for a self join. A predicate join is then a weights producer, for
-example `dwithin` between polygons.
+example `dwithin` between polygons. Optional `output.weights.distances` contains the minimum
+closed-geometry distance aligned with `neighbors`: planar coordinate units, or meters for
+great-circle `dwithin`. Intersecting or contained geometries have distance zero; holes contribute
+their boundaries. Planar distance output uses scaled norms, so representable distances such as
+`1e20` do not saturate when their square exceeds float32. Normal gaps beside long, asymmetric
+segments remain measurable even when a projection fraction would underflow. Large `dwithin`
+thresholds use the same linear distance in both engines; ordinary thresholds retain squared
+comparisons. Unused distance slots are NaN on every encoding, including empty results.
+Distance output requires a metric (`native` or `great-circle`); longitude/latitude topology with
+`metric: 'none'` cannot produce distances. The optional `weights.status` fields `count`,
+`requiredCount`, `overflow`, `candidateOverflow` and `uncertainCount` are written even when no
+pair output is requested. `overflow` reports final pair capacity, and `candidateOverflow` reports
+an incomplete candidate or BVH stage. Distance evaluation adds one packed pair scratch buffer
+(eight bytes per output slot), included by the instance's `getCapacityPlan()`.
 
 The new predicates are masks over one DE-9IM matrix per candidate pair, computed from structure (vertex
 locations, edge crossings, collinear overlaps, and edge pieces located against the other geometry, with

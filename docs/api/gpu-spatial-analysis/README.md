@@ -256,7 +256,7 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | `spreg.GM_Lag` | `GPUSpatialTwoStageLeastSquares` |
 | `spreg.ML_Lag`, `ML_Error` (`method='full'`), `spat_impacts` | `GPUSpatialLagMaximumLikelihood`, `GPUSpatialErrorMaximumLikelihood`; impacts `GPUSpatialLagImpacts` over `GPUSpatialWeightsTraces` |
 | `spreg` panel, SUR, regimes, probit | Use `GPUSpatialPanelRegression` for pooled/unit-effects spatial-lag panels, `GPUSpatialRegimeRegression` for fully varying regime OLS, and `spreg` when SUR or probit inference is required |
-| `mgwr.GWR` | `GPUGeographicallyWeightedRegression`; `MGWR` backfitting is not built |
+| `mgwr.GWR`, `mgwr.MGWR` | `GPUGeographicallyWeightedRegression`; `GPUMultiscaleGeographicallyWeightedRegression` with bounded backfitting, LOO/AICc bandwidth selection and bandwidth-conditioned inference |
 | `giddy.Markov`, `LISA_Markov`, `Spatial_Markov` | `GPUTransitionMatrix`, `GPULISAMarkov`, `GPUSpatialMarkov` |
 | `giddy.directional`, `Rose` | `GPURoseStatistic` with explicit directional or axial circular semantics |
 | `segregation` aspatial and spatial indices | `GPUSegregation` |

@@ -16,7 +16,16 @@ import {
   GPUSpatialTwoStageLeastSquaresOperation,
   type SpatialTwoStageLeastSquaresOperationProps
 } from './gpu-spatial-two-stage-least-squares-operation';
-import {fitCPURegressionWithQR} from './cpu-regression-linear-algebra';
+import {
+  validateInstrumentalVariablesCovarianceOptions,
+  INSTRUMENTAL_VARIABLES_COVARIANCE_LEVERAGE_TOLERANCE,
+  INSTRUMENTAL_VARIABLES_COVARIANCE_PSD_TOLERANCE,
+  type GPUInstrumentalVariablesCovarianceMethod
+} from './instrumental-variables-covariance-parameters';
+import {
+  factorCPURegressionCorrelation,
+  fitCPURegressionWithQR
+} from './cpu-regression-linear-algebra';
 import {validateCPURegressionWeights, type CPURegressionWeights} from './cpu-regression-weights';
 import {
   getCPUErrorMean,
@@ -35,7 +44,13 @@ export type CPUSpatialTwoStageLeastSquaresInput = {
   weights: CPURegressionWeights;
   predictors: Float32Array;
   response: Float32Array;
-  robust?: {method: 'HC0' | 'HC1' | 'HAC'; kernel?: CPURegressionWeights; overflow?: Uint32Array};
+  robust?: {
+    method: GPUInstrumentalVariablesCovarianceMethod;
+    kernel?: CPURegressionWeights;
+    overflow?: Uint32Array;
+    clusters?: Uint32Array;
+    clusterCount?: number;
+  };
 };
 /** Instrument order is a model definition and remains 1 or 2. */
 export type CPUSpatialTwoStageLeastSquaresOptions = Pick<
@@ -49,9 +64,33 @@ export type CPUSpatialTwoStageLeastSquaresResult = {
   summary: Float32Array;
   residuals: Float32Array;
   /** Covariance status: 0 success, 1 finite rank failure, 2 insufficient rows,
-   * 3 non-finite failure, 4 invalid HAC kernel. Failure covariance entries are NaN. */
+   * 3 non-finite failure, 4 invalid HAC kernel, 5 invalid leverage, 6 invalid clusters, 7 non-PSD covariance. Failure covariance entries are NaN. */
   robust?: {covariance: Float32Array; status: Uint32Array};
 };
+
+/** Certifies a covariance directly, without running the CPU model fit. @internal */
+export function getCPUInstrumentalVariablesCovarianceStatus(
+  covariance: readonly number[][]
+): number {
+  // CPU twins do not inherit the GPU width cap. Avoid flattening the matrix or passing its
+  // entries as function arguments: a 402-by-402 covariance already exceeds Node's stack limit.
+  let magnitude = 0;
+  for (const row of covariance) {
+    for (const value of row) magnitude = Math.max(magnitude, Math.abs(value));
+  }
+  if (!Number.isFinite(magnitude)) return 3;
+  if (magnitude > 0) {
+    const shifted = covariance.map((row, first) =>
+      row.map(
+        (value, second) =>
+          value / magnitude +
+          (first === second ? INSTRUMENTAL_VARIABLES_COVARIANCE_PSD_TOLERANCE : 0)
+      )
+    );
+    if (!factorCPURegressionCorrelation(shifted)) return 7;
+  }
+  return 0;
+}
 
 function validateOptions(id: string, options: CPUSpatialTwoStageLeastSquaresOptions): void {
   validateCapacity(id, 'predictorCount', options.predictorCount);
@@ -61,18 +100,6 @@ function validateOptions(id: string, options: CPUSpatialTwoStageLeastSquaresOpti
       options.instrumentOrder === 1 ||
       options.instrumentOrder === 2,
     'instrumentOrder must be 1 or 2'
-  );
-}
-function validateRobust(id: string, robust: {method: string; kernel?: unknown}): void {
-  validateRequirement(
-    id,
-    ['HC0', 'HC1', 'HAC'].includes(robust.method),
-    'robust.method must be HC0, HC1 or HAC'
-  );
-  validateRequirement(
-    id,
-    (robust.method === 'HAC') === Boolean(robust.kernel),
-    'robust.kernel is required only for HAC'
   );
 }
 
@@ -138,6 +165,8 @@ function isKernelValid(kernel: CPURegressionWeights, overflow?: Uint32Array): bo
  * - HC0, HC1 and HAC use float64 influence rows and structural residuals, avoiding the GPU's
  *   second rounding of raw lag columns and residuals before robust covariance. Kernel symmetry
  *   and diagonal tolerances remain 1e-5; PSD remains a caller precondition.
+ * - HC2/HC3 leverage and the shifted PSD test use float64 with the same 1e-6 and 1e-5
+ *   tolerances as the GPU. CLUSTER sums scores in input order, rather than the GPU segment tree.
  * - Non-finite active data/weights return solver status 1, matching the current kernel's failed
  *   solve branch (despite its status-3 documentation); skipped neighbor sentinels ignore weights.
  *   Subnormals are retained. Inconsistent model CSR arrays throw rather than reading outside
@@ -163,7 +192,9 @@ export function computeSpatialTwoStageLeastSquaresOnCPU(
   if (input.predictors.length !== rowCount * predictorCount)
     throw new Error(`${id} predictors length must equal response length * predictorCount`);
   if (input.robust) {
-    validateRobust(id, input.robust);
+    validateInstrumentalVariablesCovarianceOptions(id, rowCount, input.robust);
+    if (input.robust.clusters && input.robust.clusters.length !== rowCount)
+      throw new Error(`${id} robust.clusters length must equal response length`);
     if (input.robust.kernel && input.robust.kernel.offsets.length !== rowCount + 1)
       throw new Error(`${id} robust.kernel.offsets length must equal response length + 1`);
     if (
@@ -362,10 +393,47 @@ export function computeSpatialTwoStageLeastSquaresOnCPU(
   result.residuals.set(residuals);
   if (input.robust && result.robust && !invalidKernel) {
     const influence = projected.map(row => multiplyMatrixRows(inverse, row));
-    const scores = influence.map((row, position) => [
-      residuals[position] * getCPUErrorDot(transform, row),
-      ...row.slice(1).map(value => residuals[position] * value)
-    ]);
+    let robustCode = 0;
+    let scores = influence.map((row, position) => {
+      let residual = residuals[position];
+      if (input.robust!.method === 'HC2' || input.robust!.method === 'HC3') {
+        const leverage = getCPUErrorDot(projected[position], row);
+        const denominator = 1 - leverage;
+        if (
+          !Number.isFinite(leverage) ||
+          leverage < -INSTRUMENTAL_VARIABLES_COVARIANCE_LEVERAGE_TOLERANCE ||
+          denominator <= INSTRUMENTAL_VARIABLES_COVARIANCE_LEVERAGE_TOLERANCE
+        )
+          robustCode = 5;
+        residual /= input.robust!.method === 'HC2' ? Math.sqrt(denominator) : denominator;
+      }
+      return [
+        residual * getCPUErrorDot(transform, row),
+        ...row.slice(1).map(value => residual * value)
+      ];
+    });
+    let correction = input.robust.method === 'HC1' ? rowCount / (rowCount - coefficientCount) : 1;
+    if (input.robust.clusters) {
+      const grouped = new Map<number, number[]>();
+      for (let position = 0; position < rowCount; position++) {
+        const key = input.robust.clusters[position];
+        if (key >= input.robust.clusterCount!) {
+          robustCode = 6;
+          continue;
+        }
+        const total = grouped.get(key) ?? new Array<number>(coefficientCount).fill(0);
+        scores[position].forEach((value, column) => {
+          total[column] += value;
+        });
+        grouped.set(key, total);
+      }
+      const groups = grouped.size;
+      if (groups < 2) robustCode = 6;
+      correction =
+        ((groups / Math.max(groups - 1, 1)) * (rowCount - 1)) / (rowCount - coefficientCount);
+      scores = Array.from(grouped.values());
+      if (!scores.length) scores = [new Array<number>(coefficientCount).fill(0)];
+    }
     const smoothed = input.robust.kernel
       ? scores[0].map((_, column) =>
           multiplyCPUErrorWeights(
@@ -374,7 +442,6 @@ export function computeSpatialTwoStageLeastSquaresOnCPU(
           )
         )
       : scores[0].map((_, column) => scores.map(row => row[column]));
-    const correction = input.robust.method === 'HC1' ? rowCount / (rowCount - coefficientCount) : 1;
     const robustCovariance = scores[0].map((_, first) =>
       scores[0].map(
         (_, second) =>
@@ -382,12 +449,19 @@ export function computeSpatialTwoStageLeastSquaresOnCPU(
           scores.reduce((sum, row, position) => sum + row[first] * smoothed[second][position], 0)
       )
     );
+    // Publish the symmetric sandwich and certify it at the same scale/tolerance as the GPU.
+    for (let first = 0; first < coefficientCount; first++) {
+      for (let second = first + 1; second < coefficientCount; second++) {
+        const value = 0.5 * robustCovariance[first][second] + 0.5 * robustCovariance[second][first];
+        robustCovariance[first][second] = value;
+        robustCovariance[second][first] = value;
+      }
+    }
+    if (!robustCode) robustCode = getCPUInstrumentalVariablesCovarianceStatus(robustCovariance);
     result.robust.covariance.set(robustCovariance.flat());
-    result.robust.status[0] = robustCovariance.some(row =>
-      row.some(value => !Number.isFinite(value))
-    )
-      ? 3
-      : 0;
+    if (!robustCode && result.robust.covariance.some(value => !Number.isFinite(value)))
+      robustCode = 3;
+    result.robust.status[0] = robustCode;
     if (result.robust.status[0] !== 0) result.robust.covariance.fill(NaN);
     standardErrors.splice(
       0,
@@ -423,7 +497,8 @@ export class CPUSpatialTwoStageLeastSquaresOperation extends GPUCPUOperation {
     validateOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount);
     if (props.tileRowCount !== undefined) validateCapacity(id, 'tileRowCount', props.tileRowCount);
-    if (props.robust) validateRobust(id, props.robust);
+    if (props.robust)
+      validateInstrumentalVariablesCovarianceOptions(id, props.rowCount, props.robust);
     const operation = new GPUSpatialTwoStageLeastSquaresOperation(props);
     super({
       id,
@@ -450,6 +525,10 @@ export class CPUSpatialTwoStageLeastSquaresOperation extends GPUCPUOperation {
             robust: props.robust
               ? {
                   method: props.robust.method,
+                  clusters: props.robust.clusters
+                    ? getCPUOperationUint32Rows(id, inputs, 'clusters')
+                    : undefined,
+                  clusterCount: props.robust.clusterCount,
                   kernel: props.robust.kernel
                     ? {
                         offsets: getCPUOperationUint32Rows(id, inputs, 'kernelOffsets'),

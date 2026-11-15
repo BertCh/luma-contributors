@@ -21,6 +21,7 @@ export type {
   GPUTerrainFlowStatus
 } from './gpu-terrain-flow';
 export {
+  GPU_TERRAIN_DRAINAGE_MULTIPLE,
   GPU_TERRAIN_DRAINAGE_NONE,
   GPU_TERRAIN_DRAINAGE_UNRESOLVED,
   GPUTerrainHeightAboveDrainage

@@ -255,8 +255,8 @@ describe('exact geometry kernels', () => {
         }
       }
     });
-    // Two exact kernels, one call site each: the lowest-vertex orientation and the shell search.
-    expect(expectExactKernels(assembly.getCommandNodes(graph), 'ring assembly')).toBe(2);
+    // One call chain each: successor turns, lowest-vertex orientation and shell search.
+    expect(expectExactKernels(assembly.getCommandNodes(graph), 'ring assembly')).toBe(3);
   });
 
   it('GPUCellCover containment is exact with one call site', () => {

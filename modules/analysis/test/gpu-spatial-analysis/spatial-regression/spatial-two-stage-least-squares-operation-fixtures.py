@@ -85,18 +85,52 @@ def create_fixture(name, predictors, response, matrix, order):
     mapping = normal_inverse @ design.T @ instruments @ np.linalg.inv(instruments.T @ instruments)
     scores = instruments * residuals[:, None]
     robust = {}
-    for method in ["HC0", "HC1", "HAC"]:
-        meat = scores.T @ (kernel if method == "HAC" else np.eye(row_count)) @ scores
+    # HC2/HC3 are extensions of the spreg sandwich with projected-design leverage.
+    # CR1 counts occupied groups, including deliberately gapped dense keys.
+    leverage = np.einsum('ij,jk,ik->i', projected, normal_inverse, projected)
+    clusters = (np.arange(row_count) % 3) * 2
+    for method in ["HC0", "HC1", "HC2", "HC3", "HAC", "CLUSTER"]:
+        adjusted = scores.copy()
+        if method == "HC2":
+            adjusted /= np.sqrt(1 - leverage)[:, None]
+        if method == "HC3":
+            adjusted /= (1 - leverage)[:, None]
+        if method == "CLUSTER":
+            adjusted = np.array([adjusted[clusters == key].sum(axis=0) for key in np.unique(clusters)])
+            meat = adjusted.T @ adjusted
+        else:
+            meat = adjusted.T @ (kernel if method == "HAC" else np.eye(row_count)) @ adjusted
         covariance = mapping @ meat @ mapping.T
         if method == "HC1":
             covariance *= row_count / (row_count - design.shape[1])
+        if method == "CLUSTER":
+            group_count = len(np.unique(clusters))
+            covariance *= group_count / (group_count - 1) * (row_count - 1) / (row_count - design.shape[1])
         robust_errors = np.sqrt(np.diag(covariance))
         robust_statistic = coefficients / robust_errors
         robust[method] = {
             "covariance": covariance.ravel().tolist(),
             "table": np.column_stack([coefficients, robust_errors, robust_statistic, chi2.sf(robust_statistic**2, 1)]).ravel().tolist(),
         }
+    # A structurally valid but indefinite HAC kernel must fail the covariance PSD check.
+    non_psd_kernel = np.eye(row_count)
+    influence_scores = (mapping @ scores.T).T
+    for first in range(row_count):
+        found = False
+        for second in range(first + 1, row_count):
+            candidate = np.eye(row_count)
+            candidate[first, second] = candidate[second, first] = 100
+            if np.linalg.eigvalsh(influence_scores.T @ candidate @ influence_scores).min() < -0.01:
+                non_psd_kernel = candidate
+                found = True
+                break
+        if found:
+            break
+    if not found:
+        raise ValueError("Could not construct an indefinite HAC covariance oracle")
     return {
+        "clusters": clusters.tolist(), "clusterCount": 6,
+        "nonPositiveSemidefiniteKernel": pack_weights(non_psd_kernel),
         "name": name, "predictorCount": predictor_count, "instrumentOrder": order,
         "predictors": predictors.ravel().tolist(), "response": response.tolist(),
         "weights": pack_weights(matrix), "kernel": pack_weights(kernel),

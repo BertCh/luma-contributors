@@ -176,14 +176,31 @@ export class CPUVariogramModelFitOperation extends GPUCPUOperation {
       ['pairs', 'none', 'cressie'].includes(weighting),
       "weighting must be 'cressie', 'pairs' or 'none'"
     );
+    const inputs = {
+      distances: props.distances,
+      semivariances: props.semivariances,
+      pairCounts: props.pairCounts
+    };
+    for (const [port, value] of Object.entries(inputs)) {
+      validateRequirement(
+        id,
+        typeof value === 'string' && value.length > 0,
+        `inputs.${port} must be a non-empty graph value name`
+      );
+    }
+    // Validate before computed keys coerce non-string names into strings.
+    for (const port of ['parameters', 'diagnostics', 'status'] as const) {
+      const value = props.output[port];
+      validateRequirement(
+        id,
+        typeof value === 'string' && value.length > 0,
+        `outputs.${port}.value must be a non-empty graph value name`
+      );
+    }
     const shape = {length: models.length};
     super({
       id,
-      inputs: {
-        distances: props.distances,
-        semivariances: props.semivariances,
-        pairCounts: props.pairCounts
-      },
+      inputs,
       outputs: {
         [props.output.parameters]: gpuGraph.vector('float32x4', shape),
         [props.output.diagnostics]: gpuGraph.vector('float32x4', shape),

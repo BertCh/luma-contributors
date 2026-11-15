@@ -39,7 +39,7 @@ for (const empty of [false, true])
         predecessors: 'parents',
         facilityNodeCounts: 'counts',
         facilityCostSums: 'sums',
-        status: {converged: 'converged'}
+        status: {converged: 'converged', iterationLimitReached: 'limitReached'}
       }
     };
     const inputs = {
@@ -51,7 +51,15 @@ for (const empty of [false, true])
       facilityCount: {format: 'uint32' as const, values: Uint32Array.of(empty ? 0 : 3)},
       cutoff: {format: 'float32' as const, values: Float32Array.of(6)}
     };
-    const outputs = ['assignments', 'costs', 'parents', 'counts', 'sums', 'converged'];
+    const outputs = [
+      'assignments',
+      'costs',
+      'parents',
+      'counts',
+      'sums',
+      'converged',
+      'limitReached'
+    ];
     const gpuRows = await runOperationGraph(device, {
       inputs,
       operations: [new GPUNetworkServiceAreasOperation(props)],
@@ -89,7 +97,7 @@ it('reuses tight slot flags across overlapping CSR rows on both backends', async
       predecessors: 'parents',
       facilityNodeCounts: 'counts',
       facilityCostSums: 'sums',
-      status: {converged: 'converged'}
+      status: {converged: 'converged', iterationLimitReached: 'limitReached'}
     }
   };
   const inputs = {
@@ -107,7 +115,8 @@ it('reuses tight slot flags across overlapping CSR rows on both backends', async
     parents: [0xffffffff, 0xffffffff, 0xffffffff],
     counts: [2, 1],
     sums: [1, 0],
-    converged: [1]
+    converged: [1],
+    limitReached: [0]
   };
   const outputs = Object.keys(expected);
   const gpuRows = await runOperationGraph(device, {

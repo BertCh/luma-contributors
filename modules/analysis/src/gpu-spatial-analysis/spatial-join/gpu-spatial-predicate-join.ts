@@ -26,6 +26,7 @@ import {
   GPUPairwisePointInPolygon
 } from '@luma.gl/graph/geospatial';
 import {
+  getWGSLFloatLiteral,
   createWGSLActiveCountDispatch,
   createWGSLKernelNode,
   type WGSLActiveCountDispatch,
@@ -39,7 +40,8 @@ import {
   validatePowerOfTwo,
   validateCapacity,
   validateSinglePackedView,
-  validateRequirement
+  validateRequirement,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
 import {
@@ -218,7 +220,10 @@ export type GPUSpatialPredicateJoinOutput = {
   /**
    * Matches as cross spatial weights: one CSR row per left feature, neighbors are right rows
    * ascending, every weight is `1`. `weights.neighbors.length` is the pair capacity and must equal
-   * `pairs.leftIds.length` when both are given. `weights.distances` is not supported.
+   * `pairs.leftIds.length` when both are given. Optional `weights.distances` stores the minimum
+   * closed-geometry distance aligned with each neighbor (zero for intersecting pairs): coordinate
+   * units in a planar context, meters for great-circle `dwithin`. Unused slots are NaN.
+   * Longitude/latitude with `metric: 'none'` cannot produce distances.
    */
   weights?: GPUSpatialWeights;
   /**
@@ -582,7 +587,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
     const context = resolveGPUSpatialContext(
       id,
       views.spatialContext,
-      predicate === 'dwithin'
+      predicate === 'dwithin' || views.weights?.distances
         ? SPATIAL_DISTANCE_PREDICATE_JOIN_CONTEXT_SUPPORT
         : SPATIAL_PREDICATE_JOIN_CONTEXT_SUPPORT
     );
@@ -760,9 +765,11 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         if (rows !== this.leftCount) {
           throw new Error(`${id} output.weights needs one row per left feature`);
         }
-        if (views.weights.distances) {
-          throw new Error(`${id} output.weights.distances is not supported`);
-        }
+        validateRequirement(
+          id,
+          !views.weights.distances || context.metric !== 'none',
+          "output.weights.distances requires spatialContext.metric 'native' or 'great-circle'"
+        );
         if (views.pairs && views.pairs.leftIds.length !== views.weights.neighbors.length) {
           throw new Error(`${id} output.weights capacity must equal pairs`);
         }
@@ -836,6 +843,8 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       weights?.offsets,
       weights?.neighbors,
       weights?.weights,
+      weights?.distances,
+      ...Object.values(weights?.status ?? {}),
       unmatched?.ids,
       unmatched?.status.count,
       unmatched?.status.overflow,
@@ -860,7 +869,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
     observation: GPUSpatialPredicateJoinObservation = {}
   ): GPUSpatialJoinCapacityPlan {
     const {views} = this;
-    return getGPUSpatialJoinCapacityPlan({
+    const plan = getGPUSpatialJoinCapacityPlan({
       leftCount: this.leftCount,
       rightCount: this.rightCount,
       leftKind: views.left.kind,
@@ -870,6 +879,12 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       observedCandidateCount: observation.candidateCount,
       observedRequiredCount: observation.requiredCount
     });
+    if (views.weights?.distances) {
+      plan.pairs.estimatedPeakTransientBytes +=
+        plan.pairs.capacity * 2 * Uint32Array.BYTES_PER_ELEMENT;
+      plan.estimatedPeakTransientBytes += plan.pairs.estimatedPeakTransientBytes;
+    }
+    return plan;
   }
 
   getCommandNodes<Parameters>(
@@ -880,6 +895,15 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
     if (prepared && !prepared.isDeclaredIn(graph)) {
       throw new Error(`${id} requires prepared to be added to the graph first`);
+    }
+    if (weights?.distances) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'distance pairs',
+        pairCapacity * 2 * Uint32Array.BYTES_PER_ELEMENT,
+        'reduce output.weights capacity'
+      );
     }
     const nodes: GPUCommandNode<Parameters>[] = [];
     if (
@@ -1009,6 +1033,22 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       'uint32x2',
       candidateCapacity + (this.distanceView ? 1 : 0)
     );
+    // Packed matched pairs keep polygon/polygon distance evaluation within eight storage bindings.
+    const distancePairs = weights?.distances
+      ? createTransientView(graph, `${id}-distance-pairs`, 'uint32x2', pairCapacity)
+      : undefined;
+    if (distancePairs) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-clear-distance-pairs`,
+          operation: OPERATION,
+          view: distancePairs,
+          type: 'u32',
+          value: '0xffffffffu',
+          componentCount: pairCapacity * 2
+        })
+      );
+    }
     const flags = createTransientView(graph, `${id}-flags`, 'uint32', candidateCapacity);
     const flagOffsets = isAnti
       ? undefined
@@ -1527,6 +1567,14 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
         {name: 'leftIds', view: leftIds, type: 'u32', access: 'read_write'},
         {name: 'rightIds', view: rightIds, type: 'u32', access: 'read_write'}
       ];
+      if (distancePairs) {
+        scatterBindings.push({
+          name: 'distancePairs',
+          view: distancePairs,
+          type: 'u32',
+          access: 'read_write'
+        });
+      }
       if (relate && matrices) {
         scatterBindings.push(
           {name: 'matrices', view: matrices, type: 'u32', access: 'read'},
@@ -1547,6 +1595,12 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
     if (slot < PAIR_CAPACITY) {
       leftIds[leftIdsOffset + slot] = candidatePairs[candidatePairsOffset + index * 2u];
       rightIds[rightIdsOffset + slot] = candidatePairs[candidatePairsOffset + index * 2u + 1u];
+      ${
+        distancePairs
+          ? `distancePairs[distancePairsOffset + slot * 2u] = candidatePairs[candidatePairsOffset + index * 2u];
+      distancePairs[distancePairsOffset + slot * 2u + 1u] = candidatePairs[candidatePairsOffset + index * 2u + 1u];`
+          : ''
+      }
       ${relate && matrices ? `relateOut[relateOutOffset + slot] = matrices[matricesOffset + index] & ${RELATE_OUTPUT_MASK}u;` : ''}
     }
   }`
@@ -1559,6 +1613,11 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
     {
       const scalars: [string, GraphDataView<'uint32'> | undefined][] = [
         ['overflow', views.overflow],
+        ['weightsCount', weights?.status?.count],
+        ['weightsTotal', weights?.status?.requiredCount],
+        ['weightsOverflow', weights?.status?.overflow],
+        ['weightsCandidateOverflow', weights?.status?.candidateOverflow],
+        ['weightsUncertainCount', weights?.status?.uncertainCount],
         ['pairsOverflow', pairs?.status.overflow],
         ['pairsCandidateOverflow', pairs?.status.candidateOverflow],
         ['pairsCount', pairs?.status.count],
@@ -1606,6 +1665,11 @@ const UNMATCHED_CAPACITY: u32 = ${unmatched?.ids.length ?? 0}u;`,
   let unmatchedIncomplete = unmatchedTotalValue > UNMATCHED_CAPACITY;
   let overflowValue = select(0u, 1u, candidateIncomplete || pairIncomplete || unmatchedIncomplete);
   ${has('overflow') ? 'overflow[overflowOffset] = overflowValue;' : ''}
+  ${has('weightsCount') ? 'weightsCount[weightsCountOffset] = min(matchTotal, PAIR_CAPACITY);' : ''}
+  ${has('weightsTotal') ? 'weightsTotal[weightsTotalOffset] = matchTotal;' : ''}
+  ${has('weightsOverflow') ? 'weightsOverflow[weightsOverflowOffset] = select(0u, 1u, pairIncomplete);' : ''}
+  ${has('weightsCandidateOverflow') ? 'weightsCandidateOverflow[weightsCandidateOverflowOffset] = select(0u, 1u, candidateIncomplete);' : ''}
+  ${has('weightsUncertainCount') ? 'weightsUncertainCount[weightsUncertainCountOffset] = state[stateOffset + 1u];' : ''}
   ${has('pairsOverflow') ? 'pairsOverflow[pairsOverflowOffset] = select(0u, 1u, pairIncomplete);' : ''}
   ${has('pairsCandidateOverflow') ? 'pairsCandidateOverflow[pairsCandidateOverflowOffset] = select(0u, 1u, candidateIncomplete);' : ''}
   ${has('pairsCount') ? 'pairsCount[pairsCountOffset] = min(matchTotal, PAIR_CAPACITY);' : ''}
@@ -1678,6 +1742,31 @@ const UNMATCHED_CAPACITY: u32 = ${unmatched?.ids.length ?? 0}u;`,
           body: `if (index >= min(state[stateOffset + 2u], PAIR_CAPACITY)) { return; }
   neighbors[neighborsOffset + index] = rightIds[rightIdsOffset + index];
   weightValues[weightValuesOffset + index] = 1.0;`
+        })
+      );
+    }
+    if (weights?.distances && distancePairs) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-distances`,
+          operation: OPERATION,
+          variant: 'distances',
+          bindings: [
+            ...sideBindings,
+            {name: 'distancePairs', view: distancePairs, type: 'u32', access: 'read'},
+            {name: 'distances', view: weights.distances, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: pairCapacity,
+          // Reuse the same closed-geometry distance as dwithin, including holes and containment.
+          declarations: getSpatialPredicateWGSL(sideSpecs[0], sideSpecs[1], 'dwithin', 0, metric),
+          body: `let left = distancePairs[distancePairsOffset + index * 2u];
+  let right = distancePairs[distancePairsOffset + index * 2u + 1u];
+  if (left == NO_FEATURE || right == NO_FEATURE) {
+    distances[distancesOffset + index] = bitcast<f32>(0x7fc00000u | (index & 0u));
+    return;
+  }
+  let distanceValue = pairDistance(left, right);
+  distances[distancesOffset + index] = ${this.sphereRadius === undefined ? 'distanceValue' : `distanceValue * ${getWGSLFloatLiteral(this.sphereRadius)}`};`
         })
       );
     }

@@ -22,7 +22,7 @@ export type GeodesicPairsOperationProps = {
     initialBearings?: string;
     finalBearings?: string;
     midpoints?: string;
-    status?: {converged?: string};
+    status?: {converged?: string; approximation?: string; iterationLimitReached?: string};
   };
 };
 
@@ -38,12 +38,10 @@ export class GPUGeodesicPairsOperation extends GPUContributorOperation {
           length: props.pairCount
         };
     }
-    if (props.output.status?.converged !== undefined)
-      outputs['converged'] = {
-        value: props.output.status.converged,
-        format: 'uint32',
-        length: props.pairCount
-      };
+    for (const port of ['converged', 'approximation', 'iterationLimitReached'] as const) {
+      const value = props.output.status?.[port];
+      if (value !== undefined) outputs[port] = {value, format: 'uint32', length: props.pairCount};
+    }
     super({
       id: props.id ?? 'geodesic-pairs',
       inputs: {origins: props.origins, targets: props.targets},
@@ -72,6 +70,14 @@ export class GPUGeodesicPairsOperation extends GPUContributorOperation {
               converged:
                 props.output.status?.converged !== undefined
                   ? getView<'uint32'>('converged')
+                  : undefined,
+              approximation:
+                props.output.status?.approximation !== undefined
+                  ? getView<'uint32'>('approximation')
+                  : undefined,
+              iterationLimitReached:
+                props.output.status?.iterationLimitReached !== undefined
+                  ? getView<'uint32'>('iterationLimitReached')
                   : undefined
             }
           }

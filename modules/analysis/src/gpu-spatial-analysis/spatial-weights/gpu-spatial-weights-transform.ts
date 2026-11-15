@@ -20,6 +20,9 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphViewsBelongToGraph,
+  validateGraphOutputsDisjointFromInputs,
+  validateCapacity,
+  validateFiniteNumber,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -31,7 +34,15 @@ import {
 } from './spatial-weights';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
+import {
+  getGPUSpatialWeightsTransformParameterValues,
+  GPU_SPATIAL_WEIGHTS_TRANSFORM_PARAMETER_LENGTH
+} from './spatial-weights-parameters';
+
 const OPERATION = 'GPUSpatialWeightsTransform';
+/** Smallest positive float32 bandwidth: division must retain a positive denominator. */
+const MINIMUM_KERNEL_BANDWIDTH = 2 ** -149;
 
 /** Kernel profile `K(z)` of a `'kernel'` transform, with `z = d / h`. */
 export type GPUSpatialWeightsKernel =
@@ -93,7 +104,9 @@ export type GPUSpatialWeightsTransformOperation =
 /**
  * Properties for {@link GPUSpatialWeightsTransform}.
  *
- * Compile-time: every prop. Per-frame: the contents of `weights` and `output`.
+ * Compile-time: operation, kernel profile, adaptive versus fixed bandwidth, and view shapes.
+ * Per-frame: the contents of `weights`, `output` and a bandwidth parameter view. Numeric
+ * bandwidths are uploaded defaults; pass a GPUParameterBuffer view to update without recompiling.
  */
 export type GPUSpatialWeightsTransformProps = {
   /** Prefix for generated node IDs. Defaults to `'spatial-weights-transform'`. */
@@ -142,6 +155,8 @@ export type GPUSpatialWeightsTransformProps = {
    * the length unit of `weights.spatialContext`. Either:
    * - a positive number: the same `h` for every row, in the units of `weights.distances` (the
    *   fixed bandwidth of PySAL `Kernel`; use the distance-band radius for band weights); or
+   * - a packed float32 view from `getGPUSpatialWeightsTransformParameterValues`, hosted in a
+   *   `GPUParameterBuffer`, for a fixed bandwidth that changes between encodings; or
    * - `'adaptive'`: PySAL's adaptive bandwidth, `h_i` is the distance to the k-th nearest
    *   neighbor times `eps = 1.0000001` (see {@link GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON}),
    *   so the k-th neighbor keeps a tiny positive weight. On the CSR that is the largest distance of
@@ -149,7 +164,7 @@ export type GPUSpatialWeightsTransformProps = {
    *   requires `weights.information.provenance.criterion === 'knn'` and throws otherwise. On
    *   distance-band weights pass the band radius as a number.
    */
-  bandwidth?: number | 'adaptive';
+  bandwidth?: number | 'adaptive' | GraphDataView<'float32'>;
   /** Context of the numeric bandwidth, checked against `weights.spatialContext` when both exist. */
   spatialContext?: GPUSpatialContext;
 };
@@ -176,7 +191,7 @@ function getTransformOutputInformation(
     props.operation === 'binary' ||
     props.operation === 'double' ||
     props.operation === 'symmetrize' ||
-    (props.operation === 'kernel' && typeof props.bandwidth === 'number');
+    (props.operation === 'kernel' && props.bandwidth !== 'adaptive');
   return {
     rowCount: props.weights.offsets.length - 1,
     transform: OPERATION_STATES[props.operation],
@@ -232,6 +247,7 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
   readonly props: GPUSpatialWeightsTransformProps;
   /** The transformed weights (`output` or in place) with `information` and `status` attached. */
   readonly outputWeights: GPUSpatialWeights;
+  private readonly bandwidthValues?: Float32Array;
 
   constructor(props: GPUSpatialWeightsTransformProps) {
     const id = props.id ?? 'spatial-weights-transform';
@@ -260,8 +276,22 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
       if (bandwidth === undefined) {
         throw new Error(`${id} 'kernel' needs a bandwidth`);
       }
-      if (bandwidth !== 'adaptive' && !(Number.isFinite(bandwidth) && bandwidth > 0)) {
-        throw new Error(`${id} bandwidth must be 'adaptive' or > 0`);
+      if (typeof bandwidth === 'number') {
+        validateFiniteNumber(id, 'bandwidth', bandwidth, MINIMUM_KERNEL_BANDWIDTH);
+        this.bandwidthValues = getGPUSpatialWeightsTransformParameterValues({bandwidth});
+      } else if (bandwidth !== 'adaptive') {
+        validateSinglePackedView(bandwidth, ['float32'], `${id} bandwidth`);
+        validateCapacity(
+          id,
+          'bandwidth.length',
+          bandwidth.length,
+          GPU_SPATIAL_WEIGHTS_TRANSFORM_PARAMETER_LENGTH
+        );
+        validateGraphOutputsDisjointFromInputs(
+          id,
+          [props.output ?? props.weights.weights],
+          [bandwidth]
+        );
       }
       if (bandwidth === 'adaptive' && props.weights.information?.provenance?.criterion !== 'knn') {
         // Adaptive bandwidths are the k-th neighbor distance; use a number for distance bands.
@@ -301,7 +331,8 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
       weights.neighbors,
       weights.weights,
       weights.distances,
-      props.output
+      props.output,
+      typeof props.bandwidth === 'object' ? props.bandwidth : undefined
     ]);
     const rows = weights.offsets.length - 1;
     const capacity = weights.neighbors.length;
@@ -446,6 +477,14 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
     if (operation === 'kernel') {
       const kernel = props.kernel ?? 'triangular';
       const bandwidth = props.bandwidth!;
+      const runtime =
+        bandwidth === 'adaptive'
+          ? undefined
+          : createSpatialStatisticsParameterNodes(
+              graph,
+              `${id}-parameters`,
+              typeof bandwidth === 'number' ? this.bandwidthValues! : bandwidth
+            );
       // The kernel reads distances, not the old weights, so the source binding is not needed.
       const kernelBindings = [
         bindings[0],
@@ -460,7 +499,17 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
           view: props.output ?? weights.weights,
           type: 'f32' as const,
           access: 'read_write' as const
-        }
+        },
+        ...(runtime
+          ? [
+              {
+                name: 'parameters',
+                view: runtime.parameters,
+                type: 'f32' as const,
+                access: 'read' as const
+              }
+            ]
+          : [])
       ];
       const profile = {
         gaussian: 'exp(-0.5 * z * z) * 0.3989422804014327',
@@ -470,6 +519,7 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
         uniform: 'select(0.0, 0.5, z <= 1.0)'
       }[kernel];
       return [
+        ...(runtime?.nodes ?? []),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-kernel`,
           operation: OPERATION,
@@ -486,7 +536,7 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
   }
   // libpysal Kernel: h_i = (distance of the k-th neighbor) * eps, eps = 1.0000001.
   bandwidth = bandwidth * ${getWGSLFloatLiteral(GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON)};`
-      : `let bandwidth = ${getWGSLFloatLiteral(bandwidth)};`
+      : 'let bandwidth = parameters[parametersOffset];'
   }
   for (var slot = begin; slot < end; slot++) {
     let z = select(0.0, distances[distancesOffset + slot] / bandwidth, bandwidth > 0.0);

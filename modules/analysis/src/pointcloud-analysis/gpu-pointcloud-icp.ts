@@ -15,6 +15,8 @@ import {
   validateRequirement,
   validateViewLength
 } from '../analysis-core/kernels/gpu-contributor-utils';
+import {getSymmetricEigenWGSL} from '../analysis-core/kernels/symmetric-eigen-wgsl';
+import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {
   getPlaneMomentsSource,
   getPlaneSolveSource,
@@ -35,7 +37,90 @@ import {
   getPointCloudLocalTransform
 } from './pointcloud-local-origin';
 
+// Eight sweeps cover 48 four-axis pair rotations, the previous rotation budget.
+const POINT_CLOUD_ICP_MAXIMUM_EIGEN_SWEEPS = 8;
+
+/** Six scalar settings followed by the local column-major 4x4 initial transform. */
+export const GPU_POINT_CLOUD_ICP_PARAMETER_LENGTH = 22;
+
+export type GPUPointCloudICPSettings = {
+  /** Positive inclusive correspondence distance with a finite, nonzero float32 square. */
+  maximumDistance: number;
+  /** Nonnegative translation-step tolerance; default 1e-5. */
+  translationTolerance?: number;
+  /** Nonnegative rotation-column-change tolerance; default 1e-5. */
+  rotationTolerance?: number;
+  /** Positive finite float32 scale; default 1. Only Tukey also requires a finite nonzero square. */
+  robustScale?: number;
+  /** Match the contributor's compile-time robust.method; default tukey preserves earlier validation. */
+  robustMethod?: 'huber' | 'tukey';
+  /** Absolute column-major rigid initial transform; default identity. */
+  initialTransform?: readonly number[];
+};
+
+/**
+ * Pack per-frame ICP thresholds and the initial transform for a caller-owned GPUParameterBuffer.
+ * @param settings Per-frame distance, robust scale, convergence tolerances and initial transform.
+ * @param origin The contributor's compile-time local origin, when present.
+ */
+export function getGPUPointCloudICPParameterValues(
+  settings: GPUPointCloudICPSettings,
+  origin?: readonly [number, number, number]
+): Float32Array {
+  const identifier = 'gpu-pointcloud-icp';
+  validateFiniteNumber(identifier, 'maximumDistance', settings.maximumDistance);
+  validateRequirement(
+    identifier,
+    Math.fround(settings.maximumDistance) > 0 &&
+      Math.fround(settings.maximumDistance ** 2) > 0 &&
+      Number.isFinite(Math.fround(settings.maximumDistance ** 2)),
+    'maximumDistance must be positive with a finite nonzero float32 square'
+  );
+  validateFiniteNumber(
+    identifier,
+    'translationTolerance',
+    settings.translationTolerance ?? 1e-5,
+    0
+  );
+  validateFiniteNumber(identifier, 'rotationTolerance', settings.rotationTolerance ?? 1e-5, 0);
+  const robustScale = settings.robustScale ?? 1;
+  validateFiniteNumber(identifier, 'robustScale', robustScale);
+  validateRequirement(identifier, Math.fround(robustScale) > 0, 'robustScale must be positive');
+  const robustMethod = settings.robustMethod ?? 'tukey';
+  validateRequirement(
+    identifier,
+    robustMethod === 'huber' || robustMethod === 'tukey',
+    "robustMethod must be 'huber' or 'tukey'"
+  );
+  const robustScaleSquared = robustScale ** 2;
+  const hasFiniteNonzeroSquare =
+    Math.fround(robustScaleSquared) > 0 && Number.isFinite(Math.fround(robustScaleSquared));
+  if (robustMethod === 'tukey') {
+    validateRequirement(
+      identifier,
+      hasFiniteNonzeroSquare,
+      'robustScale must have a finite nonzero float32 square for the tukey method'
+    );
+  }
+  const initialTransform = getPointCloudICPInitialTransform(identifier, {
+    initialTransform: settings.initialTransform,
+    origin
+  });
+  return new Float32Array([
+    settings.maximumDistance,
+    settings.maximumDistance ** 2,
+    robustScale,
+    // Huber only reads the unsquared scale. Keep its unused square slot finite and nonzero.
+    hasFiniteNonzeroSquare ? robustScaleSquared : 1,
+    settings.translationTolerance ?? 1e-5,
+    settings.rotationTolerance ?? 1e-5,
+    ...initialTransform
+  ]);
+}
+
 export type GPUPointCloudICPProps = {
+  /** Per-frame thresholds and initial transform; overrides constructor numeric settings. */
+  parameters?: GraphDataView<'float32'>;
   id?: string;
   source: GraphDataView<'float32x3'>;
   target: GraphDataView<'float32x3'>;
@@ -82,7 +167,7 @@ export type GPUPointCloudICPProps = {
    * `..._DEGENERATE` (3) the solution is not unique (the two largest eigenvalues of the Horn matrix
    * agree to 1e-6, or a pivot of the point-to-plane normal matrix, scaled to a unit diagonal, is at
    * or below 1e-5), `..._EIGENSOLVE_EXHAUSTED` (4) the point-to-point Jacobi eigensolve did not
-   * converge within 48 rotations (one pivot each). After a code of 2, 3 or 4 the transform is the
+   * converge within eight cyclic sweeps (48 pair rotations). After a code of 2, 3 or 4 the transform is the
    * last good iterate.
    */
   status: GraphDataView<'uint32'>;
@@ -101,7 +186,66 @@ export const GPU_POINT_CLOUD_ICP_STATUS_EIGENSOLVE_EXHAUSTED = 4;
 
 const IDENTITY_TRANSFORM = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
-/** Bounded GPU point-to-point ICP with distance rejection and Horn's rigid least-squares solve. */
+function getPointCloudICPInitialTransform(
+  identifier: string,
+  props: Pick<GPUPointCloudICPProps, 'initialTransform' | 'origin'>
+): readonly number[] {
+  const initial = props.initialTransform ?? IDENTITY_TRANSFORM;
+  validateRequirement(
+    identifier,
+    initial.length === 16 && initial.every(value => Number.isFinite(Math.fround(value))),
+    'initialTransform must hold 16 finite numbers'
+  );
+  validateRequirement(
+    identifier,
+    initial[3] === 0 && initial[7] === 0 && initial[11] === 0 && initial[15] === 1,
+    'initialTransform must be a column-major rigid transform with bottom row 0, 0, 0, 1'
+  );
+  // Initial rotation must be orthonormal and proper, not a scaling/reflection matrix.
+  for (let first = 0; first < 3; first++)
+    for (let second = 0; second < 3; second++) {
+      let product = 0;
+      for (let axis = 0; axis < 3; axis++)
+        product += initial[first * 4 + axis] * initial[second * 4 + axis];
+      validateRequirement(
+        identifier,
+        Math.abs(product - Number(first === second)) < 1e-4,
+        'initialTransform rotation must be orthonormal'
+      );
+    }
+  const determinant =
+    initial[0] * (initial[5] * initial[10] - initial[9] * initial[6]) -
+    initial[4] * (initial[1] * initial[10] - initial[9] * initial[2]) +
+    initial[8] * (initial[1] * initial[6] - initial[5] * initial[2]);
+  validateRequirement(
+    identifier,
+    determinant > 0,
+    'initialTransform rotation must not be a reflection'
+  );
+  if (props.origin) {
+    validateRequirement(
+      identifier,
+      props.origin.every(Number.isFinite),
+      'origin must hold finite numbers'
+    );
+  }
+  const localInitialTransform = props.origin
+    ? getPointCloudLocalTransform(initial, props.origin)
+    : initial;
+  validateRequirement(
+    identifier,
+    localInitialTransform.every(value => Number.isFinite(Math.fround(value))),
+    'initialTransform in the local frame must hold 16 finite float32 values'
+  );
+  return localInitialTransform;
+}
+
+/**
+ * Bounded GPU point-to-point ICP with distance rejection and Horn's rigid least-squares solve.
+ * Per-frame: input contents and parameters (maximumDistance, robust scale, convergence tolerances
+ * and initialTransform). Compile-time: iterations, metric, robust method, targetGrid, origin and
+ * view shapes. Without parameters, numeric props retain their constructor-time behavior.
+ */
 export class GPUPointCloudICP implements GPUCommandNodeProducer {
   readonly id: string;
   readonly iterations: number;
@@ -155,48 +299,15 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
         );
       }
     }
-    const initial = props.initialTransform ?? IDENTITY_TRANSFORM;
-    validateRequirement(
-      this.id,
-      initial.length === 16 && initial.every(value => Number.isFinite(Math.fround(value))),
-      'initialTransform must hold 16 finite numbers'
-    );
-    validateRequirement(
-      this.id,
-      initial[3] === 0 && initial[7] === 0 && initial[11] === 0 && initial[15] === 1,
-      'initialTransform must be a column-major rigid transform with bottom row 0, 0, 0, 1'
-    );
-    // Initial rotation must be orthonormal and proper, not a scaling/reflection matrix.
-    for (let first = 0; first < 3; first++)
-      for (let second = 0; second < 3; second++) {
-        let product = 0;
-        for (let axis = 0; axis < 3; axis++)
-          product += initial[first * 4 + axis] * initial[second * 4 + axis];
-        validateRequirement(
-          this.id,
-          Math.abs(product - Number(first === second)) < 1e-4,
-          'initialTransform rotation must be orthonormal'
-        );
-      }
-    const determinant =
-      initial[0] * (initial[5] * initial[10] - initial[9] * initial[6]) -
-      initial[4] * (initial[1] * initial[10] - initial[9] * initial[2]) +
-      initial[8] * (initial[1] * initial[6] - initial[5] * initial[2]);
-    validateRequirement(
-      this.id,
-      determinant > 0,
-      'initialTransform rotation must not be a reflection'
-    );
-    if (props.origin) {
-      validateRequirement(
+    this.localInitialTransform = getPointCloudICPInitialTransform(this.id, props);
+    if (props.parameters) {
+      validateViewLength(
         this.id,
-        props.origin.every(Number.isFinite),
-        'origin must hold finite numbers'
+        'parameters',
+        props.parameters,
+        GPU_POINT_CLOUD_ICP_PARAMETER_LENGTH
       );
     }
-    this.localInitialTransform = props.origin
-      ? getPointCloudLocalTransform(initial, props.origin)
-      : initial;
     if (props.targetGrid) {
       validatePointCloudSearchGrid(this.id, 'targetGrid', props.targetGrid);
     } else {
@@ -217,7 +328,7 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {source, target, transform, history, inlierMask, status} = this.props;
+    const {source, target, transform, history, inlierMask, status, parameters} = this.props;
     const states = [0, 1].map(value =>
       createTransientView(graph, `${this.id}-state-${value}`, 'float32', 17)
     );
@@ -238,9 +349,11 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
     const nodes = getPointCloudKernelNodes(graph, {
       id: `${this.id}-initialize`,
       length: 1,
-      inputs: {},
+      inputs: parameters ? {parameters} : {},
       outputs: {state: states[0]},
-      body: `${initial.map((value, index) => `writeState(${index}u, ${Math.fround(value)});`).join('\n')} writeState(16u, 1.0);`
+      body: parameters
+        ? 'for (var entry = 0u; entry < 16u; entry++) { writeState(entry, readParameters(entry + 6u)); } writeState(16u, 1.0);'
+        : `${initial.map((value, index) => `writeState(${index}u, ${Math.fround(value)});`).join('\n')} writeState(16u, 1.0);`
     });
     const loadTransform = `let rotation = mat3x3f(vec3f(readState(0u),readState(1u),readState(2u)), vec3f(readState(4u),readState(5u),readState(6u)), vec3f(readState(8u),readState(9u),readState(10u)));
 let translation = vec3f(readState(12u),readState(13u),readState(14u));`;
@@ -255,8 +368,8 @@ let translation = vec3f(readState(12u),readState(13u),readState(14u));`;
       // Clamp in floating point before integer conversion; large radius/cell ratios and
       // queries outside the grid must not overflow signed cell coordinates.
       candidateStart = `let displacement=position-vec3f(${grid.origin.map(Math.fround).join(',')});
-let lower=vec3i(clamp(floor((displacement-vec3f(${Math.fround(this.props.maximumDistance)}))/${Math.fround(grid.cellSize)})-vec3f(1.0),vec3f(0.0),vec3f(${grid.dimensions.join(',')})));
-let upper=vec3i(clamp(floor((displacement+vec3f(${Math.fround(this.props.maximumDistance)}))/${Math.fround(grid.cellSize)})+vec3f(1.0),vec3f(-1.0),vec3f(${grid.dimensions.map(value => value - 1).join(',')})));
+let lower=vec3i(clamp(floor((displacement-vec3f(${parameters ? 'readParameters(0u)' : Math.fround(this.props.maximumDistance)}))/${Math.fround(grid.cellSize)})-vec3f(1.0),vec3f(0.0),vec3f(${grid.dimensions.join(',')})));
+let upper=vec3i(clamp(floor((displacement+vec3f(${parameters ? 'readParameters(0u)' : Math.fround(this.props.maximumDistance)}))/${Math.fround(grid.cellSize)})+vec3f(1.0),vec3f(-1.0),vec3f(${grid.dimensions.map(value => value - 1).join(',')})));
 for(var depth=lower.z;depth<=upper.z;depth++){for(var row=lower.y;row<=upper.y;row++){for(var column=lower.x;column<=upper.x;column++){
 let cell=(u32(depth)*${grid.dimensions[1]}u+u32(row))*${grid.dimensions[0]}u+u32(column);
 for(var slot=readOffsets(cell);slot<readOffsets(cell+1u);slot++){let candidate=readSortedIndices(slot);`;
@@ -266,22 +379,26 @@ for(var slot=readOffsets(cell);slot<readOffsets(cell+1u);slot++){let candidate=r
     const weightExpression = !robust
       ? '1.0'
       : robust.method === 'huber'
-        ? `min(1.0,${Math.fround(robust.scale)}/max(sqrt(distanceSquared),1e-30))`
-        : `pow(max(0.0,1.0-distanceSquared/${Math.fround(robust.scale ** 2)}),2.0)`;
+        ? `min(1.0,${parameters ? 'readParameters(2u)' : Math.fround(robust.scale)}/max(sqrt(distanceSquared),1e-30))`
+        : `pow(max(0.0,1.0-distanceSquared/${parameters ? 'readParameters(3u)' : Math.fround(robust.scale ** 2)}),2.0)`;
     const correspondence = (iteration: number) =>
       getPointCloudKernelNodes(graph, {
         id: `${this.id}-match-${iteration}`,
         length: source.length,
         inputs: {
           source,
+          ...(parameters ? {parameters} : {}),
           targetPositions: target,
           state: states[iteration % 2],
           ...(indexed ? {sortedIndices: indexed.sortedIndices, offsets: indexed.offsets} : {})
         },
-        outputs: {matches, weights, ...(matchIds ? {matchIds} : {inlierMask})},
+        // Derive matched plane positions from their IDs in the moments pass. Point-to-point
+        // masks are published once at the end. Both paths fit eight bindings with an index and
+        // runtime parameters.
+        outputs: {weights, ...(matchIds ? {matchIds} : {matches})},
         body: `${loadTransform}
 let position = rotation * readSource(index) + translation;
-var nearest=vec3f(0.0);var nearestId=0xffffffffu;var distanceSquared:f32=${Math.fround(this.props.maximumDistance ** 2)};
+var nearest=vec3f(0.0);var nearestId=0xffffffffu;var distanceSquared:f32=${parameters ? 'readParameters(1u)' : Math.fround(this.props.maximumDistance ** 2)};
 if(all(abs(position)<=vec3f(3.402823e38))){
  ${candidateStart}
  let point=readTargetPositions(candidate);let difference=point-position;let distance=dot(difference,difference);
@@ -289,7 +406,7 @@ if(all(abs(position)<=vec3f(3.402823e38))){
  ${candidateEnd}
 }
 let weight=select(0.0,${weightExpression},nearestId!=0xffffffffu);
-writeMatches(index,nearest);writeWeights(index,weight);${matchIds ? 'writeMatchIds(index,nearestId);' : 'writeInlierMask(index,u32(weight>0.0));'}`
+writeWeights(index,weight);${matchIds ? 'writeMatchIds(index,nearestId);' : 'writeMatches(index,nearest);'}`
       });
     for (let iteration = 0; iteration < this.iterations; iteration++) {
       nodes.push(...correspondence(iteration));
@@ -299,12 +416,15 @@ writeMatches(index,nearest);writeWeights(index,weight);${matchIds ? 'writeMatchI
           length: blockCount,
           inputs: {
             source,
-            matches,
+            ...(pointToPlane ? {targetPositions: target} : {matches}),
             weights,
             state: states[iteration % 2],
             ...(matchIds ? {matchIds, targetNormals: this.props.targetNormals!} : {})
           },
           outputs: {moments},
+          declarations: pointToPlane
+            ? 'fn readMatches(row: u32) -> vec3f { return readTargetPositions(readMatchIds(row)); }'
+            : undefined,
           body: pointToPlane
             ? getPlaneMomentsSource(loadTransform, source.length)
             : `${loadTransform}
@@ -327,15 +447,16 @@ for(var column=0u;column<3u;column++){for(var row=0u;row<3u;row++){writeMoments(
         ...getPointCloudKernelNodes(graph, {
           id: `${this.id}-solve-${iteration}`,
           length: 1,
-          inputs: {moments, state: states[iteration % 2]},
+          inputs: {moments, state: states[iteration % 2], ...(parameters ? {parameters} : {})},
           outputs: {next: states[(iteration + 1) % 2], history},
+          declarations: pointToPlane ? undefined : IS_FINITE_VALUE_WGSL + getSymmetricEigenWGSL(4),
           body: pointToPlane
             ? getPlaneSolveSource(
                 loadTransform,
                 blockCount,
                 iteration,
-                this.props.translationTolerance ?? 1e-5,
-                this.props.rotationTolerance ?? 1e-5
+                parameters ? 'readParameters(4u)' : (this.props.translationTolerance ?? 1e-5),
+                parameters ? 'readParameters(5u)' : (this.props.rotationTolerance ?? 1e-5)
               )
             : `${loadTransform}
 for (var entry = 0u; entry < 17u; entry++) { writeNext(entry, readState(entry)); }
@@ -362,28 +483,17 @@ var system = mat4x4f(vec4f(trace,difference),
  vec4f(difference.x, covariance[0][0]-covariance[1][1]-covariance[2][2], covariance[1][0]+covariance[0][1], covariance[2][0]+covariance[0][2]),
  vec4f(difference.y, covariance[1][0]+covariance[0][1], -covariance[0][0]+covariance[1][1]-covariance[2][2], covariance[2][1]+covariance[1][2]),
  vec4f(difference.z, covariance[2][0]+covariance[0][2], covariance[2][1]+covariance[1][2], -covariance[0][0]-covariance[1][1]+covariance[2][2]));
-var vectors = mat4x4f(vec4f(1,0,0,0),vec4f(0,1,0,0),vec4f(0,0,1,0),vec4f(0,0,0,1));
-var converged = false;
-for (var jacobiRotation = 0u; jacobiRotation < 48u; jacobiRotation++) {
-  var first = 0u; var second = 1u; var scale = 0.0;
-  for (var column = 0u; column < 4u; column++) {
-    scale = max(scale,abs(system[column][column]));
-    for (var row = column + 1u; row < 4u; row++) { if (abs(system[column][row]) > abs(system[first][second])) { first = column; second = row; } }
-  }
-  if (abs(system[first][second]) <= max(scale * 1e-6,1e-30)) { converged = true; break; }
-  let angle = 0.5 * atan2(2.0 * system[first][second], system[second][second] - system[first][first]);
-  let cosine = cos(angle); let sine = sin(angle);
-  var plane = mat4x4f(vec4f(1,0,0,0),vec4f(0,1,0,0),vec4f(0,0,1,0),vec4f(0,0,0,1));
-  plane[first][first] = cosine; plane[second][second] = cosine; plane[first][second] = -sine; plane[second][first] = sine;
-  system = transpose(plane) * system * plane; vectors = vectors * plane;
+var matrix: array<f32, 16>;
+for (var row = 0u; row < 4u; row++) {
+  for (var column = 0u; column < 4u; column++) { matrix[row * 4u + column] = system[column][row]; }
 }
-if (!converged) { writeNext(16u,${GPU_POINT_CLOUD_ICP_STATUS_EIGENSOLVE_EXHAUSTED}.0); return; }
-var largest = 0u;
-for (var axis = 1u; axis < 4u; axis++) { if (system[axis][axis] > system[largest][largest]) { largest = axis; } }
-var runnerUp = -3.402823e38;
-for (var axis = 0u; axis < 4u; axis++) { if (axis != largest) { runnerUp = max(runnerUp, system[axis][axis]); } }
-if (!(system[largest][largest] - runnerUp > max(abs(system[largest][largest]) * 1e-6,1e-30))) { writeNext(16u,${GPU_POINT_CLOUD_ICP_STATUS_DEGENERATE}.0); return; }
-let quaternion = normalize(vectors[largest]);
+var vectors: array<f32, 16>;
+let decomposition = getSymmetricEigen_4(&matrix, &vectors, 4u, ${POINT_CLOUD_ICP_MAXIMUM_EIGEN_SWEEPS}u, 1e-6);
+if (decomposition.status != 0u) { writeNext(16u,${GPU_POINT_CLOUD_ICP_STATUS_EIGENSOLVE_EXHAUSTED}.0); return; }
+let largest = decomposition.values[3];
+let runnerUp = decomposition.values[2];
+if (!(largest - runnerUp > max(abs(largest) * 1e-6,1e-30))) { writeNext(16u,${GPU_POINT_CLOUD_ICP_STATUS_DEGENERATE}.0); return; }
+let quaternion = normalize(vec4f(vectors[3], vectors[7], vectors[11], vectors[15]));
 let scalar = quaternion.x; let first = quaternion.y; let second = quaternion.z; let third = quaternion.w;
 let deltaRotation = mat3x3f(
  vec3f(1.0-2.0*(second*second+third*third), 2.0*(first*second+scalar*third), 2.0*(first*third-scalar*second)),
@@ -395,7 +505,7 @@ for (var column = 0u; column < 3u; column++) { for (var row = 0u; row < 3u; row+
 writeNext(12u,updatedTranslation.x); writeNext(13u,updatedTranslation.y); writeNext(14u,updatedTranslation.z);
 let step = length(deltaTranslation);
 let rotationStep = max(max(length(deltaRotation[0]-vec3f(1,0,0)),length(deltaRotation[1]-vec3f(0,1,0))),length(deltaRotation[2]-vec3f(0,0,1)));
-if (step <= ${Math.fround(this.props.translationTolerance ?? 1e-5)} && rotationStep <= ${Math.fround(this.props.rotationTolerance ?? 1e-5)}) { writeNext(16u,${GPU_POINT_CLOUD_ICP_STATUS_CONVERGED}.0); }
+if (step <= ${parameters ? 'readParameters(4u)' : Math.fround(this.props.translationTolerance ?? 1e-5)} && rotationStep <= ${parameters ? 'readParameters(5u)' : Math.fround(this.props.rotationTolerance ?? 1e-5)}) { writeNext(16u,${GPU_POINT_CLOUD_ICP_STATUS_CONVERGED}.0); }
 writeHistory(${iteration}u,vec3f(f32(count),residual,step));`
         })
       );
@@ -411,6 +521,17 @@ writeHistory(${iteration}u,vec3f(f32(count),residual,step));`
           body: `var valid=false;if(readWeights(index)>0.0){let normal=safeNormal(readTargetNormals(readMatchIds(index)));valid=dot(normal,normal)>0.5;}writeInlierMask(index,u32(valid));`
         })
       );
+    if (!matchIds) {
+      nodes.push(
+        ...getPointCloudKernelNodes(graph, {
+          id: `${this.id}-final-mask`,
+          length: source.length,
+          inputs: {weights},
+          outputs: {inlierMask},
+          body: 'writeInlierMask(index, u32(readWeights(index) > 0.0));'
+        })
+      );
+    }
     nodes.push(
       ...getPointCloudKernelNodes(graph, {
         id: `${this.id}-publish`,

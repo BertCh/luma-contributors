@@ -3,15 +3,23 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {reconcileLandscapePatchLabels} from './reconcile-patches';
+import {addLandscapePatchMetrics} from './landscape-patch-metrics';
+import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
   createTransientView,
   GPUReduction,
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
+import {
+  createRecipeKernelNode,
+  getRecipeView,
+  validateRecipeBoundary
+} from '../recipes/expansion-recipe-utils';
 import {
   validateCapacity,
+  validateMaximumCount,
+  validateGPUStorageBindingByteLength,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
@@ -20,6 +28,9 @@ import {
  * walks all of them with one thread, so the table stays at most 65,536 entries.
  */
 export const LANDSCAPE_METRICS_MAXIMUM_CLASS_COUNT = 256;
+
+/** Four directed sides per cell must fit an exact uint32 histogram counter. */
+const LANDSCAPE_METRICS_MAXIMUM_CELL_COUNT = Math.floor(0xffffffff / 4);
 
 export type GPULandscapeMetricsOutput = {
   /** `float32x4`, one row per patch: area, perimeter, cell count, like-adjacent sides. */
@@ -102,7 +113,28 @@ export function addLandscapeMetricsRecipe<Parameters>(
     props.connectivity === 4 || props.connectivity === 8,
     'connectivity must be 4 or 8'
   );
+  validateMaximumCount(id, 'width times height', cellCount, LANDSCAPE_METRICS_MAXIMUM_CELL_COUNT);
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    id,
+    'raster labels',
+    cellCount * 4,
+    'reduce the raster size'
+  );
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    id,
+    'patch metrics',
+    patchCount * 16,
+    'reduce the patch count'
+  );
   const output = props.output;
+  validateRecipeBoundary(
+    graph,
+    id,
+    [props.patches, props.patchClasses],
+    Object.values(output ?? {})
+  );
   // Validation precedes reconcileLandscapePatchLabels, which adds nodes to the graph.
   const reconciled = props.reconcilePatches
     ? reconcileLandscapePatchLabels(graph, {
@@ -155,73 +187,61 @@ export function addLandscapeMetricsRecipe<Parameters>(
     1,
     output?.landscapeCohesion
   );
-  // Exact (cell count, like-adjacent side count) per patch, for the class sums.
-  const patchCounts = createTransientView(graph, `${id}-patch-counts`, 'uint32x2', patchCount);
-  const declarations = `
-fn getPatch(column: i32, row: i32) -> u32 {
-  if(column<0 || row<0 || column>=${width} || row>=${height}){return 0xffffffffu;}
-  return patches[patchesOffset+u32(row)*${width}u+u32(column)];
-}
-fn getClass(patchIndex: u32) -> u32 {
-  if(patchIndex>=${patchCount}u){return 0xffffffffu;}
-  let category=classes[classesOffset+patchIndex];
-  return select(category,0xffffffffu,category==${props.backgroundClass ?? 0xffffffff}u);
-}`;
+  const {classCells, classLikeSides} = addLandscapePatchMetrics(graph, {
+    ...props,
+    id,
+    patches,
+    patchMetrics,
+    classAdjacency
+  });
+  const totalCellCount = createTransientView(graph, `${id}-valid-cell-count`, 'uint32', 1);
+  graph.add(
+    new GPUReduction({
+      id: `${id}-valid-cell-count`,
+      input: classCells,
+      output: totalCellCount,
+      operation: 'sum'
+    }).getCommandNodes(graph)
+  );
+  const classKeys = createTransientView(graph, `${id}-class-keys`, 'uint32', patchCount);
+  const classTerms = ['perimeter', 'squared-area', 'weighted-perimeter'].map(name => ({
+    name,
+    contributions: createTransientView(graph, `${id}-class-${name}-terms`, 'float32', patchCount),
+    output: createTransientView(graph, `${id}-class-${name}-sums`, 'float32', classCount)
+  }));
   graph.add(
     createRecipeKernelNode(graph, {
-      id: `${id}-patch-summary`,
+      id: `${id}-class-terms`,
       operation: id,
       invocationCount: patchCount,
-      declarations:
-        declarations +
-        `
-fn readOutput(row:u32)->vec4<f32>{return vec4<f32>(output[outputOffset+row*4u+0u],output[outputOffset+row*4u+1u],output[outputOffset+row*4u+2u],output[outputOffset+row*4u+3u]);}
-fn writeOutput(row:u32,value:vec4<f32>){output[outputOffset+row*4u+0u]=value[0u];output[outputOffset+row*4u+1u]=value[1u];output[outputOffset+row*4u+2u]=value[2u];output[outputOffset+row*4u+3u]=value[3u];}
-`,
       bindings: [
-        {name: 'patches', view: patches, type: 'u32', access: 'read'},
+        {name: 'patches', view: patchMetrics, type: 'f32', access: 'read'},
         {name: 'classes', view: props.patchClasses, type: 'u32', access: 'read'},
-        {name: 'output', view: patchMetrics, type: 'f32', access: 'read_write'},
-        {name: 'patchCounts', view: patchCounts, type: 'u32', access: 'read_write'}
+        {name: 'keys', view: classKeys, type: 'u32', access: 'read_write'},
+        ...classTerms.map((term, index) => ({
+          name: `terms${index}`,
+          view: term.contributions,
+          type: 'f32' as const,
+          access: 'read_write' as const
+        }))
       ],
-      // Cells and sides are counted in u32 and converted once: a float32 counter stops at 2^24.
-      // sideCounts holds the perimeter sides between columns (.x, each cellSize[1] long) and
-      // between rows (.y, each cellSize[0] long).
-      body: `var cells=0u;var sideCounts=vec2<u32>(0u);var likeSides=0u;
-for(var cell=0u;cell<${cellCount}u;cell++){
- if(patches[patchesOffset+cell]!=index){continue;}
- cells+=1u;let column=i32(cell%${width}u);let row=i32(cell/${width}u);
- let neighbors=array<u32,4>(getPatch(column - 1,row),getPatch(column+1,row),getPatch(column,row - 1),getPatch(column,row+1));
- for(var direction=0u;direction<4u;direction++){
-  let exterior=(direction==0u&&column==0)||(direction==1u&&column==${width - 1})||(direction==2u&&row==0)||(direction==3u&&row==${height - 1});
-  let background=getClass(neighbors[direction])>=${classCount}u;
-  let countContact=select(select(true,${props.countBackground !== false},background),${props.countBoundary !== false},exterior);
-  if(neighbors[direction]!=index&&countContact){sideCounts[select(1u,0u,direction<2u)]+=1u;}
-  likeSides+=u32(getClass(neighbors[direction])==getClass(index));
- }
-}
-let perimeter=f32(sideCounts.x)*f32(${cellSize[1]})+f32(sideCounts.y)*f32(${cellSize[0]});
-writeOutput(index,vec4<f32>(f32(cells)*${cellSize[0] * cellSize[1]},perimeter,f32(cells),f32(likeSides)));
-patchCounts[patchCountsOffset+2u*index]=cells;patchCounts[patchCountsOffset+2u*index+1u]=likeSides;`
+      body: `let category=classes[classesOffset+index];
+keys[keysOffset+index]=select(category,0xffffffffu,category==${props.backgroundClass ?? 0xffffffff}u);
+let area=patches[patchesOffset+4u*index];
+let perimeter=patches[patchesOffset+4u*index+1u];
+let cells=patches[patchesOffset+4u*index+2u];
+terms0[terms0Offset+index]=perimeter;
+terms1[terms1Offset+index]=area*area;
+terms2[terms2Offset+index]=perimeter*sqrt(cells);`
     })
   );
   graph.add(
-    createRecipeKernelNode(graph, {
-      id: `${id}-class-adjacency`,
+    getSortedSegmentSumNodes(graph, {
+      id: `${id}-class-sums`,
       operation: id,
-      invocationCount: classCount * classCount,
-      declarations,
-      bindings: [
-        {name: 'patches', view: patches, type: 'u32', access: 'read'},
-        {name: 'classes', view: props.patchClasses, type: 'u32', access: 'read'},
-        {name: 'output', view: classAdjacency, type: 'u32', access: 'read_write'}
-      ],
-      body: `let sourceClass=index/${classCount}u;let targetClass=index%${classCount}u;var count=0u;
-for(var cell=0u;cell<${cellCount}u;cell++){
- if(getClass(patches[patchesOffset+cell])!=sourceClass){continue;}
- let column=i32(cell%${width}u);let row=i32(cell/${width}u);
- count+=u32(getClass(getPatch(column - 1,row))==targetClass)+u32(getClass(getPatch(column+1,row))==targetClass)+u32(getClass(getPatch(column,row - 1))==targetClass)+u32(getClass(getPatch(column,row+1))==targetClass);
-}output[outputOffset+index]=count;`
+      segmentCount: classCount,
+      segmentKeys: classKeys,
+      reductions: classTerms
     })
   );
   graph.add(
@@ -230,26 +250,30 @@ for(var cell=0u;cell<${cellCount}u;cell++){
       operation: id,
       invocationCount: classCount,
       declarations: `
-fn readPatches(row:u32)->vec4<f32>{return vec4<f32>(patches[patchesOffset+row*4u+0u],patches[patchesOffset+row*4u+1u],patches[patchesOffset+row*4u+2u],patches[patchesOffset+row*4u+3u]);}
-fn readOutput(row:u32)->vec4<f32>{return vec4<f32>(output[outputOffset+row*4u+0u],output[outputOffset+row*4u+1u],output[outputOffset+row*4u+2u],output[outputOffset+row*4u+3u]);}
 fn writeOutput(row:u32,value:vec4<f32>){output[outputOffset+row*4u+0u]=value[0u];output[outputOffset+row*4u+1u]=value[1u];output[outputOffset+row*4u+2u]=value[2u];output[outputOffset+row*4u+3u]=value[3u];}
 `,
       bindings: [
-        {name: 'patches', view: patchMetrics, type: 'f32', access: 'read'},
-        {name: 'patchCounts', view: patchCounts, type: 'u32', access: 'read'},
-        {name: 'classes', view: props.patchClasses, type: 'u32', access: 'read'},
+        {name: 'classCells', view: classCells, type: 'u32', access: 'read'},
+        {name: 'classLikeSides', view: classLikeSides, type: 'u32', access: 'read'},
+        {name: 'totalCellCount', view: totalCellCount, type: 'u32', access: 'read'},
+        ...classTerms.map((term, index) => ({
+          name: `sums${index}`,
+          view: term.output,
+          type: 'f32' as const,
+          access: 'read' as const
+        })),
         {name: 'output', view: classMetrics, type: 'f32', access: 'read_write'},
         {name: 'aggregation', view: aggregation, type: 'f32', access: 'read_write'}
       ],
       // Cell and like-side counts are exact u32 sums. The largest square inside the class is an
       // exact integer square root: float32 sqrt is only the first guess once cells pass 2^24.
-      body: `var area=0.0;var perimeter=0.0;var squaredArea=0.0;var weightedPerimeter=0.0;var cells=0u;var likeSides=0u;var totalCells=0u;
-for(var patchIndex=0u;patchIndex<${patchCount}u;patchIndex++){
- let values=readPatches(patchIndex);if(classes[classesOffset+patchIndex]>=${classCount}u||classes[classesOffset+patchIndex]==${props.backgroundClass ?? 0xffffffff}u){continue;}
- let patchCells=patchCounts[patchCountsOffset+2u*patchIndex];
- totalCells+=patchCells;
- if(classes[classesOffset+patchIndex]==index){area+=values.x;perimeter+=values.y;squaredArea+=values.x*values.x;weightedPerimeter+=values.y*sqrt(values.z);cells+=patchCells;likeSides+=patchCounts[patchCountsOffset+2u*patchIndex+1u];}
-}
+      body: `let cells=classCells[classCellsOffset+index];
+let likeSides=classLikeSides[classLikeSidesOffset+index];
+let totalCells=totalCellCount[totalCellCountOffset];
+let area=f32(cells)*${cellSize[0] * cellSize[1]};
+let perimeter=sums0[sums0Offset+index];
+let squaredArea=sums1[sums1Offset+index];
+let weightedPerimeter=sums2[sums2Offset+index];
 let missing=bitcast<f32>(0x7fc00000u | (index & 0u));var cohesion=missing;var mesh=missing;
 if(totalCells>0u){mesh=squaredArea/(f32(totalCells)*${cellSize[0] * cellSize[1]});}
 if(weightedPerimeter>0.0&&totalCells>1u){cohesion=100.0*(1.0-perimeter/weightedPerimeter)/(1.0-inverseSqrt(f32(totalCells)));}

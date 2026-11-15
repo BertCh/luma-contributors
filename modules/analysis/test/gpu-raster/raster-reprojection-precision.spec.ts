@@ -57,6 +57,34 @@ function makeGrid(
 
 const CASES: Case[] = [
   {
+    name: '0.25 m cells through an absolute double-single inverse projection (LUM-26)',
+    sourceGrid: makeGrid(48, 48, 0.25, EASTING + 0.3, NORTHING + 100.1),
+    destinationGrid: makeGrid(17, 3, 0.25, 1.0625, -2.34375),
+    inverseProjection: compileProjectionProgram({
+      precision: 'double-single',
+      // Intentionally unrelated: double-single results are absolute, not origin-relative.
+      destinationOrigin: [-100, 200],
+      operations: [{type: 'affine', scale: [1, 1], offset: [EASTING + 0.3, NORTHING + 100.1]}]
+    }),
+    getSourcePixel: (column, row) => [4.25 + column, 9.375 + row]
+  },
+  {
+    name: 'rotated/sheared point grids at large origins, same CRS (LUM-26)',
+    sourceGrid: {
+      width: 48,
+      height: 48,
+      affine: [0.25, 0.125, EASTING, -0.125, 0.25, NORTHING],
+      pixelInterpretation: 'point'
+    },
+    destinationGrid: {
+      width: 17,
+      height: 3,
+      affine: [0.25, 0.125, EASTING + 1.625, -0.125, 0.25, NORTHING + 1.21875],
+      pixelInterpretation: 'point'
+    },
+    getSourcePixel: (column, row) => [3.25 + column, 6.5 + row]
+  },
+  {
     // 1 m cells, grids offset by a quarter of a cell.
     name: '1 m cells at a northing of 4.6e6, same CRS',
     sourceGrid: makeGrid(32, 32, 1, EASTING, NORTHING + 100),

@@ -5,6 +5,10 @@
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getCPUOperationUint32Rows} from '../../analysis-core/operations/cpu-operation-rows';
+import {
+  getNetworkOptimizationCPUStatus,
+  type NetworkOptimizationCPUStatus
+} from './network-optimization-status';
 import {GPU_NETWORK_FLOW_WORD} from './gpu-network-flow';
 import {
   GPUNetworkFlowOperation,
@@ -27,6 +31,7 @@ export type CPUNetworkFlowResult = {
   cut: Uint32Array;
   summary: Uint32Array;
   exactCost: Uint32Array;
+  status: NetworkOptimizationCPUStatus;
 };
 
 /**
@@ -69,9 +74,14 @@ export function computeNetworkFlowOnCPU(
   const summary = new Uint32Array(8);
   const exactCost = new Uint32Array(2);
   const result = {flow, cut, summary, exactCost};
+  const finishResult = (): CPUNetworkFlowResult => ({
+    ...result,
+    status: getNetworkOptimizationCPUStatus(summary, summary[GPU_NETWORK_FLOW_WORD.augmentations])
+  });
   // The contributor exposes summary offsets, but no parameter packer/layout.
   const [source, destination, required] = parameters;
-  if (source >= nodeCount || destination >= nodeCount || source === destination) return result;
+  if (source >= nodeCount || destination >= nodeCount || source === destination)
+    return finishResult();
   let totalCapacity = 0;
   for (let edge = 0; edge < edgeCount; edge++) {
     if (
@@ -79,7 +89,7 @@ export function computeNetworkFlowOnCPU(
       edges[edge * 2 + 1] >= nodeCount ||
       capacities[edge] > MAXIMUM_TOTAL_CAPACITY - totalCapacity
     )
-      return result;
+      return finishResult();
     totalCapacity += capacities[edge];
   }
   summary[GPU_NETWORK_FLOW_WORD.valid] = 1;
@@ -133,7 +143,7 @@ export function computeNetworkFlowOnCPU(
       const edge = predecessors[cursor];
       if (edge < 0) {
         summary[GPU_NETWORK_FLOW_WORD.valid] = 0;
-        return result;
+        return finishResult();
       }
       increment = Math.min(
         increment,
@@ -144,7 +154,7 @@ export function computeNetworkFlowOnCPU(
     }
     if (cursor !== source || increment === 0) {
       summary[GPU_NETWORK_FLOW_WORD.valid] = 0;
-      return result;
+      return finishResult();
     }
     cursor = destination;
     while (cursor !== source) {
@@ -173,7 +183,7 @@ export function computeNetworkFlowOnCPU(
   summary[GPU_NETWORK_FLOW_WORD.cost] = getObjectiveBits(objective);
   summary[GPU_NETWORK_FLOW_WORD.cutCapacity] = cutCapacity;
   summary[GPU_NETWORK_FLOW_WORD.cutCertified] = Number(exhausted && cutCapacity === value);
-  return result;
+  return finishResult();
 }
 
 /** Direct round-to-nearest, ties-to-even, without a BigInt -> float64 -> float32 double rounding. */
@@ -228,10 +238,12 @@ export class CPUNetworkFlowOperation extends GPUCPUOperation {
           },
           props
         );
+        const {status, ...primaryRows} = result;
+        const outputRows = {...primaryRows, ...status};
         return Object.fromEntries(
           Object.entries(operation.outputs).map(([port, output]) => [
             output.value,
-            result[port as keyof CPUNetworkFlowResult]
+            outputRows[port as keyof typeof outputRows]
           ])
         );
       }

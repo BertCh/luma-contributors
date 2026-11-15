@@ -135,3 +135,49 @@ for (const scenario of ['reference', 'shifted', 'singular']) {
     }
   });
 }
+
+it('unit panel clears residual rows in parallel when absorption exhausts residual degrees', async () => {
+  const context = await setup();
+  const {graph, input, output} = context;
+  try {
+    const table = output('float32', 12);
+    const summary = output('float32', 16);
+    const status = output('uint32', 1);
+    const residuals = output('float32', 6);
+    residuals.buffer.write(new Float32Array(6).fill(12345));
+    const residualView = graph.createDataView(residuals.view.buffer, {
+      format: 'float32',
+      byteOffset: residuals.view.byteOffset + 4,
+      length: 4
+    });
+    graph.add(
+      new GPUSpatialPanelRegression({
+        effects: 'unit',
+        periodCount: 2,
+        predictorCount: 1,
+        weights: {
+          offsets: input('uint32', [0, 1, 2]),
+          neighbors: input('uint32', [1, 0]),
+          weights: input('float32', [1, 1])
+        },
+        predictors: input('float32', [1, 2, 3, 5]),
+        response: input('float32', [1, 3, 4, 2]),
+        output: {
+          table: table.view,
+          summary: summary.view,
+          residuals: residualView,
+          status: {code: status.view}
+        }
+      })
+    );
+    context.run();
+    expect(Array.from(await readUint32(status.buffer, 1))).toEqual([2]);
+    const actual = Array.from(await readFloat32(residuals.buffer, 6));
+    expect(actual[0]).toBe(12345);
+    expect(actual[5]).toBe(12345);
+    expect(actual.slice(1, 5).every(Number.isNaN)).toBe(true);
+    expect(Array.from(await readFloat32(table.buffer, 12)).every(Number.isNaN)).toBe(true);
+  } finally {
+    context.destroy();
+  }
+});

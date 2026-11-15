@@ -4,6 +4,8 @@
 
 import {GPUOPTICS} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-optics';
 import {
+  GPUHierarchicalDensityClustering,
+  GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT,
   GPUSpatialClustering,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
@@ -30,11 +32,36 @@ function compact({view}: KernelAuditContext, capacity: number) {
 }
 
 /**
- * Kernel-audit cases for the time input of the DBSCAN and OPTICS contributors (ST-DBSCAN and
- * ST-OPTICS) at maximal options: every optional output wired, both sum orders, planar and
+ * Kernel-audit cases for space-time DBSCAN, OPTICS and scaled HDBSCAN at maximal options: every optional output wired, both sum orders, planar and
  * geographic positions. The cases without times stay in their original audit files.
  */
 export const SPACE_TIME_CLUSTERING_AUDIT_CASES: KernelAuditCase[] = [
+  ...[
+    {rows: 1025, minimumSamples: 1},
+    {rows: GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT, minimumSamples: 32}
+  ].map(
+    ({rows, minimumSamples}): KernelAuditCase => ({
+      exportName: 'GPUHierarchicalDensityClustering',
+      name: `scaled space-time, ${rows} rows, ${minimumSamples} samples`,
+      build: ({graph, view}) => {
+        graph.add(
+          new GPUHierarchicalDensityClustering({
+            positions: view('float32x2', rows),
+            times: view('float32', rows),
+            temporalContext: TEMPORAL_CONTEXT,
+            parameters: view('float32', 4),
+            minimumClusterSize: 2,
+            minimumSamples,
+            output: {
+              labels: view('uint32', rows),
+              coreDistances: view('float32', rows),
+              status: {count: view('uint32', 1)}
+            }
+          })
+        );
+      }
+    })
+  ),
   ...(['atomic', 'sorted'] as const).flatMap(sumOrder =>
     [false, true].map(
       (geographic): KernelAuditCase => ({

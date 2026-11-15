@@ -80,6 +80,7 @@ alias rejection. These tests establish this conditional composition, not parity 
 an external LOSH inference library or multivariate joint randomization.
 
 All numerical stages remain on the GPU, with no hidden readback or CPU fallback.
-The LOSH denominator reduction retains its existing serial GPU reduction and is not a
-new scaling claim. Multivariate joint inference and raw-observation LOSH refitting are
-outside this API.
+The descriptive LOSH denominator uses parallel maximum, count and sum reductions; its
+scaled sum avoids overflow of the unscaled residual total. A resident `residualPower` parameter
+view can change the descriptive power between encodings. Multivariate joint inference and
+raw-observation LOSH refitting are outside this API.

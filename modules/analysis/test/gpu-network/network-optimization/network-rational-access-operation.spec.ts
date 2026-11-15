@@ -40,7 +40,13 @@ for (const scene of [
         assignments: 'assignments',
         scores: 'scores',
         unservedDemand: 'unserved',
-        status: 'status'
+        summary: 'summary',
+        status: {
+          invalidCount: 'invalidCount',
+          converged: 'converged',
+          iterationCount: 'iterationCount',
+          iterationLimitReached: 'iterationLimitReached'
+        }
       }
     };
     const inputs = {
@@ -82,7 +88,16 @@ for (const scene of [
         )
       }
     };
-    const outputs = ['assignments', 'scores', 'unserved', 'status'];
+    const outputs = [
+      'assignments',
+      'scores',
+      'unserved',
+      'summary',
+      'invalidCount',
+      'converged',
+      'iterationCount',
+      'iterationLimitReached'
+    ];
     const results: Record<string, Record<string, OperationGraphRows>> = {};
     for (const location of ['gpu', 'cpu'])
       results[location] = await runOperationGraph(device, {
@@ -99,7 +114,7 @@ for (const scene of [
       const actual = results['gpu'][port];
       expect(actual.length).toBe(expected.length);
       for (let row = 0; row < expected.length; row++) {
-        if (port === 'status' && row === 3) {
+        if (port === 'summary' && row === 3) {
           // Packed float32 gap bits are compared as floats, relative 2e-5.
           const expectedGap = new Float32Array(Uint32Array.of(expected[row]).buffer)[0];
           const actualGap = new Float32Array(Uint32Array.of(actual[row]).buffer)[0];
@@ -108,7 +123,7 @@ for (const scene of [
           );
         } else if (Number.isNaN(expected[row])) expect(Number.isNaN(actual[row])).toBe(true);
         else if (
-          port === 'status' ||
+          port === 'summary' ||
           (port === 'assignments' && !fractional) ||
           port === 'unserved'
         )
@@ -121,7 +136,7 @@ for (const scene of [
     }
     if (scene === 'integral') {
       expect(Array.from(results['cpu']['assignments'])).toEqual([7, 3, 0, 2]);
-      expect(Array.from(results['cpu']['status'].subarray(0, 3))).toEqual([1, 0, 3]);
+      expect(Array.from(results['cpu']['summary'].subarray(0, 3))).toEqual([1, 0, 3]);
     }
     if (simultaneousInflow) {
       // Each origin requests 3. Incoming 6 / capacity 3 limits each shift to 1.5;
@@ -129,10 +144,10 @@ for (const scene of [
       for (const location of ['gpu', 'cpu']) {
         expect(Array.from(results[location]['assignments'])).toEqual([1, 2, 1, 2]);
         expect(Array.from(results[location]['unserved'])).toEqual([0, 0]);
-        expect(Array.from(results[location]['status'].subarray(0, 3))).toEqual([1, 0, 1]);
+        expect(Array.from(results[location]['summary'].subarray(0, 3))).toEqual([1, 0, 1]);
         for (const score of results[location]['scores'])
           expect(Math.abs(score - 14 / 9)).toBeLessThanOrEqual(2e-5 * (14 / 9));
-        const gap = new Float32Array(Uint32Array.of(results[location]['status'][3]).buffer)[0];
+        const gap = new Float32Array(Uint32Array.of(results[location]['summary'][3]).buffer)[0];
         expect(Math.abs(gap - 2 / 3)).toBeLessThanOrEqual(2e-5 * (2 / 3));
       }
     }

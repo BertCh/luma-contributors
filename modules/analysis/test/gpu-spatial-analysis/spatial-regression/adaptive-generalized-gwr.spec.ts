@@ -179,7 +179,10 @@ it('adaptive GLMs report masked/nonfinite exclusions, invalid k, insufficient an
       );
       const actual = await readFloat32(coefficients.buffer, 8);
       testCase.expected.forEach((code, index) => {
-        if (code !== 0) {
+        if (code === 3) {
+          expect(Number.isFinite(actual[index * 2])).toBe(true);
+          expect(Number.isFinite(actual[index * 2 + 1])).toBe(true);
+        } else if (code !== 0) {
           expect(actual[index * 2]).toBeNaN();
           expect(actual[index * 2 + 1]).toBeNaN();
         }

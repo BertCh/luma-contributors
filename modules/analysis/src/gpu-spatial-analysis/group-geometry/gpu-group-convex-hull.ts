@@ -10,13 +10,12 @@ import {
   createTransientView,
   GPUReduction,
   GPUScan,
-  GPUSort,
-  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -26,6 +25,7 @@ import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {getSortedSegmentOffsetNodes} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -58,9 +58,15 @@ export const GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS = 4;
 /** Default prefilter level count for inputs of at least 8192 rows. */
 const DEFAULT_PREFILTER_LEVELS = 2;
 
-/** Bit of `overflow` set when a hull has more vertices than `maximumVerticesPerGroup`. */
+/**
+ * Legacy overflow bit for the per-group limit.
+ * @deprecated Read `output.status.groupOverflow`; `output.status.overflow` is now boolean.
+ */
 export const GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW = 1;
-/** Bit of `overflow` set when the emitted hulls do not fit `vertexCapacity`. */
+/**
+ * Legacy overflow bit for total vertex capacity.
+ * @deprecated Read `output.status.vertexOverflow`; `output.status.overflow` is now boolean.
+ */
 export const GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW = 2;
 
 /**
@@ -84,11 +90,12 @@ export type GPUGroupConvexHullOutput = {
   sizes?: GraphDataView<'uint32'>;
   /** Completeness scalars. */
   status: {
-    /**
-     * One row, a bit set: {@link GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW} and
-     * {@link GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW}. `0` when every hull was emitted.
-     */
+    /** One row: 1 when any hull was dropped by either limit, otherwise 0. */
     overflow: GraphDataView<'uint32'>;
+    /** Optional one row: 1 when a hull exceeded `maximumVerticesPerGroup`, otherwise 0. */
+    groupOverflow?: GraphDataView<'uint32'>;
+    /** Optional one row: 1 when eligible hulls exceeded `vertexCapacity`, otherwise 0. */
+    vertexOverflow?: GraphDataView<'uint32'>;
   };
 };
 
@@ -165,8 +172,9 @@ export type GPUGroupConvexHullProps = {
  *
  * ## Semantics
  *
- * - Rows are stably sorted by `(label, x, y)` with three `GPUSort` passes, so equal lattice points
- *   keep ascending row order and the lowest row index is the hull vertex.
+ * - Rows are stably sorted by `(label, x, y)` with the shared lexicographic sort, packing adjacent
+ *   narrow keys when they fit one word. Equal lattice points keep ascending row order and the
+ *   lowest row index is the hull vertex.
  * - Collinear points are not hull vertices (monotone chain pops on `cross <= 0`). A group of one
  *   distinct point has a 1-vertex hull, and a group whose points are all collinear has the 2
  *   extreme points.
@@ -263,15 +271,34 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
       ['offsets', output.offsets, ['uint32'], groups + 1],
       ['counts', output.counts, ['uint32'], groups],
       ['sizes', output.sizes, ['uint32'], groups],
-      ['overflow', output.status.overflow, ['uint32'], 1]
+      ['status.overflow', output.status.overflow, ['uint32'], 1],
+      ['status.groupOverflow', output.status.groupOverflow, ['uint32'], 1],
+      ['status.vertexOverflow', output.status.vertexOverflow, ['uint32'], 1]
     ] as const;
     for (const [name, view, formats, length] of checks) {
       if (!view) {
         continue;
       }
       validateSinglePackedView(view, formats, `${id} output.${name}`);
-      if (view.length < length) {
-        throw new Error(`${id} output.${name} must hold at least ${length} rows`);
+      validateRequirement(
+        id,
+        view.length >= length,
+        `output.${name} must hold at least ${length} rows`
+      );
+    }
+    for (const [name, scalar] of Object.entries(output.status)) {
+      if (!scalar) continue;
+      for (const [otherName, other] of checks) {
+        if (!other || otherName === `status.${name}`) continue;
+        const overlaps =
+          scalar.buffer === other.buffer &&
+          scalar.byteOffset < other.byteOffset + other.length * other.rowByteLength &&
+          other.byteOffset < scalar.byteOffset + scalar.length * scalar.rowByteLength;
+        validateRequirement(
+          id,
+          !overlaps,
+          `output.status.${name} must not overlap output.${otherName}`
+        );
       }
     }
     validateGraphOutputsDisjointFromInputs(
@@ -295,7 +322,7 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
       positions,
       labels,
       ...Object.values(columns),
-      status.overflow
+      ...Object.values(status)
     ]);
     const rows = positions.length;
     const f32 = (name: string, length: number) =>
@@ -451,54 +478,21 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
       );
     }
 
-    // 3. Stable LSD sort: y, then x, then group.
-    const sortedYKeys = u32('sorted-y-keys', rows);
-    const permutationY = u32('permutation-y', rows);
-    const keysX = u32('keys-x', rows);
-    const sortedXKeys = u32('sorted-x-keys', rows);
-    const permutationX = u32('permutation-x', rows);
-    const keysGroup = u32('keys-group', rows);
-    const sortedGroupKeys = u32('sorted-group-keys', rows);
-    const permutation = u32('permutation', rows);
-    nodes.push(
-      ...new GPUSort({
-        id: `${id}-sort-y`,
-        keys: latticeY,
-        values: rowIndices,
-        outputKeys: sortedYKeys,
-        outputValues: permutationY,
-        keyBits: LATTICE_KEY_BITS
-      }).getCommandNodes(graph),
-      // Both permutations below are permutations of the row indices: no index is out of range.
-      ...new GPUUint32Gather({
-        id: `${id}-gather-x`,
-        source: latticeX,
-        indices: permutationY,
-        output: keysX
-      }).getCommandNodes(graph),
-      ...new GPUSort({
-        id: `${id}-sort-x`,
-        keys: keysX,
-        values: permutationY,
-        outputKeys: sortedXKeys,
-        outputValues: permutationX,
-        keyBits: LATTICE_KEY_BITS
-      }).getCommandNodes(graph),
-      ...new GPUUint32Gather({
-        id: `${id}-gather-group`,
-        source: sortGroupKeys,
-        indices: permutationX,
-        output: keysGroup
-      }).getCommandNodes(graph),
-      ...new GPUSort({
-        id: `${id}-sort-group`,
-        keys: keysGroup,
-        values: permutationX,
-        outputKeys: sortedGroupKeys,
-        outputValues: permutation,
-        keyBits: getSortKeyBits(groupCount)
-      }).getCommandNodes(graph)
-    );
+    // 3. Stable lexicographic order by (group, x, y).
+    const sorted = createStableLexicographicIndexSortNodes(graph, {
+      id: `${id}-sort`,
+      operation: OPERATION,
+      indices: rowIndices,
+      indicesAreIdentity: true,
+      keys: [
+        {view: sortGroupKeys, keyBits: getSortKeyBits(groupCount)},
+        {view: latticeX, keyBits: LATTICE_KEY_BITS},
+        {view: latticeY, keyBits: LATTICE_KEY_BITS}
+      ]
+    });
+    nodes.push(...sorted.nodes);
+    const sortedGroupKeys = sorted.sortedPrimaryKeys;
+    const permutation = sorted.sortedIndices;
     const segmentOffsets = u32('segment-offsets', groupCount + 1);
     // Group offsets are lower bounds in the sorted keys: no counting atomics, zero fill or scan.
     nodes.push(
@@ -752,11 +746,12 @@ fn findGroup(row: u32) -> u32 {
 
     // 5. Bounded CSR emission.
     const eligibleSizes = u32('eligible-sizes', groupCount);
+    const overflowFlags = u32('overflow-flags', 1);
     nodes.push(
       createFillNode<Parameters>(graph, {
         id: `${id}-zero-overflow`,
         operation: OPERATION,
-        view: output.status.overflow,
+        view: overflowFlags,
         type: 'u32',
         value: '0u',
         componentCount: 1
@@ -767,7 +762,7 @@ fn findGroup(row: u32) -> u32 {
         [
           read('sizes', trueSizes, 'u32'),
           write('eligible', eligibleSizes, 'u32'),
-          write('overflow', output.status.overflow, 'atomic<u32>')
+          write('overflow', overflowFlags, 'atomic<u32>')
         ],
         `let size = sizes[sizesOffset + index];
   let isEligible = size <= ${maximumVerticesPerGroup}u;
@@ -808,7 +803,7 @@ fn findGroup(row: u32) -> u32 {
           read('permutation', chainPermutation, 'u32'),
           write('vertexIndices', output.vertexIndices, 'u32'),
           write('counts', output.counts, 'u32'),
-          write('overflow', output.status.overflow, 'atomic<u32>')
+          write('overflow', overflowFlags, 'atomic<u32>')
         ],
         `let size = eligible[eligibleOffset + index];
   let offset = offsets[offsetsOffset + index];
@@ -825,6 +820,26 @@ fn findGroup(row: u32) -> u32 {
     }
   }
   counts[countsOffset + index] = emitted;`
+      )
+    );
+    nodes.push(
+      kernel(
+        'publish-status',
+        1,
+        [
+          read('flags', overflowFlags, 'u32'),
+          write('overflow', output.status.overflow, 'u32'),
+          ...(output.status.groupOverflow
+            ? [write('groupOverflow', output.status.groupOverflow, 'u32')]
+            : []),
+          ...(output.status.vertexOverflow
+            ? [write('vertexOverflow', output.status.vertexOverflow, 'u32')]
+            : [])
+        ],
+        `let failures = flags[flagsOffset];
+  overflow[overflowOffset] = select(0u, 1u, failures != 0u);
+  ${output.status.groupOverflow ? `groupOverflow[groupOverflowOffset] = select(0u, 1u, (failures & ${GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW}u) != 0u);` : ''}
+  ${output.status.vertexOverflow ? `vertexOverflow[vertexOverflowOffset] = select(0u, 1u, (failures & ${GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW}u) != 0u);` : ''}`
       )
     );
     if (output.vertexPositions) {

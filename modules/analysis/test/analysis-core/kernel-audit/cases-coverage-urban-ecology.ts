@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPUPopulationSupportAlignment,
   addSegregationCounterfactualRecipe,
   addPopulationSupportAlignmentRecipe,
   addStreetProfilesRecipe,
@@ -21,6 +22,24 @@ import type {KernelAuditCase} from './kernel-audit-context';
 
 /** Full optional evidence and documented bounds, without allocating input or scratch buffers. */
 export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
+  {
+    exportName: 'GPUPopulationSupportAlignment',
+    name: 'indexed joins at partial workgroup lengths',
+    build({graph, view}) {
+      graph.add(
+        new GPUPopulationSupportAlignment({
+          populations: view('float32x2', 4097),
+          sourceIds: view('uint32', 4097),
+          targetIds: view('uint32', 257),
+          output: {
+            populations: view('float32x2', 257),
+            validity: view('uint32', 257),
+            status: view('uint32x4', 1)
+          }
+        })
+      );
+    }
+  },
   ...(['composition', 'dual-composition', 'share'] as const).map(method => ({
     exportName: 'addSegregationCounterfactualRecipe',
     name: `2048 units with ${method} quantile mapping`,

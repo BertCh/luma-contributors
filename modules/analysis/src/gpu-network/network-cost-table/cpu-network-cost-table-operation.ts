@@ -36,6 +36,7 @@ export type CPUNetworkCostTableResult = {
   overflow: Uint32Array;
   requiredCount: Uint32Array;
   converged: Uint32Array;
+  iterationLimitReached: Uint32Array;
 };
 
 /**
@@ -45,7 +46,7 @@ export type CPUNetworkCostTableResult = {
  * - Float64 shortest paths are rounded once at output; cutoff decisions and float32-overflow paths
  *   can differ. NaN costLimit disables the cutoff, as in the GPU comparisons.
  * - Searches finish exactly; GPU lane, round, command-node and device limits are dropped.
- *   converged is always 1. Output capacity still truncates rows and requiredCount saturates at uint32.
+ *   converged is always 1 and iterationLimitReached is always 0. Output capacity still truncates rows and requiredCount saturates at uint32.
  * - Unused target/cost capacity is zero-initialized; the GPU does not write unused capacity.
  *
  * @throws Error naming an inconsistent topology or costLimit argument.
@@ -84,7 +85,8 @@ export function computeNetworkCostTableOnCPU(
     costs,
     requiredCount: Uint32Array.of(requiredCount),
     overflow: Uint32Array.of(Number(requiredCount > options.capacity)),
-    converged: Uint32Array.of(1)
+    converged: Uint32Array.of(1),
+    iterationLimitReached: Uint32Array.of(0)
   };
 }
 

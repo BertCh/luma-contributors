@@ -19,7 +19,7 @@ import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 // own IDs (`<sort or scan id>-radix-...`, `-bitonic-...`, `-level-...`, `-chunk-...`), which the
 // plans document as excluded. (A module mock is not used: the node project runs with
 // `isolate: false`.)
-const PRIMITIVE_SCRATCH = /-(?:sort-low|sort-high|scan)-/;
+const PRIMITIVE_SCRATCH = /-(?:sort-low|sort-high|pass-\d+-sort|scan)-/;
 
 let serial = 0;
 

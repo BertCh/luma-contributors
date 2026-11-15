@@ -88,74 +88,89 @@ it('compares adjacency-changing snaps and signed half-cells at a nonzero origin'
   // These dyadic coordinates and tolerance are exactly representable. Local snap cells are
   // 4 versus 5 at the positive half-cell, and 0 versus 0 at the negative half-cell.
   for (const scene of scenes) {
-    const polygons = flattenPolygons(scene.polygons);
-    for (const criterion of ['queen', 'rook'] as const) {
-      for (const snapTolerance of [0, 0.25]) {
-        const props = {
-          criterion,
-          featureCount: 2,
-          capacity: 2,
-          pairCapacity: 32,
-          snapTolerance,
-          polygons: {
-            positions: 'positions',
-            ringOffsets: 'ringOffsets',
-            polygonOffsets: 'polygonOffsets',
-            featureOffsets: 'featureOffsets'
-          },
-          output: {
-            offsets: 'offsets',
-            neighbors: 'neighbors',
-            weights: 'weights',
-            status: {
-              overflow: 'overflow',
-              requiredCount: 'required',
-              candidateOverflow: 'candidate'
+    // Prefix offsets encode contiguous ring ranges; position gaps between them are not representable.
+    for (const paddingValue of [undefined, Number.NaN, 3e20, -3e20]) {
+      const original = flattenPolygons(scene.polygons);
+      const leading = paddingValue === undefined ? 0 : 2;
+      const positions = new Float32Array(original.positions.length + (leading ? 10 : 0)).fill(
+        paddingValue ?? 0
+      );
+      positions.set(original.positions, 2 * leading);
+      const padded = {
+        ...original,
+        positions,
+        ringOffsets: Uint32Array.from(original.ringOffsets, offset => offset + leading)
+      };
+      for (const criterion of ['queen', 'rook'] as const) {
+        for (const snapTolerance of [0, 0.25]) {
+          const props = {
+            criterion,
+            featureCount: 2,
+            capacity: 2,
+            pairCapacity: 32,
+            snapTolerance,
+            polygons: {
+              positions: 'positions',
+              ringOffsets: 'ringOffsets',
+              polygonOffsets: 'polygonOffsets',
+              featureOffsets: 'featureOffsets'
+            },
+            output: {
+              offsets: 'offsets',
+              neighbors: 'neighbors',
+              weights: 'weights',
+              status: {
+                overflow: 'overflow',
+                requiredCount: 'required',
+                candidateOverflow: 'candidate'
+              }
             }
+          };
+          const results: Awaited<ReturnType<typeof runOperationGraph>>[] = [];
+          for (const Operation of [GPUContiguityWeightsOperation, CPUContiguityWeightsOperation]) {
+            results.push(
+              await runOperationGraph(device, {
+                inputs: {
+                  positions: {format: 'float32x2', values: padded.positions},
+                  ringOffsets: {format: 'uint32', values: padded.ringOffsets},
+                  polygonOffsets: {format: 'uint32', values: padded.polygonOffsets},
+                  featureOffsets: {format: 'uint32', values: padded.featureOffsets}
+                },
+                operations: [new Operation(props)],
+                outputs: ['offsets', 'neighbors', 'weights', 'overflow', 'required', 'candidate']
+              })
+            );
           }
-        };
-        const results: Awaited<ReturnType<typeof runOperationGraph>>[] = [];
-        for (const Operation of [GPUContiguityWeightsOperation, CPUContiguityWeightsOperation]) {
-          results.push(
-            await runOperationGraph(device, {
-              inputs: {
-                positions: {format: 'float32x2', values: polygons.positions},
-                ringOffsets: {format: 'uint32', values: polygons.ringOffsets},
-                polygonOffsets: {format: 'uint32', values: polygons.polygonOffsets},
-                featureOffsets: {format: 'uint32', values: polygons.featureOffsets}
-              },
-              operations: [new Operation(props)],
-              outputs: ['offsets', 'neighbors', 'weights', 'overflow', 'required', 'candidate']
-            })
-          );
-        }
-        const joins = snapTolerance > 0 && scene.joinsAfterSnap;
-        for (const result of results) {
-          expect(Array.from(result['offsets']), scene.name).toEqual(joins ? [0, 1, 2] : [0, 0, 0]);
-          expect(Array.from(result['required'])).toEqual([joins ? 2 : 0]);
-          expect(Array.from(result['overflow'])).toEqual([0]);
-          expect(Array.from(result['candidate'])).toEqual([0]);
-        }
-        for (const name of [
-          'offsets',
-          'neighbors',
-          'weights',
-          'overflow',
-          'required',
-          'candidate'
-        ]) {
-          // Compare every defined output row exactly. Unused neighbor/weight slots are unspecified.
-          const length =
-            name === 'neighbors' || name === 'weights'
-              ? results[1]['offsets'][2]
-              : results[1][name].length;
-          expect(Array.from(results[0][name].slice(0, length)), scene.name).toEqual(
-            Array.from(results[1][name].slice(0, length))
-          );
-          if (name === 'neighbors')
-            expect(Array.from(results[0][name].slice(0, length))).toEqual(joins ? [1, 0] : []);
-          if (name === 'weights')
-            expect(Array.from(results[0][name].slice(0, length))).toEqual(joins ? [1, 1] : []);
+          const joins = snapTolerance > 0 && scene.joinsAfterSnap;
+          for (const result of results) {
+            expect(Array.from(result['offsets']), scene.name).toEqual(
+              joins ? [0, 1, 2] : [0, 0, 0]
+            );
+            expect(Array.from(result['required'])).toEqual([joins ? 2 : 0]);
+            expect(Array.from(result['overflow'])).toEqual([0]);
+            expect(Array.from(result['candidate'])).toEqual([0]);
+          }
+          for (const name of [
+            'offsets',
+            'neighbors',
+            'weights',
+            'overflow',
+            'required',
+            'candidate'
+          ]) {
+            // Compare every defined output row exactly. Unused neighbor/weight slots are unspecified.
+            const length =
+              name === 'neighbors' || name === 'weights'
+                ? results[1]['offsets'][2]
+                : results[1][name].length;
+            expect(Array.from(results[0][name].slice(0, length)), scene.name).toEqual(
+              Array.from(results[1][name].slice(0, length))
+            );
+            if (name === 'neighbors')
+              expect(Array.from(results[0][name].slice(0, length))).toEqual(joins ? [1, 0] : []);
+            if (name === 'weights')
+              expect(Array.from(results[0][name].slice(0, length))).toEqual(joins ? [1, 1] : []);
+          }
         }
       }
     }

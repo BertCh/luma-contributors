@@ -269,3 +269,18 @@ it('validates both operation forms at construction, with deferred GPU contributo
       /centrality-test/
     );
 });
+
+it('distinguishes a zero-cycle failure from round exhaustion in the exact CPU twin', () => {
+  const {forward, reverse} = buildCentralityCSRs(3, [
+    [0, 1, 1],
+    [1, 2, 0],
+    [2, 1, 0]
+  ]);
+  const result = computeNetworkCentralityOnCPU(
+    {topology: forward, reverseTopology: reverse, pivotNodes: Uint32Array.of(0)},
+    {computeBetweenness: true}
+  );
+  expect(result.zeroWeightCycle[0]).toBe(1);
+  expect(result.converged[0]).toBe(0);
+  expect(result).toHaveProperty('iterationLimitReached', Uint32Array.of(0));
+});

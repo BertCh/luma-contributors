@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {clamp} from '@math.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -26,7 +25,7 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
-import {createGridIndexNodes} from './gwr-grid-index';
+import {createGridIndexNodes, getDefaultGWRGridSize} from './gwr-grid-index';
 import {createGoldenSectionSearchNodes} from './gwr-golden-section-nodes';
 import {getGWRFitWGSL} from './gwr-fit-wgsl';
 import {getStudentTWGSL} from './gwr-student-t';
@@ -36,7 +35,6 @@ import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_REFINEMENT_PASS_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_SIGNIFICANCE_LEVEL,
-  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DEFAULT_GRID_DIMENSION,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT,
@@ -44,7 +42,6 @@ import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_REFINEMENT_PASS_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_SEARCH_ITERATIONS,
-  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_INDEXED_ROW_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_VARIANCE,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_PARAMETER_HEADER_LENGTH,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE,
@@ -544,15 +541,8 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
         );
       }
       this.indexGridSize = [columns, gridRows];
-    } else if (this.rowCount >= GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_INDEXED_ROW_COUNT) {
-      const dimension = clamp(
-        Math.ceil(Math.sqrt(this.rowCount / 8)),
-        1,
-        GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DEFAULT_GRID_DIMENSION
-      );
-      this.indexGridSize = [dimension, dimension];
     } else {
-      this.indexGridSize = null;
+      this.indexGridSize = getDefaultGWRGridSize(this.rowCount) ?? null;
     }
     if (
       !this.indexGridSize &&

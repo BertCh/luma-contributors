@@ -19,7 +19,7 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {resolveGPUTemporalContext} from '../../analysis-core/contracts/temporal-context';
 import {GPUOPTICSOperation, type OPTICSOperationProps} from './gpu-optics-operation';
-import {GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS} from './gpu-optics';
+import {GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS, OPTICS_ITERATION_STATUS_FIELDS} from './gpu-optics';
 
 const MISSING_ROW = 0xffffffff;
 
@@ -37,6 +37,9 @@ export type CPUOPTICSResult = {
   clusterIntervals: Uint32Array;
   clusterSummary: Uint32Array;
   candidateOverflow: Uint32Array;
+  iterationCount: Uint32Array;
+  converged: Uint32Array;
+  iterationLimitReached: Uint32Array;
 };
 
 function validateOPTICSOptions(
@@ -88,6 +91,20 @@ function validateOPTICSOptions(
     validateCapacity(id, 'frontierBatchSize', options.frontierBatchSize);
   if (options.neighborCapacity !== undefined)
     validateCapacity(id, 'neighborCapacity', options.neighborCapacity);
+  validateRequirement(
+    id,
+    ['sequential', 'parallel'].includes(options.orderingMethod ?? 'sequential'),
+    "orderingMethod must be 'sequential' or 'parallel'"
+  );
+  const grid =
+    options.neighborIndex === 'grid' ||
+    ((options.neighborIndex ?? 'auto') === 'auto' &&
+      rowCount > GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS);
+  validateRequirement(
+    id,
+    options.orderingMethod !== 'parallel' || grid,
+    "orderingMethod 'parallel' needs neighborIndex 'grid'"
+  );
   const spatialContext = resolveGPUSpatialContext(id, options.spatialContext, {
     ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
     measure: 'distance'
@@ -122,7 +139,7 @@ function validateOPTICSOptions(
  *   Near distance ties, radius boundaries or xi thresholds, float32 arithmetic can change discrete
  *   ordering, predecessors, intervals and labels; the strict tie and inclusive bound rules match.
  * - Computes the complete ordering regardless of maximumIterations, frontierBatchSize,
- *   neighborIndex or neighborCapacity. candidateOverflow is always 0 and status.complete is 1.
+ *   neighborIndex, orderingMethod or neighborCapacity. candidateOverflow and iterationLimitReached are always 0, converged and status.complete are 1.
  * - Drops the GPU row limits (4096/65536), minimumSamples limit (256), batch and command budgets.
  *   The implementation is exhaustive and intended for small collections, with O(n² log n) work.
  * - Xi still has rowCount interval capacity, required by the output layout. Summary is the
@@ -250,6 +267,9 @@ export function computeOPTICSOnCPU(
     status: Uint32Array.of(visitedCount, 1, invalidCount),
     clusterIntervals,
     clusterSummary,
+    iterationCount: Uint32Array.of(visitedCount),
+    converged: Uint32Array.of(1),
+    iterationLimitReached: Uint32Array.of(0),
     candidateOverflow: Uint32Array.of(0)
   };
 }
@@ -409,6 +429,12 @@ export class CPUOPTICSOperation extends GPUCPUOperation {
         ...(output.clusterSummary
           ? {[output.clusterSummary]: gpuGraph.vector('uint32', {length: 2})}
           : {}),
+        ...Object.fromEntries(
+          OPTICS_ITERATION_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(name => [
+            output.ports!.status[name]!,
+            gpuGraph.vector('uint32', {length: 1})
+          ])
+        ),
         ...(output.ports?.status.candidateOverflow
           ? {[output.ports.status.candidateOverflow]: gpuGraph.vector('uint32', {length: 1})}
           : {})
@@ -431,6 +457,12 @@ export class CPUOPTICSOperation extends GPUCPUOperation {
           [output.status]: result.status,
           ...(output.clusterIntervals ? {[output.clusterIntervals]: result.clusterIntervals} : {}),
           ...(output.clusterSummary ? {[output.clusterSummary]: result.clusterSummary} : {}),
+          ...Object.fromEntries(
+            OPTICS_ITERATION_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(name => [
+              output.ports!.status[name]!,
+              result[name]
+            ])
+          ),
           ...(output.ports?.status.candidateOverflow
             ? {[output.ports.status.candidateOverflow]: result.candidateOverflow}
             : {})

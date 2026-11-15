@@ -10,7 +10,10 @@ import {
   getStorageBindingCount
 } from '../../utils/gpu-contributor-test-utils';
 import {addTrackQualityRecipe} from '../../../src/gpu-network/recipes/track-quality-recipe';
-import {addNetworkDisruptionRecipe} from '../../../src/gpu-network/recipes/network-scenarios-recipe';
+import {
+  addFacilityScenarioRecipe,
+  addNetworkDisruptionRecipe
+} from '../../../src/gpu-network/recipes/network-scenarios-recipe';
 import {addInterpolationDiagnosticsRecipe} from '../../../src/gpu-spatial-analysis/recipes/interpolation-diagnostics-recipe';
 import {addDrainageNetworkRecipe} from '../../../src/gpu-spatial-analysis/recipes/drainage-network-recipe';
 import {
@@ -18,6 +21,7 @@ import {
   createRecipeKernelNode
 } from '../../../src/gpu-spatial-analysis/recipes/expansion-recipe-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import * as recipeUtilities from '../../../src/gpu-spatial-analysis/recipes/recipe-utils';
 
 const grid: GPURasterMetadata = {
   width: 3,
@@ -35,6 +39,12 @@ function context() {
   ) => createTransientView(graph, `view-${serial++}`, format, length);
   return {device, graph, view};
 }
+
+it('legacy recipe utilities share the canonical implementations', () => {
+  expect(getRecipeView).toBe(recipeUtilities.getRecipeView);
+  expect(createRecipeKernelNode).toBe(recipeUtilities.createRecipeKernelNode);
+});
+
 it('new recipe kernels stay within core storage limits, including double-single timestamps', () => {
   const {device, graph, view} = context();
   try {
@@ -48,7 +58,7 @@ it('new recipe kernels stay within core storage limits, including double-single 
       thresholds: view('float32', 2),
       similarity: {pairA: view('uint32', 2), pairB: view('uint32', 2)}
     });
-    addNetworkDisruptionRecipe(graph, {
+    const disruption = addNetworkDisruptionRecipe(graph, {
       search: {
         topology: {
           offsets: view('uint32', 4),
@@ -63,6 +73,16 @@ it('new recipe kernels stay within core storage limits, including double-single 
       parameters: view('float32', 4),
       opportunityWeights: view('float32', 3)
     });
+    expect(
+      disruption.contributors
+        .filter(contributor => !('id' in contributor))
+        .flatMap(contributor => contributor.getCommandNodes(graph))
+        .map(node => node.id)
+    ).toEqual([
+      'network-disruption-recipe-closures',
+      'network-disruption-recipe-differences',
+      'network-disruption-recipe-accessibility-delta'
+    ]);
     addInterpolationDiagnosticsRecipe(graph, {
       kriging: {
         positions: view('float32x2', 4),
@@ -93,6 +113,47 @@ it('new recipe kernels stay within core storage limits, including double-single 
     expect(kernels.length).toBeGreaterThan(20);
     for (const kernel of kernels)
       expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
+    const summaryKernels = kernels.filter(kernel =>
+      kernel.id.startsWith('interpolation-diagnostics-recipe-summary')
+    );
+    expect(summaryKernels.length).toBeGreaterThan(1);
+    for (const kernel of summaryKernels)
+      expect(kernel.source, kernel.id).not.toMatch(/for\s*\(var row\s*=/);
+    // Division by a near-maximum scale can flush its reciprocal to zero on the GPU.
+    // Require the shared range-controlled quotient instead of a raw float32 division.
+    const normalize = summaryKernels.find(kernel => kernel.id.includes('normalize'));
+    expect(normalize?.source).toContain('getScaledQuotient(value, scale[scaleOffset], 1.0, 0)');
+  } finally {
+    device.destroy();
+  }
+});
+
+it('facility demand summaries use parallel contributions and published reductions', () => {
+  const {device, graph, view} = context();
+  try {
+    const recipe = addFacilityScenarioRecipe(graph, {
+      costs: view('float32', 514),
+      demand: view('float32', 257),
+      supply: view('float32', 2),
+      facilityMask: view('uint32', 2),
+      parameters: view('float32', 4)
+    });
+    const kernels = getGPUCommandNodeKernelSources((graph as unknown as {nodes: unknown[]}).nodes);
+    const summaryKernels = kernels.filter(kernel => kernel.id.includes('summary'));
+    expect(summaryKernels.length).toBeGreaterThan(1);
+    for (const kernel of summaryKernels) {
+      expect(kernel.source, kernel.id).not.toMatch(/for\s*\(var row\s*=/);
+      expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
+    }
+    expect(recipe.contributors.filter(contributor => 'operation' in contributor)).toHaveLength(3);
+    const glueNodes = recipe.contributors
+      .filter(contributor => !('id' in contributor))
+      .flatMap(contributor => contributor.getCommandNodes(graph));
+    expect(glueNodes.map(node => node.id)).toEqual([
+      'facility-scenario-recipe-supply',
+      'facility-scenario-recipe-nearest',
+      'facility-scenario-recipe-summary'
+    ]);
   } finally {
     device.destroy();
   }

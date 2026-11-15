@@ -147,6 +147,12 @@ it('GPUGroupStatistics validates props', () => {
     length: number
   ) => createTransientView(graph, `v-${serial++}`, format, length);
   expectThrows(graph => ({keys: view(graph, 'float32', 10) as never}), /keys/);
+  for (const rowCount of [0, 2 ** 31 + 1]) {
+    expectThrows(
+      graph => ({keys: view(graph, 'uint32', rowCount), columns: []}),
+      /group-statistics keys.length must be an integer in \[1, 2147483648\]/
+    );
+  }
   expectThrows(graph => ({mask: view(graph, 'uint32', 9)}), /mask must have the same length/);
   expectThrows(() => ({variance: 'bogus' as never}), /variance/);
   expectThrows(() => ({sumScale: 0}), /sumScale/);
@@ -343,6 +349,7 @@ it('GPUGroupStatistics emits deterministic nodes for every statistic', () => {
   };
   const contributor = new GPUGroupStatistics(props);
   const nodes = contributor.getCommandNodes(graph);
+  expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
   const ids = nodes.map(node => node.id);
   expect(new Set(ids).size).toBe(ids.length);
   expect(ids.every(id => id.startsWith('stats-'))).toBe(true);
@@ -360,7 +367,7 @@ it('GPUGroupStatistics emits deterministic nodes for every statistic', () => {
     expect(ids, step).toContain(step);
   }
   // 64-bit keys use two key sorts per chain.
-  expect(ids.filter(id => id.includes('-order-sort-high')).length).toBeGreaterThan(0);
+  expect(ids.filter(id => id.includes('-order-pass-1-sort')).length).toBeGreaterThan(0);
   // A second call on a second graph with the same props gives the same IDs.
   const graph2 = new GPUCommandGraph(device);
   const props2 = createProps(graph2, {id: 'stats'}, ['count', 'mean']);
@@ -372,4 +379,65 @@ it('GPUGroupStatistics emits deterministic nodes for every statistic', () => {
   // Order statistics are skipped when no column asks for them.
   expect(first.some(id => id.includes('sort-value'))).toBe(false);
   device.destroy();
+});
+
+it('GPUGroupStatistics bounds moment work by rows rather than group capacity', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    for (const rowCount of [1, 257, 2 ** 20 + 2]) {
+      const graph = new GPUCommandGraph(device);
+      const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+        createTransientView(graph, `tree-${serial++}`, format, length);
+      const capacity = 8192;
+      const contributor = new GPUGroupStatistics(
+        createProps(graph, {
+          keys: view('uint32', rowCount),
+          columns: [
+            {
+              values: view('float32', rowCount),
+              statistics: ['variance'],
+              output: {variances: view('float32', capacity)}
+            }
+          ],
+          output: {
+            keys: view('uint32', capacity),
+            counts: view('uint32', capacity),
+            status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+          }
+        })
+      );
+      const nodes = contributor.getCommandNodes(graph);
+      const merges = nodes.filter(node => node.id.includes('-moment-merge-'));
+      expect(merges.length).toBe(Math.ceil(Math.log2(rowCount)));
+      const mergeInvocations = merges.reduce(
+        (total, node) => total + (node.workload?.maximumInvocationCount ?? Infinity),
+        0
+      );
+      expect(mergeInvocations).toBeLessThan(2 * rowCount);
+      const publish = nodes.find(node => node.id.endsWith('-moments'));
+      expect(publish?.workload?.maximumInvocationCount).toBe(rowCount);
+      expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('GPUGroupStatistics refuses row scratch above the device binding limit before adding nodes', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const rowCount = Math.floor(device.limits.maxStorageBufferBindingSize / 4) + 1;
+    const props = createProps(graph);
+    const contributor = new GPUGroupStatistics({
+      ...props,
+      keys: createTransientView(graph, 'too-many-keys', 'uint32', rowCount),
+      columns: []
+    });
+    expect(() => contributor.getCommandNodes(graph)).toThrow(
+      /group-statistics keys.length row scratch needs .* bytes in one binding \(limit .*\); reduce keys.length/
+    );
+  } finally {
+    device.destroy();
+  }
 });

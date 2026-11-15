@@ -4,6 +4,7 @@
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUSpatialEdgeModel} from '../../analysis-core/contracts/index';
+import {SCAN_TOTAL_WGSL} from '../../analysis-core/kernels/scan-total';
 import {LON_LAT_RING_WGSL} from '../../analysis-core/lon-lat-ring-wgsl';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import {
@@ -544,6 +545,7 @@ export function createPreparationStatusNode<Parameters>(
     variant: 'status',
     bindings,
     invocationCount: Math.max(1, props.metadata.length / 4),
+    declarations: SCAN_TOTAL_WGSL,
     body: `${props.ringFlags ? 'ringFlags[ringFlagsOffset + index] = metadata[metadataOffset + 4u * index];' : ''}
   if (index == 0u) {
     let last = ${props.counts.length - 1}u;
@@ -553,7 +555,7 @@ export function createPreparationStatusNode<Parameters>(
     for (var stage = 0u; stage < 6u; stage++) {
       intermediateTotal = max(intermediateTotal, stageFlags[stageFlagsOffset + stage]);
     }
-    let requiredCount = select(total, 8u * (denseTotal + ${(3 * props.metadata.length) / 4}u), intermediateTotal > ${props.capacity}u);
+    let requiredCount = select(total, getSaturatedScanProduct(getSaturatedScanSum(denseTotal, ${(3 * props.metadata.length) / 4}u), 8u), intermediateTotal > ${props.capacity}u);
     stageFlags[stageFlagsOffset] = intermediateTotal;
     stageFlags[stageFlagsOffset + 1u] = 0u;
     stageFlags[stageFlagsOffset + 2u] = 0u;

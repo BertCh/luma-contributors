@@ -8,6 +8,7 @@ export {
   RASTER_EMBEDDING_NO_LABEL
 } from './raster-embedding-common';
 export * from './gpu-raster-embedding-dequantize';
+export * from './gpu-raster-embedding-quantize';
 export * from './gpu-raster-embedding-similarity';
 export * from './gpu-raster-embedding-nearest-pixels';
 export * from './gpu-raster-embedding-change';

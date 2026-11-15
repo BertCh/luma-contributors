@@ -16,6 +16,11 @@ import {
   type NetworkTimeRoutingOperationProps
 } from './gpu-network-time-routing-operation';
 
+import {
+  getNetworkOptimizationCPUStatus,
+  type NetworkOptimizationCPUStatus
+} from './network-optimization-status';
+
 const NONE = 0xffffffff;
 
 /** Packed routing inputs and cost layout, matching GPUNetworkTimeRouting. */
@@ -38,6 +43,7 @@ export type NetworkTimeRoutingFloat64Result = {
   converged: number;
   targetState: number;
   arrivalTime: number;
+  iterationCount: number;
 };
 
 /** Validates compile-time routing shape/model props without GPU-only caps. @internal */
@@ -112,7 +118,8 @@ export function computeNetworkTimeRoutingFloat64(
     valid: 0,
     converged: 0,
     targetState: NONE,
-    arrivalTime: Infinity
+    arrivalTime: Infinity,
+    iterationCount: 0
   };
   const initial = endpoints[0];
   if (initial >= stateCount || !Number.isFinite(departureTime) || departureTime < 0) return result;
@@ -149,6 +156,7 @@ export function computeNetworkTimeRoutingFloat64(
   arrivals[initial] = departureTime;
   let changed: boolean;
   do {
+    result.iterationCount++;
     changed = false;
     for (let edge = 0; edge < transitionCount; edge++) {
       const source = transitions[edge * 2];
@@ -213,13 +221,21 @@ export function computeNetworkTimeRoutingOnCPU(input: CPUNetworkTimeRoutingInput
   arrivals: Float32Array;
   predecessorTransitions: Uint32Array;
   summary: Uint32Array;
+  status: NetworkOptimizationCPUStatus;
 } {
   const result = computeNetworkTimeRoutingFloat64(input);
   const arrivalBits = new Uint32Array(new Float32Array([result.arrivalTime]).buffer)[0];
+  const summary = new Uint32Array([
+    result.valid,
+    result.converged,
+    result.targetState,
+    arrivalBits
+  ]);
   return {
     arrivals: Float32Array.from(result.arrivals),
     predecessorTransitions: result.predecessorTransitions,
-    summary: new Uint32Array([result.valid, result.converged, result.targetState, arrivalBits])
+    summary,
+    status: getNetworkOptimizationCPUStatus(summary, result.iterationCount)
   };
 }
 
@@ -255,11 +271,14 @@ export class CPUNetworkTimeRoutingOperation extends GPUCPUOperation {
           samplesPerTransition: props.samplesPerTransition,
           waitingPolicy: props.waitingPolicy
         });
-        return {
-          [props.output.arrivals]: result.arrivals,
-          [props.output.predecessorTransitions]: result.predecessorTransitions,
-          [props.output.summary]: result.summary
-        };
+        const {status, ...primaryRows} = result;
+        const outputRows = {...primaryRows, ...status};
+        return Object.fromEntries(
+          Object.entries(operation.outputs).map(([port, output]) => [
+            output.value,
+            outputRows[port as keyof typeof outputRows]
+          ])
+        );
       }
     });
   }

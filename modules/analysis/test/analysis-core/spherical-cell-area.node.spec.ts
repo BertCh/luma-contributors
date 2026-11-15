@@ -4,10 +4,7 @@
 
 import {describe, expect, it} from 'vitest';
 import {getGPUAuthalicSphereRadius} from '../../src/analysis-core/contracts/spatial-context';
-import {
-  getRasterSphereRadius,
-  getSphericalRasterCellArea
-} from '../../src/analysis-core/spherical-cell-area';
+import {getSphericalRasterCellArea} from '../../src/analysis-core/spherical-cell-area';
 
 describe('spherical raster cell area units', () => {
   it('matches the binary64 spherical oracle in square meters and square kilometers', () => {
@@ -38,10 +35,9 @@ describe('spherical raster cell area units', () => {
     expect(getSphericalRasterCellArea(originLatitude, cellWidth, cellHeight, row)).toBe(areas[0]);
   });
 
-  it('retains the deprecated radius helper as an exact alias honoring kilometers', () => {
-    expect(getRasterSphereRadius).toBe(getGPUAuthalicSphereRadius);
+  it('resolves the authalic radius in kilometers', () => {
     expect(
-      getRasterSphereRadius({
+      getGPUAuthalicSphereRadius({
         coordinateSpace: 'longitude-latitude',
         metric: 'great-circle',
         units: 'kilometers'

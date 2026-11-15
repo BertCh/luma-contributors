@@ -29,7 +29,7 @@ export type NetworkServiceAreasOperationProps = {
     predecessors?: string;
     facilityNodeCounts?: string;
     facilityCostSums?: string;
-    status?: {converged?: string};
+    status?: {converged?: string; iterationLimitReached?: string};
   };
 };
 /** Vector operation form. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
@@ -52,12 +52,11 @@ export class GPUNetworkServiceAreasOperation extends GPUContributorOperation {
       outputs[port] = {
         value,
         format: ['costs', 'facilityCostSums'].includes(port) ? 'float32' : 'uint32',
-        length:
-          port === 'converged'
-            ? 1
-            : ['facilityNodeCounts', 'facilityCostSums'].includes(port)
-              ? props.facilityCapacity
-              : props.nodeCount
+        length: ['converged', 'iterationLimitReached'].includes(port)
+          ? 1
+          : ['facilityNodeCounts', 'facilityCostSums'].includes(port)
+            ? props.facilityCapacity
+            : props.nodeCount
       };
     }
     super({
@@ -111,7 +110,11 @@ export class GPUNetworkServiceAreasOperation extends GPUContributorOperation {
               converged:
                 props.output.status?.converged === undefined
                   ? undefined
-                  : getView<'uint32'>('converged')
+                  : getView<'uint32'>('converged'),
+              iterationLimitReached:
+                props.output.status?.iterationLimitReached === undefined
+                  ? undefined
+                  : getView<'uint32'>('iterationLimitReached')
             }
           }
         })

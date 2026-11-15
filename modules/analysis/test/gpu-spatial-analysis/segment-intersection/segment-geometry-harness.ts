@@ -15,9 +15,22 @@ export function createSegmentGeometry(
   graph: GPUCommandGraph,
   name: string,
   features: OracleSegmentFeature[],
-  buffers: Buffer[]
+  buffers: Buffer[],
+  padding?: {leading: number; trailing: number; value: number}
 ): GPUSegmentGeometry {
   const arrays = buildArrays(features);
+  if (padding) {
+    const positions = new Float32Array(
+      arrays.positions.length + 2 * (padding.leading + padding.trailing)
+    ).fill(padding.value);
+    positions.set(arrays.positions, 2 * padding.leading);
+    arrays.positions = positions;
+    if (arrays.kind === 'lines') {
+      arrays.lineOffsets = Uint32Array.from(arrays.lineOffsets, offset => offset + padding.leading);
+    } else {
+      arrays.ringOffsets = Uint32Array.from(arrays.ringOffsets, offset => offset + padding.leading);
+    }
+  }
   const upload = (data: Float32Array | Uint32Array) => {
     const buffer = createInputBuffer(device, data);
     buffers.push(buffer);

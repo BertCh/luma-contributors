@@ -2,9 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  GPUScanUint64,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {validateMaximumCount} from './gpu-contributor-utils';
-import {createWGSLKernelNode} from './wgsl-kernel-nodes';
+import {createFillNode, createWGSLKernelNode} from './wgsl-kernel-nodes';
 
 /**
  * Value of a saturated scan total: the true sum of the counts reached `2^32`. It is above every
@@ -15,15 +21,15 @@ import {createWGSLKernelNode} from './wgsl-kernel-nodes';
  */
 export const SATURATED_SCAN_TOTAL = 0xffffffff;
 
-/** Properties for {@link createScanCarryNode} and {@link createSaturatedScanTotalNodes}. @internal */
+/** Properties for the count-scan and scan-total helpers. @internal */
 export type ScanTotalProps = {
   /** Node ID prefix. */
   id: string;
   /** Operation name reported in the workload estimate. */
   operation: string;
-  /** Per-row uint32 counts that the exclusive scan read. */
+  /** Per-row uint32 counts. */
   counts: GraphDataView<'uint32'>;
-  /** Exclusive prefix sums of `counts` written by `GPUScan` (wrapping modulo `2^32`). */
+  /** Exclusive offsets: read by total-only helpers, written by the saturated count scan. */
   offsets: GraphDataView<'uint32'>;
   /** Number of scanned rows, at most the length of both views. */
   rowCount: number;
@@ -106,5 +112,92 @@ export function createSaturatedScanTotalNodes<Parameters>(
   total[totalOffset + TOTAL_ROW] = sum;`
     }),
     createScanCarryNode(graph, props)
+  ];
+}
+
+/**
+ * Saturating arithmetic for scan offsets, counts and resize bounds. Clamp operands before
+ * evaluating the arithmetic: WGSL select evaluates both values, including the unselected one.
+ * @internal
+ */
+export const SCAN_TOTAL_WGSL = /* wgsl */ `
+fn getSaturatedScanSum(offset: u32, count: u32) -> u32 {
+  return offset + min(count, 0xffffffffu - offset);
+}
+fn getSaturatedScanProduct(count: u32, multiplier: u32) -> u32 {
+  if (multiplier == 0u) { return 0u; }
+  let maximumCount = 0xffffffffu / multiplier;
+  return select(min(count, maximumCount) * multiplier, 0xffffffffu, count > maximumCount);
+}
+`;
+
+/**
+ * Scans counts into saturated exclusive offsets and a saturated total. Unlike a total-only carry
+ * check, this preserves monotonic offsets after any number of uint32 wraps, so a later row cannot
+ * overwrite an earlier output prefix. Compose the published inclusive uint64 scan with a shift and
+ * uint32 saturation. Counts must fit in uint32 and there can be at most uint32 rows, so the true sum
+ * fits in uint64. Consumers must also saturate offset-plus-count arithmetic (SCAN_TOTAL_WGSL).
+ *
+ * @internal
+ */
+export function createSaturatedCountScanNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: ScanTotalProps
+): GPUCommandNode<Parameters>[] {
+  validateMaximumCount(props.id, 'rowCount', props.rowCount, SATURATED_SCAN_TOTAL);
+  validateMaximumCount(props.id, 'rowCount', props.rowCount, props.counts.length);
+  validateMaximumCount(props.id, 'rowCount', props.rowCount, props.offsets.length);
+  validateMaximumCount(props.id, 'totalRow', props.totalRow ?? 0, props.total.length - 1);
+  const counts = graph.createDataView(props.counts.buffer, {
+    format: 'uint32',
+    byteOffset: props.counts.byteOffset,
+    length: props.rowCount
+  });
+  const highInput = createTransientView(graph, `${props.id}-high-input`, 'uint32', props.rowCount);
+  const low = createTransientView(graph, `${props.id}-prefix-low`, 'uint32', props.rowCount);
+  const high = createTransientView(graph, `${props.id}-prefix-high`, 'uint32', props.rowCount);
+  return [
+    createFillNode<Parameters>(graph, {
+      id: `${props.id}-clear-high`,
+      operation: props.operation,
+      view: highInput,
+      type: 'u32',
+      value: '0u'
+    }),
+    ...new GPUScanUint64({
+      id: props.id,
+      inputLow: counts,
+      inputHigh: highInput,
+      outputLow: low,
+      outputHigh: high
+    }).getCommandNodes(graph),
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${props.id}-saturate`,
+      operation: props.operation,
+      variant: 'saturated-count-scan',
+      bindings: [
+        {name: 'low', view: low, type: 'u32', access: 'read'},
+        {name: 'high', view: high, type: 'u32', access: 'read'},
+        {name: 'offsets', view: props.offsets, type: 'u32', access: 'read_write'},
+        {name: 'total', view: props.total, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: Math.max(1, props.rowCount),
+      declarations: 'override ROW_COUNT: u32;\noverride TOTAL_ROW: u32;',
+      constants: {ROW_COUNT: props.rowCount, TOTAL_ROW: props.totalRow ?? 0},
+      body: `if (index == 0u) {
+    var sum = 0u;
+    if (ROW_COUNT > 0u) {
+      sum = select(low[lowOffset + ROW_COUNT - 1u], 0xffffffffu, high[highOffset + ROW_COUNT - 1u] != 0u);
+    }
+    total[totalOffset + TOTAL_ROW] = sum;
+  }
+  if (index < ROW_COUNT) {
+    var offset = 0u;
+    if (index > 0u) {
+      offset = select(low[lowOffset + index - 1u], 0xffffffffu, high[highOffset + index - 1u] != 0u);
+    }
+    offsets[offsetsOffset + index] = offset;
+  }`
+    })
   ];
 }

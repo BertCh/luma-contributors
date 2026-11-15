@@ -71,5 +71,60 @@ export const GTWR_AUDIT_CASES: KernelAuditCase[] = [
         })
       );
     }
-  }
+  },
+  ...([false, true] as const).map(multiscale => ({
+    exportName: multiscale
+      ? 'GPUMultiscaleGeographicallyTemporallyWeightedRegression'
+      : 'GPUGeographicallyTemporallyWeightedRegression',
+    name: 'adaptive-profile-search',
+    build({graph, view}: Parameters<KernelAuditCase['build']>[0]) {
+      const rows = 40;
+      const common = {
+        positions: view('float32x2', rows),
+        times: view('float32', rows),
+        temporalContext: TEMPORAL_CONTEXT,
+        predictors: view('float32', rows),
+        predictorCount: 1,
+        response: view('float32', rows),
+        mask: view('uint32', rows),
+        adaptive: true,
+        kernel: 'bisquare' as const,
+        bandwidthSearch: {parameters: view('float32', 6), maximumIterations: 1}
+      };
+      const output = {
+        coefficients: view('float32', rows * 2),
+        fitted: view('float32', rows),
+        residuals: view('float32', rows),
+        localStatus: view('uint32', rows),
+        status: {
+          iterationCount: view('uint32', 1),
+          converged: view('uint32', 1),
+          iterationLimitReached: view('uint32', 1)
+        }
+      };
+      graph.add(
+        multiscale
+          ? new GPUMultiscaleGeographicallyTemporallyWeightedRegression({
+              ...common,
+              iterationCount: 1,
+              parameters: view('float32', 6),
+              output: {
+                ...output,
+                selectedParameters: view('float32', 6),
+                scores: view('float32', 1)
+              }
+            })
+          : new GPUGeographicallyTemporallyWeightedRegression({
+              ...common,
+              parameters: view('float32', 4),
+              output: {
+                ...output,
+                selectedParameters: view('float32', 2),
+                hatDiagonal: view('float32', rows),
+                summary: view('float32', 12)
+              }
+            })
+      );
+    }
+  }))
 ];

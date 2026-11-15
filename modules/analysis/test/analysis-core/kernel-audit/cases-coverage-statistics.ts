@@ -180,7 +180,7 @@ export const COVERAGE_STATISTICS_CASES: KernelAuditCase[] = [
       );
     }
   },
-  ...(['HC0', 'HC1', 'HAC'] as const).map(method => ({
+  ...(['HC0', 'HC1', 'HC2', 'HC3', 'HAC', 'CLUSTER'] as const).map(method => ({
     exportName: 'GPUInstrumentalVariablesCovariance',
     name: `maximum-${method}`,
     build({graph, view, weights}: KernelAuditContext) {
@@ -193,6 +193,7 @@ export const COVERAGE_STATISTICS_CASES: KernelAuditCase[] = [
           residuals: view('float32', 65536),
           method,
           ...(method === 'HAC' ? {kernel: weights(65536)} : {}),
+          ...(method === 'CLUSTER' ? {clusters: view('uint32', 65536), clusterCount: 65536} : {}),
           output: {covariance: view('float32', 256), status: view('uint32', 1)}
         })
       );

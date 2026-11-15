@@ -4,6 +4,7 @@
 
 import {GPU_WGS84_FLATTENING, GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from './contracts/earth';
 import {WEB_MERCATOR_EARTH_RADIUS} from '@luma.gl/graph/gpu-project';
+import {validateCapacity, validateRequirement} from './kernels/gpu-contributor-utils';
 import {getWGSLFloatLiteral} from './kernels/wgsl-kernel-nodes';
 
 /**
@@ -297,4 +298,94 @@ export function validateRasterRowDirection(id: string, rowDirection: string | un
   if (!['south', 'north'].includes(rowDirection ?? 'south')) {
     throw new Error(`${id} rowDirection must be south or north`);
   }
+}
+
+/** Shared construction-time raster context; the affine retains its declared row direction. */
+export type GPURasterContextOptions = {
+  grid: RasterGridAffine;
+  cellSizeMode?: GPURasterCellSizeMode;
+  /** Float64 world origin subtracted before georeference words are rounded to float32. */
+  localOrigin?: readonly [number, number];
+};
+
+/** Validated shape and per-frame georeference shared by raster contributors and packers. */
+export type GPUResolvedRasterContext = {
+  cellCount: number;
+  cellSizeMode: GPURasterCellSizeMode;
+  localOrigin: readonly [number, number];
+  georeference: Required<RasterGridGeoreference>;
+  /** `[originX, originY, a, b, d, e, determinant, 0]`, origins relative to localOrigin. */
+  parameterValues: Float32Array;
+};
+
+/**
+ * Resolves grid shape, units and local georeference once, without inspecting pixel values.
+ * Latitude-dependent ground scales require axis-aligned rows; uniform mode permits rotation and
+ * shear. This never changes row direction or pixel interpretation. Repack for each new affine;
+ * width, height, pixel interpretation and cellSizeMode remain compile-time contributor choices.
+ */
+export function resolveGPURasterContext(
+  id: string,
+  options: GPURasterContextOptions
+): GPUResolvedRasterContext {
+  const {grid} = options;
+  validateCapacity(id, 'grid.width', grid.width, 1);
+  validateCapacity(id, 'grid.height', grid.height, 1);
+  validateCapacity(id, 'grid cells', grid.width * grid.height, 1);
+  validateRequirement(
+    id,
+    grid.affine.length === 6 && grid.affine.every(Number.isFinite),
+    'grid.affine must contain six finite values'
+  );
+  validateRequirement(
+    id,
+    ['area', 'point'].includes(grid.pixelInterpretation),
+    'grid.pixelInterpretation must be area or point'
+  );
+  validateRasterCellSizeMode(id, options.cellSizeMode);
+  const cellSizeMode = options.cellSizeMode ?? 'uniform';
+  const [columnX, rowX, originX, columnY, rowY, originY] = grid.affine;
+  const determinant = columnX * rowY - rowX * columnY;
+  validateRequirement(
+    id,
+    Number.isFinite(determinant) && determinant !== 0,
+    'grid.affine must be invertible (finite nonzero determinant)'
+  );
+  validateRequirement(
+    id,
+    cellSizeMode === 'uniform' || (rowX === 0 && columnY === 0),
+    'grid.affine must be axis-aligned for geographic or web-mercator cellSizeMode'
+  );
+  const localOrigin = options.localOrigin ?? [0, 0];
+  validateRequirement(
+    id,
+    localOrigin.length === 2 && localOrigin.every(Number.isFinite),
+    'localOrigin must contain two finite coordinates'
+  );
+  const parameterValues = Float32Array.of(
+    originX - localOrigin[0],
+    originY - localOrigin[1],
+    columnX,
+    rowX,
+    columnY,
+    rowY,
+    determinant,
+    0
+  );
+  // A separately rounded float64 determinant can stay nonzero after the packed axes collapse.
+  // Check those coefficients too, while preserving the existing determinant word's precision.
+  const packedDeterminant =
+    parameterValues[2] * parameterValues[5] - parameterValues[3] * parameterValues[4];
+  validateRequirement(
+    id,
+    parameterValues.every(Number.isFinite) && parameterValues[6] !== 0 && packedDeterminant !== 0,
+    'grid.affine relative to localOrigin must be finite and invertible in float32'
+  );
+  return {
+    cellCount: grid.width * grid.height,
+    cellSizeMode,
+    localOrigin,
+    georeference: getRasterGridGeoreference(grid),
+    parameterValues
+  };
 }

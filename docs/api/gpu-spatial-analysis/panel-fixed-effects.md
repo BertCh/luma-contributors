@@ -8,7 +8,8 @@ then predictor column. The same entity weights apply to every period. There is n
 mask or missing-row compaction. Nonfinite observations are failures, never omitted.
 
 Unit effects subtract each entity's temporal mean from every predictor and response
-on GPU. This projection commutes with the period-block spatial weights, including
+on GPU. One invocation per entity computes its temporal means once, preserving period order;
+a separate row pass subtracts them from every observation. This projection commutes with the period-block spatial weights, including
 directed and non-row-standardized weights. The existing spatial 2SLS solver then
 uses transformed X and its spatial lags as instruments for transformed Wy. No
 observation buffers are read back and there is no CPU estimation fallback.

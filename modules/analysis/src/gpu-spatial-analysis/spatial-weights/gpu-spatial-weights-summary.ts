@@ -4,16 +4,22 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
 import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+  getGPUSpatialWeightsSummaryParameterValues,
+  GPU_SPATIAL_WEIGHTS_SUMMARY_PARAMETER_LENGTH
+} from './spatial-weights-parameters';
 import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -77,12 +83,15 @@ export type GPUSpatialWeightsSummaryProps = {
   output: GPUSpatialWeightsSummaryOutput;
   /**
    * Absolute tolerance for calling `w_ij` and `w_ji` equal when counting asymmetric slots.
-   * Defaults to 0 (exact).
+   * Per-frame: a one-float parameter view packed by getGPUSpatialWeightsSummaryParameterValues,
+   * or a numeric default uploaded through GPUParameterBuffer. Defaults to 0 (exact).
    */
-  symmetryTolerance?: number;
+  symmetryTolerance?: number | GraphDataView<'float32'>;
 };
 
 /**
+ * Per-frame: weights and symmetryTolerance. Compile-time: view shapes and chunk layout.
+ *
  * Descriptive statistics of a {@link GPUSpatialWeights} on the GPU, the libpysal `W.s0/s1/s2`,
  * `cardinalities`, `asymmetry()` and `islands` summary:
  *
@@ -112,6 +121,7 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSpatialWeightsSummaryProps;
+  private readonly toleranceValues?: Float32Array;
 
   constructor(props: GPUSpatialWeightsSummaryProps) {
     const id = props.id ?? 'spatial-weights-summary';
@@ -132,16 +142,28 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
         throw new Error(`${id} cardinality length must equal the weights row count`);
       }
     }
-    if (
-      props.symmetryTolerance !== undefined &&
-      !(Number.isFinite(props.symmetryTolerance) && props.symmetryTolerance >= 0)
-    ) {
-      throw new Error(`${id} symmetryTolerance must be finite and >= 0`);
+    const tolerance = props.symmetryTolerance ?? 0;
+    if (typeof tolerance === 'number') {
+      validateFiniteNumber(id, 'symmetryTolerance', tolerance, 0);
+      this.toleranceValues = getGPUSpatialWeightsSummaryParameterValues({
+        symmetryTolerance: tolerance
+      });
+    } else {
+      validateSinglePackedView(tolerance, ['float32'], `${id} symmetryTolerance`);
+      validateCapacity(
+        id,
+        'symmetryTolerance.length',
+        tolerance.length,
+        GPU_SPATIAL_WEIGHTS_SUMMARY_PARAMETER_LENGTH
+      );
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.statistics, props.output.counts, props.output.cardinality],
-      getGPUSpatialWeightsOrChunksViews(props.weights)
+      [
+        ...getGPUSpatialWeightsOrChunksViews(props.weights),
+        typeof props.symmetryTolerance === 'object' ? props.symmetryTolerance : undefined
+      ]
     );
   }
 
@@ -158,11 +180,35 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
       ...getGPUSpatialWeightsOrChunksViews(props.weights),
       statistics,
       counts,
-      props.output.cardinality
+      props.output.cardinality,
+      typeof props.symmetryTolerance === 'object' ? props.symmetryTolerance : undefined
     ]);
+    if (typeof props.symmetryTolerance === 'object') {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'symmetryTolerance binding',
+        getViewBindingRange(props.symmetryTolerance).size,
+        'use a smaller packed symmetryTolerance view'
+      );
+    }
     const rows = dispatches.reduce((total, dispatch) => total + dispatch.rowCount, 0);
     const capacity = weights.neighbors.length;
-    const tolerance = getWGSLFloatLiteral(props.symmetryTolerance ?? 0);
+    // A leading word stages the tolerance beside row mismatch counts, keeping reverse-chunk
+    // kernels within WebGPU's guaranteed eight-storage-buffer limit.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'symmetry state',
+      (rows + 1) * 4,
+      'use fewer weights rows'
+    );
+    const runtime = createSpatialStatisticsParameterNodes(
+      graph,
+      `${id}-parameters`,
+      this.toleranceValues ?? (props.symmetryTolerance as GraphDataView<'float32'>)
+    );
+    const tolerance = runtime.parameters;
     const view = <Format extends 'uint32' | 'float32'>(
       name: string,
       format: Format,
@@ -172,7 +218,12 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
     const rowSums = view('row-sums', 'float32', rows);
     const s1Partials = view('s1-partials', 'float32', rows);
     const s2Partials = view('s2-partials', 'float32', rows);
-    const asymmetric = view('asymmetric', 'uint32', rows);
+    const symmetryState = view('symmetry-state', 'uint32', rows + 1);
+    const asymmetric = graph.createDataView(symmetryState.buffer, {
+      format: 'uint32',
+      length: rows,
+      byteOffset: 4
+    });
     const isolates = view('isolates', 'uint32', rows);
     const cardinality = props.output.cardinality ?? view('cardinality', 'uint32', rows);
     const chunkSlotCounts = view('chunk-slot-counts', 'uint32', dispatches.length);
@@ -240,12 +291,12 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
             {name: 'rowSums', view: rowSums, type: 'f32', access: 'read_write'},
             {name: 's1Partials', view: s1Partials, type: 'f32', access: 'read_write'},
             {name: 'asymmetric', view: asymmetric, type: 'u32', access: 'read_write'},
-            {name: 'cardinality', view: cardinality, type: 'u32', access: 'read_write'}
+            {name: 'cardinality', view: cardinality, type: 'u32', access: 'read_write'},
+            {name: 'tolerance', view: tolerance, type: 'f32', access: 'read'}
           ],
           invocationCount: rows,
           declarations: `${constants}
 const CAPACITY: u32 = ${capacity}u;
-const TOLERANCE: f32 = ${tolerance};
 const MISSING: f32 = -1.0;
 
 // Weight w_row,column by binary search of the ascending neighbor IDs of row, or MISSING.
@@ -282,7 +333,7 @@ fn findWeight(row: u32, column: u32) -> f32 {
       unmatched++;
     } else {
       s1 += (weight + reverse) * (weight + reverse);
-      if (abs(weight - reverse) > TOLERANCE) {
+      if (abs(weight - reverse) > tolerance[toleranceOffset]) {
         unmatched++;
       }
     }
@@ -318,11 +369,12 @@ fn findWeight(row: u32, column: u32) -> f32 {
         })
       ];
     };
-    const nodes: GPUCommandNode<Parameters>[] = isChunked
+    const rowNodes: GPUCommandNode<Parameters>[] = isChunked
       ? this.getChunkedRowNodes(graph, {
           dispatches,
           rows,
           tolerance,
+          symmetryState,
           view,
           columnSums,
           rowSums,
@@ -340,6 +392,7 @@ fn findWeight(row: u32, column: u32) -> f32 {
     const blockCount = Math.ceil(rows / SUMMARY_BLOCK_ROWS);
     const floatPartials = view('float-partials', 'float32', 3 * blockCount);
     const countPartials = view('count-partials', 'uint32', 5 * blockCount);
+    const nodes: GPUCommandNode<Parameters>[] = [...runtime.nodes, ...rowNodes];
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-blocks`,
@@ -533,7 +586,8 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
     context: {
       dispatches: GPUSpatialWeightsChunkDispatch[];
       rows: number;
-      tolerance: string;
+      tolerance: GraphDataView<'float32'>;
+      symmetryState: GraphDataView<'uint32'>;
       view: <Format extends 'uint32' | 'float32'>(
         name: string,
         format: Format,
@@ -550,10 +604,22 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
     }
   ): GPUCommandNode<Parameters>[] {
     const {id} = this;
-    const {dispatches, rows, tolerance, view} = context;
+    const {dispatches, rows, tolerance, symmetryState, view} = context;
     const {columnSums, rowSums, s1Partials, s2Partials} = context;
     const {asymmetric, isolates, cardinality, chunkSlotCounts} = context;
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: GPUCommandNode<Parameters>[] = [
+      createWGSLKernelNode(graph, {
+        id: `${id}-stage-tolerance`,
+        operation: OPERATION,
+        variant: 'stage-tolerance',
+        invocationCount: 1,
+        bindings: [
+          {name: 'tolerance', view: tolerance, type: 'f32', access: 'read'},
+          {name: 'symmetryState', view: symmetryState, type: 'u32', access: 'read_write'}
+        ],
+        body: 'symmetryState[symmetryStateOffset] = bitcast<u32>(tolerance[toleranceOffset]);'
+      })
+    ];
     // Weight w_row,column by binary search of the ascending neighbor IDs of a target chunk row.
     const findWeightWGSL = `
 fn findWeight(row: u32, column: u32) -> f32 {
@@ -727,7 +793,7 @@ const CAPACITY: u32 = ${chunkCapacity}u;`,
               },
               {name: 'targetWeights', view: targetWeights.weights, type: 'f32', access: 'read'},
               {name: 's1Partials', view: s1Partials, type: 'f32', access: 'read_write'},
-              {name: 'asymmetric', view: asymmetric, type: 'u32', access: 'read_write'}
+              {name: 'symmetryState', view: symmetryState, type: 'u32', access: 'read_write'}
             ],
             invocationCount: rowDispatch.rowCount,
             declarations: `const ROWS: u32 = ${rows}u;
@@ -735,7 +801,6 @@ const ROW_START: u32 = ${rowDispatch.rowStart}u;
 const TARGET_START: u32 = ${targetDispatch.rowStart}u;
 const TARGET_END: u32 = ${targetDispatch.rowStart + targetDispatch.rowCount}u;
 const IS_LAST_TARGET: bool = ${isLastTarget};
-const TOLERANCE: f32 = ${tolerance};
 const MISSING: f32 = -1.0;
 ${findWeightWGSL}`,
             body: `let globalRow = index + ROW_START;
@@ -756,13 +821,13 @@ ${findWeightWGSL}`,
       unmatched++;
     } else {
       s1 += (weight + reverse) * (weight + reverse);
-      if (abs(weight - reverse) > TOLERANCE) {
+      if (abs(weight - reverse) > bitcast<f32>(symmetryState[symmetryStateOffset])) {
         unmatched++;
       }
     }
   }
   s1Partials[s1PartialsOffset + globalRow] = s1;
-  asymmetric[asymmetricOffset + globalRow] += unmatched;`
+  symmetryState[symmetryStateOffset + 1u + globalRow] += unmatched;`
           })
         );
       }

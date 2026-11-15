@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
+
 /**
  * Largest absolute latitude, in degrees, the rhumb helpers use. The Mercator-stretched latitude
  * diverges at the poles, so inputs are clamped here (stretched latitude about 8.0). f32 spacing at
@@ -35,10 +37,13 @@ export const GPU_RHUMB_MAX_LATITUDE = 89.9999;
  *   use the clamped `atanh` and lose precision for lines that pass latitude 89.
  * - Latitudes are clamped to `GPU_RHUMB_MAX_LATITUDE`; a destination that overshoots a pole is
  *   reflected back across it (turf's rule) and its final bearing flips north/south.
+ * - Coincident pairs have zero bearing; either sign of a zero stretched-latitude difference
+ *   uses the shared `guardedAtan2` east-west limit.
  *
  * @internal
  */
 export const RHUMB_WGSL = /* wgsl */ `
+${GUARDED_ATAN2_WGSL}
 const RHUMB_MAX_LATITUDE: f32 = ${GPU_RHUMB_MAX_LATITUDE};
 
 struct RhumbDestination {
@@ -113,10 +118,8 @@ fn rhumbBearingDegrees(origin: vec2<f32>, targetPosition: vec2<f32>) -> f32 {
   let a = rhumbClampLatitude(origin.y);
   let b = rhumbClampLatitude(targetPosition.y);
   let deltaLambda = geodesicLongitudeDelta(origin.x, targetPosition.x) * GEODESIC_DEGREES_TO_RADIANS;
-  var deltaPsi = rhumbStretchedDelta(a, b);
-  // Keep atan2's second argument a positive zero (Metal mishandles -0.0).
-  deltaPsi = select(deltaPsi, 0.0, deltaPsi == 0.0);
-  return atan2(deltaLambda, deltaPsi) * GEODESIC_RADIANS_TO_DEGREES;
+  let deltaPsi = rhumbStretchedDelta(a, b);
+  return guardedAtan2(deltaLambda, deltaPsi) * GEODESIC_RADIANS_TO_DEGREES;
 }
 
 // atanh with the odd series through x^7 below 1/8, where a native atanh that lowers to

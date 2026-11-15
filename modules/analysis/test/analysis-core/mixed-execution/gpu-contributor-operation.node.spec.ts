@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCPUVector} from '@luma.gl/graph/gpu-core';
+import type {GPUCPUVector, GPUGraphVectorFormat} from '@luma.gl/graph/gpu-core';
 import {getGPUVectorFormatInfo} from '@luma.gl/graph/gpu-data';
 import {expect, it} from 'vitest';
 import {
@@ -15,6 +15,7 @@ import {
   GPU_CONTRIBUTOR_OPERATION_LOWERING,
   GPU_CONTRIBUTOR_OPERATION_TYPE
 } from '../../../src/analysis-core/operations/gpu-contributor-operation';
+import {GPUVariogramModelFitOperation} from '../../../src/dataframe-analysis/pair-statistics/gpu-variogram-model-fit-operation';
 
 const NO_CONTRIBUTOR = () => ({getCommandNodes: () => []});
 
@@ -138,6 +139,135 @@ it('a contributor operation rejects ports that cannot be planned, naming the por
         createContributor: NO_CONTRIBUTOR
       })
   ).not.toThrow();
+});
+
+it('rejects invalid graph value names at construction with the contributor ID and prop', () => {
+  // JavaScript callers and deserialized props can bypass the string types. In particular, a
+  // declaration object is not a name, even though luma.gl accepts it elsewhere as a reference.
+  for (const value of ['', undefined, null, 0, false, {id: 'values'}, ['values']]) {
+    expect(
+      () =>
+        new GPUContributorOperation({
+          id: 'named-input',
+          inputs: {positions: value as string},
+          outputs: {},
+          createContributor: NO_CONTRIBUTOR
+        })
+    ).toThrow('named-input inputs.positions must be a non-empty graph value name');
+    expect(
+      () =>
+        new GPUContributorOperation({
+          id: 'named-output',
+          inputs: {},
+          outputs: {result: {value: value as string, format: 'float32', length: 1}},
+          createContributor: NO_CONTRIBUTOR
+        })
+    ).toThrow('named-output outputs.result.value must be a non-empty graph value name');
+  }
+});
+
+it('rejects output formats outside the portable graph vector contract at construction', () => {
+  for (const format of [
+    '',
+    undefined,
+    null,
+    32,
+    'float16',
+    'unorm8x4',
+    'float32x1',
+    'float32x5',
+    'float32\n',
+    'vertex-list<float32x2>',
+    'fixed-size-list<float32,4>',
+    {toString: () => 'float32'}
+  ]) {
+    expect(
+      () =>
+        new GPUContributorOperation({
+          id: 'portable-output',
+          inputs: {},
+          outputs: {
+            result: {value: 'result', format: format as GPUGraphVectorFormat, length: 1}
+          },
+          createContributor: NO_CONTRIBUTOR
+        })
+    ).toThrow(
+      'portable-output outputs.result.format must be float32, sint32 or uint32 with one to four components'
+    );
+  }
+});
+
+it('accepts every portable output format without changing the declared shape', () => {
+  // Enumerated independently of the validator: three scalar types, each with 1–4 components.
+  const formats = [
+    'float32',
+    'float32x2',
+    'float32x3',
+    'float32x4',
+    'sint32',
+    'sint32x2',
+    'sint32x3',
+    'sint32x4',
+    'uint32',
+    'uint32x2',
+    'uint32x3',
+    'uint32x4'
+  ] as const;
+  for (const format of formats) {
+    const operation = new GPUContributorOperation({
+      id: 'portable-output',
+      inputs: {},
+      outputs: {result: {value: 'result', format, length: 4}},
+      createContributor: NO_CONTRIBUTOR
+    });
+    expect(operation.contract.outputs).toEqual({result: {type: 'vector', format, length: 4}});
+  }
+});
+
+it('validates output length bounds at construction, including explicitly empty ports', () => {
+  for (const minimum of [0, 1]) {
+    for (const length of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 0x100000000]) {
+      expect(
+        () =>
+          new GPUContributorOperation({
+            id: 'bounded-output',
+            inputs: {},
+            outputs: {result: {value: 'result', format: 'float32', length}},
+            emptyOutputPorts: minimum === 0 ? ['result'] : [],
+            createContributor: NO_CONTRIBUTOR
+          })
+      ).toThrow(
+        `bounded-output outputs.result.length must be an integer in [${minimum}, 4294967295]`
+      );
+    }
+    for (const length of [minimum, 0xffffffff]) {
+      const operation = new GPUContributorOperation({
+        id: 'bounded-output',
+        inputs: {},
+        outputs: {result: {value: 'result', format: 'float32', length}},
+        emptyOutputPorts: minimum === 0 ? ['result'] : [],
+        createContributor: NO_CONTRIBUTOR
+      });
+      expect(operation.contract.outputs).toEqual({
+        result: {type: 'vector', format: 'float32', length}
+      });
+    }
+  }
+});
+
+it('rejects a prop-derived zero length before the contributor is lowered', () => {
+  // No views or graph are needed to reject models=[]: the operation derives three zero lengths.
+  expect(
+    () =>
+      new GPUVariogramModelFitOperation({
+        id: 'empty-fit',
+        distances: 'distances',
+        semivariances: 'semivariances',
+        pairCounts: 'pairCounts',
+        models: [],
+        output: {parameters: 'parameters', diagnostics: 'diagnostics', status: 'status'}
+      })
+  ).toThrow('empty-fit outputs.parameters.length must be an integer in [1, 4294967295]');
 });
 
 it('an operation destroys the resource-owning contributor of the previous run', () => {

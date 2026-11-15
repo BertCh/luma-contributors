@@ -5,11 +5,19 @@
 // WGSL adaptation of scikit-learn 1.7.2 _xi_cluster and predecessor correction.
 // Original BSD notice and disclaimer are reproduced in optics-xi-license.txt.
 
-import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import type {GPUOPTICSProps} from './gpu-optics';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GPUCommandNode
+} from '@luma.gl/graph/gpu-core';
+import {
+  createWGSLDispatchGate,
+  createWGSLKernelNode
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {GPU_OPTICS_XI_BATCH_SIZE, type GPUOPTICSProps} from './gpu-optics';
 
-export function createOPTICSXiNode<Parameters>(
+/** Stateful reference xi extraction with parallel initialization and cleanup. @internal */
+export function createOPTICSXiNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUOPTICSProps,
   id: string
@@ -17,30 +25,72 @@ export function createOPTICSXiNode<Parameters>(
   const rows = props.positions.length;
   const output = props.output;
   // The last row block stores inverse ordering without another storage binding.
-  const areas = createTransientView(graph, `${id}-xi-areas`, 'uint32', rows * 4);
+  const areas = createTransientView(graph, `${id}-xi-areas`, 'uint32', rows * 4 + 6);
   const intervals =
     output.clusterIntervals ?? createTransientView(graph, `${id}-xi-intervals`, 'uint32x2', rows);
   const summary =
     output.clusterSummary ?? createTransientView(graph, `${id}-xi-summary`, 'uint32', 2);
-  return createWGSLKernelNode(graph, {
-    id: `${id}-xi`,
+  // Retain [areaCount, next, maximumBetween bits, label, visited, batchStart].
+  // Reading batchStart from storage lets all batches share shader source and pipelines.
+  // Per-area scans remain reference-tier, bounded by GPU_OPTICS_GRID_MAXIMUM_ROWS.
+  const gate = createWGSLDispatchGate(graph, {
+    id: `${id}-xi-dispatch`,
     operation: 'GPUOPTICS',
-    variant: 'xi-extraction',
-    invocationCount: 1,
-    bindings: [
-      {name: 'ordering', view: output.ordering, type: 'u32', access: 'read'},
-      {name: 'reachability', view: output.reachability, type: 'f32', access: 'read'},
-      {name: 'predecessors', view: output.predecessors, type: 'u32', access: 'read'},
-      {name: 'status', view: output.status, type: 'u32', access: 'read'},
-      {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'},
-      {name: 'areas', view: areas, type: 'u32', access: 'read_write'},
-      {name: 'intervals', view: intervals, type: 'u32', access: 'read_write'},
-      {name: 'summary', view: summary, type: 'u32', access: 'read_write'}
-    ],
-    declarations: `const INVERSE_ORDER_OFFSET = ${rows * 3}u;
+    shapes: [[1]]
+  });
+  const nodes: GPUCommandNode<Parameters>[] = [
+    createWGSLKernelNode(graph, {
+      id: `${id}-xi-initialize`,
+      operation: 'GPUOPTICS',
+      variant: 'xi-initialize',
+      invocationCount: rows,
+      bindings: [
+        {name: 'ordering', view: output.ordering, type: 'u32', access: 'read'},
+        {name: 'status', view: output.status, type: 'u32', access: 'read'},
+        {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'},
+        {name: 'areas', view: areas, type: 'u32', access: 'read_write'},
+        {name: 'intervals', view: intervals, type: 'u32', access: 'read_write'},
+        {name: 'summary', view: summary, type: 'u32', access: 'read_write'},
+        gate.binding
+      ],
+      body: `labels[labelsOffset + index] = 0xffffffffu;
+  if (index < status[statusOffset]) {
+    areas[areasOffset + ${rows * 3}u + ordering[orderingOffset + index]] = index;
+  }
+  intervals[intervalsOffset + 2u * index] = 0xffffffffu;
+  intervals[intervalsOffset + 2u * index + 1u] = 0xffffffffu;
+  if (index == 0u) {
+    for (var word = 0u; word < 6u; word++) { areas[areasOffset + ${rows * 4}u + word] = 0u; }
+    areas[areasOffset + ${rows * 4 + 4}u] = status[statusOffset];
+    summary[summaryOffset] = 0u; summary[summaryOffset + 1u] = 0u;
+    ${gate.armWGSL}
+    if (status[statusOffset + 1u] == 0u || status[statusOffset] == 0u) { ${gate.disarmWGSL} }
+  }`
+    })
+  ];
+  for (let batch = 0; batch < Math.ceil(rows / GPU_OPTICS_XI_BATCH_SIZE); batch++) {
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-xi-${batch}`,
+        operation: 'GPUOPTICS',
+        variant: 'xi-extraction',
+        invocationCount: 1,
+        ...gate.getGate(0),
+        bindings: [
+          {name: 'ordering', view: output.ordering, type: 'u32', access: 'read'},
+          {name: 'reachability', view: output.reachability, type: 'f32', access: 'read'},
+          {name: 'predecessors', view: output.predecessors, type: 'u32', access: 'read'},
+          {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'},
+          {name: 'areas', view: areas, type: 'u32', access: 'read_write'},
+          {name: 'intervals', view: intervals, type: 'u32', access: 'read_write'},
+          {name: 'summary', view: summary, type: 'u32', access: 'read_write'}
+        ],
+        declarations: `const VISITED_OFFSET = ${rows * 4 + 4}u;
+const BATCH_START_OFFSET = ${rows * 4 + 5}u;
+const INVERSE_ORDER_OFFSET = ${rows * 3}u;
 const XI_COMPLEMENT = ${Math.fround(1 - (props.xi ?? 0.05))}f;
 fn reach(rank: u32) -> f32 {
-  if (rank >= status[statusOffset]) { return bitcast<f32>(0x7f800000u | (rank & 0u)); }
+  if (rank >= areas[areasOffset + VISITED_OFFSET]) { return bitcast<f32>(0x7f800000u | (rank & 0u)); }
   return reachability[reachabilityOffset + ordering[orderingOffset + rank]];
 }
 fn direction(rank: u32) -> vec4<bool> {
@@ -51,7 +101,7 @@ fn direction(rank: u32) -> vec4<bool> {
 }
 fn extend(start: u32, downward: bool) -> u32 {
   var end = start; var nonSteep = 0u;
-  for (var rank = start; rank < status[statusOffset]; rank++) {
+  for (var rank = start; rank < areas[areasOffset + VISITED_OFFSET]; rank++) {
     let flags = direction(rank);
     if (select(flags.x, flags.y, downward)) { nonSteep = 0u; end = rank; }
     else if (!select(flags.w, flags.z, downward)) {
@@ -60,18 +110,13 @@ fn extend(start: u32, downward: bool) -> u32 {
   }
   return end;
 }`,
-    body: `for (var row = 0u; row < ${rows}u; row++) {
-  labels[labelsOffset + row] = 0xffffffffu;
-  if (row < status[statusOffset]) {
-    areas[areasOffset + INVERSE_ORDER_OFFSET + ordering[orderingOffset + row]] = row;
-  }
-  intervals[intervalsOffset + 2u * row] = 0xffffffffu;
-  intervals[intervalsOffset + 2u * row + 1u] = 0xffffffffu;
-}
-summary[summaryOffset] = 0u; summary[summaryOffset + 1u] = 0u;
-if (status[statusOffset + 1u] == 0u) { return; }
-var areaCount = 0u; var next = 0u; var maximumBetween = 0.0; var clusterCount = 0u; var label = 0u;
-for (var steep = 0u; steep < status[statusOffset]; steep++) {
+        body: `let batchStart = areas[areasOffset + BATCH_START_OFFSET];
+var areaCount = areas[areasOffset + ${rows * 4}u];
+var next = areas[areasOffset + ${rows * 4 + 1}u];
+var maximumBetween = bitcast<f32>(areas[areasOffset + ${rows * 4 + 2}u]);
+var clusterCount = summary[summaryOffset];
+var label = areas[areasOffset + ${rows * 4 + 3}u];
+for (var steep = batchStart; steep < min(batchStart + ${GPU_OPTICS_XI_BATCH_SIZE}u, areas[areasOffset + VISITED_OFFSET]); steep++) {
   if (steep < next) { continue; }
   let flags = direction(steep);
   if (!flags.x && !flags.y) { continue; }
@@ -132,8 +177,40 @@ for (var steep = 0u; steep < status[statusOffset]; steep++) {
   }
 }
 summary[summaryOffset] = clusterCount;
-if (summary[summaryOffset + 1u] != 0u) {
-  for (var row = 0u; row < ${rows}u; row++) { labels[labelsOffset + row] = 0xffffffffu; }
-}`
-  });
+areas[areasOffset + ${rows * 4}u] = areaCount;
+areas[areasOffset + ${rows * 4 + 1}u] = next;
+areas[areasOffset + ${rows * 4 + 2}u] = bitcast<u32>(maximumBetween);
+areas[areasOffset + ${rows * 4 + 3}u] = label;
+areas[areasOffset + BATCH_START_OFFSET] = batchStart + ${GPU_OPTICS_XI_BATCH_SIZE}u;
+`
+      }),
+      // The batch cannot storage-write its own indirect arguments. Update them in an
+      // ungated scalar dispatch, after the batch's persistent state has been published.
+      createWGSLKernelNode(graph, {
+        id: `${id}-xi-gate-${batch}`,
+        operation: 'GPUOPTICS',
+        variant: 'xi-gate',
+        invocationCount: 1,
+        bindings: [{name: 'areas', view: areas, type: 'u32', access: 'read'}, gate.binding],
+        body: `if (areas[areasOffset + ${rows * 4 + 1}u] >= areas[areasOffset + ${rows * 4 + 4}u] ||
+      areas[areasOffset + ${rows * 4 + 5}u] >= areas[areasOffset + ${rows * 4 + 4}u]) {
+    ${gate.disarmWGSL}
+  }`
+      })
+    );
+  }
+  nodes.push(
+    createWGSLKernelNode(graph, {
+      id: `${id}-xi-finalize`,
+      operation: 'GPUOPTICS',
+      variant: 'xi-finalize',
+      invocationCount: rows,
+      bindings: [
+        {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'},
+        {name: 'summary', view: summary, type: 'u32', access: 'read'}
+      ],
+      body: 'if (summary[summaryOffset + 1u] != 0u) { labels[labelsOffset + index] = 0xffffffffu; }'
+    })
+  );
+  return nodes;
 }

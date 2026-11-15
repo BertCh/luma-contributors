@@ -59,7 +59,18 @@ it('conditional LOSH uses shared permutation kernels with maximal bindings and n
   const descriptiveNodes = new GPULOSHResidualPermutationTest({...props, id: 'parsed'})
     .getCommandNodes(graph)
     .filter(node => node.id.startsWith('parsed-descriptive'));
-  expect(getParsedKernelSources(descriptiveNodes).size).toBe(4);
+  const parsed = getParsedKernelSources(descriptiveNodes);
+  expect([...parsed.keys()]).toEqual(
+    expect.arrayContaining([
+      'parsed-descriptive-residuals',
+      'parsed-descriptive-finite-residuals',
+      'parsed-descriptive-scale-residuals',
+      'parsed-descriptive-mean',
+      'parsed-descriptive-finish',
+      'parsed-descriptive-normalized-residuals'
+    ])
+  );
+  expect(parsed.size).toBeGreaterThan(6); // Also parses the maximum, count and sum reductions.
 });
 
 it('conditional LOSH rejects missing tails and cross-stage aliases', () => {

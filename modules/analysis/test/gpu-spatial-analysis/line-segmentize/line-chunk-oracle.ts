@@ -45,6 +45,7 @@ export function chunkLines(
     }
   }
   const pieces: Piece[] = [];
+  let pieceTotal = 0;
   for (let line = 0; line < lineCount; line++) {
     const start = lines.lineOffsets[line];
     const end = lines.lineOffsets[line + 1];
@@ -53,15 +54,15 @@ export function chunkLines(
     }
     const length = measures[end - 1];
     if (!(length > 0)) {
+      pieceTotal = Math.min(0xffffffff, pieceTotal + 1);
       pieces.push({line, start: 0, end: 0, copy: true});
       continue;
     }
     if (options.mode === 'chunk') {
       const chunkLength = options.chunkLength ?? 0;
-      const count =
-        chunkLength > 0
-          ? Math.min(Math.max(Math.ceil(length / chunkLength), 1), options.lineCapacity + 1)
-          : 1;
+      const required = chunkLength > 0 ? Math.max(Math.ceil(length / chunkLength), 1) : 1;
+      pieceTotal = Math.min(0xffffffff, pieceTotal + required);
+      const count = Math.min(required, options.lineCapacity + 1);
       for (let piece = 0; piece < count; piece++) {
         pieces.push({
           line,
@@ -71,6 +72,7 @@ export function chunkLines(
         });
       }
     } else {
+      pieceTotal = Math.min(0xffffffff, pieceTotal + 1);
       const clamp = (value: number) => Math.min(Math.max(value, 0), length);
       pieces.push({
         line,
@@ -96,7 +98,7 @@ export function chunkLines(
     sourceRows: [] as number[],
     measures: [] as number[],
     sourceLineIndices: [] as number[],
-    pieceTotal: pieces.length
+    pieceTotal
   };
   for (const piece of pieces.slice(0, options.lineCapacity)) {
     const start = lines.lineOffsets[piece.line];

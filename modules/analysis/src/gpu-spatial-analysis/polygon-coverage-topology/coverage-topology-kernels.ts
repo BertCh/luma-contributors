@@ -20,9 +20,9 @@ export const COVERAGE_SNAP_MAXIMUM_STEPS = 2 ** 24;
 /**
  * WGSL for the vertex snap keys of the coverage operators (dissolve, simplification):
  *
- * - `getSnapOrigin() -> vec2f`: the first row of the kernel's `positions` binding, or zero when it
- *   is not finite. Keys are taken relative to it, so they depend on the extent of the data and not
- *   on how far the data is from zero (projected coordinates of millions with a millimetre
+ * - `getSnapOrigin() -> vec2f`: the first ring-owned vertex (`ringOffsets[0]`), or zero when there
+ *   are no vertices or that vertex is not finite. Keys are taken relative to it, so they depend
+ *   on the extent of the data and not on how far the data is from zero (projected coordinates of millions with a millimetre
  *   tolerance keep distinct keys). The snap grid is therefore anchored at the first vertex.
  * - `quantise(value, origin) -> u32`: `floor((value - origin) / snapTolerance + 0.5)` (round half
  *   up) as an order-preserving key. With a tolerance of 0 the key is the float's bits (`-0` as
@@ -32,18 +32,21 @@ export const COVERAGE_SNAP_MAXIMUM_STEPS = 2 ** 24;
  *   {@link COVERAGE_SNAP_MAXIMUM_STEPS}, where float32 can no longer tell neighbouring cells apart
  *   (the coverage operators count such vertices in `status.uncertainCount`).
  *
- * The kernel must bind `positions` (`array<f32>`, x and y interleaved) and declare
- * `isFiniteFloat`.
+ * The kernel must bind `positions` (`array<f32>`, x and y interleaved) and `ringOffsets`
+ * (`array<u32>`, including the terminal offset), and declare `isFiniteFloat`.
  *
  * @internal
  */
-export function getCoverageSnapKeyWGSL(snapTolerance: number): string {
+export function getCoverageSnapKeyWGSL(snapTolerance: number, ringCount: number): string {
   return /* wgsl */ `
 const SNAP_TOLERANCE: f32 = ${getWGSLFloatLiteral(snapTolerance)};
 const SNAP_MAXIMUM_STEPS: f32 = ${getWGSLFloatLiteral(COVERAGE_SNAP_MAXIMUM_STEPS)};
 
 fn getSnapOrigin() -> vec2f {
-  let first = vec2f(positions[positionsOffset], positions[positionsOffset + 1u]);
+  let firstVertex = ringOffsets[ringOffsetsOffset];
+  if (firstVertex >= ringOffsets[ringOffsetsOffset + ${ringCount}u] ||
+      firstVertex >= (arrayLength(&positions) - positionsOffset) / 2u) { return vec2f(0.0); }
+  let first = vec2f(positions[positionsOffset + 2u * firstVertex], positions[positionsOffset + 2u * firstVertex + 1u]);
   return select(vec2f(0.0), first, isFiniteFloat(first.x) && isFiniteFloat(first.y));
 }
 
@@ -115,7 +118,7 @@ export function createCoverageSnapRangeNodes<Parameters>(
       ],
       invocationCount: props.positions.length,
       declarations: `${IS_FINITE_FLOAT_WGSL}
-${getCoverageSnapKeyWGSL(props.snapTolerance)}`,
+${getCoverageSnapKeyWGSL(props.snapTolerance, props.ringOffsets.length - 1)}`,
       // Padding rows (outside every ring) are no vertex and hold anything: they are not counted.
       body: `if (index < ringOffsets[ringOffsetsOffset] || index >= ringOffsets[ringOffsetsOffset + ${props.ringOffsets.length - 1}u]) { return; }
   let x = positions[positionsOffset + index * 2u];

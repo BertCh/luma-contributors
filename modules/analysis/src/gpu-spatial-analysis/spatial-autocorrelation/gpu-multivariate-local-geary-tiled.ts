@@ -11,7 +11,6 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
-  getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_BITS_WGSL, GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -39,8 +38,8 @@ export type TiledMultivariateLocalGearyProps = {
   rows: number;
   columns: number;
   permutations: number;
-  seed: readonly [number, number];
-  significance: number;
+  parameters: GraphDataView<'uint32'>;
+  classifyDirections: boolean;
   correction: 'none' | 'bonferroni';
   tail: 'equal-tail' | 'esda-min-tail';
   rowTileSize: number;
@@ -81,7 +80,9 @@ export function getTiledMultivariateLocalGearyNodes<Parameters>(
   const valid = createTransientView(graph, `${id}-valid`, 'uint32', rows);
   const rowIdentifiers = createTransientView(graph, `${id}-row-ids`, 'uint32', rows);
   const validRows = createTransientView(graph, `${id}-valid-rows`, 'uint32', rows);
-  const validCount = createTransientView(graph, `${id}-valid-count`, 'uint32', 1);
+  // One count plus the three parameter words; simulation keeps its existing eight bindings.
+  const inferenceState = createTransientView(graph, `${id}-inference-state`, 'uint32', 4);
+  const validCount = graph.createDataView(inferenceState.buffer, {format: 'uint32', length: 1});
   const standardized = createTransientView(graph, `${id}-standardized`, 'float32', rows * columns);
   const partials = createTransientView(
     graph,
@@ -125,6 +126,17 @@ export function getTiledMultivariateLocalGearyNodes<Parameters>(
   const localRow = (dispatch: {isWhole: boolean}) =>
     dispatch.isWhole ? 'row' : '(row - WEIGHTS_ROW_START)';
   const nodes: GPUCommandNode<Parameters>[] = [
+    node(
+      'parameters',
+      1,
+      [
+        binding('parameters', props.parameters, 'read', 'u32'),
+        binding('inferenceState', inferenceState, 'read_write', 'u32')
+      ],
+      `inferenceState[inferenceStateOffset + 1u] = parameters[parametersOffset];
+       inferenceState[inferenceStateOffset + 2u] = parameters[parametersOffset + 1u];
+       inferenceState[inferenceStateOffset + 3u] = parameters[parametersOffset + 2u];`
+    ),
     node(
       'complete',
       rows,
@@ -224,7 +236,7 @@ fn getVectorDistance(row: u32, candidate: u32) -> f32 {
           Math.min(props.rowTileSize, dispatch.rowCount - tileOffset),
           [
             binding('standardized', standardized),
-            binding('validCount', validCount, 'read', 'u32'),
+            binding('validCount', inferenceState, 'read', 'u32'),
             binding('offsets', dispatch.weights.offsets, 'read', 'u32'),
             binding('neighbors', dispatch.weights.neighbors, 'read', 'u32'),
             binding('weights', dispatch.weights.weights),
@@ -277,7 +289,7 @@ fn setVirtualCandidate(position: u32, value: u32) {
             [
               binding('standardized', standardized),
               binding('validRows', validRows, 'read', 'u32'),
-              binding('validCount', validCount, 'read', 'u32'),
+              binding('validCount', inferenceState, 'read', 'u32'),
               binding('offsets', dispatch.weights.offsets, 'read', 'u32'),
               binding('neighbors', dispatch.weights.neighbors, 'read', 'u32'),
               binding('weights', dispatch.weights.weights),
@@ -295,7 +307,7 @@ if (isRowValid(row) && validCount[validCountOffset] > 1u) {
  var invalid = accumulators[accumulatorsOffset + 2u * ROWS + row]; var average = accumulators[accumulatorsOffset + 3u * ROWS + row];
  for (var tileStep = 0u; tileStep < REPLICATE_COUNT; tileStep++) {
   let replicate = REPLICATE_BASE + tileStep + 1u;
-  var stream = createPhiloxStream(vec2<u32>(${props.seed[0]}u, ${props.seed[1]}u), row, replicate, ${PHILOX_PURPOSES.localPermutationTest.id}u);
+  var stream = createPhiloxStream(vec2<u32>(validCount[validCountOffset + 1u], validCount[validCountOffset + 2u]), row, replicate, ${PHILOX_PURPOSES.localPermutationTest.id}u);
   pairCount = 0u;
   var chosen = 0u; var total = 0.0; var weightSum = 0.0; var overflowed = false;
   for (var slot = offsets[offsetsOffset + ${localRow(dispatch)}]; slot < offsets[offsetsOffset + ${localRow(dispatch)} + 1u]; slot++) {
@@ -338,7 +350,7 @@ if (isRowValid(row) && validCount[validCountOffset] > 1u) {
       [
         binding('observed', props.output.statistic),
         binding('accumulators', accumulators),
-        binding('validCount', validCount, 'read', 'u32'),
+        binding('validCount', inferenceState, 'read', 'u32'),
         binding('pValues', props.output.pValues, 'read_write'),
         binding('classes', props.output.classes, 'read_write', 'u32')
       ],
@@ -350,7 +362,7 @@ var probability = getNaN(); var classification = 0xffffffffu;
 if (finite) { probability = ${props.tail === 'esda-min-tail' ? `f32(min(upper, ${permutations}u - upper) + 1u) / ${permutations + 1}.0` : `min(1.0, 2.0 * f32(min(lower, upper) + 1u) / ${permutations + 1}.0)`};
 ${props.correction === 'bonferroni' ? `probability = min(1.0, probability * f32(validCount[validCountOffset]));` : 'probability = min(1.0, probability);'}
 classification = 0u;
-if (probability <= ${getWGSLFloatLiteral(props.significance)}) { classification = select(2u, 1u, observedValue < average); }
+if (probability <= ${props.classifyDirections ? '0.999999' : 'bitcast<f32>(validCount[validCountOffset + 3u])'}) { classification = select(2u, 1u, observedValue < average); }
 }
 pValues[pValuesOffset + index] = probability; classes[classesOffset + index] = classification;`
     )

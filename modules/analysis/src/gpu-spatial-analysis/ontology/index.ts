@@ -56,3 +56,7 @@ export type {
   GPUSpatialAnalysisAudit,
   GPUSpatialAnalysisStage
 } from './spatial-analysis-ontology';
+
+export {REUSED_ANALYSIS_OPERATORS} from './reused-analysis-catalog';
+
+export * from './analysis-experience/index';

@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {GPUQuantileLISA} from '../../../src/gpu-spatial-analysis/recipes/quantile-lisa-recipe';
+import {GPUQuantileLISA} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/gpu-quantile-lisa';
 import {getGPUPermutationParameterValues} from '../../../src/gpu-spatial-analysis/permutation-inference/index';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -27,6 +27,7 @@ import {
   QUANTILE_LISA_REFERENCE_CASES
 } from './quantile-lisa-reference';
 
+import MULTIVARIATE_REFERENCE from '../../oracles/fixtures/multivariate-quantile-lisa-numpy.json';
 import GEODA_REFERENCE from '../../oracles/fixtures/quantile-lisa-geoda.json';
 
 const SEED = 314159;
@@ -43,7 +44,12 @@ const ring = createWeights(
   )
 );
 
-function createHarness(device: Device, weights: CPUSpatialWeights = ring, maximumNeighbors = 2) {
+function createHarness(
+  device: Device,
+  weights: CPUSpatialWeights = ring,
+  maximumNeighbors = 2,
+  variableCount = 1
+) {
   const graph = new GPUCommandGraph(device);
   const buffers: Buffer[] = [];
   const input = <Format extends 'uint32' | 'float32'>(
@@ -65,6 +71,10 @@ function createHarness(device: Device, weights: CPUSpatialWeights = ring, maximu
     return {buffer, view: importGraphBuffer(graph, name, buffer, format, length)};
   };
   const values = input('values', 'float32', new Float32Array(8));
+  const additionalVariables = Array.from({length: variableCount - 1}, (_, variableIndex) => ({
+    values: input(`values-${variableIndex}`, 'float32', new Float32Array(8)),
+    quantileParameters: input(`quantiles-${variableIndex}`, 'uint32', new Uint32Array([2, 2]))
+  }));
   const mask = input('mask', 'uint32', new Uint32Array(8).fill(1));
   const quantileParameters = input('quantile-parameters', 'uint32', new Uint32Array([4, 1]));
   const parameters = input(
@@ -78,19 +88,25 @@ function createHarness(device: Device, weights: CPUSpatialWeights = ring, maximu
   );
   const outputs = {
     membership: output('membership', 'uint32', 8),
-    boundaries: output('boundaries', 'float32', 2),
-    validCount: output('valid-count', 'uint32', 1),
+    boundaries: output('boundaries', 'float32', 2 * variableCount),
+    validCount: output('valid-count', 'uint32', variableCount),
     classes: output('classes', 'uint32', 8),
     invalidQuantile: output('invalid-quantile', 'uint32', 1),
     exceedances: output('exceedances', 'uint32', 8),
     pseudoPValues: output('pseudo-p-values', 'float32', 8),
     observed: output('observed', 'float32', 8),
     significant: output('significant', 'uint32', 8),
-    overflow: output('overflow', 'uint32', 1)
+    overflow: output('overflow', 'uint32', 1),
+    invalidCount: output('invalid-count', 'uint32', 1),
+    islandCount: output('island-count', 'uint32', 1)
   };
   graph.add(
     new GPUQuantileLISA({
       values: values.view,
+      additionalVariables: additionalVariables.map(variable => ({
+        values: variable.values.view,
+        quantileParameters: variable.quantileParameters.view
+      })),
       mask: mask.view,
       quantileParameters: quantileParameters.view,
       parameters: parameters.view,
@@ -111,7 +127,8 @@ function createHarness(device: Device, weights: CPUSpatialWeights = ring, maximu
         pseudoPValues: outputs.pseudoPValues.view,
         observed: outputs.observed.view,
         significant: outputs.significant.view,
-        status: {overflow: outputs.overflow.view}
+        islandCount: outputs.islandCount.view,
+        status: {overflow: outputs.overflow.view, invalidCount: outputs.invalidCount.view}
       }
     })
   );
@@ -122,7 +139,8 @@ function createHarness(device: Device, weights: CPUSpatialWeights = ring, maximu
       quantileCount: number,
       selectedQuantile: number,
       rowMask = new Uint32Array(8).fill(1),
-      permutationCount = PERMUTATIONS
+      permutationCount = PERMUTATIONS,
+      additional: {values: Float32Array; settings: number[]}[] = []
     ) {
       const permutationSettings = getGPUPermutationParameterValues({
         seed: SEED,
@@ -132,6 +150,12 @@ function createHarness(device: Device, weights: CPUSpatialWeights = ring, maximu
       permutationSettings[2] = permutationCount;
       parameters.buffer.write(permutationSettings);
       values.buffer.write(source);
+      for (const [variableIndex, variable] of additional.entries()) {
+        additionalVariables[variableIndex].values.buffer.write(variable.values);
+        additionalVariables[variableIndex].quantileParameters.buffer.write(
+          Uint32Array.from(variable.settings)
+        );
+      }
       mask.buffer.write(rowMask);
       quantileParameters.buffer.write(new Uint32Array([quantileCount, selectedQuantile]));
       submitGraph(device, compiled, undefined);
@@ -145,30 +169,37 @@ function createHarness(device: Device, weights: CPUSpatialWeights = ring, maximu
         pseudoPValues,
         observed,
         significant,
-        overflow
+        overflow,
+        invalidCount,
+        islandCount
       ] = await Promise.all([
         readUint32(outputs.membership.buffer, 8),
-        readFloat32(outputs.boundaries.buffer, 2),
-        readUint32(outputs.validCount.buffer, 1),
+        readFloat32(outputs.boundaries.buffer, 2 * variableCount),
+        readUint32(outputs.validCount.buffer, variableCount),
         readUint32(outputs.classes.buffer, 8),
         readUint32(outputs.invalidQuantile.buffer, 1),
         readUint32(outputs.exceedances.buffer, 8),
         readFloat32(outputs.pseudoPValues.buffer, 8),
         readFloat32(outputs.observed.buffer, 8),
         readUint32(outputs.significant.buffer, 8),
-        readUint32(outputs.overflow.buffer, 1)
+        readUint32(outputs.overflow.buffer, 1),
+        readUint32(outputs.invalidCount.buffer, 1),
+        readUint32(outputs.islandCount.buffer, 1)
       ]);
       return {
         membership,
         boundaries,
         validCount: validCount[0],
+        validCounts: validCount,
         classes,
         invalidQuantile: invalidQuantile[0],
         exceedances,
         pseudoPValues,
         observed,
         significant,
-        overflow: overflow[0]
+        overflow: overflow[0],
+        invalidCount: invalidCount[0],
+        islandCount: islandCount[0]
       };
     },
     destroy() {
@@ -357,6 +388,131 @@ it('quantile LISA omits missing rows, exposes islands, invalid settings and neig
     expect(actual.overflow).toBe(1);
     expect(actual.pseudoPValues.every(Number.isNaN)).toBe(true);
     expect(actual.classes).toEqual(new Array(8).fill(0));
+  } finally {
+    limited.destroy();
+  }
+});
+
+it('multivariate quantile LISA matches independent NumPy intersections and conditional inference', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const fixture of MULTIVARIATE_REFERENCE.cases) {
+    // Extra slots exercise self edges, masked padding, out-of-range IDs and nonpositive weights.
+    const weights = createWeights(
+      fixture.neighbors.map((neighbors, row) => [
+        ...neighbors.map(neighbor => [neighbor, 3] as [number, number]),
+        [row, 1] as [number, number],
+        [0xffffffff, 1] as [number, number],
+        [0, 0] as [number, number],
+        [1, -1] as [number, number],
+        [2, NaN] as [number, number]
+      ])
+    );
+    const harness = createHarness(device, weights, 2, fixture.columns.length);
+    const columns = fixture.columns.map(column =>
+      Float32Array.from(column, value => (value === null ? NaN : value))
+    );
+    const additional = columns
+      .slice(1)
+      .map((values, variableIndex) => ({values, settings: fixture.settings[variableIndex + 1]}));
+    const run = (
+      settings = fixture.settings[0],
+      variables = additional,
+      permutationCount = PERMUTATIONS
+    ) =>
+      harness.run(
+        columns[0],
+        settings[0],
+        settings[1],
+        Uint32Array.from(fixture.mask),
+        permutationCount,
+        variables
+      );
+    try {
+      const actual = await run();
+      expect(actual.membership, fixture.name).toEqual(fixture.membership);
+      expect(actual.validCounts, fixture.name).toEqual(fixture.validCounts);
+      expectNumbers(
+        actual.boundaries,
+        fixture.boundaries.map(boundary =>
+          typeof boundary === 'number' ? boundary : Number(boundary)
+        )
+      );
+      expectNumbers(
+        actual.observed,
+        fixture.observed.map(value => (value === null ? NaN : value))
+      );
+      expect(actual.islandCount, fixture.name).toBe(fixture.islandCount);
+      expect(actual.overflow).toBe(0);
+      expect(actual.invalidCount).toBe(0);
+      expect(actual.invalidQuantile).toBe(0);
+      const expected = computeGeodaTailOracle({
+        weights,
+        values: Float32Array.from(fixture.membership),
+        mask: Uint32Array.from(fixture.validMask),
+        statistic: 'localJoinCount',
+        alternative: 'greater',
+        islands: 'exclude',
+        seed: SEED,
+        permutationCount: PERMUTATIONS,
+        significanceLevel: LEVEL,
+        maximumNeighbors: 2
+      });
+      expect(actual.exceedances, fixture.name).toEqual(expected.exceedances);
+      expectNumbers(actual.pseudoPValues, expected.pseudoPValues);
+      expect(actual.significant).toEqual(expected.significant);
+      expect(actual.classes).toEqual(
+        fixture.baseClasses.map(
+          (classification, row) => classification || expected.significant[row]
+        )
+      );
+      // Independently enumerated conditional distributions also constrain the sampled result.
+      for (const [row, probability] of fixture.upperTailProbabilities.entries()) {
+        if (probability !== null) {
+          const expectedTail = Math.min(probability, 1 - probability);
+          expect(Math.abs(actual.pseudoPValues[row] - expectedTail)).toBeLessThan(0.15);
+        }
+      }
+      expect(await run()).toEqual(actual);
+      // Resident changes must replace previous intersections and clear aggregated invalid settings.
+      for (const variableIndex of [0, fixture.columns.length - 1]) {
+        const invalidVariables = additional.map(variable => ({...variable}));
+        if (variableIndex > 0)
+          invalidVariables[variableIndex - 1] = {
+            ...invalidVariables[variableIndex - 1],
+            settings: [2, 0]
+          };
+        const invalid = await run(
+          variableIndex === 0 ? [2, 0] : fixture.settings[0],
+          invalidVariables
+        );
+        expect(invalid.invalidQuantile).toBe(1);
+        expect(invalid.membership).toEqual(new Array(8).fill(0));
+        expect(invalid.classes).toEqual(new Array(8).fill(2));
+        expect(invalid.exceedances).toEqual(new Array(8).fill(0xffffffff));
+        expect(invalid.pseudoPValues.every(Number.isNaN)).toBe(true);
+        expect(await run()).toEqual(actual);
+      }
+      const invalidPermutation = await run(fixture.settings[0], additional, 0);
+      expect(invalidPermutation.overflow).toBe(1);
+      expect(invalidPermutation.exceedances).toEqual(new Array(8).fill(0xffffffff));
+    } finally {
+      harness.destroy();
+    }
+  }
+  const limited = createHarness(device, ring, 1, 2);
+  try {
+    const actual = await limited.run(
+      new Float32Array(8).fill(5),
+      4,
+      4,
+      new Uint32Array(8).fill(1),
+      PERMUTATIONS,
+      [{values: new Float32Array(8).fill(7), settings: [2, 2]}]
+    );
+    expect(actual.overflow).toBe(1);
+    expect(actual.exceedances).toEqual(new Array(8).fill(0xffffffff));
+    expect(actual.pseudoPValues.every(Number.isNaN)).toBe(true);
   } finally {
     limited.destroy();
   }

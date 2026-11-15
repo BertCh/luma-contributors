@@ -27,7 +27,7 @@ export type NetworkCentralityOperationProps = Pick<
     closeness?: string;
     harmonicCloseness?: string;
     reachedCounts?: string;
-    status?: {converged?: string; zeroWeightCycle?: string};
+    status?: {converged?: string; zeroWeightCycle?: string; iterationLimitReached?: string};
   };
 };
 
@@ -116,6 +116,10 @@ export class GPUNetworkCentralityOperation extends GPUContributorOperation {
               converged:
                 props.output.status?.converged !== undefined
                   ? getView<'uint32'>('converged')
+                  : undefined,
+              iterationLimitReached:
+                props.output.status?.iterationLimitReached !== undefined
+                  ? getView<'uint32'>('iterationLimitReached')
                   : undefined,
               zeroWeightCycle:
                 props.output.status?.zeroWeightCycle !== undefined

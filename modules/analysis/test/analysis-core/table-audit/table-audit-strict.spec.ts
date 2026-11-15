@@ -64,7 +64,7 @@ it('GPUNetworkRationalAccess keeps its minima and maxima tables from 4 to 64 ori
         assignments: harness.output('float32', 2 * originCount),
         scores: harness.output('float32', originCount),
         unservedDemand: harness.output('float32', originCount),
-        status: harness.output('uint32', 4)
+        summary: harness.output('uint32', 4)
       };
       const costs = new Float32Array(2 * originCount);
       for (let origin = 0; origin < originCount; origin++) {
@@ -85,11 +85,11 @@ it('GPUNetworkRationalAccess keeps its minima and maxima tables from 4 to 64 ori
         assignments.every(value => value === 1) &&
         result(output.unservedDemand).every(value => value === 0) &&
         result(output.scores).every(value => Math.abs(value - 1) < 2e-3) &&
-        result(output.status)[0] === 1 &&
-        result(output.status)[1] === 1;
+        result(output.summary)[0] === 1 &&
+        result(output.summary)[1] === 1;
       if (!isRight) {
         wrongCases.push(
-          `${originCount} origins, nearer ${nearer}: assignments ${assignments.slice(0, 4)}, status ${result(output.status)}`
+          `${originCount} origins, nearer ${nearer}: assignments ${assignments.slice(0, 4)}, status ${result(output.summary)}`
         );
       }
     }

@@ -42,6 +42,7 @@ export type CPUNetworkCentralityResult = {
   reachedCounts: Uint32Array;
   converged: Uint32Array;
   zeroWeightCycle: Uint32Array;
+  iterationLimitReached: Uint32Array;
 };
 
 /**
@@ -57,7 +58,7 @@ export type CPUNetworkCentralityResult = {
  *   Compare well-conditioned centralities with relative tolerance 2e-5.
  * - GPU round, command-node and lane-storage limits are dropped. maximumIterations,
  *   localIterations and laneCount do not limit the CPU search; converged is zero only for a
- *   reached zero-weight tight cycle when betweenness is requested.
+ *   reached zero-weight tight cycle when betweenness is requested; iterationLimitReached is always 0.
  * - Path counts use scaled float64 mantissas and exponents to avoid overflow; sums are independent
  *   of laneCount. Zero-cycle partial node and edge dependencies retain the GPU frontier convention.
  * - Float32 distance/sum overflow is avoided internally. Subnormals are retained; undefined GPU
@@ -218,7 +219,8 @@ export function computeNetworkCentralityOnCPU(
     harmonicCloseness,
     reachedCounts,
     converged: Uint32Array.of(Number(!anyCycle)),
-    zeroWeightCycle: Uint32Array.of(Number(anyCycle))
+    zeroWeightCycle: Uint32Array.of(Number(anyCycle)),
+    iterationLimitReached: Uint32Array.of(0)
   };
 }
 

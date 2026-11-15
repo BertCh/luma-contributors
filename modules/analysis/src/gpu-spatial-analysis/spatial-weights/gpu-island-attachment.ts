@@ -51,9 +51,21 @@ export type GPUIslandAttachmentNearestSearch = 'auto' | 'scan' | 'grid';
 /**
  * Nearest candidates (the island itself included) the grid returns per island. The attachment is
  * decided among them with the scan's own comparison; an island whose list cannot prove the answer
- * (see {@link GPUIslandAttachment}) rescans every representative.
+ * (see {@link GPUIslandAttachment}) uses a bounded cooperative reduction over representatives.
  */
 const ISLAND_ATTACHMENT_CANDIDATE_COUNT = 16;
+
+/** WebGPU's portable workgroup size; one workgroup resolves each uncertain island. */
+const ISLAND_ATTACHMENT_WORKGROUP_SIZE = 256;
+
+/** Caps each fallback lane's serial work, independently of the actual representative count. */
+const ISLAND_ATTACHMENT_MAXIMUM_REPRESENTATIVES_PER_LANE = 256;
+
+/** Existing CSR row limit, also within the cooperative fallback's 256-by-256 coverage. */
+const ISLAND_ATTACHMENT_MAXIMUM_ROW_COUNT = Math.min(
+  65535,
+  ISLAND_ATTACHMENT_WORKGROUP_SIZE * ISLAND_ATTACHMENT_MAXIMUM_REPRESENTATIVES_PER_LANE
+);
 
 /**
  * Relative margin by which the farthest listed candidate must exceed the chosen one before the
@@ -81,8 +93,8 @@ export type GPUIslandAttachmentProps = {
   output: GPUSpatialWeightsOutput & {
     /**
      * `uncertainCount` is optional: the exact number of islands whose nearest representative the
-     * grid's candidate list could not prove, so that island scanned every representative in one
-     * invocation (see {@link GPUIslandAttachment}). Always 0 for `nearestSearch: 'scan'`.
+     * grid's candidate list could not prove, so that island used a bounded cooperative reduction
+     * (see {@link GPUIslandAttachment}). Always 0 for `nearestSearch: 'scan'`.
      */
     status: GPUSpatialWeightsOutput['status'] & GPUUncertaintyStatusPort;
     /** Per row: selected nearest row, or 0xffffffff when no attachment was needed/possible. */
@@ -108,15 +120,17 @@ export type GPUIslandAttachmentProps = {
  * is farther than the chosen one by more than a relative 1e-5 (the two rankings can differ only by
  * float32 rounding). Otherwise, for example when 16 or more representatives are tied or
  * coincident at the nearest distance, or when coordinates are so large that the bounds or squared
- * distances overflow, that island rescans every representative, so the answer always equals the
- * scan's. That rescan is a loop over every row inside one invocation, so its cost is visible, not
- * silent: the rule is that the result stays exact and `output.status.uncertainCount`, when given,
- * counts the islands that used it (0 with `'scan'`; with `'grid'` or `'auto'` above the cut-over a
- * nonzero count means those islands each paid one pass over all rows, up to 65,535, and a count
- * near the number of islands means the representatives are too clustered or too large for the grid
- * list to help: choose `'scan'` or deduplicate coincident representatives). The output rows then
- * merge the original row, the row's attachment and the islands attached to it (grouped by a stable
- * sort), so rows that are not islands cost their own degree rather than a scan of all rows.
+ * distances overflow, a dedicated pass gives that island one 256-lane workgroup. Each lane tests
+ * at most 256 representatives, then eight tree-reduction steps choose the nearest with the scan's
+ * scaled comparison, breaking ties by the lowest row. The construction-time limit of 65,535 rows
+ * fits within that fixed 256-by-256 coverage, so the fallback always completes: there is no search
+ * budget to exhaust and no invocation scans all representatives. `output.status.uncertainCount`,
+ * when given, counts islands sent to this pass (0 with `'scan'`). A count near the island count
+ * means the grid's candidate list rarely helps, but does not increase the per-lane work limit.
+ * `nearestSearch` and `reciprocal` are compile-time props; there are no per-frame scalar props.
+ * The output rows then merge the original row, its attachment and the islands attached to it
+ * (grouped by a stable sort), so rows that are not islands cost their own degree rather than a
+ * scan of all rows.
  */
 export class GPUIslandAttachment implements GPUCommandNodeProducer {
   readonly id: string;
@@ -130,7 +144,7 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
       "nearestSearch must be 'auto', 'scan' or 'grid'"
     );
     const rows = validateGPUSpatialWeights(this.id, props.weights);
-    validateCapacity(this.id, 'rows', rows, 1, 65535);
+    validateCapacity(this.id, 'rows', rows, 1, ISLAND_ATTACHMENT_MAXIMUM_ROW_COUNT);
     if (
       validateGPUSpatialWeightsOutput(this.id, props.output) !== rows ||
       props.positions.length !== rows ||
@@ -265,6 +279,7 @@ attachment[attachmentOffset + index] = nearest;`,
       // Islands are the query rows of a k-nearest cross join over every representative; the grid
       // bounds are the extent of the finite representatives, so every one of them is a target.
       const islandFlags = createTransientView(graph, `${id}-island-flags`, 'uint32', rows);
+      const unresolved = createTransientView(graph, `${id}-unresolved`, 'uint32', rows);
       const search = createNeighborSearchDerivedParameterNodes<Parameters>(graph, {
         id: `${id}-index-parameters`,
         operation: 'GPUIslandAttachment',
@@ -332,12 +347,14 @@ attachment[attachmentOffset + index] = nearest;`,
             binding('candidateOffsets', candidateOffsets),
             binding('candidateNeighbors', candidateNeighbors),
             binding('candidateDistances', candidateDistances, 'read', 'f32'),
+            binding('unresolved', unresolved, 'read_write'),
             binding('attachment', props.output.attachment, 'read_write'),
             ...(uncertainCount
               ? [binding('uncertainCount', uncertainCount, 'read_write', 'atomic<u32>')]
               : [])
           ],
-          `var nearest = NO_ATTACHMENT; var bestDifference = vec2<f32>(0.0);
+          `unresolved[unresolvedOffset + index] = 0u;
+var nearest = NO_ATTACHMENT; var bestDifference = vec2<f32>(0.0);
 let position = vec2<f32>(positions[positionsOffset + 2u * index], positions[positionsOffset + 2u * index + 1u]);
 if (offsets[offsetsOffset + index] == offsets[offsetsOffset + index + 1u] && isFiniteBits(position.x) && isFiniteBits(position.y)) {
  let begin = candidateOffsets[candidateOffsetsOffset + index];
@@ -354,7 +371,7 @@ if (offsets[offsetsOffset + index] == offsets[offsetsOffset + index + 1u] && isF
  }
  // The list is complete when it holds fewer than the candidate count (an empty list means the grid
  // was unusable, for example overflowing bounds). Otherwise the answer is proven when the
- // farthest entry is clearly farther than the chosen one; if not, rescan every representative.
+ // farthest entry is clearly farther than the chosen one; otherwise use the cooperative pass.
  var proven = found > 0u && found < ${ISLAND_ATTACHMENT_CANDIDATE_COUNT}u;
  if (found == ${ISLAND_ATTACHMENT_CANDIDATE_COUNT}u && nearest != NO_ATTACHMENT) {
   let chosenDistance = 2.0 * length(bestDifference);
@@ -362,13 +379,77 @@ if (offsets[offsetsOffset + index] == offsets[offsetsOffset + index + 1u] && isF
  }
  if (!proven) {
   ${uncertainCount ? 'atomicAdd(&uncertainCount[uncertainCountOffset], 1u);' : ''}
-  nearest = NO_ATTACHMENT; bestDifference = vec2<f32>(0.0);
-${scanWGSL}
+  unresolved[unresolvedOffset + index] = 1u;
+  nearest = NO_ATTACHMENT;
  }
 }
 attachment[attachmentOffset + index] = nearest;`,
           nearestDeclarations
-        )
+        ),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-resolve-unproven`,
+          operation: 'GPUIslandAttachment',
+          variant: 'resolve-unproven',
+          invocationCount: rows * ISLAND_ATTACHMENT_WORKGROUP_SIZE,
+          workgroupSize: ISLAND_ATTACHMENT_WORKGROUP_SIZE,
+          guardIndex: false,
+          bindings: [
+            binding('positions', props.positions, 'read', 'f32'),
+            binding('unresolved', unresolved),
+            binding('attachment', props.output.attachment, 'read_write')
+          ],
+          declarations: `${nearestDeclarations}
+const ROWS: u32 = ${rows}u;
+const WORKGROUP_SIZE: u32 = ${ISLAND_ATTACHMENT_WORKGROUP_SIZE}u;
+const MAXIMUM_REPRESENTATIVES_PER_LANE: u32 = ${ISLAND_ATTACHMENT_MAXIMUM_REPRESENTATIVES_PER_LANE}u;
+var<workgroup> nearestRows: array<u32, ${ISLAND_ATTACHMENT_WORKGROUP_SIZE}>;
+var<workgroup> nearestDifferences: array<vec2<f32>, ${ISLAND_ATTACHMENT_WORKGROUP_SIZE}>;`,
+          // All lanes, including unused lanes and padded workgroups, reach every barrier.
+          body: `let island = workgroupIndex;
+let lane = localInvocationIndex;
+var isUnresolved = false;
+var position = vec2<f32>(0.0);
+if (island < ROWS) {
+ isUnresolved = unresolved[unresolvedOffset + island] != 0u;
+ position = vec2<f32>(positions[positionsOffset + 2u * island], positions[positionsOffset + 2u * island + 1u]);
+}
+var nearest = NO_ATTACHMENT;
+var bestDifference = vec2<f32>(0.0);
+if (isUnresolved) {
+ for (var round = 0u; round < MAXIMUM_REPRESENTATIVES_PER_LANE; round++) {
+  let other = round * WORKGROUP_SIZE + lane;
+  if (other >= ROWS) { break; }
+  let candidate = vec2<f32>(positions[positionsOffset + 2u * other], positions[positionsOffset + 2u * other + 1u]);
+  if (other != island && isFiniteBits(candidate.x) && isFiniteBits(candidate.y)) {
+   let difference = position * 0.5 - candidate * 0.5;
+   if (isCloserDifference(difference, bestDifference, nearest == NO_ATTACHMENT)) {
+    nearest = other; bestDifference = difference;
+   }
+  }
+ }
+}
+nearestRows[lane] = nearest;
+nearestDifferences[lane] = bestDifference;
+workgroupBarrier();
+for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride /= 2u) {
+ if (lane < stride) {
+  let other = nearestRows[lane + stride];
+  let difference = nearestDifferences[lane + stride];
+  nearest = nearestRows[lane];
+  bestDifference = nearestDifferences[lane];
+  if (other != NO_ATTACHMENT &&
+      (isCloserDifference(difference, bestDifference, nearest == NO_ATTACHMENT) ||
+       (other < nearest && !isCloserDifference(bestDifference, difference, false)))) {
+   nearestRows[lane] = other;
+   nearestDifferences[lane] = difference;
+  }
+ }
+ workgroupBarrier();
+}
+if (isUnresolved && lane == 0u) {
+ attachment[attachmentOffset + island] = nearestRows[0];
+}`
+        })
       );
     }
     // Islands grouped by the row they attach to: a stable sort by target keeps ascending island

@@ -99,8 +99,8 @@ export type GPUContiguityWeightsProps = {
    * `q = floor((x - origin) / snapTolerance + 0.5)` per axis (round half up, in f32; from 2^23
    * steps the quotient is already an integer and is used as it is) and two vertices are the same
    * point when both `q` match. It is the snap key of the coverage operators
-   * (`GPUCoverageDissolve`, `GPUCoverageSimplification`). The origin is local: the first vertex of
-   * `polygons.positions` (0 when that vertex is not finite), so `q` depends on the extent of the
+   * (`GPUCoverageDissolve`, `GPUCoverageSimplification`). The origin is local: the first
+   * ring-owned vertex (`polygons.ringOffsets[0]`) (0 when that vertex is not finite), so `q` depends on the extent of the
    * data and not on its distance from the coordinate origin (projected coordinates in the
    * millions keep a millimetre tolerance). `0` (the default) compares the exact f32 values (`-0`
    * equals `+0`). Quantisation is a grid snap, not a distance test: two points closer than the
@@ -374,13 +374,13 @@ const POLYGON_COUNT: u32 = ${polygonCount}u;
 const FEATURE_COUNT: u32 = ${featureCount}u;
 
 ${IS_FINITE_FLOAT_WGSL}
-// The snap key shared with the coverage operators: getSnapOrigin() (the first vertex of the
-// buffer, 0 when it is not finite) and quantise(value, origin). Keys are formed from the offset to
+// The snap key shared with the coverage operators: getSnapOrigin() (the first ring-owned vertex,
+// 0 when it is not finite) and quantise(value, origin). Keys are formed from the offset to
 // the origin, so they depend on the extent of the data and not on its distance from the
 // coordinate origin (an absolute key x / tolerance passes 2^31 for coordinates in the millions
 // with a millimetre tolerance), and from 2^23 steps the integer quotient is used as it is,
 // because adding 0.5 there rounds an odd step to the next even one.
-${getCoverageSnapKeyWGSL(snapTolerance)}`,
+${getCoverageSnapKeyWGSL(snapTolerance, ringCount)}`,
         body: `var ring = 0u;
   var high = RING_COUNT;
   while (ring + 1u < high) {

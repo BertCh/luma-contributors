@@ -55,6 +55,16 @@ explicit readback. Unknown details are reported as `unspecified`, never inferred
 guarantee. `GPU_SPATIAL_ANALYSIS_AUDIT` and `formatGPUSpatialAnalysisAuditMarkdown()` expose the
 same inventory used by package verification.
 
+## Contributor operation contracts
+
+`GPUContributorOperation` from `@luma-contributors/analysis/analysis-core` adapts a contributor
+into a published luma.gl `GPUGraph` operation. Compile with `GPU_CONTRIBUTOR_OPERATION_LOWERING`.
+Input and output graph value names must be non-empty; output formats must be `float32`, `sint32`
+or `uint32` vectors with one to four components. Output lengths are validated at construction
+and must be positive unless the port is listed in `emptyOutputPorts`. Errors name the operation
+and port before luma.gl plans the contract. An operation cannot write the same graph value twice
+or read a value it also writes. Packed single chunks are checked when views are resolved.
+
 ## Shared ports, status and planning
 
 The entry point exports non-owning structural ports for point, line, polygon and trajectory

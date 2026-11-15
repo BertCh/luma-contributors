@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   GPU_EARTH_MEAN_RADIUS_METERS,
   GPU_WGS84_FLATTENING,
@@ -38,7 +39,9 @@ export const GPU_GEODESIC_WGS84_FLATTENING = GPU_WGS84_FLATTENING;
  * - `geodesicDestination(origin, bearingDegrees, angle) -> vec2<f32>`: point at central `angle`
  *   along a bearing; longitude continuous with the origin.
  * - `geodesicInterpolate(a, b, angle, fraction) -> vec2<f32>`: slerp along the great circle
- *   (`angle = geodesicCentralAngle(a, b)`); longitude continuous with `a`.
+ *   (`angle = geodesicCentralAngle(a, b)`); longitude continuous with `a`. Preserves known
+ *   endpoints at fractions zero/one; returns NaN for interior interpolation within 1e-6
+ *   radians of an antipode, where the interpolation path is not certified.
  * - `geodesicSegmentFraction(point, start, end) -> f32` and
  *   `geodesicSegmentDistance(point, start, end, fraction, radius) -> f32`: point-to-segment
  *   distance for segments that are straight in longitude/latitude (the edge model of the
@@ -67,7 +70,13 @@ export const GPU_GEODESIC_WGS84_FLATTENING = GPU_WGS84_FLATTENING;
  * ```
  */
 export const GEODESIC_WGSL = /* wgsl */ `
+${GUARDED_ATAN2_WGSL.replaceAll('guardedAtan2', 'geodesicAtan2')}
 const GEODESIC_PI: f32 = 3.14159265358979;
+// Component reconstruction avoids polar and long-path cancellation; these boundaries
+// retain the established short-path arithmetic and are covered by the PROJ regressions.
+const GEODESIC_DIRECT_COMPONENT_ANGLE: f32 = 0.25 * GEODESIC_PI;
+const GEODESIC_DIRECT_POLAR_LATITUDE: f32 = 80.0;
+const GEODESIC_DIRECT_POLAR_SINE: f32 = 0.984807753012208; // sin(80 degrees)
 const GEODESIC_DEGREES_TO_RADIANS: f32 = 0.0174532925199433;
 const GEODESIC_RADIANS_TO_DEGREES: f32 = 57.2957795130823;
 
@@ -114,8 +123,8 @@ fn geodesicUnitVector(lngLat: vec2<f32>) -> vec3<f32> {
 fn geodesicFromUnitVector(vector: vec3<f32>) -> vec2<f32> {
   let horizontal = sqrt(vector.x * vector.x + vector.y * vector.y);
   return vec2<f32>(
-    atan2(vector.y, vector.x) * GEODESIC_RADIANS_TO_DEGREES,
-    atan2(vector.z, horizontal) * GEODESIC_RADIANS_TO_DEGREES
+    geodesicAtan2(vector.y, vector.x) * GEODESIC_RADIANS_TO_DEGREES,
+    geodesicAtan2(vector.z, horizontal) * GEODESIC_RADIANS_TO_DEGREES
   );
 }
 
@@ -130,43 +139,51 @@ fn geodesicHaversineTerm(a: vec2<f32>, b: vec2<f32>) -> f32 {
   return clamp(term, 0.0, 1.0);
 }
 
+// East, north and up components of b in the local frame at a. Near an antipode,
+// use the latitude sum and longitude supplement to avoid subtracting order-one terms.
+fn geodesicBearingComponents(origin: vec2<f32>, targetPosition: vec2<f32>) -> vec3<f32> {
+  if (origin.y == targetPosition.y && (geodesicLongitudeDelta(origin.x, targetPosition.x) == 0.0 || abs(origin.y) == 90.0)) {
+    return vec3<f32>(0.0, 0.0, 1.0);
+  }
+  let latitudeRadians = origin.y * GEODESIC_DEGREES_TO_RADIANS;
+  let targetLatitudeRadians = targetPosition.y * GEODESIC_DEGREES_TO_RADIANS;
+  let longitudeDeltaDegrees = geodesicLongitudeDelta(origin.x, targetPosition.x);
+  let longitudeDeltaRadians = longitudeDeltaDegrees * GEODESIC_DEGREES_TO_RADIANS;
+  let originCosine = geodesicCosLatitude(origin.y);
+  let targetCosine = geodesicCosLatitude(targetPosition.y);
+  let halfSineLongitude = sin(0.5 * longitudeDeltaRadians);
+  let halfVersine = 2.0 * halfSineLongitude * halfSineLongitude;
+  var east = targetCosine * sin(longitudeDeltaRadians);
+  var north = sin((targetPosition.y - origin.y) * GEODESIC_DEGREES_TO_RADIANS) +
+    sin(latitudeRadians) * targetCosine * halfVersine;
+  var longitudeCosine = 1.0 - halfVersine;
+  // A small longitude supplement does not imply a near antipode: two points at
+  // the same pole can have opposite longitudes. Their latitude sum is near 180
+  // degrees, where taking its sine loses the colatitude's relative precision.
+  if (abs(longitudeDeltaDegrees) > 90.0 && origin.y * targetPosition.y <= 0.0) {
+    let supplement = (180.0 - abs(longitudeDeltaDegrees)) * GEODESIC_DEGREES_TO_RADIANS;
+    let halfSine = sin(0.5 * supplement);
+    east = targetCosine * sign(longitudeDeltaDegrees) * sin(supplement);
+    north = sin((origin.y + targetPosition.y) * GEODESIC_DEGREES_TO_RADIANS) -
+      2.0 * sin(latitudeRadians) * targetCosine * halfSine * halfSine;
+    longitudeCosine = 2.0 * halfSine * halfSine - 1.0;
+  }
+  let vertical = sin(latitudeRadians) * sin(targetLatitudeRadians) + originCosine * targetCosine * longitudeCosine;
+  return vec3<f32>(east, north, vertical);
+}
+
 fn geodesicCentralAngle(a: vec2<f32>, b: vec2<f32>) -> f32 {
-  // Vincenty's special case for the sphere: well conditioned from a millimeter to antipodal,
-  // unlike the haversine form whose sqrt(1 - h) loses precision near antipodes.
-  let phi1 = a.y * GEODESIC_DEGREES_TO_RADIANS;
-  let phi2 = b.y * GEODESIC_DEGREES_TO_RADIANS;
-  let deltaPhi = (b.y - a.y) * GEODESIC_DEGREES_TO_RADIANS;
-  let deltaLambda = geodesicLongitudeDelta(a.x, b.x) * GEODESIC_DEGREES_TO_RADIANS;
-  let sinPhi1 = sin(phi1);
-  let cosPhi1 = geodesicCosLatitude(a.y);
-  let cosPhi2 = geodesicCosLatitude(b.y);
-  let sinHalfLambda = sin(0.5 * deltaLambda);
-  let halfVersine = 2.0 * sinHalfLambda * sinHalfLambda;
-  let east = cosPhi2 * sin(deltaLambda);
-  let north = sin(deltaPhi) + sinPhi1 * cosPhi2 * halfVersine;
-  let up = sinPhi1 * sin(phi2) + cosPhi1 * cosPhi2 * (1.0 - halfVersine);
-  return atan2(sqrt(east * east + north * north), up);
+  let components = geodesicBearingComponents(a, b);
+  return geodesicAtan2(sqrt(components.x * components.x + components.y * components.y), components.z);
 }
 
 fn geodesicInitialBearingDegrees(a: vec2<f32>, b: vec2<f32>) -> f32 {
-  let phi1 = a.y * GEODESIC_DEGREES_TO_RADIANS;
-  let phi2 = b.y * GEODESIC_DEGREES_TO_RADIANS;
-  let deltaPhi = (b.y - a.y) * GEODESIC_DEGREES_TO_RADIANS;
-  let deltaLambda = geodesicLongitudeDelta(a.x, b.x) * GEODESIC_DEGREES_TO_RADIANS;
-  let sinHalfLambda = sin(0.5 * deltaLambda);
-  let cosPhi2 = geodesicCosLatitude(b.y);
-  let y = sin(deltaLambda) * cosPhi2;
-  // cos(phi1) sin(phi2) - sin(phi1) cos(phi2) cos(deltaLambda), without cancellation.
-  let x = sin(deltaPhi) + 2.0 * sin(phi1) * cosPhi2 * sinHalfLambda * sinHalfLambda;
-  // Coincident points have no azimuth. Pin the conventional zero bearing instead of
-  // evaluating atan2(0, 0), whose result is unbounded by WGSL (and can be NaN).
-  if (x == 0.0 && y == 0.0) {
-    return 0.0;
-  }
-  return atan2(y, x) * GEODESIC_RADIANS_TO_DEGREES;
+  let components = geodesicBearingComponents(a, b);
+  return geodesicAtan2(components.x, components.y) * GEODESIC_RADIANS_TO_DEGREES;
 }
 
 fn geodesicDestination(origin: vec2<f32>, bearingDegrees: f32, angle: f32) -> vec2<f32> {
+  if (angle == 0.0) { return origin; }
   let phi1 = origin.y * GEODESIC_DEGREES_TO_RADIANS;
   let theta = bearingDegrees * GEODESIC_DEGREES_TO_RADIANS;
   let sinPhi1 = sin(phi1);
@@ -175,6 +192,37 @@ fn geodesicDestination(origin: vec2<f32>, bearingDegrees: f32, angle: f32) -> ve
   // sin(phi2) - sin(phi1), from the half-angle form so short moves keep their precision.
   let sinDelta = -2.0 * sinPhi1 * sinHalfAngle * sinHalfAngle + cosPhi1 * sin(angle) * cos(theta);
   let sinPhi2 = clamp(sinPhi1 + sinDelta, -1.0, 1.0);
+  // The half-angle change below preserves ordinary short moves. At a polar
+  // origin or arrival (within 10 degrees of a pole), use components instead of asin.
+  // Long paths also cancel in sinPhi1 + sinDelta and in the longitude denominator.
+  // Preserve the established half-angle change only for short ordinary paths.
+  if (abs(angle) >= GEODESIC_DIRECT_COMPONENT_ANGLE || abs(origin.y) >= GEODESIC_DIRECT_POLAR_LATITUDE || abs(sinPhi2) >= GEODESIC_DIRECT_POLAR_SINE) {
+    let east = sin(theta) * sin(angle);
+    let north = cosPhi1 * cos(angle) - sinPhi1 * sin(angle) * cos(theta);
+    let vertical = sinPhi1 * cos(angle) + cosPhi1 * sin(angle) * cos(theta);
+    let horizontal = sqrt(east * east + north * north);
+    // Above 45 degrees, recover the latitude from the colatitude: atan2(vertical, horizontal)
+    // returns a value near pi/2 whose absolute error (about a meter in f32) would swamp short
+    // polar moves, while the colatitude keeps the horizontal component's relative precision.
+    var latitudeDegrees = geodesicAtan2(vertical, horizontal) * GEODESIC_RADIANS_TO_DEGREES;
+    if (abs(vertical) > horizontal) {
+      latitudeDegrees = sign(vertical) * (90.0 - geodesicAtan2(horizontal, abs(vertical)) * GEODESIC_RADIANS_TO_DEGREES);
+    }
+    // A short move from a polar origin still takes the half-angle latitude change, added in
+    // degrees: converting a polar latitude to f32 radians alone costs about 0.4 m, which the
+    // component form inherits. The midpoint cosine guard hands the last 0.06 degrees to the
+    // colatitude.
+    if (abs(angle) < GEODESIC_DIRECT_COMPONENT_ANGLE) {
+      let midpointCosine = cos(0.5 * (phi1 + asin(sinPhi2)));
+      if (abs(midpointCosine) > 1e-3) {
+        latitudeDegrees = origin.y + 2.0 * asin(clamp(sinDelta / (2.0 * midpointCosine), -1.0, 1.0)) * GEODESIC_RADIANS_TO_DEGREES;
+      }
+    }
+    return vec2<f32>(
+      origin.x + geodesicAtan2(east, north) * GEODESIC_RADIANS_TO_DEGREES,
+      latitudeDegrees
+    );
+  }
   let roughPhi2 = asin(sinPhi2);
   // sin(phi2) - sin(phi1) = 2 cos((phi1 + phi2) / 2) sin((phi2 - phi1) / 2); the midpoint cosine
   // is insensitive to the rough phi2, so the latitude change is recovered to relative precision.
@@ -183,7 +231,7 @@ fn geodesicDestination(origin: vec2<f32>, bearingDegrees: f32, angle: f32) -> ve
   if (abs(midpointCosine) > 1e-3) {
     deltaPhi = 2.0 * asin(clamp(sinDelta / (2.0 * midpointCosine), -1.0, 1.0));
   }
-  let deltaLambda = atan2(
+  let deltaLambda = geodesicAtan2(
     sin(theta) * sin(angle) * cosPhi1,
     cos(angle) - sinPhi1 * sinPhi2
   );
@@ -194,6 +242,15 @@ fn geodesicDestination(origin: vec2<f32>, bearingDegrees: f32, angle: f32) -> ve
 }
 
 fn geodesicInterpolate(a: vec2<f32>, b: vec2<f32>, angle: f32, fraction: f32) -> vec2<f32> {
+  // Endpoints are known even when the interior path is nonunique or ill-conditioned.
+  if (fraction == 0.0) { return a; }
+  if (fraction == 1.0) {
+    if (abs(b.x - a.x) <= 180.0) { return b; }
+    return vec2<f32>(a.x + geodesicLongitudeDelta(a.x, b.x), b.y);
+  }
+  if (GEODESIC_PI - angle < 1e-6) {
+    return vec2<f32>(bitcast<f32>(0x7fc00000u | (bitcast<u32>(a.x) & 0u)));
+  }
   let unitA = geodesicUnitVector(a);
   let unitB = geodesicUnitVector(b);
   var vector: vec3<f32>;

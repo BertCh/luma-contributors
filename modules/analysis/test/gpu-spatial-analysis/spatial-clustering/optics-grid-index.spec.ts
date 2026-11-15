@@ -20,10 +20,12 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import parallelFixture from './optics-parallel-fixtures.json';
 
 type Scenario = {
   name: string;
   positions: number[];
+  repeat?: boolean;
   times?: number[];
   /** Grid-path radius-neighbor slots, when the default per-row allowance is too small. */
   neighborCapacity?: number;
@@ -137,9 +139,16 @@ type OPTICSRun = {
   clusterIntervals?: number[];
   clusterSummary?: number[];
   candidateOverflow?: number[];
+  iterationCount: number[];
+  converged: number[];
+  iterationLimitReached: number[];
 };
 
-async function runOPTICS(scenario: Scenario, neighborIndex: 'brute-force' | 'grid') {
+async function runOPTICS(
+  scenario: Scenario,
+  neighborIndex: 'brute-force' | 'grid',
+  orderingMethod: 'parallel' | 'sequential' = 'sequential'
+) {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device);
@@ -179,17 +188,30 @@ async function runOPTICS(scenario: Scenario, neighborIndex: 'brute-force' | 'gri
       ? {clusterIntervals: output('uint32x2', rowCount, 2), clusterSummary: output('uint32', 2)}
       : {})
   };
+  const iterationPorts = {
+    iterationCount: output('uint32', 1),
+    converged: output('uint32', 1),
+    iterationLimitReached: output('uint32', 1)
+  };
   const candidateOverflow = neighborIndex === 'grid' ? output('uint32', 1) : undefined;
   const optics = new GPUOPTICS({
     ...scenario.props,
     id: `optics-${neighborIndex}`,
     neighborIndex,
+    orderingMethod,
     neighborCapacity: neighborIndex === 'grid' ? scenario.neighborCapacity : undefined,
     positions: input(scenario.positions, 'float32x2', rowCount),
     times: scenario.times ? input(scenario.times, 'float32', rowCount) : undefined,
     output: {
       ...Object.fromEntries(Object.entries(outputs).map(([name, field]) => [name, field.view])),
-      ...(candidateOverflow ? {ports: {status: {candidateOverflow: candidateOverflow.view}}} : {})
+      ports: {
+        status: {
+          ...Object.fromEntries(
+            Object.entries(iterationPorts).map(([name, field]) => [name, field.view])
+          ),
+          ...(candidateOverflow ? {candidateOverflow: candidateOverflow.view} : {})
+        }
+      }
     } as GPUOPTICSProps['output']
   });
   expect(optics.neighborIndex).toBe(neighborIndex);
@@ -197,12 +219,16 @@ async function runOPTICS(scenario: Scenario, neighborIndex: 'brute-force' | 'gri
   const compiled = graph.compile();
   try {
     submitGraph(device, compiled, undefined);
+    if (scenario.repeat) submitGraph(device, compiled, undefined);
     const result: Record<string, number[]> = {};
     for (const [name, field] of Object.entries(outputs)) {
       result[name] =
         field.view.format === 'float32'
           ? await readFloat32(field.buffer, field.words)
           : await readUint32(field.buffer, field.words);
+    }
+    for (const [name, field] of Object.entries(iterationPorts)) {
+      result[name] = await readUint32(field.buffer, 1);
     }
     if (candidateOverflow) {
       result['candidateOverflow'] = await readUint32(candidateOverflow.buffer, 1);
@@ -218,6 +244,8 @@ for (const scenario of SCENARIOS) {
   it(`OPTICS grid reachability matches the exhaustive step: ${scenario.name}`, async () => {
     const bruteForce = await runOPTICS(scenario, 'brute-force');
     const grid = await runOPTICS(scenario, 'grid');
+    const parallel = await runOPTICS(scenario, 'grid', 'parallel');
+    expect(parallel).toEqual(grid);
     expect(grid.candidateOverflow).toEqual([0]);
     for (const [name, expected] of Object.entries(bruteForce)) {
       expect(grid[name as keyof OPTICSRun], name).toEqual(expected);
@@ -335,7 +363,7 @@ it('OPTICS neighborIndex resolves auto by row count and names its limits', async
       extractionMethod: 'xi',
       extractionDistance: undefined
     })
-  ).toThrow(/^optics positions rows with extractionMethod 'xi' must be an integer in \[1, 4096\]/);
+  ).not.toThrow();
   expect(() => create(64, {neighborCapacity: 100})).toThrow(
     /^optics neighborCapacity and output.ports.status.candidateOverflow need neighborIndex 'grid'/
   );
@@ -378,4 +406,95 @@ it('OPTICS above the exhaustive cap orders every valid row through the grid', as
       expect(predecessor).toBe(0xffffffff);
     }
   }
+});
+
+for (const predecessorCorrection of [true, false]) {
+  it(`OPTICS xi above 4096 matches sklearn and the sequential frontier (correction=${predecessorCorrection})`, async () => {
+    const scenario: Scenario = {
+      name: 'sklearn-large',
+      positions: parallelFixture.positions,
+      props: {...parallelFixture.options, extractionMethod: 'xi', predecessorCorrection}
+    };
+    const sequential = await runOPTICS(scenario, 'grid');
+    const parallel = await runOPTICS(scenario, 'grid', 'parallel');
+    expect(parallel).toEqual(sequential);
+    const extraction = parallelFixture.xi.find(
+      value => value.predecessorCorrection === predecessorCorrection
+    )!;
+    expect(parallel.ordering).toEqual(parallelFixture.ordering);
+    expect(parallel.predecessors).toEqual(parallelFixture.predecessors);
+    expect(parallel.coreDistances).toEqual(parallelFixture.coreDistances);
+    expect(parallel.reachability).toEqual(
+      parallelFixture.reachability.map(value => (value === 'Infinity' ? Infinity : value))
+    );
+    expect(parallel.labels).toEqual(extraction.labels);
+    expect(parallel.clusterSummary).toEqual([extraction.intervals.length, 0]);
+    expect(parallel.clusterIntervals!.slice(0, extraction.intervals.length * 2)).toEqual(
+      extraction.intervals.flat()
+    );
+    expect(
+      parallel
+        .clusterIntervals!.slice(extraction.intervals.length * 2)
+        .every(value => value === 0xffffffff)
+    ).toBe(true);
+    expect(parallel.iterationCount).toEqual([parallelFixture.ordering.length]);
+    expect(parallel.converged).toEqual([1]);
+    expect(parallel.iterationLimitReached).toEqual([0]);
+  }, 600_000);
+}
+
+for (const extractionMethod of ['xi', 'dbscan'] as const) {
+  for (const scene of [
+    'all-invalid',
+    'ties-and-padding',
+    'visit-budget',
+    'candidate-overflow'
+  ] as const) {
+    it(`parallel OPTICS handles ${scene}, ${extractionMethod}`, async () => {
+      const positions = Array.from({length: 259}, (_, row) => [
+        scene === 'all-invalid' || row % 17 === 0 ? NaN : Math.floor(row / 7),
+        0
+      ]).flat();
+      const scenario: Scenario = {
+        name: scene,
+        positions,
+        neighborCapacity: scene === 'candidate-overflow' ? 1 : 259 * 32,
+        props: {
+          minimumSamples: 2,
+          maximumDistance: 1,
+          extractionDistance: 1,
+          extractionMethod,
+          ...(scene === 'visit-budget' ? {maximumIterations: 19} : {})
+        }
+      };
+      const reference = await runOPTICS(scenario, 'grid');
+      const result = await runOPTICS(scenario, 'grid', 'parallel');
+      expect(result).toEqual(reference);
+      const overflow = scene === 'candidate-overflow';
+      const incomplete = overflow || scene === 'visit-budget';
+      expect(result.converged).toEqual([incomplete ? 0 : 1]);
+      expect(result.iterationLimitReached).toEqual([scene === 'visit-budget' ? 1 : 0]);
+      expect(result.iterationCount).toEqual([result.status[0]]);
+      if (incomplete || scene === 'all-invalid') {
+        expect(result.labels.every(value => value === 0xffffffff)).toBe(true);
+        if (extractionMethod === 'xi') {
+          expect(result.clusterSummary).toEqual([0, 0]);
+          expect(result.clusterIntervals!.every(value => value === 0xffffffff)).toBe(true);
+        }
+      }
+    });
+  }
+}
+
+it('parallel OPTICS retains every distance bit before applying row-index ties', async () => {
+  const scenario: Scenario = {
+    name: 'near-tie',
+    repeat: true,
+    positions: [0, 0, 1 + 2 ** -20, 0, 1, 0],
+    props: {minimumSamples: 2, maximumDistance: 2, extractionDistance: 2}
+  };
+  const result = await runOPTICS(scenario, 'grid', 'parallel');
+  expect(result).toEqual(await runOPTICS(scenario, 'grid'));
+  expect(result.ordering).toEqual([0, 2, 1]);
+  expect(result.predecessors).toEqual([0xffffffff, 2, 0]);
 });

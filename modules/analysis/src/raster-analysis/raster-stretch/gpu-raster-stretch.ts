@@ -28,11 +28,18 @@ import {
 } from './raster-stretch-parameters';
 import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid} from '../raster-band-utils';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   DECODE_ORDERED_KEY_WGSL,
   GET_ORDERED_KEY_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
+
+import {
+  getRasterAlgebraInputNodes,
+  getRasterAlgebraInputViews,
+  isRasterAlgebraBand,
+  validateRasterAlgebraInput
+} from '../raster-algebra/raster-algebra-input';
 
 const OPERATION = 'GPURasterStretch';
 const DEFAULT_BIN_COUNT = 1024;
@@ -63,16 +70,16 @@ export type GPURasterStretchOutput = {
  *
  * Per-frame (no recompile): `values` contents, `regionMask` contents, `palette` contents and
  * `parameters` written with `getGPURasterStretchParameterValues`. Topology: the `grid` size,
- * `binCount`, `lutSize`, `noDataValue`, palette size, and which views exist.
+ * `binCount`, `lutSize`, `noDataValue`, palette size, band metadata, and which views exist.
  */
 export type GPURasterStretchProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'raster-stretch'`. */
   id?: string;
-  /** Packed row-major float32 raster; cell `(column, row)` is row `row * width + column`. */
-  values: GraphDataView<'float32'>;
+  /** Published band (validity, native nodata and calibration honoured), or legacy row-major float values. */
+  values: GraphDataView<'float32'> | GPURasterBand;
   /** Raster grid: its width and height (each in `[1, 2^24]`) size the kernels. */
   grid: GPURasterMetadata;
-  /** Optional finite nodata sentinel compared exactly. NaN is always nodata. */
+  /** Optional finite nodata sentinel for legacy values; bands use their own native sentinel. */
   noDataValue?: number;
   /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
   mask?: GraphDataView<'uint32'>;
@@ -152,10 +159,7 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     validateRasterAlgebraCount(id, 'binCount', this.binCount, 16, 65536);
     validateRasterAlgebraCount(id, 'lutSize', this.lutSize, 2, 65536);
     validateRasterAlgebraNoData(id, props.noDataValue);
-    validateRasterAlgebraView(id, 'values', props.values, 'float32', cellCount);
-    if (!props.values) {
-      throw new Error(`${id} needs values`);
-    }
+    validateRasterAlgebraInput(id, 'values', props.values, props.grid, cellCount);
     validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', cellCount);
     validateRasterAlgebraView(id, 'regionMask', props.regionMask, 'uint32', cellCount);
     validateRasterAlgebraView(
@@ -203,7 +207,13 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
         output.histogram,
         output.statistics
       ],
-      [props.values, props.mask, props.regionMask, props.parameters, props.palette]
+      [
+        ...getRasterAlgebraInputViews(props.values),
+        props.mask,
+        props.regionMask,
+        props.parameters,
+        props.palette
+      ]
     );
   }
 
@@ -216,7 +226,7 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     const {width, height} = props.grid;
     const cellCount = width * height;
     validateRasterAlgebraGraph(id, graph, [
-      props.values,
+      ...getRasterAlgebraInputViews(props.values),
       props.mask,
       props.regionMask,
       props.parameters,
@@ -228,7 +238,8 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
       output.histogram,
       output.statistics
     ]);
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const source = getRasterAlgebraInputNodes(graph, `${id}-input`, props.values, props.grid);
+    const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const keys = createTransientView(graph, `${id}-keys`, 'uint32', 4);
     // Rows 0 to 7: domain minimum and maximum, bin scale, bin width, lo, hi, in-domain count,
     // valid count. Rows 8 and 9: the count of the first occupied bin as two 16-bit halves (each
@@ -245,7 +256,7 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     const histogramCellsPerThread = clamp(Math.ceil(binCount / 32), 8, 64);
 
     const cellInputs: WGSLKernelBinding[] = [
-      {name: 'values', view: props.values, type: 'f32', access: 'read'}
+      {name: 'values', view: source.values, type: 'f32', access: 'read'}
     ];
     if (props.mask) {
       cellInputs.push({name: 'validity', view: props.mask, type: 'u32', access: 'read'});
@@ -271,7 +282,7 @@ const BIN_COUNT: u32 = ${binCount}u;
 const LUT_SIZE: u32 = ${lutSize}u;
 const PALETTE_SIZE: u32 = ${paletteSize}u;`;
     const valueWGSL = `${constants}
-${getRasterAlgebraValueWGSL(props.noDataValue)}
+${getRasterAlgebraValueWGSL(isRasterAlgebraBand(props.values) ? undefined : props.noDataValue)}
 fn readCellValue(index: u32, value: ptr<function, f32>) -> bool {
   let sample = values[valuesOffset + index];
   *value = sample;

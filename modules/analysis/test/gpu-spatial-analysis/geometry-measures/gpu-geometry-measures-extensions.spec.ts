@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import cr01Reference from './cr01-geodesic-fixture.json';
 import {GPUGeometryMeasures} from '../../../src/gpu-spatial-analysis/geometry-measures/index';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -196,8 +197,9 @@ const GEODESIC_CASES: {
       [0.1, 51.6],
       [-0.2, 51.6]
     ],
-    area: 463546956.6654968,
-    perimeter: 86167.35011837249,
+    // PROJ evaluated after float32 rounding, exactly as the GPU receives the coordinates.
+    area: cr01Reference.legacyRegressions.cityGeodesicPolygon.area,
+    perimeter: cr01Reference.legacyRegressions.cityGeodesicPolygon.perimeter,
     areaTolerance: 5e-6
   },
   {

@@ -9,6 +9,7 @@ import {
 } from '../../../src/geospatial-analysis/index';
 import {
   GPUPointCloudChange,
+  GPUPointCloudNormalScale,
   GPUPointCloudFeatures,
   GPUPointCloudGround,
   GPUPointCloudHeight,
@@ -148,6 +149,42 @@ function buildIndexedChange(context: KernelAuditContext, radius: number, halfDep
 /** Cases at and one step above the capacity, iteration, window and unindexed-work limits. */
 function getPointCloudLimitCases(): KernelAuditCase[] {
   return [
+    {
+      exportName: 'GPUPointCloudNormalScale',
+      name: '32 scales with indexed nearest-64 support and parameter orientation',
+      build: ({graph, view}) =>
+        graph.add(
+          new GPUPointCloudNormalScale({
+            parameters: view('float32', 5),
+            positions: view('float32x3', 128),
+            queryRows: view('uint32', 16),
+            radii: Array.from({length: 32}, (_, index) => 0.1 + index * 0.1),
+            capacity: 64,
+            grid: {origin: [-4, -4, -4], cellSize: 1, dimensions: [8, 8, 8]},
+            normals: view('float32x3', 16),
+            normalScales: view('float32', 16),
+            normalVariances: view('float32', 16),
+            status: view('uint32', 16)
+          })
+        )
+    },
+    {
+      exportName: 'GPUPointCloudNormalScale',
+      name: 'scale count one above 32',
+      build: ({graph, view}) =>
+        graph.add(
+          new GPUPointCloudNormalScale({
+            positions: view('float32x3', 16),
+            parameters: view('float32', 5),
+            radii: Array.from({length: 33}, (_, index) => index + 1),
+            capacity: 64,
+            normals: view('float32x3', 16),
+            normalScales: view('float32', 16),
+            normalVariances: view('float32', 16),
+            status: view('uint32', 16)
+          })
+        )
+    },
     {
       exportName: 'GPUPointCloudNeighborhoods',
       name: 'capacity one above 64',

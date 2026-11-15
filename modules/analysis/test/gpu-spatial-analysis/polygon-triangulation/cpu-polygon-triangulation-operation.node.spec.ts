@@ -13,6 +13,7 @@ import {GPUPolygonTriangulationOperation} from '../../../src/analysis-core/polyg
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   OPERATION_POLYGONS,
+  createPaddingTriangulationInput,
   CLAMPED_RING_END_CASES,
   createClampedRingEndInput,
   getTriangulationOperationProps,
@@ -235,4 +236,23 @@ it('validates both operation shapes at construction and contributor props when v
   ).toThrow(/polygon-twin/);
   // A GPU work budget is deliberately unused by the CPU twin.
   expect(() => new CPUPolygonTriangulationOperation({...props, maximumWork: 0})).not.toThrow();
+});
+
+it('CPU triangulation ignores garbage before the first ring and after the last', () => {
+  const reference = computePolygonTriangulationOnCPU(createPaddingTriangulationInput(), {
+    indexCapacity: 128
+  });
+  expect(Array.from(reference.valid)).toEqual([1, 1, 1]);
+  expect(Array.from(reference.triangleCount)).toEqual([0, 8, 2]);
+  for (const value of [Number.NaN, 3e30, -3e30]) {
+    const input = createPaddingTriangulationInput(2, 3, value);
+    const result = computePolygonTriangulationOnCPU(input, {indexCapacity: 128});
+    const usedWords = 3 * result.triangleOffsets[3];
+    expect(Array.from(result.indices.slice(0, usedWords), vertex => vertex - 2)).toEqual(
+      Array.from(reference.indices.slice(0, usedWords))
+    );
+    expect(result.valid).toEqual(reference.valid);
+    expect(result.triangleCount).toEqual(reference.triangleCount);
+    expect(result.triangleOffsets).toEqual(reference.triangleOffsets);
+  }
 });

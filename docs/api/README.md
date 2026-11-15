@@ -29,6 +29,9 @@ See the [analysis catalog](/docs/api/analysis-catalog) for every contributor
 at a glance and the [cross-reference](/docs/api/gpu-spatial-analysis-cross-reference)
 for a map from familiar tool names to contributors.
 
+Read [operation forms and CPU twins](/docs/api/operation-forms-and-cpu-twins) to choose between
+caller-owned GPU views, named graph operations and CPU execution, with a complete variogram fit.
+
 ## What luma.gl owns
 
 Link to the luma.gl documentation rather than to copies here:

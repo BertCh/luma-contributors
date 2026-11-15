@@ -146,3 +146,51 @@ it('both operations reject unknown models and weightings at construction, naming
   expect(getNames(cpu.contract)).toEqual(getNames(gpu.contract));
   expect(cpu.contract.outputs).toEqual(gpu.contract.outputs);
 });
+
+it.each([
+  'distances',
+  'semivariances',
+  'pairCounts'
+] as const)('both operations reject invalid graph names for input %s at construction', port => {
+  for (const value of ['', undefined, null, 0, false, {id: 'bins'}, ['bins']]) {
+    const props = {
+      id: 'fit',
+      distances: 'distances',
+      semivariances: 'semivariances',
+      pairCounts: 'pairCounts',
+      [port]: value as string,
+      output: {parameters: 'parameters', diagnostics: 'diagnostics', status: 'status'}
+    };
+    for (const operationClass of [GPUVariogramModelFitOperation, CPUVariogramModelFitOperation]) {
+      expect(() => new operationClass(props)).toThrow(
+        `fit inputs.${port} must be a non-empty graph value name`
+      );
+    }
+  }
+});
+
+it.each([
+  'parameters',
+  'diagnostics',
+  'status'
+] as const)('both operations reject invalid graph names for output %s before names become object keys', port => {
+  for (const value of ['', undefined, null, 0, false, {id: 'fitted'}, ['fitted']]) {
+    const props = {
+      id: 'fit',
+      distances: 'distances',
+      semivariances: 'semivariances',
+      pairCounts: 'pairCounts',
+      output: {
+        parameters: 'parameters',
+        diagnostics: 'diagnostics',
+        status: 'status',
+        [port]: value as string
+      }
+    };
+    for (const operationClass of [GPUVariogramModelFitOperation, CPUVariogramModelFitOperation]) {
+      expect(() => new operationClass(props)).toThrow(
+        `fit outputs.${port}.value must be a non-empty graph value name`
+      );
+    }
+  }
+});

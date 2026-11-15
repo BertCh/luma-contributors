@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getResourceBuffer} from '../network-resource-buffers';
 import {expect, it} from 'vitest';
@@ -207,3 +208,156 @@ it('GPUNetworkIsochrones bakes a numeric startCount without a binding', () => {
     /startCount must be an integer in \[0, 3\]/
   );
 });
+
+it('forwards iterationLimitReached without converged through both isochrone search paths', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    for (const withAssignments of [false, true]) {
+      const graph = new GPUCommandGraph(device);
+      const iterationLimitReached = createTransientView(graph, 'limit-reached', 'uint32', 1);
+      const status = {converged: undefined, iterationLimitReached};
+      const nodes = new GPUNetworkIsochrones(
+        createProps(graph, {
+          id: 'stopping',
+          startNodes: createTransientView(graph, 'sources', 'uint32', 1),
+          assignments: withAssignments
+            ? createTransientView(graph, 'assignments', 'uint32', 4)
+            : undefined,
+          output: {status}
+        })
+      ).getCommandNodes(graph);
+      const writers = nodes.filter(node =>
+        node.resources?.some(
+          resource =>
+            getResourceBuffer(resource) === iterationLimitReached &&
+            resource.usage === 'storage-read-write'
+        )
+      );
+      expect(writers).toHaveLength(1);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('validates search status scalars, graph ownership and separation from geometry and inputs', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const base = createProps(graph, {
+      id: 'stopping',
+      startNodes: createTransientView(graph, 'sources', 'uint32', 1)
+    });
+    const flag = createTransientView(graph, 'flag', 'uint32', 1);
+    for (const name of ['converged', 'iterationLimitReached'] as const) {
+      const withFlag = (view: typeof flag) =>
+        new GPUNetworkIsochrones({
+          ...base,
+          output: {status: {[name]: view}}
+        });
+      for (const length of [0, 2]) {
+        expect(() =>
+          withFlag(createTransientView(graph, `bad-${name}-${length}`, 'uint32', length))
+        ).toThrow(new RegExp(`^stopping output.status.${name} must contain exactly one row`));
+      }
+      expect(() =>
+        withFlag(createTransientView(graph, `float-${name}`, 'float32', 1) as never)
+      ).toThrow(new RegExp(`^stopping output.status.${name}`));
+      expect(() => withFlag(base.startNodes!)).toThrow(/stopping.*share buffers/);
+      expect(() => withFlag(base.raster!.output.status!.count!)).toThrow(/stopping.*share buffers/);
+      const foreign = createTransientView(
+        new GPUCommandGraph(device),
+        `foreign-${name}`,
+        'uint32',
+        1
+      );
+      expect(() => withFlag(foreign).getCommandNodes(graph)).toThrow(/stopping.*target graph/);
+      expect(
+        () =>
+          new GPUNetworkIsochrones({
+            ...base,
+            startNodes: undefined,
+            output: {status: {[name]: flag}}
+          })
+      ).toThrow(/stopping output needs startNodes/);
+    }
+    expect(
+      () =>
+        new GPUNetworkIsochrones({
+          ...base,
+          output: {
+            status: {
+              converged: flag,
+              iterationLimitReached: flag
+            }
+          }
+        })
+    ).toThrow(/stopping output.status views must use separate buffers/);
+  } finally {
+    device.destroy();
+  }
+});
+
+for (const withAssignments of [false, true]) {
+  for (const alias of ['status', 'input', 'geometry'] as const) {
+    it(`rejects physical isochrone status aliases through duplicate imports (${alias}, assignments: ${withAssignments})`, () => {
+      const device = createNullWebGPUDevice();
+      const graph = new GPUCommandGraph(device);
+      const physicalBuffer = device.createBuffer({byteLength: 256, usage: Buffer.STORAGE});
+      try {
+        const firstHandle = graph.importBuffer(
+          {id: 'first-import', byteLength: 256, usage: Buffer.STORAGE},
+          physicalBuffer
+        );
+        const secondHandle = graph.importBuffer(
+          {id: 'second-import', byteLength: 256, usage: Buffer.STORAGE},
+          physicalBuffer
+        );
+        expect(firstHandle).not.toBe(secondHandle);
+        const firstView = graph.createDataView(firstHandle, {
+          format: 'uint32',
+          byteOffset: 0,
+          length: 1
+        });
+        const secondView = graph.createDataView(secondHandle, {
+          format: 'uint32',
+          byteOffset: 0,
+          length: 1
+        });
+        const base = createProps(graph, {
+          id: 'physical-status',
+          startNodes:
+            alias === 'input' ? firstView : createTransientView(graph, 'sources', 'uint32', 1),
+          assignments: withAssignments
+            ? createTransientView(graph, 'assignments', 'uint32', 4)
+            : undefined
+        });
+        expect(
+          () =>
+            new GPUNetworkIsochrones({
+              ...base,
+              raster:
+                alias === 'geometry'
+                  ? {
+                      ...base.raster!,
+                      output: {
+                        ...base.raster!.output,
+                        status: {...base.raster!.output.status, count: firstView}
+                      }
+                    }
+                  : base.raster,
+              output: {
+                status: {
+                  converged: alias === 'status' ? firstView : undefined,
+                  iterationLimitReached: secondView
+                }
+              }
+            })
+        ).toThrow(/^physical-status.*(?:separate buffers|share buffers)/);
+      } finally {
+        physicalBuffer.destroy();
+        device.destroy();
+      }
+    });
+  }
+}

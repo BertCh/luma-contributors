@@ -214,7 +214,9 @@ export type GPULocalKrigingSettings = {
  * 1/2, 2 Gaussian, 3 Matern 3/2, 4 Matern 5/2), then for co-kriging `variableCount^2` coefficients
  * `B = L L^T` row-major for each structure. `covarianceScale` is the largest structure variance
  * times its largest cross loading; the system is divided by it so entries stay O(1) next to unit
- * drift rows. A zero `covarianceScale` (an unwritten buffer) gives status 1 for every query.
+ * drift rows. An initialized model whose float32 scale is zero uses scale 1, preserving valid
+ * zero-loading process covariances. A zero `covarianceScale` in an unwritten buffer still gives
+ * status 1 for every query.
  *
  * @param settings The covariance model, one per structure when co-kriging.
  * @param target Optional destination of at least the parameter length.
@@ -273,7 +275,10 @@ export function getGPULocalKrigingParameterValues(
       (covariance.sill + (covariance.nugget ?? 0)) * loadingScale
     );
   });
-  destination[0] = covarianceScale;
+  // Zero loadings define a valid PSD process covariance. Reserve zero for an unwritten buffer,
+  // including when an initialized scale rounds to zero in the float32 parameter layout.
+  const normalizationScale = Math.fround(covarianceScale);
+  destination[0] = normalizationScale === 0 ? 1 : normalizationScale;
   return destination;
 }
 

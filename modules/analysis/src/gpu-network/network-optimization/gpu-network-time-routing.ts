@@ -2,12 +2,22 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createTransientView} from '@luma.gl/graph/gpu-core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import type {
+  GPUInvalidStatusPort,
+  GPUIterationStatusPort
+} from '../../analysis-core/contracts/status';
+import {
+  createNetworkOptimizationStatusNodes,
+  getNetworkOptimizationStatusViews,
+  validateNetworkOptimizationStatus
+} from './network-optimization-status';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
@@ -32,6 +42,19 @@ const ENDPOINT_COUNT = 2;
 /** Words of the `summary` view: valid, converged, target state, arrival time bits. */
 const SUMMARY_WORD_COUNT = 4;
 
+export type GPUNetworkTimeRoutingOutput = {
+  arrivals: GraphDataView<'float32'>;
+  /** Transition index per state; 0xffffffff for initial/unreached. */
+  predecessorTransitions: GraphDataView<'uint32'>;
+  /** [valid, converged, targetState, arrivalTimeBits]. */
+  summary: GraphDataView<'uint32'>;
+  /** invalidCount is 1 for rejected inputs or nonfinite arrival arithmetic.
+   * iterationCount counts executed transition sweeps, including the final no-change sweep.
+   * Invalid problems set neither converged nor iterationLimitReached.
+   */
+  status?: GPUInvalidStatusPort & GPUIterationStatusPort;
+};
+
 export type GPUNetworkTimeRoutingProps = {
   id?: string;
   /** Physical vertex of each explicit routing/restriction state. */
@@ -51,13 +74,7 @@ export type GPUNetworkTimeRoutingProps = {
   /** Nonnegative relative departure time; arbitrary epoch subtraction is caller-owned. */
   departure: GraphDataView<'float32'>;
   maximumRelaxations?: number;
-  output: {
-    arrivals: GraphDataView<'float32'>;
-    /** Transition index per state; 0xffffffff for initial/unreached. */
-    predecessorTransitions: GraphDataView<'uint32'>;
-    /** [valid, converged, targetState, arrivalTimeBits]. */
-    summary: GraphDataView<'uint32'>;
-  };
+  output: GPUNetworkTimeRoutingOutput;
 };
 
 /**
@@ -70,6 +87,9 @@ export type GPUNetworkTimeRoutingProps = {
  * with at most 256 states, 4,096 transitions and 65,536 relaxation rounds (default: one per
  * state), enforced at construction. A frontier relaxation with a time-dependent arrival function
  * on the reachability engine would replace it for larger networks.
+ * Compile-time: view lengths, costModel, samplesPerTransition, waitingPolicy, maximumRelaxations
+ * and optional status views. Per-frame: state vertices, transitions, costs, endpoints and departure.
+ * Every encoding rewrites the outputs.
  */
 export class GPUNetworkTimeRouting implements GPUCommandNodeProducer {
   readonly id: string;
@@ -141,7 +161,12 @@ export class GPUNetworkTimeRouting implements GPUCommandNodeProducer {
       props.output.summary.length === SUMMARY_WORD_COUNT,
       `output.summary must hold ${SUMMARY_WORD_COUNT} rows`
     );
-    validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
+    validateNetworkOptimizationStatus(
+      id,
+      [props.output.arrivals, props.output.predecessorTransitions, props.output.summary],
+      props.output.status
+    );
+    validateGraphOutputsDisjointFromInputs(this.id, getTimeRoutingOutputViews(props.output), [
       props.stateVertices,
       props.transitions,
       props.costs,
@@ -159,9 +184,20 @@ export class GPUNetworkTimeRouting implements GPUCommandNodeProducer {
       props.costs,
       props.endpoints,
       props.departure,
-      ...Object.values(props.output)
+      ...getTimeRoutingOutputViews(props.output)
     ]);
-    return [
+    // A fifth private summary word tracks sweeps only when requested. The solve already uses
+    // eight bindings; publish its four public words separately rather than adding a ninth binding.
+    const countsIterations = Boolean(props.output.status?.iterationCount);
+    const summary = countsIterations
+      ? createTransientView(
+          graph,
+          `${id}-summary-with-iterations`,
+          'uint32',
+          SUMMARY_WORD_COUNT + 1
+        )
+      : props.output.summary;
+    const nodes = [
       createWGSLKernelNode<Parameters>(graph, {
         id,
         operation: 'GPUNetworkTimeRouting',
@@ -181,7 +217,7 @@ export class GPUNetworkTimeRouting implements GPUCommandNodeProducer {
             type: 'u32',
             access: 'read_write'
           },
-          {name: 'summary', view: props.output.summary, type: 'u32', access: 'read_write'}
+          {name: 'summary', view: summary, type: 'u32', access: 'read_write'}
         ],
         declarations: `const STATE_COUNT: u32 = ${props.stateVertices.length}u;
 const TRANSITION_COUNT: u32 = ${props.transitions.length}u;
@@ -209,7 +245,8 @@ ${
 }
 }`,
 
-        body: `var infinityBits = 0x7f800000u; let infinity = bitcast<f32>(infinityBits);
+        body: `${countsIterations ? 'summary[summaryOffset + 4u] = 0u;' : ''}
+var infinityBits = 0x7f800000u; let infinity = bitcast<f32>(infinityBits);
 summary[summaryOffset] = 0u; summary[summaryOffset + 1u] = 0u; summary[summaryOffset + 2u] = 0xffffffffu; summary[summaryOffset + 3u] = bitcast<u32>(infinity);
 for (var state = 0u; state < STATE_COUNT; state++) { arrivals[arrivalsOffset + state] = infinity; predecessors[predecessorsOffset + state] = 0xffffffffu; }
 let initial = endpoints[endpointsOffset];
@@ -236,6 +273,7 @@ for (var edge = 0u; edge < TRANSITION_COUNT; edge++) {
 summary[summaryOffset] = 1u;
 arrivals[arrivalsOffset + initial] = startTime;
 for (var round = 0u; round < ${props.maximumRelaxations ?? props.stateVertices.length}u; round++) {
+  ${countsIterations ? 'summary[summaryOffset + 4u]++;' : ''}
   var changed = false;
   for (var edge = 0u; edge < TRANSITION_COUNT; edge++) {
     let source = transitions[transitionsOffset + 2u * edge]; let destination = transitions[transitionsOffset + 2u * edge + 1u];
@@ -258,7 +296,47 @@ summary[summaryOffset + 2u] = bestState;
 summary[summaryOffset + 3u] = bitcast<u32>(best);`
       })
     ];
+    if (countsIterations) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-publish-summary`,
+          operation: 'GPUNetworkTimeRouting',
+          variant: 'publish-summary',
+          invocationCount: SUMMARY_WORD_COUNT,
+          bindings: [
+            {name: 'source', view: summary, type: 'u32', access: 'read'},
+            {name: 'destination', view: props.output.summary, type: 'u32', access: 'read_write'}
+          ],
+          body: 'destination[destinationOffset + index] = source[sourceOffset + index];'
+        })
+      );
+    }
+    nodes.push(
+      ...createNetworkOptimizationStatusNodes(
+        graph,
+        id,
+        'GPUNetworkTimeRouting',
+        summary,
+        props.output.status,
+        {
+          invalidCount: '1u - summary[summaryOffset]',
+          iterationCount: 'summary[summaryOffset + 4u]',
+          converged: 'summary[summaryOffset] * summary[summaryOffset + 1u]',
+          iterationLimitReached: 'summary[summaryOffset] * (1u - summary[summaryOffset + 1u])'
+        }
+      )
+    );
+    return nodes;
   }
+}
+
+function getTimeRoutingOutputViews(output: GPUNetworkTimeRoutingProps['output']): GraphDataView[] {
+  return [
+    output.arrivals,
+    output.predecessorTransitions,
+    output.summary,
+    ...getNetworkOptimizationStatusViews(output.status)
+  ];
 }
 
 /** Static directed network edge; IDs are indices in the input array. */

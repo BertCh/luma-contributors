@@ -21,7 +21,9 @@ const PAIR_STATISTICS_TOTAL_FAN_IN = 256;
  * Per-segment totals of a segment-major table (`segment * rowCount + row`) for the grid paths of
  * the pair contributors: levels of invocations that each add at most 256 consecutive entries, in
  * a fixed order, until one total per segment remains (three levels at 2^24 rows). No invocation
- * loops over every row. float32 sums are added in that tree order; uint32 counts are exact.
+ * loops over every row. float32 sums are added in that tree order. With `detectOverflow`, uint32
+ * totals saturate and a second `segmentCount` block of the output contains per-segment overflow
+ * flags. Carry flags survive every tree level; an exact total of 0xffffffff does not overflow.
  *
  * @internal
  */
@@ -34,6 +36,7 @@ export function getPairStatisticsSegmentTotalNodes<Parameters>(
     rowCount: number;
     input: GraphDataView<'float32'> | GraphDataView<'uint32'>;
     output: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+    detectOverflow?: boolean;
   }
 ): GPUCommandNode<Parameters>[] {
   const {id, operation, segmentCount} = props;
@@ -47,9 +50,12 @@ export function getPairStatisticsSegmentTotalNodes<Parameters>(
     const output =
       groupCount === 1
         ? props.output
-        : (createTransientView(graph, `${id}-level-${level}`, format, segmentCount * groupCount) as
-            | GraphDataView<'float32'>
-            | GraphDataView<'uint32'>);
+        : (createTransientView(
+            graph,
+            `${id}-level-${level}`,
+            format,
+            segmentCount * groupCount * (props.detectOverflow ? 2 : 1)
+          ) as GraphDataView<'float32'> | GraphDataView<'uint32'>);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-level-${level}`,
@@ -60,7 +66,22 @@ export function getPairStatisticsSegmentTotalNodes<Parameters>(
           {name: 'entries', view: input, type, access: 'read'},
           {name: 'totals', view: output, type, access: 'read_write'}
         ],
-        body: `let segment = index / ${groupCount}u; let group = index % ${groupCount}u;
+        body: props.detectOverflow
+          ? `let segment = index / ${groupCount}u; let group = index % ${groupCount}u;
+  let begin = segment * ${entryCount}u + group * ${PAIR_STATISTICS_TOTAL_FAN_IN}u;
+  let end = segment * ${entryCount}u + min((group + 1u) * ${PAIR_STATISTICS_TOTAL_FAN_IN}u, ${entryCount}u);
+  var total = ${type}(0);
+  var overflow = 0u;
+  for (var entry = begin; entry < end; entry++) {
+    let value = entries[entriesOffset + entry];
+    let exceeds = value > 0xffffffffu - total;
+    total = select(total + value, 0xffffffffu, exceeds);
+    overflow |= u32(exceeds);
+    ${level > 0 ? `overflow |= entries[entriesOffset + ${segmentCount * entryCount}u + entry];` : ''}
+  }
+  totals[totalsOffset + index] = total;
+  totals[totalsOffset + ${segmentCount * groupCount}u + index] = overflow;`
+          : `let segment = index / ${groupCount}u; let group = index % ${groupCount}u;
   let begin = segment * ${entryCount}u + group * ${PAIR_STATISTICS_TOTAL_FAN_IN}u;
   let end = segment * ${entryCount}u + min((group + 1u) * ${PAIR_STATISTICS_TOTAL_FAN_IN}u, ${entryCount}u);
   var total = ${type}(0);

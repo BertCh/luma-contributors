@@ -155,6 +155,12 @@ for (const scene of [
   'order2',
   'HC0',
   'HC1',
+  'HC2',
+  'HC3',
+  'CLUSTER',
+  'oneGroup',
+  'missingKey',
+  'nonPSD',
   'HAC',
   'zeroTotal',
   'singular',
@@ -164,8 +170,14 @@ for (const scene of [
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const fixture = fixtures[scene === 'zeroTotal' ? 2 : scene === 'order2' ? 1 : 0];
-    const robust = ['HC0', 'HC1', 'HAC', 'invalidKernel'].includes(scene);
-    const method = scene === 'HC1' ? 'HC1' : scene === 'HC0' ? 'HC0' : 'HAC';
+    const robust = !['ordinary', 'order2', 'zeroTotal', 'singular'].includes(scene);
+    const method =
+      scene === 'HC0' || scene === 'HC1' || scene === 'HC2' || scene === 'HC3'
+        ? scene
+        : ['CLUSTER', 'oneGroup', 'missingKey'].includes(scene)
+          ? 'CLUSTER'
+          : 'HAC';
+    const kernel = scene === 'nonPSD' ? fixture.nonPositiveSemidefiniteKernel : fixture.kernel;
     const outputNames = [
       'code',
       'table',
@@ -192,22 +204,36 @@ for (const scene of [
             offsets: {format: 'uint32', values: Uint32Array.from(fixture.weights.offsets)},
             neighbors: {format: 'uint32', values: Uint32Array.from(fixture.weights.neighbors)},
             weights: {format: 'float32', values: Float32Array.from(fixture.weights.weights)},
+            ...(method === 'CLUSTER'
+              ? {
+                  clusters: {
+                    format: 'uint32' as const,
+                    values: Uint32Array.from(fixture.clusters, (key, row) =>
+                      scene === 'oneGroup'
+                        ? 0
+                        : scene === 'missingKey' && row === 0
+                          ? 0xffffffff
+                          : key
+                    )
+                  }
+                }
+              : {}),
             ...(robust && method === 'HAC'
               ? {
                   kernelOffsets: {
                     format: 'uint32' as const,
-                    values: Uint32Array.from(fixture.kernel.offsets)
+                    values: Uint32Array.from(kernel.offsets)
                   },
                   kernelNeighbors: {
                     format: 'uint32' as const,
-                    values: Uint32Array.from(fixture.kernel.neighbors)
+                    values: Uint32Array.from(kernel.neighbors)
                   },
                   kernelWeights: {
                     format: 'float32' as const,
                     values:
                       scene === 'invalidKernel'
-                        ? new Float32Array(fixture.kernel.weights.length)
-                        : Float32Array.from(fixture.kernel.weights)
+                        ? new Float32Array(kernel.weights.length)
+                        : Float32Array.from(kernel.weights)
                   }
                 }
               : {})
@@ -223,6 +249,8 @@ for (const scene of [
               robust: robust
                 ? {
                     method,
+                    clusters: method === 'CLUSTER' ? 'clusters' : undefined,
+                    clusterCount: method === 'CLUSTER' ? fixture.clusterCount : undefined,
                     kernel:
                       method === 'HAC'
                         ? {
@@ -252,7 +280,15 @@ for (const scene of [
       expect(Array.from(results[0]['robustStatus'])).toEqual(
         Array.from(results[1]['robustStatus'])
       );
-      expect(results[1]['robustStatus'][0]).toBe(scene === 'invalidKernel' ? 4 : 0);
+      expect(results[1]['robustStatus'][0]).toBe(
+        scene === 'invalidKernel'
+          ? 4
+          : scene === 'nonPSD'
+            ? 7
+            : scene === 'oneGroup' || scene === 'missingKey'
+              ? 6
+              : 0
+      );
     }
     for (const name of outputNames.filter(name => name !== 'code' && name !== 'robustStatus')) {
       // Relative tolerances: diagnostics and robust normal-equation projections dominate error.

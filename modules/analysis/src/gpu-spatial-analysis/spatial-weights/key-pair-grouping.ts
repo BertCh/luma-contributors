@@ -5,12 +5,11 @@
 import {
   createTransientView,
   GPUScan,
-  GPUSort,
-  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 /** Key value that marks an invalid item. Both halves equal it, and invalid items sort last. @internal */
@@ -57,11 +56,18 @@ export function getKeyPairSortNodes<Parameters>(
   keyBits?: {high?: number; low?: number}
 ): KeyPairSort<Parameters> {
   const itemIds = createTransientView(graph, `${id}-item-ids`, 'uint32', count);
-  const sortedLow = createTransientView(graph, `${id}-sorted-low`, 'uint32', count);
-  const lowOrder = createTransientView(graph, `${id}-low-order`, 'uint32', count);
-  const gatheredHigh = createTransientView(graph, `${id}-gathered-high`, 'uint32', count);
-  const sortedHigh = createTransientView(graph, `${id}-sorted-high`, 'uint32', count);
-  const sortedItems = createTransientView(graph, `${id}-sorted-items`, 'uint32', count);
+  const sorted = createStableLexicographicIndexSortNodes(graph, {
+    id: `${id}-sort`,
+    operation,
+    indices: itemIds,
+    indicesAreIdentity: true,
+    // Capacity plans count six words per item, including identity and both unpacked passes.
+    packKeys: false,
+    keys: [
+      {view: keyHigh, keyBits: keyBits?.high},
+      {view: keyLow, keyBits: keyBits?.low}
+    ]
+  });
   const nodes: GPUCommandNode<Parameters>[] = [
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-iota`,
@@ -71,31 +77,9 @@ export function getKeyPairSortNodes<Parameters>(
       invocationCount: count,
       body: 'itemIds[itemIdsOffset + index] = index;'
     }),
-    ...new GPUSort({
-      id: `${id}-sort-low`,
-      keys: keyLow,
-      values: itemIds,
-      outputKeys: sortedLow,
-      outputValues: lowOrder,
-      keyBits: keyBits?.low
-    }).getCommandNodes(graph),
-    // `lowOrder` is a permutation of the item IDs, so no index is out of range.
-    ...new GPUUint32Gather({
-      id: `${id}-gather-high`,
-      source: keyHigh,
-      indices: lowOrder,
-      output: gatheredHigh
-    }).getCommandNodes(graph),
-    ...new GPUSort({
-      id: `${id}-sort-high`,
-      keys: gatheredHigh,
-      values: lowOrder,
-      outputKeys: sortedHigh,
-      outputValues: sortedItems,
-      keyBits: keyBits?.high
-    }).getCommandNodes(graph)
+    ...sorted.nodes
   ];
-  return {nodes, sortedItems};
+  return {nodes, sortedItems: sorted.sortedIndices};
 }
 
 /** Result of {@link getKeyGroupNodes}. @internal */

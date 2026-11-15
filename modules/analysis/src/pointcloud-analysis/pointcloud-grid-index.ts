@@ -86,8 +86,9 @@ export function getPointCloudRowDirection(grid: {
  * 4. A 3-D grid over a raster mode that ignores Z, and float32x3 positions with a 2-D grid.
  * 5. Grids above 2^24 cells per axis or with cell offsets larger than the caller's storage
  *    binding are rejected here with a named limit; the published class names none.
- * 6. The offsets and sorted IDs as plain read-only views for the caller's own kernels (it needs
- *    `count` and `overflow` rows and a caller-sized `objectIds` capacity).
+ * The published API already accepts caller-owned cellOffsets and objectIds views (plus count
+ * and overflow); output access is not a migration blocker. The four semantic differences above
+ * are confirmed against the installed 10.0.0-alpha.13 public GPUGridIndex contract and kernels.
  */
 export function createPointCloudGridIndex<Parameters>(
   graph: GPUCommandGraph<Parameters>,

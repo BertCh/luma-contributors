@@ -6,6 +6,7 @@ import {
   GPURasterEmbeddingChange,
   GPURasterEmbeddingCovariance,
   GPURasterEmbeddingDequantize,
+  GPURasterEmbeddingQuantize,
   GPURasterEmbeddingKMeans,
   GPURasterEmbeddingKNearestClassifier,
   GPURasterEmbeddingLinearProbe,
@@ -250,6 +251,49 @@ export const RTS_01_03_EMBEDDING_FDR_AUDIT_CASES: readonly KernelAuditCase[] = [
     name: 'rts03-int8-128-bands-raw',
     build: context => dequantize(context, false)
   },
+  ...(['tessera-int8', 'float16'] as const).map(format => ({
+    exportName: 'GPURasterEmbeddingDequantize',
+    name: `emb01-${format}-normalized-masked`,
+    build: (context: KernelAuditContext) => {
+      const {graph, view} = context;
+      const pixelCount = pixelsAtBindingLimit(context);
+      graph.add(
+        new GPURasterEmbeddingDequantize({
+          pixelCount,
+          dimensions: DIMENSIONS,
+          format,
+          normalize: true,
+          quantized: view('uint32', (pixelCount * DIMENSIONS) / (format === 'float16' ? 2 : 4)),
+          ...(format === 'tessera-int8' ? {scales: view('float32', pixelCount)} : {}),
+          mask: view('uint32', pixelCount),
+          output: {
+            vectors: view('float32', pixelCount * DIMENSIONS),
+            validity: view('uint32', pixelCount)
+          }
+        })
+      );
+    }
+  })),
+  ...[false, true].map(withValidity => ({
+    exportName: 'GPURasterEmbeddingQuantize',
+    name: `emb01-int8-encode-validity-${withValidity}`,
+    build: (context: KernelAuditContext) => {
+      const {graph, view} = context;
+      const pixelCount = pixelsAtBindingLimit(context);
+      graph.add(
+        new GPURasterEmbeddingQuantize({
+          pixelCount,
+          dimensions: DIMENSIONS,
+          vectors: view('float32', pixelCount * DIMENSIONS),
+          mask: view('uint32', pixelCount),
+          output: {
+            quantized: view('uint32', (pixelCount * DIMENSIONS) / 4),
+            ...(withValidity ? {validity: view('uint32', pixelCount)} : {})
+          }
+        })
+      );
+    }
+  })),
   {
     exportName: 'GPURasterEmbeddingSimilarity',
     name: 'rts03-cosine-64-queries',

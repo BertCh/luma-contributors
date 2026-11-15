@@ -492,6 +492,39 @@ compared exactly. The sentinel marks raster cells only: a per-frame constant ope
 value, so `GPURasterConditional` with `noDataValue: 0` and `constantB: 0` writes 0 where the condition
 fails, and `GPURasterArithmetic` `maximum(a, 0)` with `noDataValue: 0` is defined wherever `a` is. Stacks are band-sequential: layer `i` occupies rows `[i * cellCount, (i + 1) * cellCount)`.
 
+`GPURasterReclassify.values` and `GPURasterConditional.conditionValues`, `a`, and `b` also accept
+published `GPURasterBand` inputs. Supply `grid` when any input is a band. Buffer bands may be
+float32, uint32 or sint32; texture bands use the published scalar/channel storage contract.
+The published raster conversion resolves native no-data and band validity before applying scale
+and offset. Non-finite band samples are missing. Legacy float views keep the NaN/sentinel rules
+above, including infinity handling. The contributor-level `noDataValue` applies only to legacy
+views; each band owns its native sentinel. In a conditional, only the chosen operand must be valid,
+and an invalid condition always produces NaN. An additional reclassify `mask` still filters cells.
+Band storage and validity may have padding after the grid; only the grid prefix is read. Reclassify
+uses the grid cell count by default for a band and can classify a smaller `rowCount` prefix.
+Band metadata and grid dimensions are compile-time; input contents and masks can change each frame.
+
+`GPURasterCellStatistics.stack` and `GPUWeightedOverlay.stack` also accept an ordered array of
+published bands: `stack: [elevationBand, moistureBand, ...]`. Supply exactly `layerCount` bands and
+`grid` with exactly `cellCount` cells; every band must already occupy that complete grid. Buffer
+and texture storage and native scalar formats can be mixed. Each band's validity, native nodata,
+scale and offset are resolved independently. The top-level `noDataValue` applies only to the legacy
+packed stack, so a calibrated band value equal to it stays valid. The existing `mask`, nodata
+policy, minimum valid count, frequency tie rules and remapping operate on calibrated observations.
+
+Band arrays are converted and packed on the GPU into one float32 stack, so the analytical kernels
+keep one input binding even at 64 statistics layers or 16 overlay layers. The extra stack occupies
+`4 * cellCount * layerCount` bytes, plus published band-conversion scratch. Its binding must fit
+the device's storage limit; reduce the grid or layer count if construction of the command nodes
+rejects it. `estimatedCommandNodeCount` bounds conversion, packing and analysis nodes and is
+checked at construction. Compiled graphs own the scratch; these contributors need no `destroy()`.
+Legacy packed stacks retain their existing path and results.
+
+Band metadata is validated at construction. Calibration and non-NaN float sentinels must round to
+finite float32; integer sentinels must be integers within the native uint32 or sint32 range.
+Textures must select one 2D mip, one array layer and one sample, preserve the declared band scalar
+format, and select an existing channel. Validity must belong to the same graph as the band storage.
+
 - `GPURasterReclassify` maps values through `n` ascending per-frame breaks: the class is the number
   of breaks `<= value` (left-closed `[b[k - 1], b[k])`, default) or `< value` (right-closed), found
   by binary search. Outputs: `classes` (`0xffffffff` for nodata), `reclassified`
@@ -632,6 +665,13 @@ Settings of `getGPUWeightedOverlayParameterValues`:
 
 #### `GPURasterArithmetic`
 
+Operands `a` and `b` accept published buffer or texture raster bands alongside legacy float32
+views. Supply `grid` for a band; validity and the native sentinel are applied before band calibration.
+The operation's per-frame scale and offset then apply to those calibrated values. The top-level
+`noDataValue` applies only to legacy operands. An absent `b` still uses `constantB`, including when
+that constant equals the legacy sentinel. All band metadata is compile-time; buffer contents and
+validity are borrowed and reread on every encoding.
+
 Scales two rasters and combines them per cell; here near-infrared reflectance after the fire minus before it.
 
 ::lens{scenario=gpu-raster.raster-arithmetic rung=result caption="Change in near-infrared reflectance; the burn scar is the strongest decrease."}
@@ -720,6 +760,14 @@ and GIMP levels) and sigmoidal contrast (normalized so 0 and 1 are fixed). GDAL 
 `lutSize` normalized values with optional `lutColors`, the `histogram`, and an 8-row `statistics`
 row `[domainMinimum, domainMaximum, lo, hi, validCount, binWidth, 0, 0]` (`GPU_RASTER_STRETCH_STATISTICS_INDEX`).
 
+`values` accepts a published `GPURasterBand` as well as a legacy float view. Band validity,
+native no-data and calibration are resolved through the published raster primitives before both
+statistics and application. Band samples must be finite; legacy infinities retain their documented
+clamping behavior. `noDataValue` applies only to legacy views. `mask` remains an additional cell
+filter, while `regionMask` filters statistics only. Only the grid prefix of padded band views is
+used; band metadata is compile-time and band contents/validity are per-frame. Construction validates
+the same band metadata limits as reclassify and conditional above.
+
 Statistics (exact min/max, a `binCount` histogram, its CDF) come from the valid, finite cells inside a
 per-frame window `[column0, row0, column1, row1)` and an optional per-frame `regionMask`; the apply
 step always covers every cell. A viewport mask (for example from `GPURegionMask`) gives QGIS-style
@@ -731,8 +779,8 @@ exact minimum and maximum. (Ten values 0, 10, ..., 90 at `p = 0.98` give 80.02; 
 rule gives 88.2.) Equalization uses the rule of the published `GPURasterContrast` and OpenCV
 `equalizeHist`, `(cdf[bin] - cdfFirst) / (total - cdfFirst)` with `cdfFirst` the cumulative count of the
 first occupied bin: it depends only on ranks, so the smallest value maps to 0, the largest to 1 and three
-equally frequent values map to 0, 0.5 and 1. NaN, `noDataValue`, and `validity`
-cells are nodata (`stretched` NaN, `colors` 0). A constant raster (`lo == hi`) maps values below to 0,
+equally frequent values map to 0, 0.5 and 1. NaN, the applicable no-data sentinel, and cells
+rejected by band validity or `mask` are nodata (`stretched` NaN, `colors` 0). A constant raster (`lo == hi`) maps values below to 0,
 equal to 0.5, above to 1; with an automatic domain and no included cell, `statistics` is NaN and
 `validCount` 0.
 
@@ -787,6 +835,10 @@ Settings of `getGPURasterStretchParameterValues`:
 
 ## `GPUIsolines` and `GPUIsobands`
 
+Isoband triangle and boundary-edge scans saturate their totals at `0xffffffff`. Offsets stay
+monotonic even when the requirement exceeds uint32, so capacity overflow keeps the output prefix
+and sets the existing `overflow` or `edgeOverflow` status.
+
 Marching-squares contours of any float32 raster (terrain, density, interpolation output) with
 per-frame levels. Both contributors share one definition, so filled bands and lines drawn together
 coincide bit for bit on a device. Samples sit at cell centres of the per-frame world extent (row 0
@@ -801,9 +853,38 @@ differ only on saddles whose corners are far from symmetric, such as `10, 0, 1.1
 (mean 2.775 joined them, saddle value 0.991 separates them). Crossings are computed once per
 canonical edge (left to right, bottom to top), so neighbouring cells produce identical vertices.
 
+`GPUIsolines.values` and `GPUIsobands.values` also accept a published `GPURasterBand` on `grid`.
+Buffer bands support float32, uint32 and sint32; texture bands use the published scalar/channel
+storage contract. Conversion honors native nodata and nonzero band validity before applying scale
+and offset. Non-finite samples become missing. The contributor-level `noDataValue` applies only to
+legacy float views, so a calibrated band value equal to that sentinel remains valid. An additional
+`mask` still filters samples, and any missing corner excludes its marching cell from all geometry.
+Classes, segments, stitched polylines, triangles and boundary edges use the same calibrated values.
+
+Band metadata and grid dimensions are compile-time; sample values, band validity and masks can
+change between encodings. Buffer storage and validity may have byte offsets and padding after the
+grid; only the grid prefix is converted. Canonicalization allocates graph-owned float32 values and
+uint32 validity, each `4 * grid.width * grid.height` bytes, and checks the device binding limit before
+allocation. For tiled isolines the band covers the local grid including its halo, while parameters
+still describe the shared domain. Contour coordinates continue to use the explicit parameter
+extent and the row direction documented below.
+
+**Isoline tiles.** Optional compile-time `GPUIsolines.tile` places a halo-padded local grid in
+`domainWidth` × `domainHeight` sample coordinates with `columnOffset` and `rowOffset`.
+`ownedCells: [minColumn, minRow, maxColumn, maxRow]` is a half-open rectangle of local
+marching-cell lower-left samples. Partition domain cells exactly once and supply all four corners
+of every owned cell, including a one-sample right/top halo at internal boundaries. Empty owned
+rectangles emit nothing. Pack parameters with the **domain** grid and extent and use identical
+levels and `localOrigin` for every tile. Shared sample anchors and canonical interpolation make
+seam coordinates identical. `segmentEdges` uses domain edge IDs; join tile fragments by edge ID
+and level without coordinate snapping. Counts, capacities and optional stitched polylines remain
+local to each tile; cross-tile chains remain fragments. The existing Dixie Fire lens uses one
+resident grid without `tile`, so its result is unchanged. External vector overlays remain unsupported.
+
 **Row direction.** `GPUIsolines`, `GPUIsobands` and `GPUIsobandRings` place row 0 of the raster at
-`minY` of the extent and read only the width and height of `grid`, not `grid.affine`. Nothing is
-checked at construction. A north-up grid (row 0 at the top, the default of
+`minY` of the extent and read sample dimensions (`grid`, or the domain for tiled isolines), not
+`grid.affine`. Construction validates tile bounds but does not infer row direction. A north-up grid
+(row 0 at the top, the default of
 `makeGPURasterMetadata`) therefore comes out mirrored north to south unless you reverse the row
 order of the raster before upload. Mirroring the output instead (`y' = minY + maxY - y`) also
 swaps the documented side: high values are then on the right of a segment and ring windings are
@@ -907,7 +988,7 @@ Settings of `getGPUIsobandsParameterValues`:
 ### `GPUIsolines` parameters
 
 - Packer: `getGPUIsolinesParameterValues(settings, grid)`, writes `GPU_ISOLINES_PARAMETER_LENGTH` (8) `float32` values.
-  - `grid` (`GPURasterMetadata`): Frame raster grid; its width and height give the cell sizes and must match the contributor's.
+  - `grid` (`GPURasterMetadata`): Frame raster grid; its width and height give the cell sizes and must match the contributor's unless `GPUIsolinesProps.tile` is set: then pass the DOMAIN grid and extent, and reuse identical parameters (including localOrigin) for all tiles. Tile offsets are applied in domain sample coordinates by the contributor, before interpolation.
 
 Settings of `getGPUIsolinesParameterValues`:
 
@@ -963,6 +1044,12 @@ Chains the band boundary edges of an elevation raster into closed shell and hole
 ::lens{scenario=gpu-raster.isoband-rings rung=graph caption="Band boundary edges feed hash, sort, match, ring tracing and placement nodes."}
 
 ## `GPURasterSampling` and `GPURasterProfile`
+
+Both contributors accept a published `GPURasterBand` in `values`, including buffer and texture
+storage. Band validity, native nodata and calibration are resolved by published raster primitives
+before interpolation. `mask` filters additional cells; the legacy `noDataValue` applies only to a
+bare value view, so a calibrated band value equal to that sentinel remains valid. Padded buffer
+views are bounded to the grid, and borrowed validity is reread on every encoding.
 
 `GPURasterSampling` samples a float32 raster at points ("extract raster values to points", draping,
 tooltips). The pixel coordinate is `u = (x - minX) * (1 / cellWidth) - 0.5`, so integer `u` is a cell

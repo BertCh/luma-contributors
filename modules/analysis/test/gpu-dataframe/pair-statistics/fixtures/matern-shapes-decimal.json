@@ -1,0 +1,132 @@
+[
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 0,
+    "shape": 0.0
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 1e-12,
+    "shape": 1.1276649552631157e-23
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 1e-09,
+    "shape": 1.1276649516964753e-17
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 1e-08,
+    "shape": 1.1276649195645781e-15
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 1e-05,
+    "shape": 1.1276292537940557e-09
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 0.01,
+    "shape": 0.001092590687973528
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 0.10528462740268395,
+    "shape": 0.09020401043104956
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 0.10528462740268416,
+    "shape": 0.09020401043104985
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 0.10528462740268436,
+    "shape": 0.09020401043105016
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 0.1,
+    "shape": 0.08269093083402458
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 1,
+    "shape": 0.950212931632136
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 10,
+    "shape": 1.0
+  },
+  {
+    "model": "matern-3/2",
+    "scaledDistance": 1000,
+    "shape": 1.0
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 0,
+    "shape": 0.0
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 1e-12,
+    "shape": 5.84987622055953e-24
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 1e-09,
+    "shape": 5.849876220559531e-18
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 1e-08,
+    "shape": 5.849876220559526e-16
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 1e-05,
+    "shape": 5.849876215426536e-10
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 0.01,
+    "shape": 0.0005844902293258149
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 0.08439584012236759,
+    "shape": 0.039659788788330264
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 0.08439584012236775,
+    "shape": 0.03965978878833041
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 0.08439584012236792,
+    "shape": 0.03965978878833056
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 0.1,
+    "shape": 0.05472389112314801
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 1,
+    "shape": 0.950212931632136
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 10,
+    "shape": 1.0
+  },
+  {
+    "model": "matern-5/2",
+    "scaledDistance": 1000,
+    "shape": 1.0
+  }
+]

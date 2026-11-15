@@ -17,6 +17,9 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import type {Device} from '@luma.gl/core';
 import {
   getStorageBindingElementLimit,
+  validateCapacity,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
@@ -32,6 +35,15 @@ const OPERATION = 'GPUGroupStatistics';
 
 /** Largest number of value columns one contributor instance reduces. */
 const MAXIMUM_COLUMN_COUNT = 4;
+
+/** Published GPUSort accepts at most 2^31 rows, including its padding. */
+const MAXIMUM_ROW_COUNT = 2 ** 31;
+
+/**
+ * Upper bound per published sort, scan or gather: includes radix histogram scans and their
+ * hierarchy at the maximum row count. Their public APIs do not expose node count estimates.
+ */
+const PRIMITIVE_COMMAND_NODE_ALLOWANCE = 512;
 
 /**
  * Largest group capacity (`output.keys.length`) of {@link GPUGroupStatistics} on `device`: the
@@ -258,9 +270,12 @@ const FLOAT_OUTPUTS = [
  * about 1e15 of dynamic range at a million rows), so a column of 1e-4 and a column of 1e6 both
  * sum to float32 accuracy; smaller values round to the unit. The optional `sums` words are a
  * second, 64-bit accumulator in the caller's unit `1 / sumScale`. Moments are corrected two-pass:
- * `d = v - mean` is reduced in a fixed order (one 256-thread workgroup per group, strided partial
- * sums plus a fixed binary tree), and the central sums about the true mean come from the shifted
+ * `d = v - mean` is reduced in a fixed binary tree over sorted row blocks, with O(rows) work and
+ * O(log rows) depth even for one dominant group. The central sums about the true mean come from the shifted
  * sums, so the result is bitwise reproducible. The z-score is centred on that same corrected mean.
+ * Signed first and third powers use a per-group power-of-two scale before the tree and restore
+ * it after cancellation, preventing overflow of same-sign branches. Groups whose values have
+ * binary exponent at most 30 need no scaling. Even powers retain float32 range limits.
  *
  * The official `GPUGroupAggregation` of `@luma.gl/graph/gpu-core` publishes count, sum, mean,
  * minimum and maximum for dense `uint32` keys with float compare-exchange sums. This contributor
@@ -283,6 +298,8 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
   readonly variance: 'sample' | 'population';
   /** Fixed-point scale of the `sums` words. */
   readonly sumScale: number;
+  /** Upper bound including published primitive allowances and the row-dependent moment tree. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUGroupStatisticsProps) {
     this.id = props.id ?? 'group-statistics';
@@ -301,9 +318,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     }
     validateSinglePackedView(keys, ['uint32', 'uint32x2'], `${id} keys`);
     const rowCount = keys.length;
-    if (rowCount < 1) {
-      throw new Error(`${id} keys must hold at least one row`);
-    }
+    validateCapacity(id, 'keys.length', rowCount, 1, MAXIMUM_ROW_COUNT);
     if (mask) {
       validateSinglePackedView(mask, ['uint32'], `${id} mask`);
       if (mask.length !== rowCount) {
@@ -452,6 +467,27 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
       }
     }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
+    // Structure: at most two sorts, two gathers and one scan, plus 16 local nodes. A column's
+    // order statistics add at most three sorts, four gathers and two scans. The other column
+    // passes need fewer than 32 nodes, plus the logarithmic moment merge levels.
+    this.estimatedCommandNodeCount =
+      5 * PRIMITIVE_COMMAND_NODE_ALLOWANCE +
+      16 +
+      columns.reduce((total, column) => {
+        const needsOrder = column.statistics.some(statistic =>
+          ['median', 'percentiles', 'mode', 'uniqueCount'].includes(statistic)
+        );
+        const needsMoments = column.statistics.some(statistic =>
+          ['variance', 'standardDeviation', 'skewness', 'kurtosis', 'zScore'].includes(statistic)
+        );
+        return (
+          total +
+          32 +
+          (needsOrder ? 9 * PRIMITIVE_COMMAND_NODE_ALLOWANCE : 0) +
+          (needsMoments ? Math.ceil(Math.log2(rowCount)) + 2 : 0)
+        );
+      }, 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   private getInputViews(): (GraphDataView | undefined)[] {
@@ -481,6 +517,15 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    // Every row-proportional scratch binding is a scalar array, including the four separate
+    // moment-power arrays. Check before declaring any command nodes or transients.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'keys.length row scratch',
+      props.keys.length * 4,
+      'reduce keys.length'
+    );
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
     const capacity = props.output.keys.length;
     validateMaximumCount(

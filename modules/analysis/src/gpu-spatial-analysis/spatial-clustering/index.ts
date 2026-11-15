@@ -49,3 +49,8 @@ export {computeOPTICSOnCPU, CPUOPTICSOperation} from './cpu-optics-operation';
 export type {CPUOPTICSOptions, CPUOPTICSResult} from './cpu-optics-operation';
 export {GPUOPTICSOperation} from './gpu-optics-operation';
 export type {OPTICSOperationProps} from './gpu-optics-operation';
+export {
+  getGPUHierarchicalDensityClusteringParameterValues,
+  GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH
+} from './hierarchical-density-clustering-parameters';
+export type {GPUHierarchicalDensityClusteringSettings} from './hierarchical-density-clustering-parameters';

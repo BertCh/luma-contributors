@@ -6,7 +6,10 @@ import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contri
 import {GPUIsolines, type GPUIsolinesProps} from './gpu-isolines';
 
 /** Logical values and explicit capacities shared by the isolines operations. */
-export type IsolinesOperationProps = Pick<GPUIsolinesProps, 'id' | 'grid' | 'noDataValue'> & {
+export type IsolinesOperationProps = Pick<
+  GPUIsolinesProps,
+  'id' | 'grid' | 'noDataValue' | 'tile'
+> & {
   values: string;
   mask?: string;
   levels: string;

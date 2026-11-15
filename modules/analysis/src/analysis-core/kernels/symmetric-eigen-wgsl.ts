@@ -164,3 +164,47 @@ fn getSymmetricEigen_${n}(
 }
 `;
 }
+
+/**
+ * Smallest eigenpair of a finite symmetric 2 by 2 matrix with entries `(first, cross, second)`.
+ * Returns `SmallestSymmetricEigen2 {value, vector}`. Repeated eigenvalues choose `(1, 0)`;
+ * otherwise the unit vector has nonnegative first component (the sign at an axis is arbitrary).
+ *
+ * The rationalized Jacobi tangent avoids half-trace subtraction. Scaling is used only to find
+ * that tangent, not to store the diagonals: `min(first, second) - abs(cross) * tangent` retains a
+ * small normal negative eigenvalue beside a much larger positive diagonal even when their ratio
+ * underflows float32. Unit vectors are formed from `(1, tangent)`, never from tiny curvatures.
+ * Subnormal inputs/results can still be flushed by the GPU. Requires finite input entries.
+ * @internal
+ */
+export const SMALLEST_SYMMETRIC_EIGEN_2_WGSL = /* wgsl */ `
+struct SmallestSymmetricEigen2 {
+  value: f32,
+  vector: vec2<f32>,
+}
+
+fn getSmallestSymmetricEigen2(first: f32, cross: f32, second: f32) -> SmallestSymmetricEigen2 {
+  if (cross == 0.0) {
+    return SmallestSymmetricEigen2(min(first, second),
+      select(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0), second < first));
+  }
+  let exponent = frexp(max(abs(first), max(abs(cross), abs(second)))).exp;
+  let scaledFirst = ldexp(first, -exponent);
+  let scaledSecond = ldexp(second, -exponent);
+  let scaledCross = abs(ldexp(cross, -exponent));
+  let halfGap = 0.5 * abs(scaledFirst - scaledSecond);
+  var tangent = 1.0;
+  if (halfGap > 0.0) {
+    // Either the gap or coupling is large enough to square safely. If the gap is zero,
+    // the tangent is exactly one, including when scaledCross underflows.
+    let radius = length(vec2<f32>(halfGap, scaledCross));
+    tangent = scaledCross / (halfGap + radius);
+  }
+  let correction = abs(cross) * tangent;
+  let crossSign = select(-1.0, 1.0, cross > 0.0);
+  let direction = select(vec2<f32>(1.0, -crossSign * tangent),
+    vec2<f32>(tangent, -crossSign), second < first);
+  return SmallestSymmetricEigen2(min(first, second) - correction,
+    direction / sqrt(1.0 + tangent * tangent));
+}
+`;

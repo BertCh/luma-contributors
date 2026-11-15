@@ -213,7 +213,20 @@ fn getGeodesicAreaPoint(
   distance: f32,
   origin: vec2<f32>
 ) -> vec2<f32> {
-  let point = vincentyDirect(start, bearing, distance).destination;
+  let direct = vincentyDirect(start, bearing, distance);
+  if (direct.hasLocalDelta) {
+    // Keep the small displacement out of global f32 coordinates. Rounding a
+    // 51-degree midpoint first quantizes its latitude by about 0.4 m, which
+    // alone can exceed a city polygon's area tolerance. Add sine differences
+    // rather than latitude differences, so fast math cannot reassociate this
+    // into the same lossy global-coordinate subtraction.
+    let sineChange = geodesicSinLatitudeDelta(start.y, origin.y) + direct.sinLatitudeDelta;
+    return vec2<f32>(
+      startX + direct.longitudeDelta * GEODESIC_DEGREES_TO_RADIANS,
+      getAuthalicSinDelta(sin(origin.y * GEODESIC_DEGREES_TO_RADIANS), sineChange)
+    );
+  }
+  let point = direct.destination;
   return vec2<f32>(
     startX + (point.x - start.x) * GEODESIC_DEGREES_TO_RADIANS,
     getAreaY(point, origin)

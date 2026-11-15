@@ -8,7 +8,7 @@ import {GPUCellMeasures, type GPUCellMeasuresProps} from './gpu-cell-measures';
 /** Graph values replacing the contributor's packed views. */
 export type CellMeasuresOperationProps = Pick<
   GPUCellMeasuresProps,
-  'id' | 'family' | 'wordOrder' | 'maximumEdgeCount' | 'units'
+  'id' | 'family' | 'wordOrder' | 'maximumEdgeCount' | 'units' | 'precision'
 > & {
   cells: string;
   rowCount: number;
@@ -41,7 +41,9 @@ export class GPUCellMeasuresOperation extends GPUContributorOperation {
                       format: port === 'edgeCounts' || port === 'pentagons' ? 'uint32' : 'float32',
                       length:
                         props.rowCount *
-                        (port === 'edgeLengths' ? (props.maximumEdgeCount ?? 6) : 1)
+                        (port === 'edgeLengths'
+                          ? (props.maximumEdgeCount ?? (props.family === 'h3' ? 6 : 4))
+                          : 1)
                     }
                   ]
                 ]

@@ -110,6 +110,7 @@ type Result = {
   ringOffsets: number[];
   overflow: number;
   requiredCount: number;
+  uncertainCount: number;
   converged: number;
   /** `[initial crossings, remaining crossings, restored vertices, overflow]`. */
   topologyStats: number[];
@@ -121,9 +122,18 @@ async function runCoverage(
   tolerance: number,
   capacity?: number,
   topologyRounds = 0,
-  simplifyBoundary = true
+  simplifyBoundary = true,
+  padding?: {value: number; leading: number; trailing: number; snapTolerance: number}
 ): Promise<Result> {
   const layout = flattenPolygons(polygons);
+  if (padding) {
+    const positions = new Float32Array(
+      layout.positions.length + 2 * (padding.leading + padding.trailing)
+    ).fill(padding.value);
+    positions.set(layout.positions, 2 * padding.leading);
+    layout.positions = positions;
+    layout.ringOffsets = Uint32Array.from(layout.ringOffsets, offset => offset + padding.leading);
+  }
   const vertexCount = layout.positions.length / 2;
   const ringCount = layout.ringOffsets.length - 1;
   const rig = new WeightsRig(device);
@@ -133,6 +143,7 @@ async function runCoverage(
   const overflow = rig.output('uint32', 1);
   const requiredCount = rig.output('uint32', 1);
   const converged = rig.output('uint32', 1);
+  const uncertainCount = rig.output('uint32', 1);
   const topologyStats = rig.output('uint32', 4);
   const parameters = new GPUParameterBuffer(device, {
     id: 'coverage-tolerance',
@@ -151,6 +162,7 @@ async function runCoverage(
         layout.polygonOffsets.length
       ),
       parameters: parameters.importToGraph(rig.graph),
+      snapTolerance: padding?.snapTolerance,
       maximumIterations: 128,
       simplifyBoundary,
       topologyIterationCount: topologyRounds,
@@ -162,7 +174,8 @@ async function runCoverage(
         status: {
           converged: converged.view,
           overflow: overflow.view,
-          requiredCount: requiredCount.view
+          requiredCount: requiredCount.view,
+          uncertainCount: uncertainCount.view
         }
       }
     })
@@ -174,6 +187,7 @@ async function runCoverage(
     ringOffsets: ringOffsetValues,
     overflow: (await readUint32(overflow.buffer, 1))[0],
     requiredCount: (await readUint32(requiredCount.buffer, 1))[0],
+    uncertainCount: (await readUint32(uncertainCount.buffer, 1))[0],
     converged: (await readUint32(converged.buffer, 1))[0],
     topologyStats: Array.from(await readUint32(topologyStats.buffer, 4))
   };
@@ -697,4 +711,48 @@ it('GPUCoverageSimplification snap keys follow the extent at projected coordinat
   // Without a snap tolerance there is no range.
   const exact = await runProjectedSquares(device, 10000, northing, 0);
   expect(exact.uncertainCount).toBe(0);
+});
+
+it('GPUCoverageSimplification ignores leading and trailing garbage when choosing the snap origin', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const polygons: OraclePolygons = [
+    [
+      [
+        [1e6, 1e6],
+        [1e6 + 1, 1e6],
+        [1e6 + 1, 1e6 + 1],
+        [1e6, 1e6 + 1]
+      ]
+    ],
+    [
+      [
+        [1e6 + 1, 1e6],
+        [1e6 + 2, 1e6],
+        [1e6 + 2, 1e6 + 1],
+        [1e6 + 1, 1e6 + 1]
+      ]
+    ]
+  ];
+  const snapTolerance = 0.001;
+  const reference = await runCoverage(device, polygons, 0, 16, 0, false, {
+    leading: 0,
+    trailing: 0,
+    value: 0,
+    snapTolerance
+  });
+  expect(reference.uncertainCount).toBe(0);
+  expect(reference.requiredCount).toBe(8);
+  expect(reference.overflow).toBe(0);
+  for (const value of [Number.NaN, 3e20, -3e20]) {
+    const result = await runCoverage(device, polygons, 0, 16, 0, false, {
+      leading: 2,
+      trailing: 3,
+      value,
+      snapTolerance
+    });
+    expect(result.keepMask.slice(0, 2)).toEqual([0, 0]);
+    expect(result.keepMask.slice(-3)).toEqual([0, 0, 0]);
+    expect({...result, keepMask: result.keepMask.slice(2, -3)}).toEqual(reference);
+  }
 });

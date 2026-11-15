@@ -8,6 +8,15 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {validateCommandNodeBudget} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getRasterAlgebraStackNodeCount,
+  getRasterAlgebraStackNodes,
+  getRasterAlgebraStackViews,
+  isRasterAlgebraBandStack,
+  validateRasterAlgebraStack
+} from './raster-algebra-stack-input';
 import {GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH} from './local-operations-parameters';
 import {
   getRasterAlgebraValueWGSL,
@@ -21,6 +30,8 @@ import {
 const OPERATION = 'GPURasterCellStatistics';
 /** Largest stack depth: the frequency kernel is `O(layerCount^2)` per cell. */
 const MAXIMUM_LAYER_COUNT = 64;
+/** At most one kernel for each metric group: moments, extremes and frequencies. */
+const MAXIMUM_ANALYSIS_NODE_COUNT = 3;
 
 /**
  * Caller-owned outputs of {@link GPURasterCellStatistics}, each at least `cellCount` rows. Provide
@@ -56,18 +67,20 @@ export type GPURasterCellStatisticsOutput = {
  * Properties for {@link GPURasterCellStatistics}.
  *
  * Per-frame (no recompile): stack contents and `parameters` (nodata policy, minimum valid count).
- * Topology: `layerCount`, `cellCount`, `noDataValue`, and which outputs exist.
+ * Topology: `layerCount`, `cellCount`, `noDataValue`, grid shape, band metadata and which outputs exist.
  */
 export type GPURasterCellStatisticsProps = {
   /** Prefix for generated node IDs. Defaults to `'raster-cell-statistics'`. */
   id?: string;
-  /** Band-sequential float32 stack: layer `i` occupies rows `[i * cellCount, (i + 1) * cellCount)`. */
-  stack: GraphDataView<'float32'>;
+  /** Ordered published bands, or a legacy band-sequential float32 view with cellCount rows per layer. */
+  stack: GraphDataView<'float32'> | readonly GPURasterBand[];
+  /** Shared complete grid, required for bands; its cell count must equal cellCount. */
+  grid?: GPURasterMetadata;
   /** Layer count in `[1, 64]`. */
   layerCount: number;
   /** Cells per layer. */
   cellCount: number;
-  /** Optional finite nodata sentinel compared exactly. NaN is always nodata. */
+  /** Optional finite sentinel for the legacy stack only; bands use their own native nodata. */
   noDataValue?: number;
   /**
    * Optional input row filter (`uint32`, at least `cellCount` rows): nonzero keeps the cell, zero
@@ -99,6 +112,8 @@ export type GPURasterCellStatisticsProps = {
 export class GPURasterCellStatistics implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
   readonly id: string;
+  /** Upper bound including published band conversion and packing nodes. */
+  readonly estimatedCommandNodeCount: number;
   /** Validated properties. */
   readonly props: GPURasterCellStatisticsProps;
 
@@ -113,7 +128,10 @@ export class GPURasterCellStatistics implements GPUCommandNodeProducer {
       throw new Error(`${id} layerCount * cellCount must fit in uint32`);
     }
     validateRasterAlgebraNoData(id, props.noDataValue);
-    validateRasterAlgebraView(id, 'stack', props.stack, 'float32', layerCount * cellCount);
+    validateRasterAlgebraStack(id, props.stack, props.grid, layerCount, cellCount);
+    this.estimatedCommandNodeCount =
+      MAXIMUM_ANALYSIS_NODE_COUNT + getRasterAlgebraStackNodeCount(props.stack);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', cellCount);
     validateRasterAlgebraView(
       id,
@@ -138,24 +156,25 @@ export class GPURasterCellStatistics implements GPUCommandNodeProducer {
     validateRasterAlgebraAliasing(
       id,
       outputs.map(([, view]) => view),
-      [props.stack, props.mask, props.parameters]
+      [...getRasterAlgebraStackViews(props.stack), props.mask, props.parameters]
     );
   }
 
-  /** Returns up to three kernels: moments, extremes, and frequencies. */
+  /** Converts band inputs, then returns up to three metric kernels. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output, layerCount, cellCount} = props;
     validateRasterAlgebraGraph(id, graph, [
-      props.stack,
+      ...getRasterAlgebraStackViews(props.stack),
       props.mask,
       props.parameters,
       ...getOutputEntries(output).map(([, view]) => view)
     ]);
+    const source = getRasterAlgebraStackNodes(graph, id, props.stack, props.grid, cellCount);
     const inputs: WGSLKernelBinding[] = [
-      {name: 'stack', view: props.stack, type: 'f32', access: 'read'},
+      {name: 'stack', view: source.values, type: 'f32', access: 'read'},
       ...(props.mask
         ? [{name: 'mask', view: props.mask, type: 'u32', access: 'read'} as const]
         : []),
@@ -168,7 +187,7 @@ export class GPURasterCellStatistics implements GPUCommandNodeProducer {
     ): WGSLKernelBinding[] => (view ? [{name, view, type, access: 'read_write'}] : []);
     const declarations = `const LAYER_COUNT: u32 = ${layerCount}u;
 const CELL_COUNT: u32 = ${cellCount}u;
-${getRasterAlgebraValueWGSL(props.noDataValue)}
+${getRasterAlgebraValueWGSL(isRasterAlgebraBandStack(props.stack) ? undefined : props.noDataValue)}
 fn readLayer(layer: u32, cell: u32, value: ptr<function, f32>) -> bool {
   let sample = stack[stackOffset + layer * CELL_COUNT + cell];
   *value = sample;
@@ -192,7 +211,7 @@ fn readLayer(layer: u32, cell: u32, value: ptr<function, f32>) -> bool {
     }
     ${statement}
   }`;
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     if (output.sum || output.mean || output.standardDeviation || output.counts) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {

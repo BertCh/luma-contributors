@@ -7,11 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
-import {
-  GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW,
-  GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW,
-  GPUGroupConvexHull
-} from '../../../src/gpu-spatial-analysis/group-geometry/index';
+import {GPUGroupConvexHull} from '../../../src/gpu-spatial-analysis/group-geometry/index';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -32,6 +28,8 @@ type Hulls = {
   hulls: number[][];
   sizes: number[];
   overflow: number;
+  groupOverflow: number;
+  vertexOverflow: number;
   vertexIndices: number[];
   vertexPositions: number[];
   offsets: number[];
@@ -70,7 +68,9 @@ async function runHull(
     offsets: output(groupCount + 1),
     counts: output(groupCount),
     sizes: output(groupCount),
-    overflow: output(1)
+    overflow: output(1),
+    groupOverflow: output(1),
+    vertexOverflow: output(1)
   };
   graph.add(
     new GPUGroupConvexHull({
@@ -95,7 +95,23 @@ async function runHull(
         offsets: importGraphBuffer(graph, 'o-offsets', out.offsets, 'uint32', groupCount + 1),
         counts: importGraphBuffer(graph, 'o-counts', out.counts, 'uint32', groupCount),
         sizes: importGraphBuffer(graph, 'o-sizes', out.sizes, 'uint32', groupCount),
-        status: {overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1)}
+        status: {
+          overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
+          groupOverflow: importGraphBuffer(
+            graph,
+            'o-group-overflow',
+            out.groupOverflow,
+            'uint32',
+            1
+          ),
+          vertexOverflow: importGraphBuffer(
+            graph,
+            'o-vertex-overflow',
+            out.vertexOverflow,
+            'uint32',
+            1
+          )
+        }
       }
     })
   );
@@ -110,6 +126,8 @@ async function runHull(
     ),
     sizes: await readUint32(out.sizes, groupCount),
     overflow: (await readUint32(out.overflow, 1))[0],
+    groupOverflow: (await readUint32(out.groupOverflow, 1))[0],
+    vertexOverflow: (await readUint32(out.vertexOverflow, 1))[0],
     vertexIndices,
     vertexPositions: await readFloat32(out.vertexPositions, capacity * 2),
     offsets
@@ -223,9 +241,9 @@ it('GPUGroupConvexHull drops hulls over the per-group cap or total capacity and 
   const capped = await runHull(device, positions, labels, groupCount, {
     maximumVerticesPerGroup: 10
   });
-  expect(capped.overflow & GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW).toBe(
-    GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW
-  );
+  expect(capped.overflow).toBe(1);
+  expect(capped.groupOverflow).toBe(1);
+  expect(capped.vertexOverflow).toBe(0);
   expect(capped.hulls[0]).toEqual([]);
   expect(capped.sizes[0]).toBe(expected.hulls[0].length);
   expect(capped.hulls[1]).toEqual(expected.hulls[1]);
@@ -234,9 +252,9 @@ it('GPUGroupConvexHull drops hulls over the per-group cap or total capacity and 
   const small = await runHull(device, positions, labels, groupCount, {
     vertexCapacity: expected.hulls[0].length + expected.hulls[1].length - 1
   });
-  expect(small.overflow & GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW).toBe(
-    GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW
-  );
+  expect(small.overflow).toBe(1);
+  expect(small.groupOverflow).toBe(0);
+  expect(small.vertexOverflow).toBe(1);
   expect(small.hulls[0]).toEqual(expected.hulls[0]);
   for (let group = 1; group < groupCount; group++) {
     expect(small.hulls[group]).toEqual([]);
@@ -619,3 +637,61 @@ it('GPUGroupConvexHull snaps odd lattice values above 2^23 to themselves', async
   expect(result.overflow).toBe(0);
   expect(result.hulls[0]).toEqual([0, 2, 3]);
 });
+
+it('GPUGroupConvexHull ignores excluded rows before, between and after groups', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const positions = Float32Array.of(0, 0, 3, 0, 2, 2, 0, 1, 0, 0, 10, 0, 13, 0, 12, 2, 10, 1);
+  const labels = Uint32Array.of(0, 0, 0, 0, 0, 1, 1, 1, 1);
+  // There are no ring offsets for point sets: excluded labels are the reachable padding layout.
+  // Include a duplicate extreme, an empty group and both hull prefilter paths.
+  for (const options of [
+    {prefilterLevels: 0, extremePointFilter: false},
+    {prefilterLevels: 2, extremePointFilter: true, noiseLabel: 2}
+  ]) {
+    const excludedLabel = options.noiseLabel ?? 0xffffffff;
+    const settings = {...options, vertexCapacity: 16, maximumVerticesPerGroup: 16};
+    const reference = await runHull(device, positions, labels, 3, settings);
+    const oracle = computeGroupConvexHullOracle(
+      positions,
+      getOracleGroupKeys(positions, labels, 3),
+      3
+    );
+    expect(reference.hulls).toEqual(oracle.hulls);
+    expect(reference.sizes).toEqual([4, 4, 0]);
+    expect(reference.overflow).toBe(0);
+    for (const value of [Number.NaN, 3e30, -3e30]) {
+      const paddedPositions: number[] = [value, value, 0, 0];
+      const paddedLabels = [excludedLabel, 99];
+      const originalRows = [-1, -1];
+      for (let row = 0; row < labels.length; row++) {
+        if (row === 5) {
+          // A finite duplicate of a real extreme must not compete for ownership either.
+          paddedPositions.push(value, value, 0, 0);
+          paddedLabels.push(99, excludedLabel);
+          originalRows.push(-1, -1);
+        }
+        paddedPositions.push(positions[2 * row], positions[2 * row + 1]);
+        paddedLabels.push(labels[row]);
+        originalRows.push(row);
+      }
+      paddedPositions.push(value, value, 0, 0);
+      paddedLabels.push(excludedLabel, 99);
+      const result = await runHull(
+        device,
+        Float32Array.from(paddedPositions),
+        Uint32Array.from(paddedLabels),
+        3,
+        settings
+      );
+      expect(result.hulls.map(hull => hull.map(row => originalRows[row]))).toEqual(reference.hulls);
+      expect(result.sizes).toEqual(reference.sizes);
+      expect(result.offsets).toEqual(reference.offsets);
+      expect(result.overflow).toBe(0);
+      const used = reference.offsets[3];
+      expect(result.vertexPositions.slice(0, 2 * used)).toEqual(
+        reference.vertexPositions.slice(0, 2 * used)
+      );
+    }
+  }
+}, 120000);

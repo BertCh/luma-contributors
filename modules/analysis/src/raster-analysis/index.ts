@@ -31,9 +31,12 @@ export * from './raster-patches/index';
 export * from './raster-pyramid/index';
 export * from './raster-sampling/index';
 export * from './raster-stretch/index';
+export * from './raster-contrast-equalization/index';
 export * from './raster-zonal-statistics/index';
 export * from './remote-sensing/index';
 export * from './raster-time-series/index';
 
 export * from './raster-watershed/index';
 export * from './raster-morphology/index';
+
+export * from './spectral-filter/index';

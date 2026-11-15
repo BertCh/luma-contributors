@@ -9,7 +9,13 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  getRasterAlgebraInputNodes,
+  getRasterAlgebraInputViews,
+  isRasterAlgebraBand,
+  validateRasterAlgebraInput
+} from '../raster-algebra/raster-algebra-input';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPU_RASTER_SAMPLING_PARAMETER_LENGTH} from './raster-sampling-parameters';
 import {
   getRasterSamplingWGSL,
@@ -39,11 +45,11 @@ export type GPURasterSamplingProps = {
   /** Raster grid: its width and height size the kernels; its extent places the samples. */
   grid: GPURasterMetadata;
   /**
-   * Row-major raster of at least `width * height` rows (row 0 is the grid's first row). A
+   * Published band or legacy row-major float values (at least `width * height` rows). A
    * non-finite cell (NaN or an infinity) is nodata.
    */
-  values: GraphDataView<'float32'>;
-  /** Optional finite sentinel treated as nodata. */
+  values: GraphDataView<'float32'> | GPURasterBand;
+  /** Optional finite sentinel for legacy values; bands use their own validity, sentinel and calibration. */
   noDataValue?: number;
   /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
   mask?: GraphDataView<'uint32'>;
@@ -97,7 +103,7 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
     const {id} = this;
     const {output} = props;
     const pixelCount = validateRasterDescription(id, props.grid, props.noDataValue);
-    validateRasterSamplingView(id, 'values', props.values, 'float32', pixelCount);
+    validateRasterAlgebraInput(id, 'values', props.values, props.grid, pixelCount);
     if (props.mask) {
       validateRasterSamplingView(id, 'mask', props.mask, 'uint32', pixelCount);
     }
@@ -127,7 +133,13 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
       );
     }
     const outputs = [output.values, output.outputValidity].filter(view => view !== undefined);
-    const inputs = [props.values, props.mask, props.positions, props.pointCount, props.parameters];
+    const inputs = [
+      ...getRasterAlgebraInputViews(props.values),
+      props.mask,
+      props.positions,
+      props.pointCount,
+      props.parameters
+    ];
     if (new Set(outputs.map(view => view.buffer)).size !== outputs.length) {
       throw new Error(`${id} outputs must not share buffers`);
     }
@@ -146,7 +158,7 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
     const {id, props} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      props.values,
+      ...getRasterAlgebraInputViews(props.values),
       props.mask,
       props.positions,
       props.pointCount,
@@ -154,8 +166,9 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
       output.values,
       output.outputValidity
     ]);
+    const source = getRasterAlgebraInputNodes(graph, `${id}-source`, props.values, props.grid);
     const bindings: WGSLKernelBinding[] = [
-      {name: 'raster', view: props.values, type: 'f32', access: 'read'}
+      {name: 'raster', view: source.values, type: 'f32', access: 'read'}
     ];
     if (props.mask) {
       bindings.push({name: 'validity', view: props.mask, type: 'u32', access: 'read'});
@@ -177,6 +190,7 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
       });
     }
     return [
+      ...source.nodes,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-sample`,
         operation: OPERATION,
@@ -186,7 +200,7 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
         declarations: `${getRasterSamplingWGSL({
           width: props.grid.width,
           height: props.grid.height,
-          noDataValue: props.noDataValue,
+          noDataValue: isRasterAlgebraBand(props.values) ? undefined : props.noDataValue,
           hasValidity: Boolean(props.mask)
         })}
 const POINT_CAPACITY: u32 = ${props.positions.length}u;`,

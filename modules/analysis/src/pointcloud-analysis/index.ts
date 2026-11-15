@@ -7,6 +7,7 @@ export * from './gpu-pointcloud-features';
 export * from './gpu-pointcloud-ground';
 export * from './gpu-pointcloud-icp';
 export * from './gpu-pointcloud-neighborhoods';
+export * from './gpu-pointcloud-normal-scale';
 export * from './gpu-pointcloud-smrf';
 export * from './gpu-pointcloud-statistical-filter';
 export {
@@ -30,3 +31,4 @@ export {getPointCloudRowDirection} from './pointcloud-grid-index';
 export type {PointCloudGrid} from './pointcloud-grid-index';
 export * from './pointcloud-limits';
 export * from './pointcloud-local-origin';
+export * from './pointcloud-sampling-covariance';

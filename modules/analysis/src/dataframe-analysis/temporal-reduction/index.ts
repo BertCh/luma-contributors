@@ -11,3 +11,5 @@ export {
   GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH,
   GPU_TEMPORAL_REDUCTION_WORD_PARAMETER_LENGTH
 } from './temporal-reduction-parameters';
+
+export {formatTimestampTicks, getTimestampPresentationMilliseconds} from './timestamp-format';

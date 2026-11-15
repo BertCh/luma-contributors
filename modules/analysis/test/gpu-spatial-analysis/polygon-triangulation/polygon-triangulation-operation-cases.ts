@@ -115,3 +115,43 @@ export function getTriangulationOperationProps(
     }
   };
 }
+
+/** Empty polygon, a frame (area 12), and a convex quadrilateral (area 4). */
+export function createPaddingTriangulationInput(
+  leading = 0,
+  trailing = 0,
+  value = 0
+): CPUPolygonTriangulationInput {
+  const input = packOperationPolygons([
+    [],
+    [
+      [
+        [0, 0],
+        [4, 0],
+        [4, 4],
+        [0, 4]
+      ],
+      [
+        [1, 1],
+        [1, 3],
+        [3, 3],
+        [3, 1]
+      ]
+    ],
+    [
+      [
+        [10, 0],
+        [13, 0],
+        [12, 2],
+        [10, 1]
+      ]
+    ]
+  ]);
+  const positions = new Float32Array(input.positions.length + 2 * (leading + trailing)).fill(value);
+  positions.set(input.positions, 2 * leading);
+  return {
+    ...input,
+    positions,
+    ringOffsets: Uint32Array.from(input.ringOffsets, offset => offset + leading)
+  };
+}

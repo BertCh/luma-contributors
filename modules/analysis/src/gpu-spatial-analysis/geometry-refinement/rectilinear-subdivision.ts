@@ -7,7 +7,10 @@ import {
   type GPUCommandGraph,
   type GPUCommandNode
 } from '@luma.gl/graph/gpu-core';
-import {GPUScan} from '@luma.gl/graph/gpu-core';
+import {
+  createSaturatedCountScanNodes,
+  SCAN_TOTAL_WGSL
+} from '../../analysis-core/kernels/scan-total';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createZeroPiecesNode, GPUSubdividePolygons} from './gpu-subdivide-polygons';
 
@@ -34,6 +37,7 @@ export function getRectilinearSubdivisionNodes<Parameters>(
   );
   const leafCounts = createTransientView(graph, `${id}-leaf-counts`, 'uint32', seedCapacity);
   const leafOffsets = createTransientView(graph, `${id}-leaf-offsets`, 'uint32', seedCapacity);
+  const leafTotal = createTransientView(graph, `${id}-leaf-total`, 'uint32', 1);
   const exhaustedFlag = createTransientView(graph, `${id}-exhausted`, 'uint32', 1);
   // The splitting of a seed is independent of every other seed, so it runs twice: a `count` pass
   // fixes the leaf count of each seed, a scan numbers the leaves in seed order, and a `write` pass
@@ -85,7 +89,8 @@ export function getRectilinearSubdivisionNodes<Parameters>(
               }
             ])
       ],
-      declarations: `const LIMIT:u32=${maximumVertices}u;
+      declarations: `${SCAN_TOTAL_WGSL}
+const LIMIT:u32=${maximumVertices}u;
 const CAPACITY:u32=${props.output.pieces.length}u;
 const THREADS:u32=${queueThreadCount}u;
 const QUEUE_BASE:u32=${128 * 260}u;
@@ -114,12 +119,14 @@ fn storePoint(slot:u32,vertex:u32,thread:u32,point:vec2f) {let base=queueOffset+
       body: 'leafCounts[leafCountsOffset + index] = 0u; if (index == 0u) { exhaustedFlag[exhaustedFlagOffset] = 0u; }'
     }),
     getSplitPass('count'),
-    ...new GPUScan({
+    ...createSaturatedCountScanNodes<Parameters>(graph, {
       id: `${id}-leaf-scan`,
-      input: leafCounts,
-      output: leafOffsets,
-      mode: 'exclusive'
-    }).getCommandNodes(graph),
+      operation: 'GPUSubdividePolygons',
+      counts: leafCounts,
+      offsets: leafOffsets,
+      rowCount: seedCapacity,
+      total: leafTotal
+    }),
     getSplitPass('write'),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-rectilinear-status`,
@@ -127,14 +134,13 @@ fn storePoint(slot:u32,vertex:u32,thread:u32,point:vec2f) {let base=queueOffset+
       variant: 'rectilinear-status',
       invocationCount: 1,
       bindings: [
-        {name: 'leafCounts', view: leafCounts, type: 'u32', access: 'read'},
-        {name: 'leafOffsets', view: leafOffsets, type: 'u32', access: 'read'},
+        {name: 'leafTotal', view: leafTotal, type: 'u32', access: 'read'},
         {name: 'exhaustedFlag', view: exhaustedFlag, type: 'u32', access: 'read'},
         {name: 'inputStatus', view: seeds.status, type: 'u32', access: 'read'},
         {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
       ],
       declarations: `const CAPACITY:u32=${props.output.pieces.length}u;`,
-      body: `let required=leafOffsets[leafOffsetsOffset+${seedCapacity - 1}u]+leafCounts[leafCountsOffset+${seedCapacity - 1}u];
+      body: `let required=leafTotal[leafTotalOffset];
 status[statusOffset]=min(required,CAPACITY);status[statusOffset+1u]=required;
 status[statusOffset+2u]=inputStatus[inputStatusOffset+2u]|select(0u,1u,required>CAPACITY);
 status[statusOffset+3u]=inputStatus[inputStatusOffset+3u]|select(0u,0x80000000u,exhaustedFlag[exhaustedFlagOffset]!=0u);`
@@ -165,7 +171,7 @@ function getRectilinearSplitBody(pass: 'count' | 'write', maximumSplits: number)
   if(count<=LIMIT) {
    ${
      pass === 'write'
-       ? `let required=leafOffsets[leafOffsetsOffset+seed]+leaves;
+       ? `let required=getSaturatedScanSum(leafOffsets[leafOffsetsOffset+seed],leaves);
    if(required<CAPACITY) {
     pieces[piecesOffset+required*4u]=count;
     for(var column=1u;column<4u;column++) {pieces[piecesOffset+required*4u+column]=inputPieces[inputPiecesOffset+seed*4u+column];}

@@ -182,6 +182,18 @@ it('terrain roadmap kernels parse within portable binding limits', () => {
     const commandNodes = contributor.getCommandNodes(graph);
     if (contributor instanceof GPUTerrainBreach) {
       expect(commandNodes.map(node => node.id)).toContain(`${contributor.id}-verify-paths`);
+      expect(commandNodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+      expect(commandNodes.map(node => node.id)).not.toContain(`${contributor.id}-search`);
+      const relaxations = commandNodes.filter(node => /-search-relax-/.test(node.id));
+      expect(relaxations).toHaveLength(contributor.props.maximumSteps);
+      for (const node of relaxations) expect(node.condition).toBeDefined();
+    }
+    if (contributor instanceof GPUTerrainDepressionHierarchy) {
+      expect(commandNodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+      expect(commandNodes.map(node => node.id)).not.toContain(`${contributor.id}-build`);
+      expect(commandNodes.map(node => node.id)).toContain(
+        `${contributor.id}-activation-splice-round-0`
+      );
     }
     const sources = getParsedKernelSources(commandNodes);
     expect(sources.size).toBeGreaterThan(0);
@@ -455,4 +467,122 @@ it('flow fractions reject a sheared grid, whose two diagonal steps differ, and a
   );
   expect(() => create([0.6, 0.8, 0, 0.8, -0.6, 0])).not.toThrow();
   expect(() => create([1, 0, 0, 0, 1, 0])).not.toThrow();
+});
+
+it('breach rejects an excessive step graph before creating command nodes', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  let identifier = 0;
+  const view = <Format extends 'float32' | 'uint32'>(format: Format, length: number) =>
+    createTransientView(graph, `budget-${identifier++}`, format, length);
+  expect(
+    () =>
+      new GPUTerrainBreach({
+        id: 'breach-budget',
+        grid: {width: 1, height: 1, affine: [1, 0, 0, 0, 1, 0], pixelInterpretation: 'area'},
+        elevation: view('float32', 1),
+        pitCells: view('uint32', 1),
+        maximumSteps: 16384,
+        maximumCutDepth: 1,
+        elevationDecrement: 0.5,
+        output: {
+          elevation: view('float32', 1),
+          cutDepth: view('float32', 1),
+          modificationMask: view('uint32', 1),
+          pathCells: view('uint32', 16385),
+          pathLengths: view('uint32', 1),
+          pitStatus: view('uint32', 1),
+          unresolvedCount: view('uint32', 1)
+        }
+      })
+  ).toThrow(/breach-budget.*estimated command node count.*32768/);
+});
+
+it('hierarchy rejects reconstruction scratch above the binding limit before allocating nodes', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  let identifier = 0;
+  const view = <Format extends 'float32' | 'uint32'>(format: Format, length: number) =>
+    createTransientView(graph, `activation-storage-${identifier++}`, format, length);
+  const count = Math.floor(graph.device.limits.maxStorageBufferBindingSize / 72) + 1;
+  const hierarchy = new GPUTerrainDepressionHierarchy({
+    id: 'hierarchy-storage',
+    grid: {width: count, height: 1, affine: [1, 0, 0, 0, 1, 0], pixelInterpretation: 'area'},
+    elevation: view('float32', count),
+    outlets: view('uint32', count),
+    stages: view('float32', 1),
+    nodeCapacity: 1,
+    output: {
+      nodes: view('uint32', 4),
+      levels: view('float32', 2),
+      cellNodes: view('uint32', count),
+      curves: view('float32', 2),
+      status: view('uint32', 3)
+    }
+  });
+  expect(() => hierarchy.getCommandNodes(graph)).toThrow(
+    /hierarchy-storage activation scratch needs.*limit.*reduce grid dimensions/
+  );
+});
+
+it('parallel terrain node estimates cover single cells, padding and 262144-cell activation graphs', () => {
+  for (const count of [1, 257, 262144]) {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    let identifier = 0;
+    const view = <Format extends 'float32' | 'uint32'>(format: Format, length: number) =>
+      createTransientView(graph, `parallel-${identifier++}`, format, length);
+    const grid = {
+      width: count,
+      height: 1,
+      affine: [1, 0, 0, 0, 1, 0] as const,
+      pixelInterpretation: 'area' as const
+    };
+    const hierarchy = new GPUTerrainDepressionHierarchy({
+      id: 'parallel-hierarchy',
+      grid,
+      elevation: view('float32', count),
+      outlets: view('uint32', count),
+      stages: view('float32', 1),
+      nodeCapacity: 1,
+      output: {
+        nodes: view('uint32', 4),
+        levels: view('float32', 2),
+        cellNodes: view('uint32', count),
+        curves: view('float32', 2),
+        status: view('uint32', 3),
+        ports: {status: {requiredCount: view('uint32', 1), overflow: view('uint32', 1)}}
+      }
+    });
+    const hierarchyNodes = hierarchy.getCommandNodes(graph);
+    expect(hierarchyNodes.length).toBeLessThanOrEqual(hierarchy.estimatedCommandNodeCount);
+    expect(
+      hierarchyNodes.find(node => node.id === 'parallel-hierarchy-activation-splice-round-0')
+        ?.workload?.maximumInvocationCount
+    ).toBe(count * 8);
+    for (const pitCount of [0, 33]) {
+      const breach = new GPUTerrainBreach({
+        id: `parallel-breach-${pitCount}`,
+        grid,
+        elevation: view('float32', count),
+        validity: view('uint32', count),
+        pitCells: view('uint32', pitCount),
+        maximumSteps: 3,
+        maximumCutDepth: 1,
+        elevationDecrement: 0.5,
+        output: {
+          elevation: view('float32', count),
+          cutDepth: view('float32', count),
+          modificationMask: view('uint32', count),
+          pathCells: view('uint32', pitCount * 4),
+          pathLengths: view('uint32', pitCount),
+          pitStatus: view('uint32', pitCount),
+          unresolvedCount: view('uint32', 1)
+        }
+      });
+      const breachNodes = breach.getCommandNodes(graph);
+      expect(breachNodes.length).toBeLessThanOrEqual(breach.estimatedCommandNodeCount);
+      const relaxations = breachNodes.filter(node => /-search-relax-/.test(node.id));
+      expect(relaxations).toHaveLength(pitCount === 0 ? 0 : 3);
+      for (const node of relaxations)
+        expect(node.workload?.maximumInvocationCount).toBe(pitCount * Math.min(count, 7));
+    }
+  }
 });

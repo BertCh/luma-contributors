@@ -45,6 +45,8 @@ export function createPieceCountNode<Parameters>(
     rowCount: number;
     maximumPieces: number;
     pieceCounts: GraphDataView<'uint32'>;
+    /** Full per-line requirement, saturated at uint32 maximum, independent of output slots. */
+    requiredPieceCounts?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
@@ -55,7 +57,17 @@ export function createPieceCountNode<Parameters>(
       {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
       {name: 'rowMeasures', view: props.rowMeasures, type: 'f32', access: 'read'},
       {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
-      {name: 'pieceCounts', view: props.pieceCounts, type: 'u32', access: 'read_write'}
+      {name: 'pieceCounts', view: props.pieceCounts, type: 'u32', access: 'read_write'},
+      ...(props.requiredPieceCounts
+        ? [
+            {
+              name: 'requiredPieceCounts',
+              view: props.requiredPieceCounts,
+              type: 'u32' as const,
+              access: 'read_write' as const
+            }
+          ]
+        : [])
     ],
     invocationCount: props.lineOffsets.length - 1,
     declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;
@@ -69,11 +81,17 @@ const IS_CHUNK: bool = ${props.mode === 'chunk'};`,
     let lineLength = rowMeasures[rowMeasuresOffset + end - 1u];
     let chunkLength = parameters[parametersOffset];
     if (IS_CHUNK && lineLength > 0.0 && chunkLength > 0.0) {
-      count = u32(min(ceil(lineLength / chunkLength), f32(MAXIMUM_PIECES)));
-      count = clamp(count, 1u, MAXIMUM_PIECES);
+      let requirement = ceil(lineLength / chunkLength);
+      // f32(0xffffffffu) rounds up to 2^32. Branch before conversion: converting that
+      // value (or infinity from a tiny chunk length) to u32 is outside its range.
+      count = 0xffffffffu;
+      if (requirement < 4294967296.0) {
+        count = max(u32(requirement), 1u);
+      }
     }
   }
-  pieceCounts[pieceCountsOffset + index] = count;`
+  ${props.requiredPieceCounts ? 'requiredPieceCounts[requiredPieceCountsOffset + index] = count;' : ''}
+  pieceCounts[pieceCountsOffset + index] = min(count, MAXIMUM_PIECES);`
   });
 }
 
@@ -412,8 +430,8 @@ const STRIDE: u32 = ${LINE_PIECE_STRIDE}u;`,
   }
   outputLineOffsets[outputLineOffsetsOffset + index] = min(start, CAPACITY);
   if (index == 0u) {
-    let pieceTotal = pieceTotal[pieceTotalOffset];
-    overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY || pieceTotal > LINE_CAPACITY);
+    let requiredPieces = pieceTotal[pieceTotalOffset];
+    overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY || requiredPieces > LINE_CAPACITY);
     ${props.vertexCount ? 'vertexCountOut[vertexCountOutOffset] = min(total, CAPACITY);' : ''}
     ${props.requiredVertexCount ? 'totalOut[totalOutOffset] = total;' : ''}
   }`

@@ -5,6 +5,7 @@
 import {expect, it} from 'vitest';
 import {
   computeSpatialTwoStageLeastSquaresOnCPU,
+  getCPUInstrumentalVariablesCovarianceStatus,
   CPUSpatialTwoStageLeastSquaresOperation
 } from '../../../src/gpu-spatial-analysis/spatial-regression/cpu-spatial-two-stage-least-squares-operation';
 import {
@@ -129,7 +130,7 @@ for (const fixture of fixtures) {
       expect(result.summary[5]).toBeCloseTo(0.9505670553, 6);
     }
   });
-  for (const method of ['HC0', 'HC1', 'HAC'] as const) {
+  for (const method of ['HC0', 'HC1', 'HC2', 'HC3', 'HAC', 'CLUSTER'] as const) {
     it(`matches full ${method} sandwich, table and unchanged diagnostics: ${fixture.name}, order ${fixture.instrumentOrder}`, () => {
       const kernel = {
         offsets: Uint32Array.from(fixture.kernel.offsets),
@@ -137,13 +138,25 @@ for (const fixture of fixtures) {
         weights: Float32Array.from(fixture.kernel.weights)
       };
       const result = computeSpatialTwoStageLeastSquaresOnCPU(
-        {...getInput(fixture), robust: {method, kernel: method === 'HAC' ? kernel : undefined}},
+        {
+          ...getInput(fixture),
+          robust: {
+            method,
+            kernel: method === 'HAC' ? kernel : undefined,
+            clusters: method === 'CLUSTER' ? Uint32Array.from(fixture.clusters) : undefined,
+            clusterCount: method === 'CLUSTER' ? fixture.clusterCount : undefined
+          }
+        },
         {predictorCount: fixture.predictorCount, instrumentOrder: fixture.instrumentOrder as 1 | 2}
       );
       expect(result.status[0]).toBe(0);
       expect(result.robust!.status[0]).toBe(0);
       expectRegressionRowsClose(result.robust!.covariance, fixture.robust[method].covariance, 3e-6);
-      expectRegressionRowsClose(result.table, fixture.robust[method].table, 3e-6);
+      expectRegressionRowsClose(
+        result.table,
+        Float32Array.from(fixture.robust[method].table),
+        3e-6
+      );
       expectRegressionRowsClose(
         result.summary,
         fixture.summary.map(value => (value === null ? NaN : value)),
@@ -303,5 +316,150 @@ it('validates both operation constructions and retains CPU support beyond shader
         ...PROPS,
         robust: {method: 'HAC', output: {covariance: 'covariance', status: 'robustStatus'}}
       })
-  ).toThrow(/robust.kernel/);
+  ).toThrow(/kernel/);
+});
+
+for (const scene of ['oneGroup', 'missingKey', 'outOfRangeKey', 'allMissing', 'nonPSD'] as const) {
+  it(`uses the named covariance failure without discarding point estimates: ${scene}`, () => {
+    const fixture = fixtures[0];
+    const clusters = Uint32Array.from(fixture.clusters);
+    if (scene === 'oneGroup') clusters.fill(0);
+    if (scene === 'missingKey') clusters[0] = 0xffffffff;
+    if (scene === 'outOfRangeKey') clusters[0] = fixture.clusterCount;
+    if (scene === 'allMissing') clusters.fill(0xffffffff);
+    const kernel = fixture.nonPositiveSemidefiniteKernel;
+    const result = computeSpatialTwoStageLeastSquaresOnCPU(
+      {
+        ...getInput(),
+        robust:
+          scene === 'nonPSD'
+            ? {
+                method: 'HAC',
+                kernel: {
+                  offsets: Uint32Array.from(kernel.offsets),
+                  neighbors: Uint32Array.from(kernel.neighbors),
+                  weights: Float32Array.from(kernel.weights)
+                }
+              }
+            : {method: 'CLUSTER', clusters, clusterCount: fixture.clusterCount}
+      },
+      {predictorCount: fixture.predictorCount}
+    );
+    expect(result.status[0]).toBe(0);
+    expect(result.robust!.status[0]).toBe(scene === 'nonPSD' ? 7 : 6);
+    expect(result.robust!.covariance.every(Number.isNaN)).toBe(true);
+    for (let column = 0; column < fixture.predictorCount + 2; column++) {
+      expect(result.table[column * 4]).toBeCloseTo(fixture.table[column * 4], 5);
+      expect(result.table.subarray(column * 4 + 1, column * 4 + 4).every(Number.isNaN)).toBe(true);
+    }
+  });
+}
+
+for (const method of ['HC2', 'HC3'] as const) {
+  it(`rejects unit projected leverage for ${method}`, () => {
+    const result = computeSpatialTwoStageLeastSquaresOnCPU(
+      {
+        predictors: Float32Array.of(1, 0, 0, 0, 0, 0, 0, 0),
+        response: Float32Array.of(1, 3, -1, 2, 7, 0, -2, 8),
+        weights: {
+          offsets: Uint32Array.of(0, 1, 2, 3, 4, 5, 6, 7, 8),
+          neighbors: Uint32Array.of(1, 2, 3, 4, 5, 6, 7, 0),
+          weights: new Float32Array(8).fill(1)
+        },
+        robust: {method}
+      },
+      {predictorCount: 1}
+    );
+    expect(result.status[0]).toBe(0);
+    expect(result.robust!.status[0]).toBe(5);
+    expect(result.robust!.covariance.every(Number.isNaN)).toBe(true);
+  });
+}
+
+it('reduces singleton CR1 to HC1 and ignores unused dense cluster slots', () => {
+  const input = getInput();
+  const options = {predictorCount: 2};
+  const singleton = computeSpatialTwoStageLeastSquaresOnCPU(
+    {
+      ...input,
+      robust: {
+        method: 'CLUSTER',
+        clusters: Uint32Array.from(input.response, (_, row) => row),
+        clusterCount: input.response.length
+      }
+    },
+    options
+  );
+  const corrected = computeSpatialTwoStageLeastSquaresOnCPU(
+    {...input, robust: {method: 'HC1'}},
+    options
+  );
+  expect(singleton.robust!.status[0]).toBe(0);
+  expectRegressionRowsClose(singleton.robust!.covariance, corrected.robust!.covariance, 1e-6);
+  const dense = computeSpatialTwoStageLeastSquaresOnCPU(
+    {
+      ...input,
+      robust: {
+        method: 'CLUSTER',
+        clusters: Uint32Array.from(fixtures[0].clusters, key => key / 2),
+        clusterCount: 3
+      }
+    },
+    options
+  );
+  const gapped = computeSpatialTwoStageLeastSquaresOnCPU(
+    {
+      ...input,
+      robust: {
+        method: 'CLUSTER',
+        clusters: Uint32Array.from(fixtures[0].clusters),
+        clusterCount: fixtures[0].clusterCount
+      }
+    },
+    options
+  );
+  expectRegressionRowsClose(dense.robust!.covariance, gapped.robust!.covariance, 0);
+});
+
+it('certifies a 402 by 402 CPU covariance without exceeding the argument limit', () => {
+  // predictorCount=400 produces 402 coefficients including the intercept and spatial lag.
+  // Identity has maximum absolute entry 1 and strictly positive eigenvalues. Exercise the
+  // production PSD stage directly to avoid unrelated QR and conditioning work for this width.
+  // Run with --pool=forks to reproduce Node's ordinary stack limit; threads can mask the bug.
+  const coefficientCount = 402;
+  const covariance = Array.from({length: coefficientCount}, (_, row) =>
+    Array.from({length: coefficientCount}, (_, column) => (row === column ? 1 : 0))
+  );
+  expect(getCPUInstrumentalVariablesCovarianceStatus(covariance)).toBe(0);
+  // Certification must not shift or otherwise mutate the published covariance.
+  covariance.forEach((row, position) =>
+    expect(row.every((value, column) => value === (position === column ? 1 : 0))).toBe(true)
+  );
+});
+
+it('retains nonfinite, zero and indefinite covariance statuses in the CPU certificate', () => {
+  expect(
+    getCPUInstrumentalVariablesCovarianceStatus([
+      [0, 0],
+      [0, 0]
+    ])
+  ).toBe(0);
+  expect(
+    getCPUInstrumentalVariablesCovarianceStatus([
+      [1, 0],
+      [0, -1]
+    ])
+  ).toBe(7);
+  expect(
+    getCPUInstrumentalVariablesCovarianceStatus([
+      [1, NaN],
+      [NaN, 1]
+    ])
+  ).toBe(3);
+  expect(
+    getCPUInstrumentalVariablesCovarianceStatus([
+      [Infinity, 0],
+      [0, 1]
+    ])
+  ).toBe(3);
 });

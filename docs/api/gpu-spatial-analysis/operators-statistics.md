@@ -106,6 +106,21 @@ quotient with one `fma` remainder step, so constant data centers to exactly 0 on
 
 ### `GPUHotSpotAnalysis` and `GPULocalMoran`
 
+`GPUHotSpotAnalysis`, `GPULocalMoran` and `GPULocalGeary` accept optional `output.status.invalidCount` and `output.status.overflow` uint32
+scalars. `invalidCount` counts selected input rows with nonfinite values; masked rows, islands and
+undefined analytic tests do not count. `overflow` forwards input weights' capacity overflow as 0 or 1,
+and is 0 when the input has no overflow port. Both outputs are overwritten on every encoding,
+independently of multiple-testing correction. Existing result views and formulas are unchanged.
+
+`GPUHotSpotAnalysis.selfWeight` accepts a numeric default or a packed float32 view from
+`getGPUHotSpotAnalysisParameterValues` hosted in a `GPUParameterBuffer`. Updating that buffer
+between encodings switches between Gi (`0`) and Gi* (positive), or changes the focal weight,
+without rebuilding the graph. Numeric defaults and the packer reject positive weights that
+round below the smallest normal float32 (`2^-126`), preventing underflow or GPU flushing from
+silently changing Gi* to Gi. Exactly zero remains valid for Gi.
+The existing `parameters` view still controls fixed moments;
+its layout and the fixed confidence bins are unchanged.
+
 Score tract values against neighbouring values with local Moran’s I, analytic conditional-randomisation z-scores, and corrected significance.
 
 ::lens{scenario=gpu-spatial-analysis.local-moran rung=result caption="Compare poverty percentages and local I across 791 Chicago tracts; significance is reported separately."}
@@ -171,7 +186,7 @@ Shared semantics (also `GPULocalGeary`):
 
 - `GPUHotSpotAnalysis` writes the Getis-Ord Gi* z-score per row for arbitrary weights:
   `z_i = sum_j w_ij (x_j - X) / (S sqrt((n S1_i - W_i^2) / (n - 1)))`, with `W_i = sum_j w_ij` and
-  `S1_i = sum_j w_ij^2`. The focal row enters through the compile-time `selfWeight` (default 1,
+  `S1_i = sum_j w_ij^2`. The focal row enters through `selfWeight` (default 1,
   classic Gi*), never through the matrix; a row's own value alone never produces a z-score. The
   z-score is unchanged when every value is shifted by a constant. It equals esda's
   `G_Local(star=True)` analytic `Zs` for positive data (esda normalizes by the sum of values, which
@@ -217,7 +232,14 @@ searchParameters.write(getGPUNeighborSearchParameterValues({bounds, radius: 500}
 
 #### `GPUHotSpotAnalysis` parameters
 
+- Packer: `getGPUHotSpotAnalysisParameterValues(settings?)`, writes `GPU_HOT_SPOT_ANALYSIS_PARAMETER_LENGTH` (1) `float32` values.
 - Packer: `getGPUSpatialAutocorrelationParameterValues(settings?)`, writes `GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH` (8) `float32` values.
+
+Settings of `getGPUHotSpotAnalysisParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `selfWeight` (optional) | `number` | Non-negative focal weight. Zero selects Gi, a positive value selects Gi*. Positive weights must round to a normal float32 (at least 2^-126); smaller values are rejected rather than silently switching statistics. Defaults to 1. |
 
 Settings of `getGPUSpatialAutocorrelationParameterValues`:
 
@@ -280,6 +302,76 @@ Additional spatial statistics below.
 ::lens{scenario=gpu-spatial-analysis.local-geary rung=formula caption="Follow the rule: squared differences to each neighbour, weighted, divided by the variance."}
 ::lens{scenario=gpu-spatial-analysis.local-geary rung=kernel caption="Inspect 791 focal invocations over the retained WGSL bindings."}
 ::lens{scenario=gpu-spatial-analysis.local-geary rung=graph caption="Trace queen weights, row standardisation, moments and the local Geary kernel."}
+
+### `GPULocalSpatialHeteroscedasticity`
+
+Descriptive LOSH divides each row's weighted neighbor residual power by the study-wide mean
+residual power. Positive usable neighbors are normalized within each row. Masked rows, nonfinite
+values and islands have no residual; an all-zero or absent residual field leaves the statistic
+undefined. The per-row `output.status` codes remain `0` defined, `1` excluded, `2` undefined and
+`3` incomplete weights.
+
+The global mean uses parallel maximum, count and sum reductions. Residuals are divided by their
+maximum before summation, so a finite mean does not overflow merely because its unscaled total
+would overflow. Exponent-scaled quotients avoid underflow of a large divisor's reciprocal;
+the mean is reconstructed from a bounded mantissa and two finite power-of-two scales.
+No invocation scans all rows to form the mean. Float32 results may differ from
+the former running mean through reduction order.
+
+Per-frame `residualPower` accepts a packed float32 view from
+`getGPULocalSpatialHeteroscedasticityParameterValues` hosted in a `GPUParameterBuffer`; write
+`1` or `2` between encodings to switch absolute deviations and squared deviations. Numeric
+powers remain supported as uploaded defaults. View shapes, optional outputs and chunk topology
+are compile-time. The [conditional residual inference](./losh-residual-permutation.md) wrapper
+accepts the same parameter view.
+
+{/* parameters: GPULocalSpatialHeteroscedasticity generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPULocalSpatialHeteroscedasticity` parameters
+
+- Packer: `getGPULocalSpatialHeteroscedasticityParameterValues(settings?)`, writes `GPU_LOCAL_SPATIAL_HETEROSCEDASTICITY_PARAMETER_LENGTH` (1) `float32` values.
+
+Settings of `getGPULocalSpatialHeteroscedasticityParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `residualPower` (optional) | `1 \| 2` | Absolute-deviation power: 1 for absolute deviation, 2 for variance. Defaults to 2. |
+
+{/* /parameters */}
+
+### `GPUMultivariateLocalGearyPermutationTest`
+
+Conditional randomization tests multivariate local Geary statistics over complete, unmasked
+rows. Islands and incomplete rows remain untested; incomplete weights invalidate inference.
+
+The exact and tiled strategies accept an optional `parameters` uint32 view from
+`getGPUMultivariateLocalGearyPermutationTestParameterValues`, hosted in a `GPUParameterBuffer`.
+Its three words are `[seedLow, seedHigh, float32 bits of significance]`; both Philox key words
+retain all 32 bits. Updating this view changes the seed and classification threshold on the same
+compiled graph, including with multiple-testing correction. When the view is present it overrides
+numeric `seed` and `significance` defaults; omitting it uploads those defaults through the same
+parameter-buffer layout. Use the packer to validate each frame's settings.
+
+Values, mask, CSR contents and parameter contents are per-frame. View shapes, variable count,
+maximum permutations, strategy, tile sizes, maximum neighbors, tail convention, correction choice
+and optional outputs stay compile-time. The tiled simulation stages the parameter words beside
+the valid-row count to keep each kernel within eight storage-buffer bindings. The conditional
+randomization, tie handling and multiple-testing formulas are unchanged.
+
+{/* parameters: GPUMultivariateLocalGearyPermutationTest generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUMultivariateLocalGearyPermutationTest` parameters
+
+- Packer: `getGPUMultivariateLocalGearyPermutationTestParameterValues(settings?)`, writes `GPU_MULTIVARIATE_LOCAL_GEARY_PERMUTATION_TEST_PARAMETER_LENGTH` (3) `uint32` values.
+
+Settings of `getGPUMultivariateLocalGearyPermutationTestParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `seed` (optional) | `readonly [number, number]` | Two unsigned 32-bit Philox key words, including all high bits. Defaults to [0, 0]. |
+| `significance` (optional) | `number` | Significance threshold in (0, 1), compared as float32. Defaults to 0.05. |
+
+{/* /parameters */}
 
 ### `GPUAssuncaoReisStandardization`
 
@@ -546,9 +638,16 @@ of the whole run). Omitting the prop keeps today's behavior and kernels unchange
 - Local: each row loops over permutations in its own invocation and `break`s at `L`, so a clearly
   non-extreme row costs about `h / (tail probability)` permutations instead of `P`. `significant`,
   `adjustedPValues` and the Geary `classes` use the stopped p-value.
-- Global: the permutations run in fixed batches of `getGPUGlobalPermutationBatchSize(rows,
-  maximumPermutations)` (about 128 row-block workgroups per batch so the GPU stays occupied, at most 64
-  batches; the batch is also the most permutations computed past `L`). After each batch a one-workgroup
+- Global: the permutations run in fixed batches of `permutationBatchSize` when provided, otherwise
+  `getGPUGlobalPermutationBatchSize(rows, maximumPermutations)` (about 128 row-block workgroups per
+  batch so the GPU stays occupied, at most 64 batches). The batch is also the most permutations
+  computed past `L`. `permutationBatchSize` materializes each permuted variable once per row and
+  permutation before the pair kernel gathers its values. It accepts an integer in
+  `[1, maximumPermutations + 1]`, at most `2^25` elements per materialized variable and at most
+  4096 unrolled batches; `estimatedCommandNodeCount` also enforces the shared command node budget.
+  With or without early stopping, the shuffle sequence and sum order are unchanged, so the results
+  are bit-identical to the inline shuffle for the same seed. The observed statistic runs separately
+  before the first sequential batch. After each batch a one-workgroup
   node scans that batch's tail flags in permutation order, keeps the running counts in a GPU state
   word and zeroes the indirect dispatches of the remaining batches, so the stopping index does not
   depend on the batch size. `referenceDistribution`, `histogram`, `simulatedMean`,
@@ -1369,7 +1468,7 @@ Settings of `getGPUSpatialKMeansParameterValues`:
 
 ### `GPUHierarchicalDensityClustering`
 
-Cluster planar points by density at every scale (HDBSCAN), returning compact cluster labels, core distances and the cluster count.
+Cluster planar points by density at every scale (HDBSCAN), returning compact cluster labels, core distances and the cluster count. Optional relative times and a per-frame time scale enable [scaled ST-HDBSCAN](./space-time-clustering.md#st-hdbscan) through the same contributor.
 
 ::lens{scenario=gpu-spatial-analysis.hierarchical-density-clustering rung=result caption="HDBSCAN finds 19 clusters of different density among 782 observations without a radius; the rest is noise."}
 
@@ -1409,6 +1508,20 @@ graph.add(new GPUHierarchicalDensityClustering({
 ::lens{scenario=gpu-spatial-analysis.hierarchical-density-clustering rung=formula caption="Follow core distance, mutual reachability and cluster stability, which decide the surviving clusters."}
 ::lens{scenario=gpu-spatial-analysis.hierarchical-density-clustering rung=kernel caption="Inspect the k-nearest, Boruvka, dendrogram, condensing and selection kernels with retained WGSL bindings."}
 ::lens{scenario=gpu-spatial-analysis.hierarchical-density-clustering rung=graph caption="Trace core distances, the spanning tree, the dendrogram and excess-of-mass selection over 782 observations."}
+
+{/* parameters: GPUHierarchicalDensityClustering generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+##### `GPUHierarchicalDensityClustering` parameters
+
+- Packer: `getGPUHierarchicalDensityClusteringParameterValues(settings)`, writes `GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH` (4) `float32` values.
+
+Settings of `getGPUHierarchicalDensityClusteringParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `timeScale` | `number` | Spatial position units per temporal-context tick. Finite and non-negative; zero ignores time distances. |
+
+{/* /parameters */}
 
 ### `GPUSpatialWeightsMinimumSpanningTree`, `GPUSkaterRegions`, and `GPURegionPartitionEvaluation`
 
@@ -1621,8 +1734,14 @@ Convex hull per label (Andrew monotone chain), for cluster and hot-region outlin
 footprints (PostGIS `ST_ConvexHull` per group, `GeoSeries.convex_hull`). Props: `positions`, `labels`,
 `groupCount`, optional `noiseLabel`, `maximumVerticesPerGroup` (at least 3), `vertexCapacity` and
 `output`: `vertexIndices`, optional `vertexPositions`, `offsets` (`groupCount + 1`), `counts`, optional
-`sizes` (true hull sizes) and `status.overflow` (bit 1: a hull exceeded the per-group cap; bit 2: the total
-capacity ran out).
+`sizes` (true hull sizes) and `status.overflow` (0 or 1). Optional one-row diagnostics
+`status.groupOverflow` and `status.vertexOverflow` identify the per-group and total vertex limits,
+respectively. Every supplied status is rewritten each frame, including empty groups.
+
+`status.overflow` previously packed bits 1 and 2; code testing those bits must use the corresponding
+named diagnostic. The exported `GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW` and
+`GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW` constants remain available but are deprecated; they no longer
+apply to `status.overflow`.
 
 - Hulls are counter-clockwise, not closed, and start at the smallest `(x, y)` vertex. Collinear points
   are excluded, equal points collapse to the lowest row, one distinct point gives one vertex, and
@@ -2438,4 +2557,4 @@ Settings of `getGPULocalOutlierFactorParameterValues`:
 ::lens{scenario=gpu-spatial-analysis.local-outlier-factor rung=graph caption="Trace the ten-nearest-neighbour search into k-distance, density, LOF and the thresholded mask."}
 
 See [local variability and regression extensions](./statistical-expansion.md) for the expanded
-statistics, fixed/grid-selected multiscale fits, generalized local models, pooled panels and regimes.
+statistics, fixed, finite-grid or golden-section-selected multiscale fits, generalized local models, pooled panels and regimes.

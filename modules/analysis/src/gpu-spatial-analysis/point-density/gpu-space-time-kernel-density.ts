@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  GPUGridIndex,
   GPUReduction,
   GPUSort,
   type GPUCommandGraph,
@@ -37,6 +36,7 @@ import {GET_ORDERED_KEY_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/ke
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import {GRID_COORDINATE_WGSL} from '../spatial-interpolation/gpu-inverse-distance-weighting';
 import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
+import {createPointNeighborGridIndexNodes} from '../../analysis-core/kernels/point-neighbor-grid-index';
 import {resolveGPUSpaceTimeTemporalContext} from '../space-time-tests/space-time-bands';
 import {
   GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION,
@@ -483,23 +483,16 @@ ${GET_ORDERED_KEY_WGSL}`,
     );
 
     // 4. Grid index over the time-ordered positions and ascending time order inside each cell.
-    const indexCellCount = indexGridSize[0] * indexGridSize[1];
-    const cellOffsets = u32('cell-offsets', indexCellCount + 1);
-    const objectIds = u32('object-ids', rowCount);
-    const indexCount = u32('index-count', 1);
-    const indexOverflow = u32('index-overflow', 1);
-    nodes.push(
-      ...new GPUGridIndex({
-        id: `${id}-index`,
-        positions: sortedPositions,
-        gridSize: indexGridSize,
-        bounds: indexBounds,
-        cellOffsets,
-        objectIds,
-        count: indexCount,
-        overflow: indexOverflow
-      }).getCommandNodes(graph)
-    );
+    const index = createPointNeighborGridIndexNodes<Parameters>(graph, {
+      id,
+      indexId: `${id}-index`,
+      positions: sortedPositions,
+      gridSize: indexGridSize,
+      bounds: indexBounds,
+      rowCount
+    });
+    const {cellOffsets, sortedRows: objectIds, gridCount: indexCount} = index;
+    nodes.push(...index.nodes);
     // The grid index scatters IDs with atomics, so the order inside a cell varies between runs. A
     // time-ordered copy makes ascending slot order the same as ascending time order.
     const cellRowOrder = createGridCellRowOrderNodes(graph, {

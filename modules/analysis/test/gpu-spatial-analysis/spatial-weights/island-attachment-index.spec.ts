@@ -133,7 +133,11 @@ async function runAttachment(
       new GPUIslandAttachment({
         weights: {
           offsets: upload('uint32', scene.offsets, rows + 1),
-          neighbors: upload('uint32', scene.neighbors, Math.max(scene.neighbors.length, 1)),
+          neighbors: upload(
+            'uint32',
+            scene.neighbors.length ? scene.neighbors : new Uint32Array(1),
+            Math.max(scene.neighbors.length, 1)
+          ),
           weights: importGraphBuffer(
             graph,
             'input-weights',
@@ -258,6 +262,97 @@ describe('GPUIslandAttachment grid path equals the scan', () => {
     expect(grid.attachment).toEqual(reference);
     expect(countAttached(reference)).toBeGreaterThan(1000);
     expect(grid.uncertainCount).toBeGreaterThanOrEqual(40);
+  }, 120_000);
+
+  for (const tiedCount of [16, 1024]) {
+    it(`${tiedCount} exactly equidistant representatives match the scan and CPU reference`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      // Nonzero, exactly representable distance 5. The island is shuffled among connected rows;
+      // its own zero-distance candidate must be skipped. The remaining candidates cannot certify
+      // the lowest-row answer, including across different lanes and representative rounds.
+      const directions: [number, number][] = [
+        [3, 4],
+        [-3, 4],
+        [3, -4],
+        [-3, -4]
+      ];
+      const points: [number, number][] = Array.from(
+        {length: tiedCount},
+        (_, row) => directions[row % directions.length]
+      );
+      points.push([0, 0]);
+      const scene = createScene(points, row => row === tiedCount, tiedCount + 100);
+      const reference = getReference(scene);
+      const scan = await runAttachment(device, scene, 'scan');
+      const grid = await runAttachment(device, scene, 'grid');
+      expect(scan.attachment).toEqual(reference);
+      expect(grid.attachment).toEqual(reference);
+      expect(grid.attachment).toEqual(scan.attachment);
+      expect(grid.uncertainCount).toBe(1);
+      expect(scan.uncertainCount).toBe(0);
+    }, 120_000);
+  }
+
+  it('1,025 coincident islands exclude themselves and reduce ties to the lowest other row', async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    // The last representative round has a single occupied lane; every query needs the fallback.
+    // There are no original edges, exercising padded input slots and reciprocal merging as well.
+    const rows = 1025;
+    const scene: Scene = {
+      positions: new Float32Array(2 * rows).fill(7),
+      offsets: new Uint32Array(rows + 1),
+      neighbors: new Uint32Array(0)
+    };
+    const reference = getReference(scene);
+    expect(reference).toEqual([1, ...new Array(rows - 1).fill(0)]);
+    const scan = await runAttachment(device, scene, 'scan');
+    const grid = await runAttachment(device, scene, 'grid');
+    expect(scan.attachment).toEqual(reference);
+    expect(grid.attachment).toEqual(scan.attachment);
+    expect(grid.uncertainCount).toBe(rows);
+  }, 120_000);
+
+  it('the bounded fallback reaches the final representative at the maximum row count', async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const rows = 65535;
+    // Overflowing squared distances force the fallback. Only the very last representative is
+    // nearest, exercising round 256 and the unoccupied lane at the 65,535-row boundary.
+    const positions = new Float32Array(2 * rows);
+    for (let row = 1; row < rows; row++) positions[2 * row] = Math.fround(3e38);
+    positions[2 * (rows - 1)] = Math.fround(1e38);
+    const scene: Scene = {
+      positions,
+      offsets: Uint32Array.from({length: rows + 1}, (_, row) => Math.max(row - 1, 0)),
+      neighbors: Uint32Array.from({length: rows - 1}, (_, slot) =>
+        slot === rows - 2 ? 1 : slot + 2
+      )
+    };
+    const reference = getReference(scene);
+    expect(reference[0]).toBe(rows - 1);
+    const scan = await runAttachment(device, scene, 'scan');
+    const grid = await runAttachment(device, scene, 'grid');
+    expect(scan.attachment).toEqual(reference);
+    expect(grid.attachment).toEqual(scan.attachment);
+    expect(grid.uncertainCount).toBe(1);
+  }, 120_000);
+
+  it('no finite other representative leaves the island unattached', async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const scene: Scene = {
+      positions: new Float32Array([0, 0, Number.NaN, 0, 0, Number.POSITIVE_INFINITY]),
+      offsets: new Uint32Array(4),
+      neighbors: new Uint32Array(0)
+    };
+    const reference = getReference(scene);
+    const scan = await runAttachment(device, scene, 'scan');
+    const grid = await runAttachment(device, scene, 'grid');
+    expect(reference).toEqual([NONE, NONE, NONE]);
+    expect(scan.attachment).toEqual(reference);
+    expect(grid.attachment).toEqual(scan.attachment);
   }, 120_000);
 
   it('skips non-finite representatives and leaves non-finite islands unattached', async () => {

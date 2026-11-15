@@ -12,10 +12,12 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
+  getCoreDefaultBuffer,
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
@@ -144,8 +146,14 @@ export type GPUNetworkServiceAreasOutput = {
   facilityCostSums?: GraphDataView<'float32'>;
   /** Optional GPU-written status words. */
   status?: {
-    /** Optional one-row flag: 1 only when both phases reached a fixpoint, otherwise 0. */
+    /** Optional one-row flag: 1 only when all requested phases reached a fixpoint, otherwise 0. */
     converged?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row complement of converged: 1 when cost, label or predecessor tie rounds
+     * stopped before their fixpoint, including a zero activeIterations limit; otherwise 0.
+     * May be requested without converged. Incumbent costs, assignments and parents are retained.
+     */
+    iterationLimitReached?: GraphDataView<'uint32'>;
   };
 };
 
@@ -213,7 +221,8 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
       ['output.assignments', output.assignments],
       ['output.predecessors', output.predecessors],
       ['output.facilityNodeCounts', output.facilityNodeCounts],
-      ['output.status.converged', output.status?.converged]
+      ['output.status.converged', output.status?.converged],
+      ['output.status.iterationLimitReached', output.status?.iterationLimitReached]
     ] as const) {
       if (view) {
         validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
@@ -257,10 +266,11 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
       ['facilityCount', typeof props.facilityCount === 'object' ? props.facilityCount : undefined],
       ['activeIterations', props.activeIterations],
       ['costLimit', props.costLimit],
-      ['output.status.converged', output.status?.converged]
+      ['output.status.converged', output.status?.converged],
+      ['output.status.iterationLimitReached', output.status?.iterationLimitReached]
     ] as const) {
-      if (view && view.length !== 1) {
-        throw new Error(`${id} ${name} must contain exactly one row`);
+      if (view) {
+        validateRequirement(id, view.length === 1, `${name} must contain exactly one row`);
       }
     }
     for (const [name, view] of [
@@ -305,10 +315,13 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
       output.predecessors,
       output.facilityNodeCounts,
       output.facilityCostSums,
-      output.status?.converged
+      output.status?.converged,
+      output.status?.iterationLimitReached
     ]
       .filter(view => view !== undefined)
-      .map(view => view.buffer);
+      .map(view =>
+        view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
+      );
     const inputs = [
       ...getGPUNetworkTopologyViews(props.topology),
       props.facilities,
@@ -318,13 +331,14 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
       props.costLimit
     ]
       .filter(view => view !== undefined)
-      .map(view => view.buffer);
-    if (
-      new Set(outputs).size !== outputs.length ||
-      outputs.some(buffer => inputs.includes(buffer))
-    ) {
-      throw new Error(`${id} outputs must use separate buffers from each other and from inputs`);
-    }
+      .map(view =>
+        view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
+      );
+    validateRequirement(
+      id,
+      new Set(outputs).size === outputs.length && outputs.every(buffer => !inputs.includes(buffer)),
+      'outputs must use separate buffers from each other and from inputs'
+    );
   }
 
   /**
@@ -341,9 +355,10 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, getViews(props));
     const nodeCount = output.assignments.length;
     const costs = output.costs ?? createTransientView(graph, `${id}-costs`, 'float32', nodeCount);
-    const reachabilityConverged = output.status?.converged
-      ? createTransientView(graph, `${id}-reachability-converged`, 'uint32', 1)
-      : undefined;
+    const reachabilityConverged =
+      output.status?.converged || output.status?.iterationLimitReached
+        ? createTransientView(graph, `${id}-reachability-converged`, 'uint32', 1)
+        : undefined;
     const labels = output.assignments;
     const phase: FrontierPhase = {
       maxRounds: labelIterations,
@@ -455,7 +470,7 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
         })
       );
     }
-    if (output.status?.converged && reachabilityConverged) {
+    if (reachabilityConverged) {
       nodes.push(
         createServiceAreasFinalizeNode<Parameters>(graph, {
           id: `${id}-finalize`,
@@ -463,7 +478,8 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
           phase,
           tiePhase,
           reachabilityConverged,
-          converged: output.status.converged
+          converged: output.status?.converged,
+          iterationLimitReached: output.status?.iterationLimitReached
         })
       );
     }
@@ -625,6 +641,7 @@ function getViews(props: GPUNetworkServiceAreasProps): (GraphDataView | undefine
     output.predecessors,
     output.facilityNodeCounts,
     output.facilityCostSums,
-    output.status?.converged
+    output.status?.converged,
+    output.status?.iterationLimitReached
   ];
 }

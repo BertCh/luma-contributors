@@ -344,11 +344,16 @@ scores[scoresOffset + index] = score;`
         rasterBinding('bestIndex', bestIndex),
         rasterBinding('secondaryScore', secondaryScore),
         rasterBinding('coarse', coarse, true),
-        rasterBinding('status', props.output.status, true)
+        rasterBinding('status', props.output.status, true),
+        ...(props.output.secondPeakRatio
+          ? [rasterBinding('secondPeakRatio', props.output.secondPeakRatio, true)]
+          : [])
       ],
+      declarations: RASTER_FINITE_WGSL,
       body: `let best = bestScore[bestScoreOffset]; let secondary = secondaryScore[secondaryScoreOffset]; let selected = bestIndex[bestIndexOffset];
 let coordinate = vec2<i32>(i32(selected % ${searchWidth}u), i32(selected / ${searchWidth}u));
 var code = 0u; if (best < ${props.minimumCorrelation ?? 0}) { code = 3u; } else if (best - secondary <= max(abs(best), 1e-12) * ${props.ambiguityTolerance ?? 1e-4}) { code = 2u; }
+${props.output.secondPeakRatio ? 'var ratio = missing(); if (code != 3u && best > 0.0) { ratio = clamp(max(secondary, 0.0) / best, 0.0, 1.0); } secondPeakRatio[secondPeakRatioOffset] = ratio;' : ''}
 coarse[coarseOffset] = f32(coordinate.x - ${maximumShift[0]}); coarse[coarseOffset + 1u] = f32(coordinate.y - ${maximumShift[1]}); status[statusOffset] = code;`
     })
   );

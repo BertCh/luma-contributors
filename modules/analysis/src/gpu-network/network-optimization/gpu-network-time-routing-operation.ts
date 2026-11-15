@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getNetworkOptimizationStatusOutputs,
+  type NetworkOptimizationStatusValues
+} from './network-optimization-status';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUNetworkTimeRouting, type GPUNetworkTimeRoutingProps} from './gpu-network-time-routing';
 
@@ -22,7 +26,12 @@ export type NetworkTimeRoutingOperationProps = Pick<
   endpoints: string;
   /** float32, one relative departure. */
   departure: string;
-  output: {arrivals: string; predecessorTransitions: string; summary: string};
+  output: {
+    arrivals: string;
+    predecessorTransitions: string;
+    summary: string;
+    status?: NetworkOptimizationStatusValues;
+  };
 };
 
 /** GPU operation form. Every property is compile-time; graph contents are per-frame. */
@@ -44,7 +53,11 @@ export class GPUNetworkTimeRoutingOperation extends GPUContributorOperation {
           format: 'uint32',
           length: props.stateCount
         },
-        summary: {value: props.output.summary, format: 'uint32', length: 4}
+        summary: {value: props.output.summary, format: 'uint32', length: 4},
+        ...getNetworkOptimizationStatusOutputs(
+          props.id ?? 'network-time-routing',
+          props.output.status
+        )
       },
       createContributor: getView =>
         new GPUNetworkTimeRouting({
@@ -61,7 +74,12 @@ export class GPUNetworkTimeRoutingOperation extends GPUContributorOperation {
           output: {
             arrivals: getView<'float32'>('arrivals'),
             predecessorTransitions: getView<'uint32'>('predecessorTransitions'),
-            summary: getView<'uint32'>('summary')
+            summary: getView<'uint32'>('summary'),
+            status: Object.fromEntries(
+              Object.entries(props.output.status ?? {}).flatMap(([name, value]) =>
+                value === undefined ? [] : [[name, getView<'uint32'>(name)]]
+              )
+            )
           }
         })
     });

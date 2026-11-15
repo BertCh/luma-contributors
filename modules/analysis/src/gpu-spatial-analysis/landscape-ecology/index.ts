@@ -43,3 +43,14 @@ export type {
   GPURasterResistanceConnectivityProps,
   GPURasterResistanceConnectivityRecipeResult
 } from './raster-resistance-connectivity';
+export {GPUPopulationSupportAlignment} from './gpu-population-support-alignment';
+export {GPUPopulationSupportAlignmentOperation} from './gpu-population-support-alignment-operation';
+export type {PopulationSupportAlignmentOperationProps} from './gpu-population-support-alignment-operation';
+export {
+  CPUPopulationSupportAlignmentOperation,
+  computePopulationSupportAlignmentOnCPU
+} from './cpu-population-support-alignment-operation';
+export type {
+  CPUPopulationSupportAlignmentInput,
+  CPUPopulationSupportAlignmentResult
+} from './cpu-population-support-alignment-operation';

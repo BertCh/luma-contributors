@@ -30,3 +30,4 @@ export * from './network-time-geography/index';
 export * from './recipes/index';
 
 export * from './network-point-process/index';
+export * from './k-shortest-paths/index';

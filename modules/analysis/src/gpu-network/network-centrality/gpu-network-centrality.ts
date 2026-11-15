@@ -13,6 +13,7 @@ import {
 import {
   getCoreBindingElementLimit,
   validateCapacity,
+  validateRequirement,
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
@@ -21,6 +22,7 @@ import {
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
+  getCoreDefaultBuffer,
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
@@ -39,6 +41,7 @@ import {
 } from '../network-reachability/network-frontier';
 import {
   CENTRALITY_ALIGNMENT_ELEMENTS,
+  CENTRALITY_BATCH_STATUS_WORDS,
   createCentralityAccumulateNode,
   createCentralityEdgeAccumulateNode,
   createCentralityBatchInfoNode,
@@ -100,6 +103,13 @@ export type GPUNetworkCentralityOutput = {
      * unordered (see `zeroWeightCycle`). With 0 the betweenness values are incomplete.
      */
     converged?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row flag: 1 when any reachability, path-count or dependency phase exhausted
+     * its round budget, otherwise 0. May be requested alone. A zero-weight cycle without a
+     * round-budget exit clears converged but does not set iterationLimitReached.
+     * Incumbent centralities are still published.
+     */
+    iterationLimitReached?: GraphDataView<'uint32'>;
     /**
      * Optional one-row flag, with a betweenness output: 1 when, for some pivot, shortest paths
      * cross a cycle of edges of weight exactly zero between nodes of equal cost (for example an
@@ -289,7 +299,7 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
    * reachability search (plus a finalize node with a status flag), one closeness reduction
    * with a closeness output, and with betweenness `2R + 3` (reset, two initializers, `R` sigma and
    * `R` delta rounds) plus one accumulate node per betweenness output and one status node with
-   * a status flag (`status.converged` or `status.zeroWeightCycle`). Rejected by the constructor
+   * a status flag (`status.converged`, `status.zeroWeightCycle` or `status.iterationLimitReached`). Rejected by the constructor
    * above 32,768.
    */
   readonly estimatedCommandNodeCount: number;
@@ -360,6 +370,19 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
         throw new Error(`${id} output.status.converged must contain exactly one row`);
       }
     }
+    const iterationLimitReached = output.status?.iterationLimitReached;
+    if (iterationLimitReached) {
+      validateSinglePackedView(
+        iterationLimitReached,
+        ['uint32'],
+        `${id} output.status.iterationLimitReached`
+      );
+      validateRequirement(
+        id,
+        iterationLimitReached.length === 1,
+        'output.status.iterationLimitReached must contain exactly one row'
+      );
+    }
     const zeroWeightCycle = output.status?.zeroWeightCycle;
     if (zeroWeightCycle) {
       validateSinglePackedView(zeroWeightCycle, ['uint32'], `${id} output.status.zeroWeightCycle`);
@@ -372,9 +395,9 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
         );
       }
     }
-    // Either status flag gives every batch a status slot, its search a finalize node and the
-    // betweenness phases a status node.
-    const hasStatus = Boolean(converged || zeroWeightCycle);
+    // Any stopping or cycle status flag gives every batch a status slot, its search a finalize
+    // node and the betweenness phases a status node.
+    const hasStatus = Boolean(converged || zeroWeightCycle || iterationLimitReached);
     this.maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
     this.localIterations = props.localIterations ?? DEFAULT_LOCAL_ITERATIONS;
     validateCapacity(
@@ -457,6 +480,7 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
         output.harmonicCloseness,
         output.reachedCounts,
         converged,
+        iterationLimitReached,
         zeroWeightCycle
       ],
       getInputViews(props)
@@ -468,13 +492,26 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       output.harmonicCloseness,
       output.reachedCounts,
       converged,
+      iterationLimitReached,
       zeroWeightCycle
     ]
       .filter(view => view !== undefined)
-      .map(view => view.buffer);
-    if (new Set(outputBuffers).size !== outputBuffers.length) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
+      .map(view =>
+        view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
+      );
+    const inputBuffers = new Set(
+      getInputViews(props)
+        .filter(view => view !== undefined)
+        .map(view =>
+          view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
+        )
+    );
+    validateRequirement(
+      id,
+      new Set(outputBuffers).size === outputBuffers.length &&
+        outputBuffers.every(buffer => !inputBuffers.has(buffer)),
+      'outputs must use separate buffers from each other and from inputs'
+    );
   }
 
   /**
@@ -497,6 +534,7 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       output.harmonicCloseness,
       output.reachedCounts,
       output.status?.converged,
+      output.status?.iterationLimitReached,
       output.status?.zeroWeightCycle
     ]);
     const hasBetweenness = Boolean(output.betweenness || output.edgeBetweenness);
@@ -532,9 +570,11 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       })
     );
     const costs = createTransientView(graph, `${id}-costs`, 'float32', expandedNodeCount);
-    // One aligned slot per batch: word 0 converged, word 1 the zero-weight cycle flag.
+    // One aligned slot per batch: convergence, zero-weight cycle, and round-limit exit.
     const batchConverged =
-      output.status?.converged || output.status?.zeroWeightCycle
+      output.status?.converged ||
+      output.status?.zeroWeightCycle ||
+      output.status?.iterationLimitReached
         ? createTransientView(
             graph,
             `${id}-batch-converged`,
@@ -766,7 +806,7 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
                 graph,
                 batchConverged,
                 batch * CENTRALITY_ALIGNMENT_ELEMENTS,
-                2
+                CENTRALITY_BATCH_STATUS_WORDS
               )
             })
           );
@@ -780,6 +820,8 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
           batchCount,
           batchStatus: batchConverged,
           converged: output.status?.converged,
+          iterationLimitReached: output.status?.iterationLimitReached,
+          hasBetweenness,
           zeroWeightCycle: output.status?.zeroWeightCycle
         })
       );

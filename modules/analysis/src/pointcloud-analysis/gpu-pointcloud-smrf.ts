@@ -25,7 +25,57 @@ import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 import {getPointCloudCellSource, validatePointCloudGrid} from './gpu-pointcloud-surfaces';
 import type {PointCloudRasterGrid} from './gpu-pointcloud-surfaces';
 
+export type GPUPointCloudSMRFSettings = {
+  /** Nonnegative terrain slope; default 0.15. */
+  slope?: number;
+  /** Nonnegative multiplier of the terrain gradient; default 1.25. */
+  scalar?: number;
+  /** Nonnegative elevation threshold in z units; default 0.5. */
+  threshold?: number;
+};
+
+/** Two settings followed by one slope threshold for each compile-time radius. */
+export function getGPUPointCloudSMRFParameterLength(maximumRadius: number): number {
+  return 2 + maximumRadius;
+}
+
+/**
+ * Pack scalar, threshold and per-radius slope thresholds for a caller-owned GPUParameterBuffer.
+ * Products are evaluated in float64 and rounded once, preserving the constructor convention.
+ * @param settings Per-frame classification settings.
+ * @param grid The contributor's compile-time grid.
+ * @param maximumRadius The contributor's compile-time maximumRadius, in cells.
+ */
+export function getGPUPointCloudSMRFParameterValues(
+  settings: GPUPointCloudSMRFSettings,
+  grid: PointCloudRasterGrid,
+  maximumRadius: number
+): Float32Array {
+  const identifier = 'gpu-pointcloud-smrf';
+  validateCapacity(
+    identifier,
+    'maximumRadius',
+    maximumRadius,
+    1,
+    GPU_POINT_CLOUD_MAXIMUM_SMRF_WINDOW_CELLS
+  );
+  validateFiniteNumber(identifier, 'slope', settings.slope ?? 0.15, 0);
+  validateFiniteNumber(identifier, 'scalar', settings.scalar ?? 1.25, 0);
+  validateFiniteNumber(identifier, 'threshold', settings.threshold ?? 0.5, 0);
+  return new Float32Array([
+    settings.scalar ?? 1.25,
+    settings.threshold ?? 0.5,
+    ...Array.from({length: maximumRadius}, (_, index) => {
+      const threshold = (settings.slope ?? 0.15) * grid.cellSize * (index + 1);
+      validateFiniteNumber(identifier, `slope threshold[${index}]`, threshold, 0);
+      return threshold;
+    })
+  ]);
+}
+
 export type GPUPointCloudSMRFProps = {
+  /** Per-frame thresholds; overrides slope, scalar and threshold. */
+  parameters?: GraphDataView<'float32'>;
   id?: string;
   positions: GraphDataView<'float32x3'>;
   classifications: GraphDataView<'uint32'>;
@@ -78,6 +128,9 @@ type RasterViews = Record<
  * The diamond minimum and maximum windows are the published `GPURasterErosion` and
  * `GPURasterDilation` (`pointcloud-diamond-morphology.ts`); the other stages are independently
  * implemented WGSL. No CPU numerical fallback or intermediate readback.
+ * Per-frame: input contents and parameters (slope, scalar, threshold). Compile-time: grid,
+ * window, cut, class labels, onlyGround, optional selection and view shapes. Without parameters,
+ * threshold props retain their constructor-time behavior.
  */
 export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
   readonly id: string;
@@ -114,6 +167,14 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
       0,
       GPU_POINT_CLOUD_MAXIMUM_SMRF_CUT_CELLS
     );
+    if (props.parameters) {
+      validateViewLength(
+        this.id,
+        'parameters',
+        props.parameters,
+        getGPUPointCloudSMRFParameterLength(this.maximumRadius)
+      );
+    }
     validateFiniteNumber(this.id, 'slope', props.slope ?? 0.15, 0);
     validateFiniteNumber(this.id, 'scalar', props.scalar ?? 1.25, 0);
     validateFiniteNumber(this.id, 'threshold', props.threshold ?? 0.5, 0);
@@ -150,7 +211,8 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
       groundSurface,
       groundMask,
       outputClassifications,
-      status
+      status,
+      parameters
     } = this.props;
     const cells = grid.width * grid.height;
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -168,7 +230,7 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
         ...getPointCloudKernelNodes(graph, {
           id: `${this.id}-${name}`,
           length,
-          inputs,
+          inputs: {...inputs, ...(parameters ? {parameters} : {})},
           outputs,
           body
         })
@@ -331,7 +393,7 @@ writeResult(index,mean); writeAvailability(index,select(0u,2u,count>0u));`
         `object-mask-${radius}`,
         {previous: previousOpening, opening, objectMask},
         {nextMask},
-        `writeNextMask(index,readObjectMask(index)|u32(abs(readPrevious(index)-readOpening(index))>${Math.fround((this.props.slope ?? 0.15) * grid.cellSize * radius)}));`
+        `writeNextMask(index,readObjectMask(index)|u32(abs(readPrevious(index)-readOpening(index))>${parameters ? `readParameters(${radius + 1}u)` : Math.fround((this.props.slope ?? 0.15) * grid.cellSize * radius)}));`
       );
       objectMask = nextMask;
       previousOpening = opening;
@@ -375,7 +437,7 @@ let position=readPositions(index);
 ${getPointCloudCellSource(grid)}
 if (!inside || !all(abs(position)<=vec3f(3.402823e38))) { writeStatus(index,${GPU_POINT_CLOUD_SMRF_STATUS_INVALID}u); return; }
 if (readAvailability(cellIndex)==0u) { writeStatus(index,${GPU_POINT_CLOUD_SMRF_STATUS_NO_TERRAIN}u); return; }
-let tolerance=${Math.fround(this.props.threshold ?? 0.5)}+${Math.fround(this.props.scalar ?? 1.25)}*readGradients(cellIndex);
+let tolerance=${parameters ? 'readParameters(1u)' : Math.fround(this.props.threshold ?? 0.5)}+${parameters ? 'readParameters(0u)' : Math.fround(this.props.scalar ?? 1.25)}*readGradients(cellIndex);
 writeGroundMask(index,u32(abs(position.z-readTerrain(cellIndex))<=tolerance));
 let margin=${Math.max(2 * this.maximumRadius, 4 * this.cutRadius, 2)}u;
 let edge = cell.x<margin || cell.y<margin || cell.x+margin>=${grid.width}u || cell.y+margin>=${grid.height}u;

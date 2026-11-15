@@ -13,6 +13,15 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {validateCommandNodeBudget} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getRasterAlgebraStackNodeCount,
+  getRasterAlgebraStackNodes,
+  getRasterAlgebraStackViews,
+  isRasterAlgebraBandStack,
+  validateRasterAlgebraStack
+} from './raster-algebra-stack-input';
 import {
   getBreakSearchWGSL,
   getRasterAlgebraValueWGSL,
@@ -35,6 +44,8 @@ import {
 const OPERATION = 'GPUWeightedOverlay';
 /** Workgroup size of the range-reducing score kernel; its WGSL tree reduction depends on it. */
 const SCORE_WORKGROUP_SIZE = 256;
+/** Range clear, scoring and range decode; the two range nodes are optional. */
+const MAXIMUM_ANALYSIS_NODE_COUNT = 3;
 
 /** Caller-owned outputs of {@link GPUWeightedOverlay}. `score` is required. */
 export type GPUWeightedOverlayOutput = {
@@ -51,21 +62,23 @@ export type GPUWeightedOverlayOutput = {
  *
  * Per-frame (no recompile): stack contents, `parameters` (weights, remap modes and ranges, break
  * counts, normalization, nodata policy), and the remap tables. Topology: `layerCount`,
- * `cellCount`, `maximumBreakCount`, `noDataValue`, and which views exist.
+ * `cellCount`, `maximumBreakCount`, `noDataValue`, grid shape, band metadata and which views exist.
  */
 export type GPUWeightedOverlayProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'weighted-overlay'`. */
   id?: string;
   /**
-   * Band-sequential float32 stack: layer `i` occupies rows `[i * cellCount, (i + 1) * cellCount)`.
-   * NaN cells are nodata.
+   * Ordered published bands, or a legacy band-sequential float32 view (cellCount rows per layer).
+   * Bands use native validity, nodata and calibration. Legacy NaN cells are nodata.
    */
-  stack: GraphDataView<'float32'>;
+  stack: GraphDataView<'float32'> | readonly GPURasterBand[];
+  /** Shared complete grid, required for bands; its cell count must equal cellCount. */
+  grid?: GPURasterMetadata;
   /** Layer count in `[1, 16]`. */
   layerCount: number;
   /** Cells per layer. */
   cellCount: number;
-  /** Optional finite nodata sentinel compared exactly against input values. */
+  /** Optional finite sentinel for the legacy stack only; bands use their own native nodata. */
   noDataValue?: number;
   /**
    * Optional input row filter (`uint32`, at least `cellCount` rows): nonzero keeps the cell, zero
@@ -89,7 +102,7 @@ export type GPUWeightedOverlayProps = {
 };
 
 /**
- * Weighted overlay (suitability analysis) of up to 16 float32 rasters.
+ * Weighted overlay (suitability analysis) of up to 16 rasters, calibrated to float32.
  *
  * Each layer value is remapped, either linearly from `[inputMinimum, inputMaximum]` to `[0, 1]` (clamped,
  * optionally inverted) or through a per-layer break table to a class value, then
@@ -103,6 +116,8 @@ export type GPUWeightedOverlayProps = {
 export class GPUWeightedOverlay implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
   readonly id: string;
+  /** Upper bound including published band conversion and packing nodes. */
+  readonly estimatedCommandNodeCount: number;
   /** Validated properties. */
   readonly props: GPUWeightedOverlayProps;
   /** Compile-time table capacity per layer (0 without tables). */
@@ -125,7 +140,10 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
       throw new Error(`${id} layerCount * cellCount must fit in uint32`);
     }
     validateRasterAlgebraNoData(id, props.noDataValue);
-    validateRasterAlgebraView(id, 'stack', props.stack, 'float32', layerCount * cellCount);
+    validateRasterAlgebraStack(id, props.stack, props.grid, layerCount, cellCount);
+    this.estimatedCommandNodeCount =
+      MAXIMUM_ANALYSIS_NODE_COUNT + getRasterAlgebraStackNodeCount(props.stack);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', cellCount);
     validateRasterAlgebraView(
       id,
@@ -164,18 +182,24 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
     validateRasterAlgebraAliasing(
       id,
       [output.score, output.validity, output.scoreRange],
-      [props.stack, props.mask, props.parameters, props.remapBreaks, props.remapValues]
+      [
+        ...getRasterAlgebraStackViews(props.stack),
+        props.mask,
+        props.parameters,
+        props.remapBreaks,
+        props.remapValues
+      ]
     );
   }
 
-  /** Returns the score kernel and, with `scoreRange`, a key clear and a decode kernel. */
+  /** Converts band inputs, then scores and optionally clears/decodes the range. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, maximumBreakCount} = this;
     const {output, layerCount, cellCount} = props;
     validateRasterAlgebraGraph(id, graph, [
-      props.stack,
+      ...getRasterAlgebraStackViews(props.stack),
       props.mask,
       props.parameters,
       props.remapBreaks,
@@ -184,7 +208,8 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
       output.validity,
       output.scoreRange
     ]);
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const source = getRasterAlgebraStackNodes(graph, id, props.stack, props.grid, cellCount);
+    const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const rangeKeys = output.scoreRange
       ? createTransientView(graph, `${id}-range-keys`, 'uint32', 2)
       : undefined;
@@ -203,7 +228,7 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
     }
     const hasTables = Boolean(props.remapBreaks);
     const bindings: WGSLKernelBinding[] = [
-      {name: 'stack', view: props.stack, type: 'f32', access: 'read'},
+      {name: 'stack', view: source.values, type: 'f32', access: 'read'},
       ...(props.mask
         ? [{name: 'mask', view: props.mask, type: 'u32', access: 'read'} as const]
         : []),
@@ -252,7 +277,7 @@ ${
 var<workgroup> tileMaximum: array<u32, ${SCORE_WORKGROUP_SIZE}>;`
     : ''
 }
-${getRasterAlgebraValueWGSL(props.noDataValue)}
+${getRasterAlgebraValueWGSL(isRasterAlgebraBandStack(props.stack) ? undefined : props.noDataValue)}
 ${hasTables ? getBreakSearchWGSL('countBreaksBelow', 'remapBreaks') : ''}
 ${GET_ORDERED_KEY_WGSL}`,
         body: `${rangeKeys ? 'var minimumKey = 0xffffffffu;\n  var maximumKey = 0u;\n  if (index < CELL_COUNT) {' : ''}

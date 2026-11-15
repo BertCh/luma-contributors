@@ -32,6 +32,8 @@ export type PointCloudKernelProps = {
   inputs: Record<string, PointCloudKernelView>;
   /** Writable packed views; `readName(row)` and `writeName(row, value)` are declared. */
   outputs: Record<string, PointCloudKernelView>;
+  /** Shared WGSL helper declarations used by the row body. */
+  declarations?: string;
   /** One whole workgroup owns each logical row; the body must synchronize every active lane. */
   cooperative?: {workgroupSize: number; declarations: string};
   /** WGSL statements run per row with `index` and `localInvocationIndex` in scope. */
@@ -112,6 +114,7 @@ fn safeNormal(value: vec3f) -> vec3f {
   if (!(magnitude > 0.0)) { return vec3f(0.0); }
   return scaled / magnitude;
 }
+${props.declarations ?? ''}
 ${props.cooperative?.declarations ?? ''}
 fn runPointCloudRow(index: u32, localInvocationIndex: u32) {
   ${props.body}

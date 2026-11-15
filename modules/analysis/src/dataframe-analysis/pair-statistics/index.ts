@@ -178,3 +178,33 @@ export {GPURipleyEnvelopeOperation} from './gpu-ripley-envelope-operation';
 export type {RipleyEnvelopeOperationProps} from './gpu-ripley-envelope-operation';
 export {GPUSpaceTimeDiggleTestOperation} from './gpu-space-time-diggle-test-operation';
 export type {SpaceTimeDiggleTestOperationProps} from './gpu-space-time-diggle-test-operation';
+
+export {GPUCoregionalizationFit} from './gpu-coregionalization-fit';
+export type {
+  GPUCoregionalizationFitProps,
+  GPUCoregionalizationFitOutput,
+  GPUCoregionalizationFitStatus
+} from './gpu-coregionalization-fit';
+export {GPUCoregionalizationFitOperation} from './gpu-coregionalization-fit-operation';
+export type {CoregionalizationFitOperationProps} from './gpu-coregionalization-fit-operation';
+export {
+  CPUCoregionalizationFitOperation,
+  computeCoregionalizationFitOnCPU,
+  fitLinearModelOfCoregionalization
+} from './cpu-coregionalization-fit-operation';
+export type {
+  CPUCoregionalizationFitInput,
+  CPUCoregionalizationFitResult
+} from './cpu-coregionalization-fit-operation';
+export {
+  getGPUCoregionalizationFitParameterValues,
+  COREGIONALIZATION_DEFAULT_TOLERANCE,
+  GPU_COREGIONALIZATION_MAXIMUM_VARIABLE_COUNT,
+  GPU_COREGIONALIZATION_MAXIMUM_STRUCTURE_COUNT,
+  GPU_COREGIONALIZATION_MAXIMUM_BIN_COUNT,
+  GPU_COREGIONALIZATION_MAXIMUM_ITERATIONS
+} from './coregionalization-parameters';
+export type {
+  CoregionalizationFitOptions,
+  CoregionalizationStructure
+} from './coregionalization-parameters';

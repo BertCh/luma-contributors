@@ -10,7 +10,6 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {toRadians} from '@math.gl/core';
 import {GPU_EARTH_AUTHALIC_RADIUS_METERS} from './contracts/earth';
-import {getGPUAuthalicSphereRadius} from './contracts/spatial-context';
 import {IS_FINITE_VALUE_WGSL} from './kernels/wgsl-common';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from './kernels/wgsl-kernel-nodes';
 
@@ -45,9 +44,6 @@ export function getSphericalRasterCellArea(
     Math.sin(toRadians(0.5 * cellHeight))
   );
 }
-
-/** @deprecated Use getGPUAuthalicSphereRadius. */
-export const getRasterSphereRadius = getGPUAuthalicSphereRadius;
 
 /**
  * Validates the longitude/latitude placement view (`GPUPolygonRasterization.parameters`).

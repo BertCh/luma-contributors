@@ -5,7 +5,7 @@ ST-DBSCAN and ST-OPTICS. The time test is one more condition on the neighbor rel
 clusters, borders, noise, reachability and extraction follow from the same kernels as the purely
 spatial versions. Without `times`, nothing changes: the generated kernels contain no time code.
 
-ST-HDBSCAN is not available. See [Not available: ST-HDBSCAN](#not-available-st-hdbscan).
+`GPUHierarchicalDensityClustering` also supports ST-HDBSCAN through a continuous scaled Euclidean metric. See [ST-HDBSCAN](#st-hdbscan).
 
 Import from `@luma-contributors/analysis/gpu-spatial-analysis`.
 
@@ -64,7 +64,7 @@ parameters.write(getGPUSpatialClusteringParameterValues({
 ST-DBSCAN adds one gather of `times` into grid-cell order and one float compare per scanned
 candidate. The grid is spatial only, so the scan visits every spatial candidate and a short window
 does not prune work; a time-sorted or three-dimensional index would, and is a separate item.
-ST-OPTICS keeps the frontier of `GPUOPTICS` and its limits: at most 4096 rows with the exhaustive reachability step or xi extraction, at most 65,536 with `neighborIndex: 'grid'`, whose radius list also applies the time window.
+ST-OPTICS keeps the frontier of `GPUOPTICS` and its limits: at most 4096 rows with the exhaustive reachability step, at most 65,536 (including xi extraction) with `neighborIndex: 'grid'`, whose radius list also applies the time window. `orderingMethod: 'parallel'` distributes the indexed frontier across workgroups with the same strict time filter and exact row-index tie rule; the default remains `'sequential'`.
 
 ## Reference and agreement
 
@@ -74,12 +74,70 @@ ST-OPTICS keeps the frontier of `GPUOPTICS` and its limits: at most 4096 rows wi
 
 The pinned environment (Python 3.15.0, numpy 2.5.4, scipy 1.18.1, scikit-learn 1.9.1) differs from the 3.14 pins of `requirements.txt`. `st-dbscan` 0.2.3 is published as a source distribution only and its pyscaffold build fails under pip on Python 3.15, so the generator imports it from the unpacked sdist (SHA-256 `ca1810025630571aa9ffe204f81d9c0a52dc29daa2d05bb2cd7941f56f32fd8d`, recorded in the fixture).
 
-## Not available: ST-HDBSCAN
+## ST-HDBSCAN
 
-`GPUHierarchicalDensityClustering` cannot take the time filter by adding a predicate:
+`GPUHierarchicalDensityClustering` accepts optional `times`, `temporalContext` and `parameters`.
+Its distance is `sqrt(dx² + dy² + (timeScale * dt)²)`, equivalent to Euclidean HDBSCAN on
+`[x, y, timeScale * t]`. `timeScale` is spatial position units per temporal-context tick.
+For example, with positions in meters and times in seconds, `timeScale: 2` assigns a one-second
+separation the same distance as two meters. Zero gives spatial distances while still excluding
+non-finite times. There is no hard time window.
 
-- Its core distances come from `GPUNearestFeatureJoin` neighbors mode, which has no per-pair predicate.
-- Its Boruvka minimum spanning tree walks a point BVH with spatial boxes and prunes a node when `max(core, box distance)` exceeds the best weight. With a hard time filter, pruning would also need a time extent in every node; with the `st-clustering` penalty (`2 * eps1` outside the window) a pair can be nearer than its box distance, which makes the spatial lower bound invalid.
-- A hard filter makes the graph a forest, and the dendrogram, condensed tree and selection assume one spanning tree.
+```ts
+import {
+  GPUHierarchicalDensityClustering,
+  getGPUHierarchicalDensityClusteringParameterValues
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
-Doing this needs changes in `spatial-join` and the hierarchical-density kernels and a decision on the forest semantics, not a filter pass.
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+
+const parameters = new GPUParameterBuffer(device, {
+  id: 'hdbscan-parameters', format: 'float32', length: 4,
+  values: getGPUHierarchicalDensityClusteringParameterValues({timeScale: 2})
+});
+graph.add(new GPUHierarchicalDensityClustering({
+  positions,                        // planar float32x2
+  times: relativeTimes,              // float32, one per position
+  temporalContext: converter.outputTemporalContext,
+  parameters: parameters.importToGraph(graph),
+  minimumSamples: 5,                 // includes the point itself
+  minimumClusterSize: 10,
+  output: {labels, coreDistances, status: {count: clusterCount}}
+}));
+```
+
+`getGPUHierarchicalDensityClusteringParameterValues` packs `[timeScale, 0, 0, 0]` and rejects
+negative or non-finite float32 scales. Rewrite the parameter buffer between encodings to change
+the scale without recompiling. Invalid raw scale values make every row invalid. Row count,
+`minimumSamples`, `minimumClusterSize`, contexts and optional-view presence are compile-time;
+positions, times and scale values are per-frame. Only planar positions and relative float32 times
+are supported; project geographic input and choose a time origin near the observations.
+The shader subtracts times before scaling. Float32 subtraction, multiplication and squared-distance
+overflow remain numerical limits; center inputs and rescale units to keep distances representable.
+
+The exact indexed core-distance walk and Boruvka search reuse the spatial point BVH. Spatial box
+distance is a conservative lower bound for the combined metric. The BVH does not prune by time,
+so many observations at the same spatial site can require many candidate visits. The existing
+GPU spanning tree, dendrogram, condensation and excess-of-mass selection are shared. Limits stay
+at 1,048,576 rows and 32 minimum samples; construction validates the command-node estimate and
+graph declaration checks scratch against the device storage binding limit.
+
+Outputs retain the spatial HDBSCAN contract: one label per input row (`0xffffffff` for noise),
+optional self-inclusive core distances (`Infinity` for invalid rows or insufficient neighbors),
+and optional `status.count` containing the number of selected clusters. Finite rows with invalid
+times are excluded from both cores and hierarchy. No candidate list truncation or approximation
+is used, so no overflow/approximation port is needed. Boruvka and tree rounds have sufficient
+fixed logarithmic budgets and GPU convergence gates, with no caller-set iteration cutoff.
+
+Selection matches scikit-learn `HDBSCAN` defaults: Euclidean distance, EOM, no single cluster,
+zero selection epsilon. Equal-weight MST edges are ordered by input rows and can produce a
+partition different from scikit-learn on ties; duplicate densities use the largest float32
+instead of infinity, as in spatial HDBSCAN. There is no HDBSCAN CPU operation twin.
+
+The independent fixture `modules/analysis/test/oracles/fixtures/space-time-hdbscan.json` is generated
+by `modules/analysis/test/oracles/space-time-hdbscan.py` using scikit-learn on scaled coordinates;
+it records the NumPy, SciPy and scikit-learn versions. It covers overlapping events, zero and
+small time scales, maximum samples, duplicate ties and a 257-row padded BVH. Headless specs compare
+partitions (adjusted Rand index at least 0.97, allowing tied merges), cluster counts and every core
+distance (absolute/relative tolerance `2e-5 * max(1, reference)`). Separate cases exercise invalid
+rows, an empty finite set, one row and too few samples.

@@ -13,6 +13,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -23,6 +24,7 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {createLinePrefixNode} from './line-segmentize-kernels';
+import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
 import {
   createPieceCountNode,
   createPieceEmitNode,
@@ -128,9 +130,9 @@ export type GPULineChunkProps = {
    * Output pieces. `output.status.count` counts the pieces written (output lines) and
    * `requiredCount` the unclamped piece count; `vertexCount` and `requiredVertexCount` count
    * vertices. In `'chunk'` mode the line capacity is `output.lineOffsets.length - 1` and the piece
-   * count is data dependent (`sourceLineIndices` gives each piece's input line); a line is counted
-   * with at most `lineCapacity + 1` pieces, so `requiredCount` is exact unless one line alone needs
-   * more than that, in which case it is a lower bound that still exceeds the capacity. In
+   * count is data dependent (`sourceLineIndices` gives each piece's input line), counted
+   * independently of the output capacity. `requiredCount` saturates at `0xffffffff` if the
+   * requirement reaches the uint32 limit (per-line counts use float32 length division). In
    * `'substring'` mode there is exactly one output line per input line.
    */
   output: GPULineGeometryOutput;
@@ -142,7 +144,8 @@ export type GPULineChunkProps = {
  * Measures are cumulative line lengths (planar, or great-circle times the sphere radius, meters by default) from a per-line
  * Neumaier-compensated prefix. Chunk `i` of a line of length `L` covers
  * `[i * chunkLength, min((i + 1) * chunkLength, L)]`; a line gets `ceil(L / chunkLength)` chunks,
- * capped at the line capacity plus one so a tiny chunk length overflows instead of wrapping counts.
+ * Output layout counts are capped at the line capacity plus one to prevent wrapping offsets;
+ * a separate count scan reports the full requirement, saturated at the uint32 maximum.
  * Every piece is an interpolated start vertex, the input vertices strictly inside its range, and an
  * interpolated end vertex, so consecutive chunks share their boundary point. Zero-length lines
  * (including single vertices) are copied as one piece; empty lines produce none. A substring whose
@@ -230,12 +233,25 @@ export class GPULineChunk implements GPUCommandNodeProducer {
     ]);
     const rowCount = props.positions.length;
     const lineCount = props.lineOffsets.length - 1;
+    if (props.mode === 'chunk' && output.status.requiredCount) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'required piece counts and offsets',
+        lineCount * Uint32Array.BYTES_PER_ELEMENT,
+        'reduce the input line count'
+      );
+    }
     const rowMeasures = createTransientView(graph, `${id}-row-measures`, 'float32', rowCount);
     const rowShifts =
       coordinateSystem === 'spherical'
         ? createTransientView(graph, `${id}-row-shifts`, 'float32', rowCount)
         : undefined;
     const pieceCounts = createTransientView(graph, `${id}-piece-counts`, 'uint32', lineCount);
+    const requiredPieceCounts =
+      props.mode === 'chunk' && output.status.requiredCount
+        ? createTransientView(graph, `${id}-required-piece-counts`, 'uint32', lineCount)
+        : undefined;
     const pieceStarts = createTransientView(graph, `${id}-piece-starts`, 'uint32', lineCount);
     const pieces = createTransientView(
       graph,
@@ -266,7 +282,8 @@ export class GPULineChunk implements GPUCommandNodeProducer {
         parameters: props.parameters,
         rowCount,
         maximumPieces: lineCapacity + 1,
-        pieceCounts
+        pieceCounts,
+        requiredPieceCounts
       }),
       ...new GPUScan({
         id: `${id}-piece-scan`,
@@ -325,6 +342,29 @@ export class GPULineChunk implements GPUCommandNodeProducer {
         lineTotal: pieceTotal
       })
     ];
+    if (requiredPieceCounts && output.status.requiredCount) {
+      const requiredPieceStarts = createTransientView(
+        graph,
+        `${id}-required-piece-starts`,
+        'uint32',
+        lineCount
+      );
+      nodes.push(
+        ...new GPUScan({
+          id: `${id}-required-piece-scan`,
+          input: requiredPieceCounts,
+          output: requiredPieceStarts
+        }).getCommandNodes(graph),
+        ...createSaturatedScanTotalNodes(graph, {
+          id: `${id}-required-pieces`,
+          operation: OPERATION,
+          counts: requiredPieceCounts,
+          offsets: requiredPieceStarts,
+          rowCount: lineCount,
+          total: output.status.requiredCount
+        })
+      );
+    }
     if (output.sourceLineIndices) {
       nodes.push(
         createPieceSourceLineIndicesNode<Parameters>(graph, {

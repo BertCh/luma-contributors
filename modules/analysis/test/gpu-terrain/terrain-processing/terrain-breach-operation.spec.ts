@@ -13,7 +13,16 @@ import {makeBreachInput, makeBreachProps} from './terrain-breach-operation-fixtu
 it('compares all breach outputs on distinct pits, a tie, depth exhaustion, masks and invalid burning', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  for (const scene of ['ordinary', 'infeasible', 'masked', 'burn', 'two-dimensional'] as const) {
+  for (const scene of [
+    'ordinary',
+    'infeasible',
+    'masked',
+    'burn',
+    'two-dimensional',
+    'padding',
+    'one-step',
+    'exhausted'
+  ] as const) {
     const input = makeBreachInput(),
       props = makeBreachProps();
     if (scene === 'infeasible') props.maximumCutDepth = 1;
@@ -26,6 +35,19 @@ it('compares all breach outputs on distinct pits, a tie, depth exhaustion, masks
       props.grid = {...props.grid, width: 5, height: 3};
       input.elevation = Float32Array.of(0, 8, 9, 6, 0, 0, 4, 2, 5, 0, 0, 7, 9, 3, 0);
       input.pitCells = Uint32Array.of(7, 6);
+      input.burnDepth = new Float32Array(15);
+      input.validity = new Uint32Array(15).fill(1);
+    }
+    if (scene === 'one-step') props.maximumSteps = 1;
+    if (scene === 'exhausted') input.validity.fill(0);
+    if (scene === 'padding') {
+      // 33 pits and 15 window cells leave both pit and entry dispatches partially occupied.
+      props.pitCount = 33;
+      props.grid = {...props.grid, width: 5, height: 3};
+      input.elevation = Float32Array.of(0, 8, 9, 6, 0, 0, 4, 2, 5, 0, 0, 7, 9, 3, 0);
+      input.pitCells = Uint32Array.from({length: 33}, (_, index) =>
+        index % 3 === 0 ? 0xffffffff : 7
+      );
       input.burnDepth = new Float32Array(15);
       input.validity = new Uint32Array(15).fill(1);
     }

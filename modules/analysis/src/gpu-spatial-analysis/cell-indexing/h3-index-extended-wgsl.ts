@@ -54,7 +54,8 @@ function formatDoubleFloat(value: number): string {
 }
 
 /** Float64 face center, hex i axis and hex j axis unit vectors for each of the 20 icosahedron faces. */
-function getFaceBasisVectors(): number[][] {
+/** Binary64 face bases shared by forward indexing and inverse cell measures. @internal */
+export function getFaceBasisVectors(): number[][] {
   const centers = parseDggsFaceTable('dggs_h3_get_face_center_geo', 2);
   const azimuths = parseDggsFaceTable('dggs_h3_get_face_axis_azimuths', 3);
   const values: number[][] = [];

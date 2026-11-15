@@ -26,7 +26,7 @@ export type CPUMinimumBoundsInput = {
   | {ringOffsets: Uint32Array; polygonOffsets: Uint32Array; featureOffsets: Uint32Array}
 );
 
-/** All fixed-size shape columns, including the one-word completeness status. */
+/** All fixed-size shape columns, including the completeness scalars. */
 export type CPUMinimumBoundsResult = {
   rectangleCorners: Float32Array;
   rectangleSizes: Float32Array;
@@ -36,6 +36,8 @@ export type CPUMinimumBoundsResult = {
   bounds: Float32Array;
   hullSizes: Uint32Array;
   overflow: Uint32Array;
+  /** Always zero: the CPU twin has no per-group hull limit. */
+  groupOverflow: Uint32Array;
 };
 
 type Point = {x: number; y: number; latticeX: number; latticeY: number; row: number};
@@ -200,7 +202,7 @@ function computeCircle(hull: Point[], group: number): Circle {
  * representatives. Rectangle ties retain the first edge within the documented 1e-6 relative band.
  *
  * What differs from the GPU contributor:
- * - No hull budget: every hull is computed, overflow is always zero, and maximumHullVertices on
+ * - No hull budget: every hull is computed, overflow and groupOverflow are always zero, and maximumHullVertices on
  *   the operation is accepted for interchangeability but does not truncate the CPU result.
  * - Lattice extent/subtraction and shape arithmetic use float64. Near lattice boundaries hulls
  *   can differ from float32 quantization; diameter ties use float64 squared distances.
@@ -265,7 +267,8 @@ export function computeMinimumBoundsOnCPU(input: CPUMinimumBoundsInput): CPUMini
     diameters: new Float32Array(groupCount).fill(NaN),
     bounds: new Float32Array(groupCount * 4).fill(NaN),
     hullSizes: new Uint32Array(groupCount),
-    overflow: new Uint32Array(1)
+    overflow: new Uint32Array(1),
+    groupOverflow: new Uint32Array(1)
   };
   for (let group = 0; group < groupCount; group++) {
     for (const point of groups[group]) {

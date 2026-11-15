@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -19,6 +20,13 @@ import {
   validateRasterAlgebraView
 } from './raster-algebra-utils';
 import {GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH} from './reclassify-parameters';
+
+import {
+  getRasterAlgebraInputNodes,
+  getRasterAlgebraInputViews,
+  isRasterAlgebraBand,
+  validateRasterAlgebraInput
+} from './raster-algebra-input';
 
 const OPERATION = 'GPURasterReclassify';
 /** Workgroup size of the privatized classify kernel; its WGSL strides depend on it. */
@@ -37,20 +45,23 @@ export type GPURasterReclassifyOutput = {
 /**
  * Properties for {@link GPURasterReclassify}.
  *
- * Per-frame (no recompile): the contents of `values`, `validity`, `breaks`, `classValues`, and
+ * Per-frame (no recompile): the contents of `values`, `mask`, `breaks`, `classValues`, and
  * `parameters` (active break count, interval closure). Topology: `rowCount`, `breaks.length`
- * (the maximum break count), `noDataValue`, and which optional views exist.
+ * (the maximum break count), `noDataValue`, band metadata, grid dimensions, and which optional
+ * views exist.
  */
 export type GPURasterReclassifyProps = {
   /** Prefix for generated node IDs. Defaults to `'raster-reclassify'`. */
   id?: string;
-  /** Packed float32 raster or column. NaN rows are nodata. */
-  values: GraphDataView<'float32'>;
-  /** Rows to classify. Defaults to `values.length`. */
+  /** Published band (validity, native nodata and calibration honoured), or legacy float column. */
+  values: GraphDataView<'float32'> | GPURasterBand;
+  /** Raster grid, required when `values` is a band. */
+  grid?: GPURasterMetadata;
+  /** Rows to classify. Defaults to the grid cell count for a band or `values.length` for a column. */
   rowCount?: number;
   /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
   mask?: GraphDataView<'uint32'>;
-  /** Optional finite nodata sentinel compared exactly against values. */
+  /** Optional finite nodata sentinel for legacy columns; bands use their own native sentinel. */
   noDataValue?: number;
   /** Ascending breaks; the view length is the compile-time maximum break count. */
   breaks: GraphDataView<'float32'>;
@@ -87,9 +98,9 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     const {output} = props;
-    validateRasterAlgebraView(id, 'values', props.values, 'float32', 0);
-    this.rowCount = props.rowCount ?? props.values.length;
-    validateRasterAlgebraCount(id, 'rowCount', this.rowCount, 0, props.values.length);
+    const inputLength = validateRasterAlgebraInput(id, 'values', props.values, props.grid);
+    this.rowCount = props.rowCount ?? inputLength;
+    validateRasterAlgebraCount(id, 'rowCount', this.rowCount, 0, inputLength);
     validateRasterAlgebraNoData(id, props.noDataValue);
     validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', this.rowCount);
     validateRasterAlgebraView(id, 'breaks', props.breaks, 'float32', 1);
@@ -132,7 +143,13 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
     validateRasterAlgebraAliasing(
       id,
       [output.classes, output.reclassified, output.classCounts],
-      [props.values, props.mask, props.breaks, props.classValues, props.parameters]
+      [
+        ...getRasterAlgebraInputViews(props.values),
+        props.mask,
+        props.breaks,
+        props.classValues,
+        props.parameters
+      ]
     );
   }
 
@@ -143,7 +160,7 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
     const {id, props, rowCount, maximumBreakCount} = this;
     const {output} = props;
     validateRasterAlgebraGraph(id, graph, [
-      props.values,
+      ...getRasterAlgebraInputViews(props.values),
       props.mask,
       props.breaks,
       props.classValues,
@@ -152,7 +169,8 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
       output.reclassified,
       output.classCounts
     ]);
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const source = getRasterAlgebraInputNodes(graph, `${id}-input`, props.values, props.grid);
+    const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     if (output.classCounts) {
       nodes.push(
         createFillNode<Parameters>(graph, {
@@ -169,7 +187,7 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
       Boolean(output.classCounts) &&
       (maximumBreakCount + 1) * 4 <= graph.device.limits.maxComputeWorkgroupStorageSize;
     const bindings: WGSLKernelBinding[] = [
-      {name: 'source', view: props.values, type: 'f32', access: 'read'},
+      {name: 'source', view: source.values, type: 'f32', access: 'read'},
       {name: 'breaks', view: props.breaks, type: 'f32', access: 'read'},
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
     ];
@@ -213,7 +231,7 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
         declarations: `const MAXIMUM_BREAK_COUNT: u32 = ${maximumBreakCount}u;
 ${privatizeCounts ? `var<workgroup> localCounts: array<atomic<u32>, ${maximumBreakCount + 1}>;` : ''}
 const NO_DATA_CLASS: u32 = 0xffffffffu;
-${getRasterAlgebraValueWGSL(props.noDataValue)}
+${getRasterAlgebraValueWGSL(isRasterAlgebraBand(props.values) ? undefined : props.noDataValue)}
 ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`,
         body: `${
           privatizeCounts

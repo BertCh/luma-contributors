@@ -23,7 +23,53 @@ import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 import {getPointCloudCellSource, validatePointCloudGrid} from './gpu-pointcloud-surfaces';
 import type {PointCloudRasterGrid} from './gpu-pointcloud-surfaces';
 
+export type GPUPointCloudGroundSettings = {
+  /** Nonnegative elevation threshold added at every stage, in z units. */
+  initialThreshold: number;
+  /** Nonnegative terrain slope per cell of radius increment. */
+  slope: number;
+  /** Nonnegative upper threshold, at least initialThreshold. */
+  maximumThreshold: number;
+};
+
+/** One float32 threshold per compile-time radius. */
+export function getGPUPointCloudGroundParameterLength(radii: readonly number[]): number {
+  return radii.length;
+}
+
+/**
+ * Pack stage thresholds for a caller-owned GPUParameterBuffer. Evaluate in float64 and round once,
+ * preserving the constructor convention even at float32 classification boundaries.
+ * @param settings Per-frame threshold settings.
+ * @param grid The contributor's compile-time grid.
+ * @param radii The contributor's compile-time radii, in cells.
+ */
+export function getGPUPointCloudGroundParameterValues(
+  settings: GPUPointCloudGroundSettings,
+  grid: PointCloudRasterGrid,
+  radii: readonly number[]
+): Float32Array {
+  const identifier = 'gpu-pointcloud-ground';
+  validateFiniteNumber(identifier, 'initialThreshold', settings.initialThreshold, 0);
+  validateFiniteNumber(identifier, 'slope', settings.slope, 0);
+  validateFiniteNumber(identifier, 'maximumThreshold', settings.maximumThreshold, 0);
+  validateRequirement(
+    identifier,
+    settings.maximumThreshold >= settings.initialThreshold,
+    'maximumThreshold must be at least initialThreshold'
+  );
+  return Float32Array.from(radii, (radius, index) =>
+    Math.min(
+      settings.maximumThreshold,
+      settings.initialThreshold +
+        settings.slope * grid.cellSize * (radius - (radii[index - 1] ?? 0))
+    )
+  );
+}
+
 export type GPUPointCloudGroundProps = {
+  /** Per-frame stage thresholds; overrides initialThreshold, slope and maximumThreshold. */
+  parameters?: GraphDataView<'float32'>;
   id?: string;
   positions: GraphDataView<'float32x3'>;
   classifications: GraphDataView<'uint32'>;
@@ -71,7 +117,9 @@ export const GPU_POINT_CLOUD_GROUND_STATUS_INCOMPLETE_WINDOW = 2;
 /**
  * Bounded progressive morphological filter; a square-window PMF, not SMRF equivalence. The stage
  * threshold grows with the radius increment, not with the window-width increment of Zhang et al.
- * (2003): see the `slope` prop.
+ * (2003): see the `slope` prop. Per-frame: input contents and parameters (stage thresholds).
+ * Compile-time: grid, radii and view shapes. Without parameters, threshold props retain their
+ * constructor-time behavior.
  */
 export class GPUPointCloudGround implements GPUCommandNodeProducer {
   readonly id: string;
@@ -107,6 +155,14 @@ export class GPUPointCloudGround implements GPUCommandNodeProducer {
       props.maximumThreshold >= props.initialThreshold,
       'maximumThreshold must be at least initialThreshold'
     );
+    if (props.parameters) {
+      validateViewLength(
+        this.id,
+        'parameters',
+        props.parameters,
+        getGPUPointCloudGroundParameterLength(props.radii)
+      );
+    }
     validateViewLength(
       this.id,
       'minimumSurface',
@@ -136,7 +192,8 @@ export class GPUPointCloudGround implements GPUCommandNodeProducer {
       radii,
       groundMask,
       outputClassifications,
-      status
+      status,
+      parameters
     } = this.props;
     const erosion = createTransientView(
       graph,
@@ -220,13 +277,14 @@ writeSupport(index, select(${GPU_POINT_CLOUD_GROUND_STATUS_INCOMPLETE_WINDOW}u, 
             opening,
             coverage,
             previous: masks[iteration % 2],
+            ...(parameters ? {parameters} : {}),
             ...(final ? {support} : {})
           },
           outputs: final ? {groundMask, status} : {next: masks[(iteration + 1) % 2]},
           body: `let position = readPositions(index);
 ${getPointCloudCellSource(grid)}
 let valid = inside && all(abs(position) <= vec3f(3.402823e38)) && readCoverage(cellIndex) != 0u;
-let ground = valid && readPrevious(index) != 0u && position.z - readOpening(cellIndex) <= ${Math.fround(threshold)};
+let ground = valid && readPrevious(index) != 0u && position.z - readOpening(cellIndex) <= ${parameters ? `readParameters(${iteration}u)` : Math.fround(threshold)};
 ${
   final
     ? `writeGroundMask(index, u32(ground));

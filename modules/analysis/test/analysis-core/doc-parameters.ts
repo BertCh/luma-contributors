@@ -39,7 +39,8 @@ const PACKER_ENTRIES = [
   '@luma-contributors/analysis/gpu-terrain',
   '@luma-contributors/analysis/raster-analysis',
   '@luma-contributors/analysis/dataframe-analysis',
-  '@luma-contributors/analysis/geospatial-analysis'
+  '@luma-contributors/analysis/geospatial-analysis',
+  '@luma-contributors/analysis/pointcloud-analysis'
 ] as const;
 
 const PACKER_NAME = /^get(GPU\w+?)ParameterValues$/;

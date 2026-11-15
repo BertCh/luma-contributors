@@ -6,11 +6,13 @@ import {
   createTransientView,
   GPUSort,
   GPUUint32Gather,
+  type GPUSortAlgorithm,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
+import {validateCapacity, validateRequirement} from './gpu-contributor-utils';
 
 /** One uint32 component of a lexicographic key, listed from most to least significant. */
 export type StableLexicographicKey = {
@@ -39,7 +41,8 @@ const MAXIMUM_PACKED_KEY_COUNT = 6;
  * Stable least-to-most passes turn several narrow columns into one lexicographic order without
  * packing them into a topology-specific shader constant or running a serial sort inside each
  * variable-length geometry. Key columns always remain indexed by the original row identifier;
- * the gather before every pass follows the permutation produced by the preceding pass.
+ * each gather follows the permutation produced by the preceding pass. A known identity order
+ * skips the first unpacked gather.
  *
  * Adjacent keys whose `keyBits` sum to at most 32 are packed into one radix key by their gather,
  * so for example a `(slot, 1-bit phase)` pair costs one stable sort instead of two. Packed
@@ -54,31 +57,48 @@ export function createStableLexicographicIndexSortNodes<Parameters>(
     operation: string;
     /** Identity (or other stable original-order) row identifiers. */
     indices: GraphDataView<'uint32'>;
+    /** Skip the first gather only when the caller guarantees `indices[index] === index`. */
+    indicesAreIdentity?: boolean;
+    /** Disable packing to keep per-component scratch allocations predictable. Defaults to true. */
+    packKeys?: boolean;
+    /** Published sort implementation to use for each pass. Defaults to 'auto'. */
+    algorithm?: GPUSortAlgorithm;
     /** Tuple components from most to least significant. */
     keys: readonly StableLexicographicKey[];
   }
 ): StableLexicographicIndexSortResult<Parameters> {
-  if (props.keys.length < 1) {
-    throw new Error(`${props.id} requires at least one key`);
-  }
+  validateCapacity(props.id, 'keys.length', props.keys.length, 1);
   const length = props.indices.length;
   for (const [keyIndex, key] of props.keys.entries()) {
-    if (key.view.length !== length) {
-      throw new Error(`${props.id} key ${keyIndex} length must match indices length`);
-    }
+    validateRequirement(
+      props.id,
+      key.view.length === length,
+      `keys[${keyIndex}].view.length must equal indices.length (${length})`
+    );
+    validateCapacity(props.id, `keys[${keyIndex}].keyBits`, key.keyBits ?? 32, 1, 32);
   }
 
   const nodes: GPUCommandNode<Parameters>[] = [];
   let currentIndices = props.indices;
   let sortedPrimaryKeys: GraphDataView<'uint32'> | undefined;
-  const columns = getPackedKeyColumns(props.keys);
+  const columns =
+    props.packKeys === false
+      ? props.keys
+          .slice()
+          .reverse()
+          .map(key => [key])
+      : getPackedKeyColumns(props.keys);
   for (const [passIndex, column] of columns.entries()) {
-    const gatheredKeys = createTransientView<'uint32', Parameters>(
-      graph,
-      `${props.id}-pass-${passIndex}-gathered-keys`,
-      'uint32',
-      length
-    );
+    const packed = column.length > 1;
+    const needsGather = packed || passIndex > 0 || !props.indicesAreIdentity;
+    const gatheredKeys = needsGather
+      ? createTransientView<'uint32', Parameters>(
+          graph,
+          `${props.id}-pass-${passIndex}-gathered-keys`,
+          'uint32',
+          length
+        )
+      : column[0].view;
     const sortedKeys = createTransientView<'uint32', Parameters>(
       graph,
       `${props.id}-pass-${passIndex}-sorted-keys`,
@@ -91,7 +111,6 @@ export function createStableLexicographicIndexSortNodes<Parameters>(
       'uint32',
       length
     );
-    const packed = column.length > 1;
     nodes.push(
       // A single key is gathered by the published gather. Several packed keys need one shader that
       // reads each column, so they keep a local kernel.
@@ -116,18 +135,21 @@ export function createStableLexicographicIndexSortNodes<Parameters>(
   ${getPackedKeySource(column)}`
             })
           ]
-        : new GPUUint32Gather({
-            id: `${props.id}-pass-${passIndex}-gather`,
-            source: column[0].view,
-            indices: currentIndices,
-            output: gatheredKeys
-          }).getCommandNodes(graph)),
+        : needsGather
+          ? new GPUUint32Gather({
+              id: `${props.id}-pass-${passIndex}-gather`,
+              source: column[0].view,
+              indices: currentIndices,
+              output: gatheredKeys
+            }).getCommandNodes(graph)
+          : []),
       ...new GPUSort({
         id: `${props.id}-pass-${passIndex}-sort`,
         keys: gatheredKeys,
         values: currentIndices,
         outputKeys: sortedKeys,
         outputValues: nextIndices,
+        algorithm: props.algorithm,
         keyBits: packed ? getColumnKeyBits(column) : column[0].keyBits
       }).getCommandNodes(graph)
     );

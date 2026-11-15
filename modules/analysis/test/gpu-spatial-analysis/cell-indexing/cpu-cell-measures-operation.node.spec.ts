@@ -152,7 +152,7 @@ it('validates both operation constructors and deferred GPU contributor construct
     {maximumEdgeCount: 11},
     {maximumEdgeCount: 6.5},
     {output: {}},
-    {family: 's2' as 'h3'},
+    {family: 'geohash' as 'h3'},
     {units: 'native' as 'meters'},
     {wordOrder: 'wrong' as 'high-low'}
   ]) {

@@ -37,14 +37,14 @@ async function createParameterHarness(props: {
   positions: readonly Point[];
   observations: readonly ObservationRow[];
   queries: readonly Point[];
-  mode: 'simple' | 'ordinary' | 'co-kriging';
+  mode: 'simple' | 'ordinary' | 'co-kriging' | 'external-drift';
   neighborCount: number;
   means?: readonly number[];
   variableCount?: number;
   covarianceStructureCount?: number;
   /** Observation rows `[value, error, variable, validity]`. Replaces the default rows. */
   observationRows?: Float32Array;
-  /** Compile-time covariance. Supplies `covariance` instead of `parameters`. */
+  /** Initial convenience covariance. Supplies `covariance` instead of `parameters`. */
   covariance?: GPUPredictionCovariance;
   coregionalization?: readonly [number, number, number, number];
 }) {
@@ -64,6 +64,14 @@ async function createParameterHarness(props: {
       Float32Array.from(props.observations.flatMap(([value, error]) => [value, error, 0, 1]))
   );
   const queryBuffer = createInputBuffer(device, Float32Array.from(props.queries.flat()));
+  const sampleDriftBuffer =
+    props.mode === 'external-drift'
+      ? createInputBuffer(device, new Float32Array(props.positions.length).fill(1))
+      : undefined;
+  const queryDriftBuffer =
+    props.mode === 'external-drift'
+      ? createInputBuffer(device, new Float32Array(queryCount).fill(1))
+      : undefined;
   const valueBuffer = createOutputBuffer(device, queryCount * 4);
   const statusBuffer = createOutputBuffer(device, queryCount);
   const weightBuffer = createOutputBuffer(device, queryCount * props.neighborCount);
@@ -84,6 +92,19 @@ async function createParameterHarness(props: {
     ),
     supports: importGraphBuffer(graph, 'queries', queryBuffer, 'float32x2', queryCount),
     mode: props.mode,
+    sampleDrift: sampleDriftBuffer
+      ? importGraphBuffer(
+          graph,
+          'sample-drift',
+          sampleDriftBuffer,
+          'float32',
+          props.positions.length
+        )
+      : undefined,
+    queryDrift: queryDriftBuffer
+      ? importGraphBuffer(graph, 'query-drift', queryDriftBuffer, 'float32', queryCount)
+      : undefined,
+    driftCount: props.mode === 'external-drift' ? 1 : undefined,
     neighborCount: props.neighborCount,
     means: props.means,
     variableCount: props.variableCount,
@@ -119,7 +140,11 @@ async function createParameterHarness(props: {
     },
     async run(settings?: GPULocalKrigingSettings) {
       if (settings) {
-        parameterBuffer.write(getGPULocalKrigingParameterValues(settings));
+        if (props.covariance) {
+          contributor.setCovariance(settings);
+        } else {
+          parameterBuffer.write(getGPULocalKrigingParameterValues(settings));
+        }
       }
       submitGraph(device, compiled, undefined);
       return {
@@ -130,6 +155,8 @@ async function createParameterHarness(props: {
     },
     destroy() {
       compiled.destroy();
+      sampleDriftBuffer?.destroy();
+      queryDriftBuffer?.destroy();
       for (const buffer of [
         parameterBuffer,
         positionBuffer,
@@ -232,7 +259,86 @@ describe('per-frame covariance parameters', () => {
     }
   });
 
-  it('produces the same values as compile-time covariance', async () => {
+  for (const mode of ['ordinary', 'external-drift'] as const) {
+    it(`updates convenience covariance without rebuilding (${mode}, padding and missing query)`, async () => {
+      const scene = {
+        positions: [
+          [0, 0],
+          [2, 0],
+          [Number.NaN, 1]
+        ] as Point[],
+        observations: [
+          [2, 0],
+          [4, 0],
+          [100, 0]
+        ] as ObservationRow[],
+        queries: [
+          [0.5, 0],
+          [Number.NaN, 0]
+        ] as Point[]
+      };
+      const harness = await createParameterHarness({
+        ...scene,
+        mode,
+        neighborCount: 4,
+        covariance: {model: 'spherical', range: 3, sill: 1}
+      });
+      try {
+        for (const covariance of [
+          {model: 'exponential' as const, range: 2, sill: 3, nugget: 0.1},
+          {model: 'gaussian' as const, range: 4, sill: 0.5, nugget: 0.02}
+        ]) {
+          const result = await harness.run({covariance});
+          const reference = solveReferenceKriging({
+            mode: 'ordinary',
+            positions: scene.positions.slice(0, 2),
+            observations: scene.observations.slice(0, 2),
+            query: scene.queries[0],
+            covariance,
+            neighborCount: 4
+          });
+          expect(result.status).toEqual([0, 1]);
+          expect(Math.abs(result.values[0] - reference.prediction)).toBeLessThan(2e-5);
+          expect(Math.abs(result.values[1] - reference.variance)).toBeLessThan(2e-5);
+          expect(result.values[3]).toBe(2);
+          expect(result.weights.slice(2, 4)).toEqual([0, 0]);
+          expect(result.weights.slice(4)).toEqual([0, 0, 0, 0]);
+          expect(Number.isNaN(result.values[4])).toBe(true);
+        }
+        expect(harness.buildCount).toBe(1);
+      } finally {
+        harness.destroy();
+      }
+      // Command graphs compile once. Rebuilding after destruction requires a fresh graph and
+      // fresh graph-owned views; the new upload initializes from its current covariance settings.
+      const covariance: GPUPredictionCovariance = {
+        model: 'gaussian',
+        range: 4,
+        sill: 0.5,
+        nugget: 0.02
+      };
+      const rebuilt = await createParameterHarness({...scene, mode, neighborCount: 4, covariance});
+      try {
+        const replay = await rebuilt.run();
+        const reference = solveReferenceKriging({
+          mode: 'ordinary',
+          positions: scene.positions.slice(0, 2),
+          observations: scene.observations.slice(0, 2),
+          query: scene.queries[0],
+          covariance,
+          neighborCount: 4
+        });
+        expect(replay.status).toEqual([0, 1]);
+        expect(Math.abs(replay.values[0] - reference.prediction)).toBeLessThan(2e-5);
+        expect(Math.abs(replay.values[1] - reference.variance)).toBeLessThan(2e-5);
+        expect(rebuilt.buildCount).toBe(1);
+      } finally {
+        rebuilt.destroy();
+      }
+    });
+  }
+
+  it('produces the same values with caller-owned and convenience covariance', async () => {
     const scene = createScene(2, 40, 12, 4);
     const covariance: GPUPredictionCovariance = {
       model: 'gaussian',
@@ -266,6 +372,48 @@ describe('per-frame covariance parameters', () => {
     try {
       const result = await harness.run();
       expect(result.status).toEqual([1, 1, 1, 1]);
+    } finally {
+      harness.destroy();
+    }
+  });
+
+  it('updates convenience co-kriging loadings against a one-neighbor closed form', async () => {
+    const covariance: GPUPredictionCovariance = {model: 'exponential', range: 2, sill: 3};
+    const harness = await createParameterHarness({
+      positions: [[0, 0]],
+      observations: [[4, 0]],
+      queries: [[0.5, 0]],
+      observationRows: new Float32Array([4, 0, 1, 1]),
+      mode: 'co-kriging',
+      variableCount: 2,
+      neighborCount: 4,
+      covariance,
+      coregionalization: [1, 0, 0.5, 1]
+    });
+    try {
+      for (const coregionalization of [
+        [1, 0, 0.5, 1],
+        [2, 0, 1, 1]
+      ] as const) {
+        const result = await harness.run({covariance, coregionalization, variableCount: 2});
+        const targetVariance = coregionalization[0] ** 2 * covariance.sill;
+        const sampleVariance =
+          (coregionalization[2] ** 2 + coregionalization[3] ** 2) * covariance.sill;
+        const crossCovariance =
+          coregionalization[0] *
+          coregionalization[2] *
+          covariance.sill *
+          Math.exp((-3 * 0.5) / covariance.range);
+        expect(result.status).toEqual([0]);
+        expect(Math.abs(result.values[0] - (4 * crossCovariance) / sampleVariance)).toBeLessThan(
+          2e-5
+        );
+        expect(
+          Math.abs(result.values[1] - (targetVariance - crossCovariance ** 2 / sampleVariance))
+        ).toBeLessThan(2e-5);
+        expect(result.weights.slice(1)).toEqual([0, 0, 0]);
+      }
+      expect(harness.buildCount).toBe(1);
     } finally {
       harness.destroy();
     }
@@ -590,3 +738,54 @@ describe('conditioning (one rule: KRIGING_PIVOT_RATIO_TOLERANCE)', () => {
     });
   }
 });
+
+for (const convenience of [true, false]) {
+  it(`zero-loading known-mean co-kriging retains an initialized covariance (${convenience ? 'convenience' : 'caller-owned'})`, async () => {
+    const covariance: GPUPredictionCovariance = {model: 'exponential', range: 1, sill: 1};
+    const zeroSettings: GPULocalKrigingSettings = {
+      covariance,
+      coregionalization: [0, 0, 0, 0],
+      variableCount: 2
+    };
+    const harness = await createParameterHarness({
+      positions: [[0, 0]],
+      observations: [[100, 1]],
+      observationRows: new Float32Array([100, 1, 0, 1]),
+      queries: [[0, 0]],
+      mode: 'co-kriging',
+      neighborCount: 1,
+      variableCount: 2,
+      means: [7, 9],
+      covariance: convenience ? covariance : undefined,
+      coregionalization: [0, 0, 0, 0]
+    });
+    try {
+      if (!convenience) {
+        const unwritten = await harness.run();
+        expect(unwritten.status).toEqual([1]);
+        expect(Number.isNaN(unwritten.values[0])).toBe(true);
+      }
+      const initial = await harness.run(convenience ? undefined : zeroSettings);
+      expect(initial.status).toEqual([0]);
+      expect(initial.values.slice(0, 2)).toEqual([7, 0]);
+      expect(initial.weights).toEqual([0]);
+
+      const positive = await harness.run({
+        covariance,
+        coregionalization: [1, 0, 0, 0],
+        variableCount: 2
+      });
+      // One target observation, unit process variance and unit error: weight 1/2.
+      expect(positive.status).toEqual([0]);
+      expect(Math.abs(positive.values[0] - 53.5)).toBeLessThan(2e-5);
+      expect(Math.abs(positive.values[1] - 0.5)).toBeLessThan(2e-5);
+      const restored = await harness.run(zeroSettings);
+      expect(restored.status).toEqual([0]);
+      expect(restored.values.slice(0, 2)).toEqual([7, 0]);
+      expect(restored.weights).toEqual([0]);
+      expect(harness.buildCount).toBe(1);
+    } finally {
+      harness.destroy();
+    }
+  });
+}

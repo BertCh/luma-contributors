@@ -3,12 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import MULTIVARIATE_REFERENCE from '../../oracles/fixtures/multivariate-quantile-lisa-numpy.json';
 import type {GPUSpatialWeights} from '../../../src/gpu-spatial-analysis/spatial-weights/spatial-weights';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
 import {
   GPUQuantileLISA,
   type GPUQuantileLISAProps
-} from '../../../src/gpu-spatial-analysis/recipes/quantile-lisa-recipe';
+} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/gpu-quantile-lisa';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources,
@@ -32,29 +33,30 @@ it('quantile LISA matches pinned type-five and half-open class fixtures', () => 
 });
 
 export function createQuantileLISAProps(
-  graph: GPUCommandGraph
+  graph: GPUCommandGraph,
+  rows = 8
 ): GPUQuantileLISAProps & {weights: GPUSpatialWeights} {
   let serial = 0;
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `quantile-lisa-${serial++}`, format, length);
   return {
-    values: view('float32', 8),
+    values: view('float32', rows),
     quantileParameters: view('uint32', 2),
     parameters: view('uint32', 8),
     maximumPermutations: 99,
     weights: {
-      offsets: view('uint32', 9),
-      neighbors: view('uint32', 16),
-      weights: view('float32', 16)
+      offsets: view('uint32', rows + 1),
+      neighbors: view('uint32', 2 * rows),
+      weights: view('float32', 2 * rows)
     },
     output: {
-      membership: view('uint32', 8),
+      membership: view('uint32', rows),
       boundaries: view('float32', 2),
       validCount: view('uint32', 1),
-      classes: view('uint32', 8),
+      classes: view('uint32', rows),
       invalidQuantile: view('uint32', 1),
-      exceedances: view('uint32', 8),
-      pseudoPValues: view('float32', 8),
+      exceedances: view('uint32', rows),
+      pseudoPValues: view('float32', rows),
       status: {overflow: view('uint32', 1)}
     }
   };
@@ -90,6 +92,202 @@ it('quantile LISA validates controls and ownership and emits only resident nodes
         output: {...props.output, membership: props.values as never}
       }).getCommandNodes(graph)
     ).toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
+it('multivariate quantile LISA validates all columns, limits and output ownership at construction', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createQuantileLISAProps(graph);
+    const variable = {values: props.values, quantileParameters: props.quantileParameters};
+    const multivariate = {
+      ...props,
+      additionalVariables: [variable],
+      output: {
+        ...props.output,
+        boundaries: createTransientView(graph, 'joint-boundaries', 'float32', 4),
+        validCount: createTransientView(graph, 'joint-counts', 'uint32', 2)
+      }
+    };
+    expect(() => new GPUQuantileLISA({...props, additionalVariables: [variable]})).toThrow(
+      /quantile-lisa output.boundaries/
+    );
+    expect(
+      () =>
+        new GPUQuantileLISA({
+          ...multivariate,
+          additionalVariables: [
+            {...variable, values: createTransientView(graph, 'short-variable', 'float32', 7)}
+          ]
+        })
+    ).toThrow(/quantile-lisa variables\[1\].values/);
+    expect(
+      () =>
+        new GPUQuantileLISA({
+          ...multivariate,
+          additionalVariables: [
+            {
+              ...variable,
+              quantileParameters: createTransientView(graph, 'short-settings', 'uint32', 1)
+            }
+          ]
+        })
+    ).toThrow(/quantile-lisa variables\[1\].quantileParameters/);
+    expect(() => new GPUQuantileLISA({...multivariate, maximumNeighbors: 65})).toThrow(
+      /quantile-lisa maximumNeighbors/
+    );
+    expect(() => new GPUQuantileLISA({...multivariate, maximumPermutations: 0})).toThrow(
+      /quantile-lisa maximumPermutations/
+    );
+    expect(() => new GPUQuantileLISA({...multivariate, maximumPermutations: 2 ** 20 + 1})).toThrow(
+      /quantile-lisa maximumPermutations/
+    );
+    expect(
+      () =>
+        new GPUQuantileLISA({...multivariate, additionalVariables: new Array(64).fill(variable)})
+    ).toThrow(/quantile-lisa variable count/);
+    expect(
+      () =>
+        new GPUQuantileLISA({
+          ...multivariate,
+          output: {...multivariate.output, classes: props.output.membership}
+        })
+    ).toThrow(/outputs must not share a buffer/);
+    expect(
+      () =>
+        new GPUQuantileLISA({
+          ...multivariate,
+          additionalVariables: [{...variable, values: props.output.membership as never}]
+        })
+    ).toThrow();
+    // An additional variable cannot alias any terminal output, including optional status ports.
+    expect(
+      () =>
+        new GPUQuantileLISA({
+          ...multivariate,
+          output: {...multivariate.output, observed: props.values}
+        })
+    ).toThrow();
+    const contributor = new GPUQuantileLISA(multivariate);
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+    expect(nodes.filter(node => /-inference-permute$/.test(node.id))).toHaveLength(1);
+    expect(nodes.map(node => node.id)).toContain('quantile-lisa-variable-1-membership');
+    for (const kernel of getGPUCommandNodeKernelSources(nodes))
+      expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('quantile LISA bounds command nodes at the largest variable count and enforces the budget', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createQuantileLISAProps(graph);
+    const contributor = new GPUQuantileLISA({
+      ...props,
+      maximumNeighbors: 64,
+      maximumPermutations: 2 ** 20,
+      additionalVariables: new Array(63).fill({
+        values: props.values,
+        quantileParameters: props.quantileParameters
+      }),
+      output: {
+        ...props.output,
+        boundaries: createTransientView(graph, 'maximum-boundaries', 'float32', 128),
+        validCount: createTransientView(graph, 'maximum-counts', 'uint32', 64)
+      }
+    });
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+    const chunkWeights = {
+      offsets: createTransientView(graph, 'chunk-offsets', 'uint32', 2),
+      neighbors: createTransientView(graph, 'chunk-neighbors', 'uint32', 1),
+      weights: createTransientView(graph, 'chunk-weights', 'float32', 1)
+    };
+    expect(
+      () =>
+        new GPUQuantileLISA({
+          ...props,
+          weights: {
+            rowCount: 2048,
+            chunks: Array.from({length: 2048}, (_, rowStart) => ({
+              rowStart,
+              rowCount: 1,
+              weights: chunkWeights
+            }))
+          }
+        })
+    ).toThrow(/quantile-lisa estimated command node count/);
+    expect(
+      () =>
+        new GPUQuantileLISA({
+          ...props,
+          values: createTransientView(graph, 'over-limit-values', 'float32', 2 ** 24)
+        })
+    ).toThrow(/quantile-lisa values length/);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('NumPy fixtures distinguish marginal quantiles from joint complete-case quantiles', () => {
+  for (const fixture of MULTIVARIATE_REFERENCE.cases) {
+    const columns = fixture.columns.map(column =>
+      Float32Array.from(column, value => (value === null ? NaN : value))
+    );
+    const references = columns.map((values, variableIndex) =>
+      computeQuantileLISAReference(
+        values,
+        fixture.settings[variableIndex][0],
+        fixture.settings[variableIndex][1],
+        Uint32Array.from(fixture.mask)
+      )
+    );
+    expect(
+      references.map(reference => reference.validCount),
+      fixture.name
+    ).toEqual(fixture.validCounts);
+    expect(
+      references.flatMap(reference => reference.boundaries),
+      fixture.name
+    ).toEqual(
+      fixture.boundaries.map(boundary =>
+        typeof boundary === 'number' ? boundary : Number(boundary)
+      )
+    );
+    expect(
+      Array.from({length: 8}, (_, row) =>
+        references.every(reference => reference.membership[row]) ? 1 : 0
+      ),
+      fixture.name
+    ).toEqual(fixture.membership);
+    expect(
+      Array.from({length: 8}, (_, row) =>
+        references.every(reference => reference.validMask[row]) ? 1 : 0
+      ),
+      fixture.name
+    ).toEqual(fixture.validMask);
+  }
+  expect(MULTIVARIATE_REFERENCE.cases[0].membership).toEqual([0, 0, 0, 0, 1, 1, 0, 0]);
+  expect(MULTIVARIATE_REFERENCE.cases[2].membership).toEqual(new Array(8).fill(0));
+});
+
+it('quantile LISA checks the shared inference matrix binding before creating nodes', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const maximumRows = Math.floor(
+      device.limits.maxStorageBufferBindingSize / (8 * Float32Array.BYTES_PER_ELEMENT)
+    );
+    const contributor = new GPUQuantileLISA(createQuantileLISAProps(graph, maximumRows + 1));
+    expect(() => contributor.getCommandNodes(graph)).toThrow(
+      /quantile-lisa inference matrix scratch.*limit/
+    );
   } finally {
     device.destroy();
   }

@@ -126,6 +126,15 @@ export class GPUTerrainBranchingFlow implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    return this.getCommandNodesWithIterationStatus(graph).nodes;
+  }
+
+  /** Returns the graph-owned gate status alongside the nodes for terrain composition. @internal */
+  getCommandNodesWithIterationStatus<Parameters>(graph: GPUCommandGraph<Parameters>): {
+    nodes: readonly GPUCommandNode<Parameters>[];
+    /** [changed, enabled, executed iteration count, stopped because no progress]. */
+    iterationStatus: GraphDataView<'uint32'>;
+  } {
     const {props, id} = this;
     const count = props.values.length;
     checkTerrainGraph(id, graph, [
@@ -292,6 +301,6 @@ values[valuesOffset + index] = select(getNaN(), bitcast<f32>(bits), statusValue 
         output: props.output.unresolvedCount
       })
     );
-    return nodes;
+    return {nodes, iterationStatus: iterationState.status};
   }
 }

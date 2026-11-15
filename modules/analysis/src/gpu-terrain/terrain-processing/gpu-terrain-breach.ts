@@ -14,6 +14,7 @@ import {createRasterCountNodes} from '../../raster-analysis/remote-sensing/raste
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateFiniteNumber,
   validateGPUStorageBindingByteLength,
   validateMaximumCount,
@@ -24,6 +25,7 @@ import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createTerrainBreachSearchNodes} from './terrain-breach-search';
 import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {
   checkTerrainViews,
@@ -78,6 +80,7 @@ export type GPUTerrainBreachProps = {
  */
 export class GPUTerrainBreach implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUTerrainBreachProps) {
     this.id = props.id ?? 'terrain-breach';
     const count = validateRasterGrid(this.id, props.grid);
@@ -119,6 +122,9 @@ export class GPUTerrainBreach implements GPUCommandNodeProducer {
       props.pitCells.length * (props.maximumSteps + 1) * searchCount * 2,
       TERRAIN_BREACH_MAXIMUM_SCRATCH_WORDS
     );
+    // Search uses two nodes per step; all other search, edit, mask and count passes use at most 15.
+    this.estimatedCommandNodeCount = props.pitCells.length > 0 ? 15 + 2 * props.maximumSteps : 6;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     checkTerrainViews(
       this.id,
       [
@@ -162,71 +168,13 @@ export class GPUTerrainBreach implements GPUCommandNodeProducer {
       validity: props.validity
     });
     const elevation = masked.values;
-    const scratch = createTransientView(graph, `${id}-search`, 'uint32', scratchWords);
     const edits = createTransientView(graph, `${id}-edits`, 'uint32', count);
     const decrement = getWGSLFloatLiteral(props.elevationDecrement);
-    const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}
-fn searchIndex(cell: u32, origin: vec2<u32>) -> u32 {
- let column = cell % GRID_WIDTH; let row = cell / GRID_WIDTH;
- if (column < origin.x || row < origin.y || column >= origin.x + ${searchWidth}u || row >= origin.y + ${searchHeight}u) { return NO_CELL; }
- return (row - origin.y) * ${searchWidth}u + column - origin.x;
-}`;
-    const nodes: GPUCommandNode<Parameters>[] = [...masked.nodes];
-    if (pitCount > 0)
-      nodes.push(
-        createWGSLKernelNode(graph, {
-          id: `${id}-search`,
-          operation: 'GPUTerrainBreach',
-          invocationCount: pitCount,
-          declarations,
-          bindings: [
-            terrainBinding('elevation', elevation),
-            terrainBinding('pits', props.pitCells),
-            terrainBinding('scratch', scratch, 'read_write'),
-            terrainBinding('paths', props.output.pathCells, 'read_write'),
-            terrainBinding('lengths', props.output.pathLengths, 'read_write'),
-            terrainBinding('status', props.output.pitStatus, 'read_write')
-          ],
-          body: `let pit = pits[pitsOffset + index];
-let pathOffset = pathsOffset + index * ${props.maximumSteps + 1}u;
-lengths[lengthsOffset + index] = 0u; status[statusOffset + index] = 0u;
-for (var step = 0u; step <= ${props.maximumSteps}u; step++) { paths[pathOffset + step] = NO_CELL; }
-if (pit >= ${count}u) { return; }
-let base = elevation[elevationOffset + pit];
-if (!isFiniteValue(base) || !(base - ${decrement} < base)) { return; }
-let origin = vec2<u32>(u32(clamp(i32(pit % GRID_WIDTH) - ${props.maximumSteps}, 0, ${props.grid.width - searchWidth})), u32(clamp(i32(pit / GRID_WIDTH) - ${props.maximumSteps}, 0, ${props.grid.height - searchHeight})));
-let workOffset = scratchOffset + index * ${(props.maximumSteps + 1) * searchCount * 2}u;
-for (var entry = 0u; entry < ${(props.maximumSteps + 1) * searchCount}u; entry++) { scratch[workOffset + entry * 2u] = 0x7f800000u; scratch[workOffset + entry * 2u + 1u] = NO_CELL; }
-scratch[workOffset + searchIndex(pit, origin) * 2u] = bitcast<u32>(0.0);
-var bestCost = infinity(); var bestCell = NO_CELL; var bestStep = 0u;
-for (var step = 1u; step <= ${props.maximumSteps}u; step++) {
- let level = base - f32(step) * ${decrement};
- for (var localCell = 0u; localCell < ${searchCount}u; localCell++) {
-  let cell = (origin.y + localCell / ${searchWidth}u) * GRID_WIDTH + origin.x + localCell % ${searchWidth}u;
-  let original = elevation[elevationOffset + cell];
-  let cut = max(original - level, 0.0);
-  if (!isFiniteValue(original) || cut > ${getWGSLFloatLiteral(props.maximumCutDepth)}) { continue; }
-  var predecessor = NO_CELL; var cost = infinity();
-  for (var direction = 0u; direction < 8u; direction++) {
-   let neighbor = getFlowReceiver(cell, 1u << direction); if (neighbor == NO_CELL) { continue; }
-   let localNeighbor = searchIndex(neighbor, origin); if (localNeighbor == NO_CELL) { continue; }
-   let candidate = bitcast<f32>(scratch[workOffset + ((step - 1u) * ${searchCount}u + localNeighbor) * 2u]) + cut;
-   if (candidate < cost || (candidate == cost && neighbor < predecessor)) { cost = candidate; predecessor = neighbor; }
-  }
-  scratch[workOffset + (step * ${searchCount}u + localCell) * 2u] = bitcast<u32>(cost);
-  scratch[workOffset + (step * ${searchCount}u + localCell) * 2u + 1u] = predecessor;
-  if (original <= level && cost < bestCost) { bestCost = cost; bestCell = cell; bestStep = step; }
- }
-}
-if (bestCell == NO_CELL) { status[statusOffset + index] = 2u; return; }
-var current = bestCell;
-for (var step = bestStep; step > 0u; step--) {
- paths[pathOffset + step] = current;
- current = scratch[workOffset + (step * ${searchCount}u + searchIndex(current, origin)) * 2u + 1u];
-}
-paths[pathOffset] = pit; lengths[lengthsOffset + index] = bestStep + 1u; status[statusOffset + index] = 1u;`
-        })
-      );
+    const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}`;
+    const nodes: GPUCommandNode<Parameters>[] = [
+      ...masked.nodes,
+      ...createTerrainBreachSearchNodes(graph, {id, props, elevation, searchWidth, searchHeight})
+    ];
     nodes.push(
       createWGSLKernelNode(graph, {
         id: `${id}-edit-initialize`,

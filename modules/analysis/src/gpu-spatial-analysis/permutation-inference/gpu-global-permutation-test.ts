@@ -19,9 +19,11 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
@@ -87,6 +89,12 @@ const MATERIALIZED_MAXIMUM_ELEMENTS = 2 ** 25;
 
 /** Most batches the materialized path unrolls. */
 const MATERIALIZED_MAXIMUM_BATCHES = 4096;
+
+/**
+ * Upper bound for the front end, finalization and published GPUScan (at most 2^24 rows).
+ * Chunk-specific analysis/weight kernels and observed pair sums are counted separately below.
+ */
+const FIXED_COMMAND_NODE_ALLOWANCE = 64;
 
 /** Words of the sequential-stopping state view (see {@link GPUGlobalPermutationTest}). */
 const SEQUENTIAL_STATE = {
@@ -213,7 +221,8 @@ export type GPUGlobalPermutationTestOutput = {
  *
  * Per-frame (no rebuild or recompile): the contents of `weights`, `values`, `secondValues`, `mask`
  * and `parameters` (seed and permutation count). Compile-time: the row count, slot capacity,
- * `statistic`, `maximumPermutations`, `histogramBins` and which optional views exist.
+ * `statistic`, `maximumPermutations`, `stopAfterExceedances`, `permutationBatchSize`,
+ * `histogramBins` and which optional views exist.
  */
 export type GPUGlobalPermutationTestProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'global-permutation-test'`. */
@@ -271,8 +280,9 @@ export type GPUGlobalPermutationTestProps = {
    * `h > P` the result equals the unstopped one bit for bit. `L` does not depend on the batch
    * size: each batch is scanned in permutation order.
    *
-   * With it set, the permutations run in fixed batches (see {@link getGPUGlobalPermutationBatchSize}:
-   * enough row-block workgroups to occupy the GPU, at most 64 batches) after one pass
+   * With it set, the permutations run in fixed batches (`permutationBatchSize` when provided,
+   * otherwise {@link getGPUGlobalPermutationBatchSize}: enough row-block workgroups to occupy
+   * the GPU, at most 64 batches) after one pass
    * for the observed statistic; a GPU state word disarms the remaining batches once the run has
    * stopped, so at most one batch of permutations past `L` is computed. Compile-time; omitted
    * (default) runs the single-dispatch path unchanged. Not supported with `alternative:
@@ -288,7 +298,9 @@ export type GPUGlobalPermutationTestProps = {
    * kernel gathers from it. The operands and their summation order are unchanged, so results are
    * bit-identical to the default path. Memory is `B x rows` floats per permuted variable (two for
    * Lee's L), at most 2^25 elements; the graph holds `ceil((maximumPermutations + 1) / B)`
-   * batches, at most 4096. Compile-time. Not supported with `stopAfterExceedances`. Omitted
+   * batches, at most 4096. With `stopAfterExceedances`, the observed pass is separate and there
+   * are `ceil(maximumPermutations / B)` batches; `B` also sets the sequential batch size;
+   * the ordered scan and GPU gating preserve the same stopping index and results. Omitted
    * (default) keeps the single-dispatch inline path; the default stays until measurements on the
    * target devices justify switching it.
    */
@@ -352,6 +364,8 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGlobalPermutationTestProps;
+  /** Upper bound including the published scan allowance and every unrolled batch. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUGlobalPermutationTestProps) {
     const id = props.id ?? 'global-permutation-test';
@@ -376,9 +390,6 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
         1,
         props.maximumPermutations + 1
       );
-      if (props.stopAfterExceedances !== undefined) {
-        throw new Error(`${id} permutationBatchSize is not supported with stopAfterExceedances`);
-      }
       validateMaximumCount(
         id,
         'permutationBatchSize x rows',
@@ -388,7 +399,10 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       validateMaximumCount(
         id,
         'permutation batches',
-        Math.ceil((props.maximumPermutations + 1) / props.permutationBatchSize),
+        Math.ceil(
+          (props.maximumPermutations + (props.stopAfterExceedances === undefined ? 1 : 0)) /
+            props.permutationBatchSize
+        ),
         MATERIALIZED_MAXIMUM_BATCHES
       );
     }
@@ -404,6 +418,17 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       (props.maximumPermutations + 1) * getPairBlockCount(props.weights),
       GPU_GLOBAL_PERMUTATION_TEST_MAXIMUM_PAIR_BLOCK_COUNT
     );
+    const chunkCount = getGPUSpatialWeightsChunkDispatches(props.weights).length;
+    const sequential = props.stopAfterExceedances !== undefined;
+    const batchSize =
+      props.permutationBatchSize ??
+      (sequential
+        ? getGPUGlobalPermutationBatchSize(props.values.length, props.maximumPermutations)
+        : props.maximumPermutations + 1);
+    const batchCount = Math.ceil((props.maximumPermutations + (sequential ? 0 : 1)) / batchSize);
+    this.estimatedCommandNodeCount =
+      FIXED_COMMAND_NODE_ALLOWANCE + 3 * chunkCount + batchCount * (chunkCount + 3);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const {output} = props;
     if (output.status?.invalidCount) {
       validatePackedUint32View(output.status.invalidCount, `${id} output.status.invalidCount`);
@@ -496,6 +521,15 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       props.output.histogram,
       props.output.status?.invalidCount
     ]);
+    if (props.permutationBatchSize !== undefined) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'materialized permutation values',
+        props.permutationBatchSize * props.values.length * Float32Array.BYTES_PER_ELEMENT,
+        'reduce permutationBatchSize or rows'
+      );
+    }
     const rows = props.values.length;
     const lee = statistic === 'leesL';
     const bivariate = statistic === 'bivariateMoran' || lee;
@@ -804,6 +838,7 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
         ...this.getMaterializedBatchNodes(graph, {
           batchState,
           batchSize,
+          pairSums,
           createPairsNodes,
           createPairSumsNode,
           blockCount,
@@ -1101,17 +1136,22 @@ fn reduceCount(local: u32, value: u32) -> u32 {
     context: {
       batchState: GraphDataView<'uint32'>;
       batchSize: number;
+      pairSums: GraphDataView<'float32'>;
       createPairsNodes: (options: {
         id: string;
         variant: string;
         invocationCount: number;
         permutationWGSL: string;
+        getGate?: (
+          dispatch: GPUSpatialWeightsChunkDispatch
+        ) => ReturnType<WGSLDispatchGate<Parameters>['getGate']>;
       }) => GPUCommandNode<Parameters>[];
       createPairSumsNode: (options: {
         id: string;
         variant: string;
         invocationCount: number;
         permutationWGSL?: string;
+        gate?: ReturnType<WGSLDispatchGate<Parameters>['getGate']>;
       }) => GPUCommandNode<Parameters>;
       blockCount: number;
       rowPositions: GraphDataView<'uint32'>;
@@ -1159,48 +1199,34 @@ fn reduceCount(local: u32, value: u32) -> u32 {
           ]
         : [])
     ];
-    const nodes: GPUCommandNode<Parameters>[] = [
+    const createMaterializeNode = (options: {
+      id: string;
+      slotCount: number;
+      permutationOffset: number;
+      gate?: ReturnType<WGSLDispatchGate<Parameters>['getGate']>;
+    }) =>
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-materialized-init`,
+        id: options.id,
         operation: OPERATION,
-        variant: 'materialized-init',
-        bindings: [
-          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-          {name: 'state', view: batchState, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: 1,
-        // Copies the parameters and clears the batch cursor (word ${S.base}).
-        body: `for (var word = 0u; word < 4u; word++) {
-    state[stateOffset + word] = parameters[parametersOffset + word];
-  }
-  for (var word = ${S.base}u; word < ${S.length}u; word++) {
-    state[stateOffset + word] = 0u;
-  }`
-      })
-    ];
-    for (let batch = 0; batch < batchCount; batch++) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-batch-${batch}-materialize`,
-          operation: OPERATION,
-          variant: `materialize-${props.statistic}`,
-          bindings: materializeBindings,
-          workgroupSize: PAIR_WORKGROUP_SIZE,
-          invocationCount: batchSize * materializeBlocks * PAIR_WORKGROUP_SIZE,
-          guardIndex: false,
-          declarations: `const ROWS: u32 = ${rows}u;
+        variant: `materialize-${props.statistic}`,
+        bindings: materializeBindings,
+        workgroupSize: PAIR_WORKGROUP_SIZE,
+        invocationCount: options.slotCount * materializeBlocks * PAIR_WORKGROUP_SIZE,
+        ...options.gate,
+        guardIndex: false,
+        declarations: `const ROWS: u32 = ${rows}u;
 const BLOCK_ROWS: u32 = ${PAIR_BLOCK_ROWS}u;
 const BLOCK_COUNT: u32 = ${materializeBlocks}u;
 const WORKGROUP_SIZE: u32 = ${PAIR_WORKGROUP_SIZE}u;
 ${getPermutationParameterWGSL(maximumPermutations)}
 ${PERMUTATION_RANDOM_WGSL}
 ${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}`,
-          // One workgroup per permutation and block of positions; the round material of the
-          // permutation is drawn once into workgroup memory. Permutation 0 copies the values.
-          body: `let workgroup = index / WORKGROUP_SIZE;
+        // One workgroup per permutation and block of positions; the round material of the
+        // permutation is drawn once into workgroup memory. Permutation 0 copies the values.
+        body: `let workgroup = index / WORKGROUP_SIZE;
   let slot = workgroup / BLOCK_COUNT;
   let block = workgroup % BLOCK_COUNT;
-  let permutation = parameters[parametersOffset + ${S.base}u] + slot;
+  let permutation = parameters[parametersOffset + ${S.base}u] + ${options.permutationOffset}u + slot;
   let count = rowPositions[rowPositionsOffset + ROWS];
   let runsPermutation = index < INVOCATION_COUNT && permutation <= readValidPermutationCount();
   if (runsPermutation && permutation > 0u) {
@@ -1223,6 +1249,40 @@ ${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}`,
       }
     }
   }`
+      });
+    if (props.stopAfterExceedances !== undefined) {
+      return this.getSequentialBatchNodes(graph, {
+        ...context,
+        alternative: resolvePermutationAlternative(id, props.alternative),
+        stopAfter: props.stopAfterExceedances,
+        createMaterializeNode
+      });
+    }
+    const nodes: GPUCommandNode<Parameters>[] = [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-materialized-init`,
+        operation: OPERATION,
+        variant: 'materialized-init',
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          {name: 'state', view: batchState, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: 1,
+        // Copies the parameters and clears the batch cursor (word ${S.base}).
+        body: `for (var word = 0u; word < 4u; word++) {
+    state[stateOffset + word] = parameters[parametersOffset + word];
+  }
+  for (var word = ${S.base}u; word < ${S.length}u; word++) {
+    state[stateOffset + word] = 0u;
+  }`
+      })
+    ];
+    for (let batch = 0; batch < batchCount; batch++) {
+      nodes.push(
+        createMaterializeNode({
+          id: `${id}-batch-${batch}-materialize`,
+          slotCount: batchSize,
+          permutationOffset: 0
         }),
         ...context.createPairsNodes({
           id: `${id}-batch-${batch}-pairs`,
@@ -1259,6 +1319,12 @@ ${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}`,
     graph: GPUCommandGraph<Parameters>,
     context: {
       batchState: GraphDataView<'uint32'>;
+      createMaterializeNode?: (options: {
+        id: string;
+        slotCount: number;
+        permutationOffset: number;
+        gate?: ReturnType<WGSLDispatchGate<Parameters>['getGate']>;
+      }) => GPUCommandNode<Parameters>;
       createPairsNodes: (options: {
         id: string;
         variant: string;
@@ -1285,7 +1351,8 @@ ${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}`,
     const {batchState, pairSums, blockCount, alternative, stopAfter} = context;
     const {maximumPermutations, parameters} = props;
     const rows = props.values.length;
-    const batchSize = getGPUGlobalPermutationBatchSize(rows, maximumPermutations);
+    const batchSize =
+      props.permutationBatchSize ?? getGPUGlobalPermutationBatchSize(rows, maximumPermutations);
     const batchCount = Math.ceil(maximumPermutations / batchSize);
     const chunkLength = Math.ceil(batchSize / SCAN_WORKGROUP_SIZE);
     const S = SEQUENTIAL_STATE;
@@ -1303,7 +1370,15 @@ ${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}`,
               PAIR_WORKGROUP_SIZE
             ] as const
         ),
-        [batchSize] as const
+        [batchSize] as const,
+        ...(context.createMaterializeNode
+          ? [
+              [
+                batchSize * Math.ceil(rows / PAIR_BLOCK_ROWS) * PAIR_WORKGROUP_SIZE,
+                PAIR_WORKGROUP_SIZE
+              ] as const
+            ]
+          : [])
       ]
     });
     const sumsSlot = chunkDispatches.length;
@@ -1334,6 +1409,15 @@ ${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}`,
     ${gate.disarmWGSL}
   }`
       }),
+      ...(context.createMaterializeNode
+        ? [
+            context.createMaterializeNode({
+              id: `${id}-materialize-observed`,
+              slotCount: 1,
+              permutationOffset: 0
+            })
+          ]
+        : []),
       ...context.createPairsNodes({
         id: `${id}-pairs-observed`,
         variant: `pairs-${props.statistic}-observed`,
@@ -1358,6 +1442,22 @@ fn getExceedanceCount(greater: u32, lesser: u32) -> u32 {
     for (let batch = 0; batch < batchCount; batch++) {
       const sumsGate = gate.getGate(sumsSlot);
       nodes.push(
+        ...(context.createMaterializeNode
+          ? [
+              context.createMaterializeNode({
+                id: `${id}-batch-${batch}-materialize`,
+                slotCount: batchSize,
+                permutationOffset: 1,
+                gate: {
+                  ...gate.getGate(sumsSlot + 1),
+                  condition: {
+                    ...gate.getGate(sumsSlot + 1).condition,
+                    id: `${id}-batch-${batch}-materialize-gate`
+                  }
+                }
+              })
+            ]
+          : []),
         ...context.createPairsNodes({
           id: `${id}-batch-${batch}-pairs`,
           variant: `pairs-${props.statistic}-batch`,

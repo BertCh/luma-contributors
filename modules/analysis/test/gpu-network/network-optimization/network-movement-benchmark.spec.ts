@@ -175,7 +175,7 @@ async function measure(
           selectedFacilities: output('uint32', size).view,
           assignments: output('uint32', 1).view,
           objective: output('float32', 1).view,
-          status: summary.view
+          summary: summary.view
         }
       })
     );
@@ -197,7 +197,7 @@ async function measure(
           assignments: output('float32', size * facilities).view,
           scores: output('float32', size).view,
           unservedDemand: output('float32', size).view,
-          status: summary.view
+          summary: summary.view
         }
       })
     );

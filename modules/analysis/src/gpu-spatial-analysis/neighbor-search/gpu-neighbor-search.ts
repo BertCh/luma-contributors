@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
 import {getGPUGreatCircleRadius} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
@@ -161,7 +162,7 @@ export type GPUNeighborSearchProps = {
    * (per-frame, closed like the spatial test). kNN then means the `k` nearest targets inside the
    * time window. A target or self-join row whose time is non-finite or outside the per-frame
    * `timeBounds` is invalid like a row outside `bounds`: it is empty, never a neighbor, and counted
-   * by `invalidCount`. A cross-join query of a planar search needs only a finite time: outside
+   * by `invalidCount`. A cross-join query needs only a finite time: outside
    * `timeBounds` it still finds its exact neighbors.
    * Requires `temporalContext` and parameters of
    * {@link GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH} words. Great-circle search takes times;
@@ -236,10 +237,10 @@ export type GPUNeighborSearchProps = {
    * finite or lies outside the per-frame `bounds` (or, for great-circle search, has a latitude
    * beyond +-90). Such rows are silently empty and never a neighbor, so a nonzero count means
    * `bounds` is too small or the data has missing coordinates. It counts target rows, plus the
-   * query rows of a cross join (`queryPositions`). A planar cross-join query is invalid only when
-   * its coordinates (or time) are not finite; `bounds` and `timeBounds` do not exclude it, so a
-   * query outside them gets the same neighbors as a brute-force scan. A great-circle cross-join
-   * query outside `bounds` is still counted and empty, because the longitude wrap follows the bounds.
+   * query rows of a cross join (`queryPositions`). A cross-join query is invalid only when
+   * its coordinates (or time) are not finite, or its great-circle latitude is beyond +-90;
+   * `bounds` and `timeBounds` do not exclude it. Queries outside them get the same neighbors
+   * as a brute-force scan, including across the longitude seam.
    */
   output: GPUNeighborSearchOutput;
   /**
@@ -273,9 +274,11 @@ export type GPUNeighborSearchProps = {
  * - A target is valid when its mask is nonzero, its coordinates are finite and it lies inside the
  *   per-frame bounds. A self join skips the row itself and its query rows are those targets. A
  *   cross-join query (`queryPositions`, with `queryMask`) is valid when its coordinates are finite;
- *   a planar query outside the bounds is searched exactly (the cell lookup clamps to the nearest
- *   edge cell and every cell bound is measured from the true position, so the result equals a
- *   brute-force scan). A great-circle query must lie inside the bounds, with latitude within +-90.
+ *   a query outside the bounds is searched exactly. Cell lookups clamp to the nearest edge cell;
+ *   great-circle cell ranges use the equivalent longitude nearest the lattice midpoint and
+ *   require latitude within +-90. Spherical distance tests reduce both stored longitudes modulo
+ *   360 with integer significand arithmetic, independently of the lattice-relative shift, so even
+ *   very large finite longitudes and tiny offsets retain their stored angular position.
  *   Cost: a planar query far outside the bounds (beyond a side or a corner by many lattice
  *   widths) cannot stop its kNN ring walk early, because the clearance of the sides across from it
  *   stays small, so it visits every lattice cell in one invocation (cell tests only; target loads
@@ -642,7 +645,7 @@ ${
       `${name}[${name}Offset + ${row}]`;
     const queryTimeName: 'times' | 'queryTimes' = crossJoin ? 'queryTimes' : 'times';
     const queryTimeBinding = timeBindings(queryTimeName);
-    // A cross-join query needs only finite coordinates and time (planar); a self join's query rows
+    // A cross-join query needs finite coordinates and time (and a spherical latitude); self-join rows
     // are its target rows, which stay bound by the bounds.
     const queryPointInBoundsWGSL = crossJoin ? 'isCrossJoinQueryInBounds' : 'isPointInBounds';
     const queryPointValidWGSL = crossJoin ? 'isCrossJoinQueryValid' : 'isPointValid';
@@ -1175,19 +1178,22 @@ ${bvhDeclarations}`,
       }
     }
 
+    const scanTotal = createTransientView(graph, `${id}-scan-total`, 'uint32', 1);
     nodes.push(
-      ...new GPUScan({
+      ...createSaturatedCountScanNodes<Parameters>(graph, {
         id: `${id}-scan`,
-        input: counts,
-        output: starts,
-        mode: 'exclusive'
-      }).getCommandNodes(graph),
+        operation: OPERATION,
+        counts,
+        offsets: starts,
+        rowCount: queryRows,
+        total: scanTotal
+      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-offsets`,
         operation: OPERATION,
         variant: 'offsets',
         bindings: [
-          {name: 'counts', view: counts, type: 'u32', access: 'read'},
+          {name: 'scanTotal', view: scanTotal, type: 'u32', access: 'read'},
           {name: 'starts', view: starts, type: 'u32', access: 'read'},
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read_write'},
           {name: 'overflow', view: weights.status.overflow, type: 'u32', access: 'read_write'},
@@ -1208,7 +1214,7 @@ const CAPACITY: u32 = ${capacity}u;`,
         body: `if (index < QUERY_ROWS) {
     offsets[offsetsOffset + index] = min(starts[startsOffset + index], CAPACITY);
   } else {
-    let total = starts[startsOffset + QUERY_ROWS - 1u] + counts[countsOffset + QUERY_ROWS - 1u];
+    let total = scanTotal[scanTotalOffset];
     offsets[offsetsOffset + QUERY_ROWS] = min(total, CAPACITY);
     overflow[overflowOffset] = select(0u, 1u, total > CAPACITY);
     ${weights.status.requiredCount ? 'totalNeighbors[totalNeighborsOffset] = total;' : ''}

@@ -37,20 +37,47 @@ export function computeCosLatitude(latitude: number): number {
   return Math.sin((90 - Math.abs(latitude)) * DEGREES_TO_RADIANS);
 }
 
+/** Binary64 mirror of geodesicBearingComponents. @internal */
+export function computeBearingComponents(
+  longitudeDelta: number,
+  latitude: number,
+  targetLatitude: number
+): [number, number, number] {
+  if (latitude === targetLatitude && (longitudeDelta === 0 || Math.abs(latitude) === 90))
+    return [0, 0, 1];
+  const sinLatitude = Math.sin(latitude * DEGREES_TO_RADIANS);
+  const cosine = computeCosLatitude(targetLatitude);
+  const halfVersine = 2 * Math.sin(longitudeDelta / 2) ** 2;
+  let east = cosine * Math.sin(longitudeDelta);
+  let north =
+    Math.sin((targetLatitude - latitude) * DEGREES_TO_RADIANS) + sinLatitude * cosine * halfVersine;
+  let longitudeCosine = 1 - halfVersine;
+  const deltaDegrees = longitudeDelta / DEGREES_TO_RADIANS;
+  if (Math.abs(deltaDegrees) > 90 && latitude * targetLatitude <= 0) {
+    const supplement = (180 - Math.abs(deltaDegrees)) * DEGREES_TO_RADIANS;
+    const halfSine = Math.sin(supplement / 2);
+    east = cosine * Math.sign(deltaDegrees) * Math.sin(supplement);
+    north =
+      Math.sin((latitude + targetLatitude) * DEGREES_TO_RADIANS) -
+      2 * sinLatitude * cosine * halfSine * halfSine;
+    longitudeCosine = 2 * halfSine * halfSine - 1;
+  }
+  const vertical =
+    sinLatitude * Math.sin(targetLatitude * DEGREES_TO_RADIANS) +
+    computeCosLatitude(latitude) * cosine * longitudeCosine;
+  return [east, north, vertical];
+}
+
 /** Binary64 mirror of geodesicCentralAngle, with a precomputed longitude delta. @internal */
 export function computeCentralAngle(
   longitudeDelta: number,
   latitude: number,
   targetLatitude: number
 ): number {
-  const sinLatitude = Math.sin(latitude * DEGREES_TO_RADIANS);
-  const cosine = computeCosLatitude(targetLatitude);
-  const halfVersine = 2 * Math.sin(longitudeDelta / 2) ** 2;
-  const east = cosine * Math.sin(longitudeDelta);
-  const north =
-    Math.sin((targetLatitude - latitude) * DEGREES_TO_RADIANS) + sinLatitude * cosine * halfVersine;
-  const up =
-    sinLatitude * Math.sin(targetLatitude * DEGREES_TO_RADIANS) +
-    computeCosLatitude(latitude) * cosine * (1 - halfVersine);
-  return Math.atan2(Math.hypot(east, north), up);
+  const [east, north, vertical] = computeBearingComponents(
+    longitudeDelta,
+    latitude,
+    targetLatitude
+  );
+  return Math.atan2(Math.hypot(east, north), vertical);
 }

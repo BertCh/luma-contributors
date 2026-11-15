@@ -81,6 +81,18 @@ an undirected network that lists both directions with equal weights may pass one
 `pivotNodes` to measure from. Outputs (at least one): `betweenness` (per node), `closeness`,
 `harmonicCloseness` and `reachedCounts` (per pivot), and `status.converged`.
 
+Optional one-row `uint32` `output.status.iterationLimitReached` records any reachability,
+path-count or dependency phase that exhausted its round budget. It can be requested without
+`converged` or `zeroWeightCycle`. A detected zero-weight cycle alone clears `converged` and sets
+`zeroWeightCycle`, while leaving `iterationLimitReached = 0`; more rounds cannot fix that cycle.
+If different batches encounter both conditions, both diagnostic flags can be 1. A zero limit flag
+alone does not certify defined betweenness; request `converged` or `zeroWeightCycle` as well. The contributor
+publishes incumbent centralities on a round-limit exit and rewrites every requested port on each
+encoding. The graph operation has the same ports; the exact CPU twin never sets
+`iterationLimitReached`, including on a zero-cycle result. Status views must use separate physical
+buffers from inputs and other outputs, even when imported with different graph IDs.
+
+
 Pivots run `laneCount` at a time (default `recommendLaneCount()`, about 1M expanded nodes per batch; closeness
 outputs are bit-identical for every lane count). Each batch runs one lane-expanded `GPUNetworkReachability`
 (`costLimit` is the radius, `maximumIterations` and `localIterations` as there; the defaults are 64 and 16).
@@ -215,6 +227,16 @@ Convert reachability predecessors and target intersections into ordered start-to
 #### `GPUNetworkServiceAreas`
 
 Assign every road intersection to its nearest facility by travel time, with facility labels, minimum costs and optional service totals.
+
+Optional one-row `uint32` ports `output.status.converged` and
+`output.status.iterationLimitReached` cover all three phases: cost relaxation, facility-label
+propagation and, when requested, predecessor tie levels. `iterationLimitReached` is exactly
+`1 - converged` and can be requested alone. A budget exit retains the current costs, assignments
+and predecessors. With a nonzero round budget, an empty active facility set converges. Both
+ports reset on every encoding.
+The graph operation exposes the same scalar ports. Its exact CPU twin runs every phase to
+completion, so it returns `converged = 1` and `iterationLimitReached = 0` even when the GPU would
+exhaust a configured phase budget.
 
 ::lens{scenario=gpu-network.network-service-areas rung=result caption="Compare 4 service areas; each colour marks the facility nearest by travel time."}
 
@@ -725,7 +747,11 @@ outputs depending on `startNodes`. With `startNodes`, `output.status.converged`
 (one row) reports whether that search reached a fixpoint within `maximumIterations`, and
 `localIterations` sets its hops per round. A 0 means the costs, and so every polygon, are truncated
 too small. As on `GPUNetworkReachability` and `GPUNetworkServiceAreas` the flag is optional, and
-omitting it accepts that truncation unchecked.
+omitting it accepts that truncation unchecked. The optional one-row `uint32`
+`output.status.iterationLimitReached` is the complement of `converged` and can be requested alone.
+Both the plain reachability search and the facility-label search forward it; with assignments,
+label-round exhaustion also sets it. Both ports require `startNodes` and separate buffers from
+inputs, geometry outputs and each other. Budget exits still publish incumbent costs and geometry.
 
 - **Raster path.** Every edge is sampled at up to `raster.maximumSamplesPerEdge` points. The cost is
   interpolated linearly from the source node along the edge weight, and the minimum (default) or
@@ -981,6 +1007,13 @@ The table is exact up to its limit: a target missing from a row is farther than 
   `maximumIterations`, `localIterations` (default 16) and `output`: `offsets` (`nodeCount + 1` rows),
   `targets` (its length is the entry capacity), `costs` (same length) and optional
   `status.overflow`, `status.requiredCount` and `status.converged`.
+  Optional `status.iterationLimitReached` is `1 - converged` and can be requested alone. It reports
+  round-budget exhaustion independently of capacity overflow. On a budget exit, retained CSR rows
+  remain consistent, and `requiredCount` counts entries found so far; it is not a certificate of
+  the full table size. The exact CPU twin runs searches to completion and always returns
+  `iterationLimitReached = 0`, including when the output capacity overflows. All scalar ports reset
+  on each encoding and need separate physical buffers from inputs and other outputs.
+
 - Method: source nodes are searched `laneCount` at a time with one lane-expanded
   `GPUNetworkReachability` per batch into one scratch block, then a per-lane count, a single-workgroup
   scan of the batch's lane counts on top of a GPU running entry cursor (which writes the batch's
@@ -997,7 +1030,7 @@ The table is exact up to its limit: a target missing from a row is farther than 
   table holds only the entries within `costLimit`. Rebuild only when weights change. The scratch block is
   `laneCount x nodeCount` floats and must fit one storage binding, so lower `laneCount` for large networks.
 - Compile cost: every round of every batch is an unrolled command node, `2 + batchCount * (6 + maximumIterations)`
-  nodes, plus one per batch with `status.converged`. The exact count is the read-only property
+  nodes, plus one per batch when `status.converged` or `status.iterationLimitReached` is requested. The exact count is the read-only property
   `estimatedCommandNodeCount`, and the constructor throws above 32,768 nodes, so a 100,000-node network
   at the default lane count needs a larger `laneCount` or fewer `maximumIterations` first.
 

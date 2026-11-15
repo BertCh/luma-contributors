@@ -36,3 +36,61 @@ it('landscape metrics validates inputs before reconcilePatches mutates the graph
     device.destroy();
   }
 });
+
+it.each([
+  false,
+  true
+])('landscape metrics rejects aliased patch and class outputs before appending nodes (reconcilePatches=%s)', reconcilePatches => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const patches = createTransientView(graph, 'patches', 'uint32', 3);
+    const patchClasses = createTransientView(graph, 'patch-classes', 'uint32', 2);
+    const sharedMetrics = createTransientView(graph, 'shared-metrics', 'float32x4', 2);
+    expect(() =>
+      addLandscapeMetricsRecipe(graph, {
+        patches,
+        patchClasses,
+        width: 3,
+        height: 1,
+        classCount: 2,
+        cellSize: [1, 1],
+        connectivity: 4,
+        reconcilePatches,
+        output: {patchMetrics: sharedMetrics, classMetrics: sharedMetrics}
+      })
+    ).toThrow(/^landscape-metrics outputs must not share a buffer$/);
+    expect((graph as unknown as {nodes: unknown[]}).nodes).toHaveLength(0);
+  } finally {
+    device.destroy();
+  }
+});
+
+it.each([
+  false,
+  true
+])('landscape metrics rejects input/output buffer aliases before appending nodes (reconcilePatches=%s)', reconcilePatches => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const patches = createTransientView(graph, 'patches', 'uint32', 3);
+    const patchClasses = createTransientView(graph, 'patch-classes', 'uint32', 2);
+    const aggregation = graph.createDataView(patchClasses.buffer, {format: 'float32', length: 2});
+    expect(() =>
+      addLandscapeMetricsRecipe(graph, {
+        patches,
+        patchClasses,
+        width: 3,
+        height: 1,
+        classCount: 2,
+        cellSize: [1, 1],
+        connectivity: 4,
+        reconcilePatches,
+        output: {aggregation}
+      })
+    ).toThrow(/^landscape-metrics outputs must not share buffers with inputs$/);
+    expect((graph as unknown as {nodes: unknown[]}).nodes).toHaveLength(0);
+  } finally {
+    device.destroy();
+  }
+});

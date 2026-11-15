@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
 import {
   createTransientView,
   GPUScan,
@@ -252,7 +253,16 @@ export class GPULonLatPolygonPreparation implements GPUCommandNodeProducer {
         counts: denseCounts
       })
     );
-    scan('dense-scan', denseCounts, denseStarts);
+    nodes.push(
+      ...createSaturatedCountScanNodes(graph, {
+        id: `${id}-dense-scan`,
+        operation: OPERATION,
+        counts: denseCounts,
+        offsets: denseStarts,
+        rowCount: props.positions.length,
+        total: denseTotal
+      })
+    );
     nodes.push(
       createSegmentizeEmitNode(graph, {
         ...segmentInputs,

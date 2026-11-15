@@ -34,7 +34,24 @@ import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
  * Also declares `guardedAtan2` ({@link GUARDED_ATAN2_WGSL}), so a kernel that embeds this must not
  * add it again.
  */
-export const H3_BOUNDARY_WGSL = /* wgsl */ `
+export const H3_BOUNDARY_WGSL = getH3BoundaryWGSL();
+
+/** Geometry specialization of the shared integer H3 boundary walk. @internal */
+export type H3BoundaryGeometry = {
+  unitType: string;
+  coordinateToPlane: string;
+  source: string;
+};
+
+/** Keeps face overage, pentagon handling and vertex ordering identical at either precision. @internal */
+export function getH3BoundaryWGSL(
+  geometry: H3BoundaryGeometry = {
+    unitType: 'vec3f',
+    coordinateToPlane: 'dggs_h3_ijk_to_hex2d',
+    source: getFloat32GeometryWGSL()
+  }
+): string {
+  return /* wgsl */ `
 ${GUARDED_ATAN2_WGSL}
 const CELL_INDEX_H3_BOUNDARY_MAX_VERTICES: u32 = 10u;
 const CELL_INDEX_H3_BOUNDARY_NO_OVERAGE: u32 = 0u;
@@ -44,7 +61,7 @@ const CELL_INDEX_H3_BOUNDARY_NEW_FACE: u32 = 2u;
 struct CellIndexH3Boundary {
   count : u32,
   points : array<vec2f, 10>,
-  units : array<vec3f, 10>,
+  units : array<${geometry.unitType}, 10>,
   // Offset of each original topological vertex, excluding inserted face-distortion vertices.
   vertexOffsets : array<u32, 6>,
 };
@@ -105,68 +122,14 @@ fn cellIndexH3BoundaryGetFaceDirection(fromFace: u32, toFace: u32) -> u32 {
   return 0u;
 }
 
-// Intersection of the segment p0-p1 with the line through edge0-edge1 (H3 _v2dIntersect).
-fn cellIndexH3BoundaryIntersect(p0: vec2f, p1: vec2f, edge0: vec2f, edge1: vec2f) -> vec2f {
-  let s1 = p1 - p0;
-  let s2 = edge1 - edge0;
-  let t = (s2.x * (p0.y - edge0.y) - s2.y * (p0.x - edge0.x)) / (-s2.x * s1.y + s1.x * s2.y);
-  return p0 + t * s1;
-}
-
-// Intersection of the hex2d segment p0-p1 with the face edge in \`quadrant\` of an icosahedron face
-// at the given adjusted (Class II) resolution.
-fn cellIndexH3BoundaryIntersectFaceEdge(
-  p0: vec2f,
-  p1: vec2f,
-  adjustedResolution: u32,
-  quadrant: u32
-) -> vec2f {
-  let maximumDimension = f32(dggs_h3_get_max_dim_by_cii_resolution(adjustedResolution));
-  let v0 = vec2f(3.0 * maximumDimension, 0.0);
-  let v1 = vec2f(-1.5 * maximumDimension, 3.0 * DGGS_H3_SQRT3_2 * maximumDimension);
-  let v2 = vec2f(-1.5 * maximumDimension, -3.0 * DGGS_H3_SQRT3_2 * maximumDimension);
-  if (quadrant == 1u) {
-    return cellIndexH3BoundaryIntersect(p0, p1, v0, v1);
-  }
-  if (quadrant == 3u) {
-    return cellIndexH3BoundaryIntersect(p0, p1, v1, v2);
-  }
-  return cellIndexH3BoundaryIntersect(p0, p1, v2, v0);
-}
-
 // True when a substrate coordinate lies exactly on an icosahedron face edge.
 fn cellIndexH3BoundaryIsOnFaceEdge(coord: vec3i, adjustedResolution: u32) -> bool {
   return coord.x + coord.y + coord.z == 3 * dggs_h3_get_max_dim_by_cii_resolution(adjustedResolution);
 }
 
-// Substrate hex2d point on \`face\` to a unit vector (H3 _hex2dToGeo with substrate = 1). Projects
-// through the face's unit-vector basis instead of dggs_h3_hex2d_to_lnglat, whose sin/cos/atan2
-// azimuth-distance chain loses about 1e-4 degrees in f32.
-fn cellIndexH3BoundaryHex2dToUnitVector(point: vec2f, face: u32, adjustedResolution: u32) -> vec3f {
-  var scale = DGGS_H3_RES0_U_GNOMONIC * DGGS_H3_ONETHIRD;
-  for (var level = 0u; level < adjustedResolution; level++) {
-    scale *= DGGS_H3_RSQRT7;
-  }
-  // \`adjustedResolution\` is always Class II here, so no extra aperture-7 factor applies.
-  return normalize(
-    dggs_h3_get_face_unit_vector_basis(face, 0u) +
-    scale * (
-      point.x * dggs_h3_get_face_unit_vector_basis(face, 1u) +
-      point.y * dggs_h3_get_face_unit_vector_basis(face, 2u)
-    )
-  );
-}
+${geometry.source}
 
-// atan2(y, -0.0) returns -sign(y) * pi / 2 on the test GPU (FX-17), so the longitude uses
-// guardedAtan2; the second atan2 below has a nonnegative length as its x.
-fn cellIndexH3BoundaryUnitVectorToLngLat(unitVector: vec3f) -> vec2f {
-  return vec2f(
-    guardedAtan2(unitVector.y, unitVector.x) * DGGS_RADIANS_TO_DEGREES,
-    atan2(unitVector.z, length(unitVector.xy)) * DGGS_RADIANS_TO_DEGREES
-  );
-}
-
-fn cellIndexH3BoundaryPush(boundary: ptr<function, CellIndexH3Boundary>, unitVector: vec3f) {
+fn cellIndexH3BoundaryPush(boundary: ptr<function, CellIndexH3Boundary>, unitVector: ${geometry.unitType}) {
   if ((*boundary).count < CELL_INDEX_H3_BOUNDARY_MAX_VERTICES) {
     (*boundary).points[(*boundary).count] = cellIndexH3BoundaryUnitVectorToLngLat(unitVector);
     (*boundary).units[(*boundary).count] = unitVector;
@@ -239,8 +202,8 @@ fn cellIndexH3BoundaryFromFaceIJK(
           let unitScale = (dggs_h3_get_max_dim_by_cii_resolution(adjustedResolution) / 2) * 3;
           transformed = dggs_h3_ijk_normalize(transformed + orient.coord * unitScale);
           let point = cellIndexH3BoundaryIntersectFaceEdge(
-            dggs_h3_ijk_to_hex2d(lastCoord),
-            dggs_h3_ijk_to_hex2d(transformed),
+            ${geometry.coordinateToPlane}(lastCoord),
+            ${geometry.coordinateToPlane}(transformed),
             adjustedResolution,
             lastToCurrent
           );
@@ -260,8 +223,8 @@ fn cellIndexH3BoundaryFromFaceIJK(
           cellIndexH3BoundaryIsOnFaceEdge(vertexCoords[lastVertex], adjustedResolution);
         if (quadrant != 0u && !isAtVertex) {
           let point = cellIndexH3BoundaryIntersectFaceEdge(
-            dggs_h3_ijk_to_hex2d(vertexCoords[lastVertex]),
-            dggs_h3_ijk_to_hex2d(vertexCoords[vertex]),
+            ${geometry.coordinateToPlane}(vertexCoords[lastVertex]),
+            ${geometry.coordinateToPlane}(vertexCoords[vertex]),
             adjustedResolution,
             quadrant
           );
@@ -278,7 +241,7 @@ fn cellIndexH3BoundaryFromFaceIJK(
       cellIndexH3BoundaryPush(
         &boundary,
         cellIndexH3BoundaryHex2dToUnitVector(
-          dggs_h3_ijk_to_hex2d(current.coord),
+          ${geometry.coordinateToPlane}(current.coord),
           current.face,
           adjustedResolution
         )
@@ -318,3 +281,65 @@ fn cellIndexH3GetBoundaryVertex(cell: vec2u, vertexIndex: u32) -> vec2f {
   return boundary.points[vertexIndex];
 }
 `;
+}
+
+function getFloat32GeometryWGSL(): string {
+  return /* wgsl */ `
+// Intersection of the segment p0-p1 with the line through edge0-edge1 (H3 _v2dIntersect).
+fn cellIndexH3BoundaryIntersect(p0: vec2f, p1: vec2f, edge0: vec2f, edge1: vec2f) -> vec2f {
+  let s1 = p1 - p0;
+  let s2 = edge1 - edge0;
+  let t = (s2.x * (p0.y - edge0.y) - s2.y * (p0.x - edge0.x)) / (-s2.x * s1.y + s1.x * s2.y);
+  return p0 + t * s1;
+}
+
+// Intersection of the hex2d segment p0-p1 with the face edge in \`quadrant\` of an icosahedron face
+// at the given adjusted (Class II) resolution.
+fn cellIndexH3BoundaryIntersectFaceEdge(
+  p0: vec2f,
+  p1: vec2f,
+  adjustedResolution: u32,
+  quadrant: u32
+) -> vec2f {
+  let maximumDimension = f32(dggs_h3_get_max_dim_by_cii_resolution(adjustedResolution));
+  let v0 = vec2f(3.0 * maximumDimension, 0.0);
+  let v1 = vec2f(-1.5 * maximumDimension, 3.0 * DGGS_H3_SQRT3_2 * maximumDimension);
+  let v2 = vec2f(-1.5 * maximumDimension, -3.0 * DGGS_H3_SQRT3_2 * maximumDimension);
+  if (quadrant == 1u) {
+    return cellIndexH3BoundaryIntersect(p0, p1, v0, v1);
+  }
+  if (quadrant == 3u) {
+    return cellIndexH3BoundaryIntersect(p0, p1, v1, v2);
+  }
+  return cellIndexH3BoundaryIntersect(p0, p1, v2, v0);
+}
+
+// Substrate hex2d point on \`face\` to a unit vector (H3 _hex2dToGeo with substrate = 1). Projects
+// through the face's unit-vector basis instead of dggs_h3_hex2d_to_lnglat, whose sin/cos/atan2
+// azimuth-distance chain loses about 1e-4 degrees in f32.
+fn cellIndexH3BoundaryHex2dToUnitVector(point: vec2f, face: u32, adjustedResolution: u32) -> vec3f {
+  var scale = DGGS_H3_RES0_U_GNOMONIC * DGGS_H3_ONETHIRD;
+  for (var level = 0u; level < adjustedResolution; level++) {
+    scale *= DGGS_H3_RSQRT7;
+  }
+  // \`adjustedResolution\` is always Class II here, so no extra aperture-7 factor applies.
+  return normalize(
+    dggs_h3_get_face_unit_vector_basis(face, 0u) +
+    scale * (
+      point.x * dggs_h3_get_face_unit_vector_basis(face, 1u) +
+      point.y * dggs_h3_get_face_unit_vector_basis(face, 2u)
+    )
+  );
+}
+
+// atan2(y, -0.0) returns -sign(y) * pi / 2 on the test GPU (FX-17), so the longitude uses
+// guardedAtan2; the second atan2 below has a nonnegative length as its x.
+fn cellIndexH3BoundaryUnitVectorToLngLat(unitVector: vec3f) -> vec2f {
+  return vec2f(
+    guardedAtan2(unitVector.y, unitVector.x) * DGGS_RADIANS_TO_DEGREES,
+    atan2(unitVector.z, length(unitVector.xy)) * DGGS_RADIANS_TO_DEGREES
+  );
+}
+
+`;
+}

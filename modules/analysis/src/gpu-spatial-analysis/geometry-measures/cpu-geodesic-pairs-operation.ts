@@ -14,9 +14,11 @@ import {
   wrapLongitude,
   computeLongitudeDelta,
   computeCosLatitude,
-  computeCentralAngle
+  computeCentralAngle,
+  computeBearingComponents
 } from '../../analysis-core/kernels/cpu-geodesic';
 import {resolveGeodesicSpatialContext} from './gpu-geodesic-pairs';
+import {GPU_GEODESIC_INVERSE_ANTIPODAL_MARGIN} from './geodesic-kernels';
 import {GPU_RHUMB_MAX_LATITUDE} from './rhumb-wgsl';
 import {
   GPUGeodesicPairsOperation,
@@ -35,19 +37,12 @@ export type CPUGeodesicPairsResult = {
   finalBearings: Float32Array;
   midpoints: Float32Array;
   converged: Uint32Array;
+  approximation: Uint32Array;
+  iterationLimitReached: Uint32Array;
 };
 
 function computeBearing(longitudeDelta: number, latitude: number, targetLatitude: number): number {
-  const deltaLatitude = (targetLatitude - latitude) * DEGREES_TO_RADIANS;
-  const sinHalfLongitude = Math.sin(longitudeDelta / 2);
-  const east = Math.sin(longitudeDelta) * computeCosLatitude(targetLatitude);
-  const north =
-    Math.sin(deltaLatitude) +
-    2 *
-      Math.sin(latitude * DEGREES_TO_RADIANS) *
-      computeCosLatitude(targetLatitude) *
-      sinHalfLongitude *
-      sinHalfLongitude;
+  const [east, north] = computeBearingComponents(longitudeDelta, latitude, targetLatitude);
   return east === 0 && north === 0 ? 0 : Math.atan2(east, north) * RADIANS_TO_DEGREES;
 }
 
@@ -67,6 +62,7 @@ function computeMidpoint(
   targetLatitude: number,
   angle: number
 ): number[] {
+  if (Math.PI - angle < 1e-6) return [NaN, NaN];
   const first = computeUnitVector(longitude, latitude);
   const second = computeUnitVector(targetLongitude, targetLatitude);
   const weight = angle < 1e-6 ? 0.5 : Math.sin(angle / 2) / Math.sin(angle);
@@ -75,10 +71,13 @@ function computeMidpoint(
     const length = Math.hypot(...vector);
     for (let index = 0; index < 3; index++) vector[index] /= length;
   }
+  const horizontal = Math.hypot(vector[0], vector[1]);
+  // Signed zero components at a pole must not select a longitude through atan2.
+  if (horizontal === 0) return [0, vector[2] < 0 ? -90 : 90];
   const resultLongitude = Math.atan2(vector[1], vector[0]) * RADIANS_TO_DEGREES;
   return [
     longitude + wrapLongitude(resultLongitude - longitude),
-    Math.atan2(vector[2], Math.hypot(vector[0], vector[1])) * RADIANS_TO_DEGREES
+    Math.atan2(vector[2], horizontal) * RADIANS_TO_DEGREES
   ];
 }
 
@@ -122,20 +121,22 @@ function roundBearing(value: number): number {
  * What differs from the GPU contributor:
  * - Ellipsoidal distance/bearings use EllipsoidGeodesicExact, including near antipodes. Valid
  *   ellipsoidal rows always have converged=1; the Vincenty iteration cap and sphere fallback are
- *   absent. maximumIterations on the operation is accepted but ignored by the CPU solver.
+ *   absent. iterationLimitReached is always zero; maximumIterations on the operation is
+ *   accepted but ignored by the CPU solver.
  * - Rhumb stretched latitudes use the full float64 closed form, without the short-line/series
  *   approximations or the 0.999999 atanh clamp. The latitude clamp is the GPU's float32 value.
  * - All arithmetic is float64 until output. Bearings that round to -180 are normalized to +180;
  *   zero bearings are positive zero. Longitude half-turn ties use round-to-even.
  * - Nonfinite coordinates or latitudes outside [-90, 90] emit NaN and converged=0; GPU results
  *   for these inputs are unspecified. Exactly antipodal spherical midpoints are nonunique;
- *   this function returns the same slerp formula's float64 result, with no uniqueness claim.
+ *   midpoints within 1e-6 radians of an antipode are NaN on both paths.
+ * - approximation marks spherical bearing/midpoint conditioning near antipodes on both paths;
+ *   the CPU exact ellipsoidal inverse never needs a sphere fallback.
  * - Midpoints remain spherical for the ellipsoidal model, as on the GPU. Rhumb midpoint latitude
  *   is the original (unclamped) mean, matching the current kernel.
  * - For (20,90) -> (20,90), the CPU midpoint is [0,90], choosing longitude zero via JavaScript
  *   atan2(0, 0). Pole midpoint longitudes follow JavaScript's signed-zero atan2 convention.
- *   The GPU reaches an unspecified zero-horizontal-vector atan2, so pole midpoint longitudes
- *   are not compared.
+ *   Both paths guard zero-axis atan2 and select longitude zero for the pole midpoint.
  *
  * @throws If origins/targets are not aligned packed float32x2 rows or the context is unsupported.
  */
@@ -153,7 +154,9 @@ export function computeGeodesicPairsOnCPU(
     initialBearings: new Float32Array(count).fill(NaN),
     finalBearings: new Float32Array(count).fill(NaN),
     midpoints: new Float32Array(count * 2).fill(NaN),
-    converged: new Uint32Array(count)
+    converged: new Uint32Array(count),
+    approximation: new Uint32Array(count),
+    iterationLimitReached: new Uint32Array(count)
   };
   const geodesic =
     metric.model === 'wgs84'
@@ -175,6 +178,9 @@ export function computeGeodesicPairsOnCPU(
       continue;
     const longitudeDelta = computeLongitudeDelta(longitude, targetLongitude) * DEGREES_TO_RADIANS;
     const angle = computeCentralAngle(longitudeDelta, latitude, targetLatitude);
+    result.approximation[row] = Number(
+      metric.model !== 'rhumb' && Math.PI - angle < GPU_GEODESIC_INVERSE_ANTIPODAL_MARGIN
+    );
     let distance = angle * metric.radius;
     let initial = computeBearing(longitudeDelta, latitude, targetLatitude);
     let final = computeBearing(-longitudeDelta, targetLatitude, latitude) + 180;
@@ -205,7 +211,7 @@ export function computeGeodesicPairsOnCPU(
         latitude + (targetLatitude - latitude) / 2
       ];
     } else if (geodesic) {
-      if (longitudeDelta === 0 && latitude === targetLatitude) {
+      if (latitude === targetLatitude && (longitudeDelta === 0 || Math.abs(latitude) === 90)) {
         distance = 0;
         initial = 0;
         final = 0;
@@ -240,7 +246,9 @@ export class CPUGeodesicPairsOperation extends GPUCPUOperation {
     validateRequirement(
       id,
       Object.values(props.output).some(value => typeof value === 'string') ||
-        props.output.status?.converged !== undefined,
+        props.output.status?.converged !== undefined ||
+        props.output.status?.approximation !== undefined ||
+        props.output.status?.iterationLimitReached !== undefined,
       'output requires at least one column'
     );
     validateRequirement(

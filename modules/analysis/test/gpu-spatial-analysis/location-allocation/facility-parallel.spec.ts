@@ -107,7 +107,13 @@ it('network enumeration respects the exact prefix and finds a winner in a partia
       selectedFacilities: harness.output('uint32', 4),
       assignments: harness.output('uint32', 9),
       objective: harness.output('float32', 1),
-      status: harness.output('uint32', 4)
+      summary: harness.output('uint32', 4),
+      status: {
+        invalidCount: harness.output('uint32', 1),
+        iterationCount: harness.output('uint32', 1),
+        converged: harness.output('uint32', 1),
+        iterationLimitReached: harness.output('uint32', 1)
+      }
     };
     const result = await harness.run(
       new GPUNetworkFacilityOptimization({
@@ -125,12 +131,21 @@ it('network enumeration respects the exact prefix and finds a winner in a partia
         ? first => {
             expect(first(output.assignments)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 1]);
             expect(first(output.objective)).toEqual([0]);
-            expect(first(output.status)).toEqual([1, 1, 0, maximumCandidates]);
+            expect(first(output.summary)).toEqual([1, 1, 0, maximumCandidates]);
             harness.rewrite(costView, costs.fill(0));
           }
         : undefined
     );
-    expect(result(output.status)).toEqual([1, Number(maximumCandidates > 0), 0, maximumCandidates]);
+    expect(result(output.summary)).toEqual([
+      1,
+      Number(maximumCandidates > 0),
+      0,
+      maximumCandidates
+    ]);
+    expect(result(output.status.invalidCount)).toEqual([0]);
+    expect(result(output.status.iterationCount)).toEqual([Math.ceil(maximumCandidates / 65536)]);
+    expect(result(output.status.converged)).toEqual([0]);
+    expect(result(output.status.iterationLimitReached)).toEqual([1]);
     if (maximumCandidates === 0) {
       expect(result(output.objective)[0]).toBeNaN();
       expect(result(output.assignments)).toEqual(new Array(9).fill(0xffffffff));
@@ -153,7 +168,7 @@ it('network winner reductions keep signed-zero ties and invalidate any feasible 
       selectedFacilities: harness.output('uint32', 3),
       assignments: harness.output('uint32', 2),
       objective: harness.output('float32', 1),
-      status: harness.output('uint32', 4)
+      summary: harness.output('uint32', 4)
     };
     const result = await harness.run(
       new GPUNetworkFacilityOptimization({
@@ -175,12 +190,12 @@ it('network winner reductions keep signed-zero ties and invalidate any feasible 
     if (dispersion) {
       expect(result(output.selectedFacilities)).toEqual([1, 1, 0]);
       expect(result(output.objective)[0]).toBeCloseTo(0);
-      expect(result(output.status)).toEqual([1, 1, 1, 8]);
+      expect(result(output.summary)).toEqual([1, 1, 1, 8]);
     } else {
       // Candidate zero has finite cost 2, but candidate four is feasible and its sum overflows.
       expect(result(output.selectedFacilities)).toEqual([0, 0, 0]);
       expect(result(output.objective)[0]).toBeNaN();
-      expect(result(output.status)).toEqual([0, 0, 0, 0]);
+      expect(result(output.summary)).toEqual([0, 0, 0, 0]);
     }
   }
 });

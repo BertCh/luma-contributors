@@ -6,6 +6,16 @@ import type {KernelAuditRejection} from './kernel-audit-rejection-type';
 
 /** Expected declaration refusals of the raster cases. */
 export const RASTER_REJECTIONS: readonly KernelAuditRejection[] = [
+  ...['maximum grid, levels and capacities with polylines', 'maximum grid, segments only'].map(
+    name => ({
+      exportName: 'GPUIsolines',
+      name,
+      kind: 'dispatch' as const,
+      limit: 4294967295,
+      rejects:
+        /^Error: isolines owned cells \* levels\.length \* 2 required segments must be at most 4294967295$/
+    })
+  ),
   {
     exportName: 'GPUIsobandRings',
     name: 'edge capacity above the maximum',

@@ -11,6 +11,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
+  type WGSLDispatchGate,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -21,7 +22,13 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateCapacity,
+  validateCommandNodeBudget,
+  validateFiniteNumber,
+  validateGPUStorageBindingByteLength,
+  validateRequirement,
+  validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -35,6 +42,17 @@ import {
   type GridIndexViews
 } from './gwr-grid-index';
 import {getGeneralizedSelectionNodes} from './generalized-gwr-selection';
+import type {GPUIterationStatusPort} from '../../analysis-core/contracts/status';
+import {
+  GENERALIZED_GWR_MAXIMUM_CANDIDATE_COUNT,
+  GENERALIZED_GWR_MAXIMUM_SEARCH_ITERATIONS,
+  GENERALIZED_GWR_MAXIMUM_SEARCH_ROWS,
+  GENERALIZED_GWR_GRID_NODE_ALLOWANCE,
+  GENERALIZED_GWR_SEPARATION_ERROR_UNIT,
+  GENERALIZED_GWR_MAXIMUM_NEIGHBOR_COUNT,
+  LOCAL_REGRESSION_MAXIMUM_ITERATIONS,
+  LOCAL_REGRESSION_MAXIMUM_GRID_CELL_COUNT
+} from './generalized-gwr-limits';
 import {getCholeskyWGSL} from './spatial-regression-solve';
 import {
   getCandidateLoopWGSL,
@@ -65,7 +83,9 @@ export const GPU_ITERATIVE_REGRESSION_STATUS = {
   ITERATION_LIMIT: 3,
   NUMERICAL_FAILURE: 4,
   /** Constant boundary response: logistic all zero/one, or Poisson all zero. */
-  DEGENERATE_RESPONSE: 5
+  DEGENERATE_RESPONSE: 5,
+  /** Complete/quasi separation witnessed by a local likelihood recession direction. */
+  SEPARATION: 6
 } as const;
 export type GPUGeneralizedGeographicallyWeightedRegressionProps = {
   id?: string;
@@ -125,15 +145,34 @@ export type GPUGeneralizedGeographicallyWeightedRegressionProps = {
    * @internal
    */
   fittedScale?: 'response' | 'link';
-  /** Exact leave-one-out mean deviance selection, restricted to training-mask rows. */
+  /** Training-only grid LOO/AICc or bounded AICc golden-section selection. */
   bandwidthSelection?: {
-    bandwidths: readonly number[];
     output: {
+      /** Grid: one per candidate. Golden section: two per search iteration; unused slots are NaN. */
       scores: GraphDataView<'float32'>;
       bandwidth: GraphDataView<'float32'>;
+      /** 0 selected; 1 no valid candidate (including invalid runtime bounds). */
       status: GraphDataView<'uint32'>;
+      /** Optional candidate history, same length/layout as scores. */
+      evaluatedBandwidths?: GraphDataView<'float32'>;
     };
-  };
+    /** Optional scalar search status; grid searches execute one pass. */
+    status?: GPUIterationStatusPort;
+  } & (
+    | {
+        method?: 'grid';
+        bandwidths: readonly number[];
+        criterion?: 'loo-deviance' | 'aicc';
+      }
+    | {
+        method: 'golden-section';
+        criterion?: 'aicc';
+        /** Per-frame [lower bound, upper bound, absolute score tolerance]. Positive finite bounds, lower < upper. */
+        parameters: GraphDataView<'float32'>;
+        /** Compile-time search budget, 1–64 (default 24). */
+        maximumIterations?: number;
+      }
+  );
   /** Model-specific scale-one GLM covariance and diagonal influence. */
   inference?: {
     standardErrors: GraphDataView<'float32'>;
@@ -143,7 +182,9 @@ export type GPUGeneralizedGeographicallyWeightedRegressionProps = {
     coefficients: GraphDataView<'float32'>;
     fitted: GraphDataView<'float32'>;
     status: {
-      /** One status code per observation. */
+      /** Per observation: 0 converged, 1 excluded, 2 singular/insufficient neighborhood,
+       * 3 iteration limit (finite iterate published), 4 numerical failure,
+       * 5 constant boundary response, 6 witnessed complete/quasi separation. */
       codes: GraphDataView<'uint32'>;
       /** Number of IRLS steps per observation. */
       iterationCount: GraphDataView<'uint32'>;
@@ -155,9 +196,18 @@ export type GPUGeneralizedGeographicallyWeightedRegressionProps = {
  * Local Poisson log-link or Bernoulli logit regression with a fixed distance or adaptive neighbor bandwidth. Newton/IRLS
  * fits use positive spatial weights, Cholesky solves and bounded likelihood step-halving. Every
  * location is fitted independently on GPU, with complete-case rows and explicit local statuses.
- * No hidden ridge, CPU fallback or separation correction. Optional inference uses the scale-one GLM sandwich covariance and diagonal influence; leave-one-out fits remove the focus from its training neighborhood. Constant boundary responses receive status 5; other perfect
- * separation can fail or reach the iteration limit; coefficients
- * and predictions then remain NaN. Poisson linear predictors outside [-30,30] are numerical failure
+ * Reference-tier dense neighborhood traversal is bounded by the row limits below. Optional grid
+ * indexing narrows neighborhoods. No hidden ridge, CPU fallback or separation correction.
+ * Inference uses scale-one GLM sandwich covariance and diagonal influence. Constant boundary
+ * responses receive status 5; an exact column threshold or a decided recession direction
+ * receives status 6. Opposing or numerically undecided moves cannot certify separation.
+ * This is a sufficient certificate, not an exhaustive LP
+ * test: uncertified separation can still reach another failure status. Budget exhaustion publishes
+ * the current finite iterate with status 3; other failed/excluded outputs remain NaN.
+ * Per-frame: parameters, data/mask/offset values and golden-section selection parameters.
+ * Compile-time: family, kernel, bandwidthMode, capacities, iteration budgets, selection method,
+ * grid dimensions, gaussianCutoff and optional views. AICc selection is capped at 4,096 rows.
+ * Poisson linear predictors outside [-30,30] are numerical failure
  * rather than silently changing the likelihood. Bounded to 65,536 rows (1,048,576 with `indexGridSize`), 1–24 predictors and 128
  * iterations; dense neighborhood traversal has quadratic work and must be benchmarked by callers. The per-focus state is
  * tiled over focal rows when it would exceed one storage binding.
@@ -165,6 +215,8 @@ export type GPUGeneralizedGeographicallyWeightedRegressionProps = {
 export class GPUGeneralizedGeographicallyWeightedRegression implements GPUCommandNodeProducer {
   readonly id: string;
   readonly spatialContext: GPUSpatialContext;
+  /** Upper bound including the published grid/sort node allowance. */
+  readonly estimatedCommandNodeCount: number;
   /** Sphere radius of great-circle distances, or null for planar distances. */
   readonly sphereRadius: number | null;
   constructor(readonly props: GPUGeneralizedGeographicallyWeightedRegressionProps) {
@@ -178,47 +230,134 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
         ? getGPUSphereRadius(this.spatialContext)
         : null;
     validateRegressionInputs(this.id, props, this.sphereRadius !== null);
-    if (props.bandwidthMode && !['fixed', 'adaptive'].includes(props.bandwidthMode))
-      throw new Error(`${this.id}: unsupported bandwidth mode`);
-    const capacity = props.maximumNeighborCount ?? 128;
-    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 128)
-      throw new Error(`${this.id}: maximumNeighborCount must be 1 to 128`);
-    if (!['poisson', 'logistic'].includes(props.family))
-      throw new Error(`${this.id}: unsupported family`);
+    validateRequirement(
+      this.id,
+      !props.bandwidthMode || ['fixed', 'adaptive'].includes(props.bandwidthMode),
+      'bandwidthMode must be fixed or adaptive'
+    );
+    const capacity = props.maximumNeighborCount ?? GENERALIZED_GWR_MAXIMUM_NEIGHBOR_COUNT;
+    validateCapacity(
+      this.id,
+      'maximumNeighborCount',
+      capacity,
+      1,
+      GENERALIZED_GWR_MAXIMUM_NEIGHBOR_COUNT
+    );
+    validateRequirement(
+      this.id,
+      ['poisson', 'logistic'].includes(props.family),
+      'family must be poisson or logistic'
+    );
     if (props.offset) {
       validateSinglePackedView(props.offset, ['float32'], this.id);
-      if (props.offset.length !== props.response.length)
-        throw new Error(`${this.id}: offset length mismatch`);
+      validateViewLength(this.id, 'offset', props.offset, props.response.length);
     }
     const rows = props.response.length;
-    if (props.bandwidthSelection) {
-      const count = props.bandwidthSelection.bandwidths.length;
-      if (
-        count < 2 ||
-        count > 32 ||
-        props.leaveOneOut ||
-        props.bandwidthSelection.bandwidths.some(
-          value =>
-            !Number.isFinite(value) ||
-            value <= 0 ||
-            (props.bandwidthMode === 'adaptive' && (!Number.isInteger(value) || value > capacity))
-        )
-      )
-        throw new Error(`${this.id}: invalid bandwidth selection`);
-      for (const [name, view] of Object.entries(props.bandwidthSelection.output)) {
+    const selection = props.bandwidthSelection;
+    let candidateCount = 0;
+    if (selection) {
+      validateRequirement(
+        this.id,
+        !props.leaveOneOut,
+        'leaveOneOut must be false with bandwidthSelection'
+      );
+      validateRequirement(
+        this.id,
+        !selection.method || ['grid', 'golden-section'].includes(selection.method),
+        'bandwidthSelection.method must be grid or golden-section'
+      );
+      if (selection.method === 'golden-section') {
+        validateCapacity(
+          this.id,
+          'bandwidthSelection.maximumIterations',
+          selection.maximumIterations ?? 24,
+          1,
+          GENERALIZED_GWR_MAXIMUM_SEARCH_ITERATIONS
+        );
+        validateSinglePackedView(selection.parameters, ['float32'], this.id);
+        validateViewLength(this.id, 'bandwidthSelection.parameters', selection.parameters, 3);
+        validateRequirement(
+          this.id,
+          !selection.criterion || selection.criterion === 'aicc',
+          'golden-section bandwidthSelection.criterion must be aicc'
+        );
+        candidateCount = 2 * (selection.maximumIterations ?? 24);
+      } else {
+        validateCapacity(
+          this.id,
+          'bandwidthSelection.bandwidths.length',
+          selection.bandwidths.length,
+          2,
+          GENERALIZED_GWR_MAXIMUM_CANDIDATE_COUNT
+        );
+        validateRequirement(
+          this.id,
+          !selection.criterion || ['loo-deviance', 'aicc'].includes(selection.criterion),
+          'bandwidthSelection.criterion must be loo-deviance or aicc'
+        );
+        selection.bandwidths.forEach((value, index) => {
+          validateFiniteNumber(
+            this.id,
+            `bandwidthSelection.bandwidths[${index}]`,
+            value,
+            Number.MIN_VALUE
+          );
+          if (props.bandwidthMode === 'adaptive') {
+            validateCapacity(
+              this.id,
+              `bandwidthSelection.bandwidths[${index}]`,
+              value,
+              1,
+              capacity
+            );
+          }
+        });
+        candidateCount = selection.bandwidths.length;
+      }
+      if (selection.method === 'golden-section' || selection.criterion === 'aicc') {
+        validateCapacity(
+          this.id,
+          'bandwidthSelection AICc rows',
+          rows,
+          1,
+          GENERALIZED_GWR_MAXIMUM_SEARCH_ROWS
+        );
+      }
+      for (const [name, view] of Object.entries(selection.output)) {
+        if (name === 'evaluatedBandwidths' && !view) continue;
         validateSinglePackedView(view, [name === 'status' ? 'uint32' : 'float32'], this.id);
-        if (view.length !== (name === 'scores' ? count : 1))
-          throw new Error(`${this.id}: selection shape mismatch`);
+        validateViewLength(
+          this.id,
+          `bandwidthSelection.output.${name}`,
+          view,
+          name === 'scores' || name === 'evaluatedBandwidths' ? candidateCount : 1
+        );
+      }
+      for (const [name, view] of Object.entries(selection.status ?? {})) {
+        if (!view) continue;
+        validateSinglePackedView(view, ['uint32'], this.id);
+        validateViewLength(this.id, `bandwidthSelection.status.${name}`, view, 1);
       }
     }
+    const columns = props.predictorCount + 1;
+    const stride = columns + 3 + (props.inference ? columns + 1 : 0);
+    const tileCount = Math.ceil(rows / Math.floor(MAXIMUM_STATE_BYTES / 4 / stride));
+    const gridAllowance = props.indexGridSize ? GENERALIZED_GWR_GRID_NODE_ALLOWANCE : 0;
+    this.estimatedCommandNodeCount =
+      gridAllowance +
+      2 * tileCount +
+      (selection ? candidateCount * (2 * tileCount + 4) + candidateCount + 8 : 0);
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     if (props.inference) {
       validateSinglePackedView(props.inference.standardErrors, ['float32'], this.id);
       validateSinglePackedView(props.inference.influence, ['float32'], this.id);
-      if (
-        props.inference.standardErrors.length !== rows * (props.predictorCount + 1) ||
-        props.inference.influence.length !== rows
-      )
-        throw new Error(`${this.id}: inference shape mismatch`);
+      validateViewLength(
+        this.id,
+        'inference.standardErrors',
+        props.inference.standardErrors,
+        rows * (props.predictorCount + 1)
+      );
+      validateViewLength(this.id, 'inference.influence', props.inference.influence, rows);
     }
     for (const [name, view] of Object.entries(getOutputColumns(props.output))) {
       validateSinglePackedView(
@@ -226,47 +365,120 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
         [name === 'coefficients' || name === 'fitted' ? 'float32' : 'uint32'],
         this.id
       );
-      if (view.length !== rows * (name === 'coefficients' ? props.predictorCount + 1 : 1))
-        throw new Error(`${this.id}: output length mismatch`);
+      validateViewLength(
+        this.id,
+        `output.${name}`,
+        view,
+        rows * (name === 'coefficients' ? props.predictorCount + 1 : 1)
+      );
+    }
+    const allOutputEntries: (readonly [string, GraphDataView | undefined])[] = [
+      ...Object.entries(getOutputColumns(props.output)).map(
+        ([name, view]) => [`output.${name}`, view] as const
+      ),
+      ...Object.entries(props.inference ?? {}).map(
+        ([name, view]) => [`inference.${name}`, view] as const
+      ),
+      ...Object.entries(selection?.output ?? {}).map(
+        ([name, view]) => [`bandwidthSelection.output.${name}`, view] as const
+      ),
+      ...Object.entries(selection?.status ?? {}).map(
+        ([name, view]) => [`bandwidthSelection.status.${name}`, view] as const
+      )
+    ];
+    const outputEntries = allOutputEntries.filter(
+      (entry): entry is readonly [string, GraphDataView] => entry[1] !== undefined
+    );
+    for (let first = 0; first < outputEntries.length; first++) {
+      const [firstName, firstView] = outputEntries[first];
+      for (const [secondName, secondView] of outputEntries.slice(first + 1)) {
+        const overlaps =
+          firstView.buffer === secondView.buffer &&
+          firstView.byteOffset < secondView.byteOffset + secondView.length * 4 &&
+          secondView.byteOffset < firstView.byteOffset + firstView.length * 4;
+        validateRequirement(
+          this.id,
+          !overlaps,
+          `${firstName} and ${secondName} output ranges must not overlap`
+        );
+      }
     }
     validateGraphOutputsDisjointFromInputs(
       this.id,
+      outputEntries.map(([, view]) => view),
       [
-        ...Object.values(getOutputColumns(props.output)),
-        ...Object.values(props.inference ?? {}),
-        ...Object.values(props.bandwidthSelection?.output ?? {})
-      ],
-      getRegressionBindings(props).map(binding => binding.view)
+        ...getRegressionBindings(props).map(binding => binding.view),
+        ...(props.bandwidthSelection?.method === 'golden-section'
+          ? [props.bandwidthSelection.parameters]
+          : [])
+      ]
     );
   }
   getCommandNodes<Parameters>(
-    graph: GPUCommandGraph<Parameters>
+    graph: GPUCommandGraph<Parameters>,
+    /** Shared training index and search gate; used only by the internal selection composition. @internal */
+    options: {
+      gridSetup?: ReturnType<typeof createLocalRegressionGrid<Parameters>>;
+      gate?: WGSLDispatchGate<Parameters>;
+    } = {}
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    // Check all row-proportional scratch before constructing any command nodes.
+    const columns = props.predictorCount + 1;
+    const stateStride = 2 * columns + 4;
+    const stateRows = Math.min(
+      props.response.length,
+      Math.floor(MAXIMUM_STATE_BYTES / 4 / stateStride)
+    );
+    for (const [name, length] of [
+      ['fit state', stateRows * stateStride],
+      ['coefficients', props.response.length * (props.predictorCount + 1)],
+      ['selection tile scores', Math.ceil(props.response.length / 256) * 4],
+      [
+        'grid cellOffsets',
+        props.indexGridSize ? props.indexGridSize[0] * props.indexGridSize[1] + 1 : 1
+      ]
+    ] as const) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        length * 4,
+        'reduce rows, predictorCount or indexGridSize'
+      );
+    }
     if (props.bandwidthSelection) return getGeneralizedSelectionNodes(graph, this);
     const rows = props.response.length;
-    const columns = props.predictorCount + 1;
     const iterations = props.maximumIterations ?? 32;
     const stride = columns + 3 + (props.inference ? columns + 1 : 0);
     // The fit state of one focal tile must fit one storage binding; larger problems run tiles.
     const tileRows = Math.min(rows, Math.floor(MAXIMUM_STATE_BYTES / 4 / stride));
     const tileCount = Math.ceil(rows / tileRows);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'fits',
+      tileRows * stride * 4,
+      'reduce predictorCount'
+    );
     const fits = createTransientView(graph, `${id}-fits`, 'float32', tileRows * stride);
     validateGraphViewsBelongToGraph(id, graph, [
       ...getRegressionBindings(props).map(binding => binding.view),
       ...Object.values(getOutputColumns(props.output)),
       ...Object.values(props.inference ?? {})
     ]);
-    const gridSetup = createLocalRegressionGrid(
-      graph,
-      id,
-      props,
-      this.sphereRadius,
-      props.family === 'poisson'
-        ? 'responseValue >= 0.0 && floor(responseValue) == responseValue'
-        : 'responseValue == 0.0 || responseValue == 1.0'
-    );
-    const effective = gridSetup.props;
+    const gridSetup =
+      options.gridSetup ??
+      createLocalRegressionGrid(
+        graph,
+        id,
+        props,
+        this.sphereRadius,
+        props.family === 'poisson'
+          ? 'responseValue >= 0.0 && floor(responseValue) == responseValue'
+          : 'responseValue == 0.0 || responseValue == 1.0'
+      );
+    const effective = {...props, response: gridSetup.props.response, mask: gridSetup.props.mask};
     const bindings = [
       ...getRegressionBindings(effective),
       ...(gridSetup.grid
@@ -290,7 +502,9 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
     // Adaptive neighbor selection walks grid rings around the focus instead of scanning every row.
     const hasRingSearch = props.bandwidthMode === 'adaptive' && Boolean(props.indexGridSize);
     // One extra slot holds the focus itself (distance 0) under leave-one-out.
-    const maximumNeighborSlots = (props.maximumNeighborCount ?? 128) + (props.leaveOneOut ? 1 : 0);
+    const maximumNeighborSlots =
+      (props.maximumNeighborCount ?? GENERALIZED_GWR_MAXIMUM_NEIGHBOR_COUNT) +
+      (props.leaveOneOut ? 1 : 0);
     const loop = (body: string) =>
       `{\n${getCandidateLoopWGSL(body, Boolean(props.indexGridSize), 'included(row) && responseValid(row)')}\n}`;
     const common = `${getRegressionWGSL(effective, neighborhood)}\n${neighborhood.grid ? '' : IS_FINITE_VALUE_WGSL}\n${getCholeskyWGSL(columns, GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT + 1)}\n${getEquilibratedCholeskyWGSL(columns)}
@@ -323,6 +537,9 @@ fn solveInformation(information: ptr<function, array<f32, ${columns * columns}>>
 fn meanResponse(linear: f32) -> f32 {
   return ${props.family === 'poisson' ? 'exp(linear)' : 'select(exp(linear) / (1.0 + exp(linear)), 1.0 / (1.0 + exp(-linear)), linear >= 0.0)'};
 }
+fn varianceResponse(linear: f32) -> f32 {
+  ${props.family === 'poisson' ? 'return exp(linear);' : 'let tail = exp(-abs(linear)); return tail / ((1.0 + tail) * (1.0 + tail));'}
+}
 fn logLikelihood(focus: u32, bandwidth: f32, coefficients: ptr<function, array<f32, ${columns}>>) -> f32 {
   var likelihood = 0.0;
   let origin = getPosition(focus);
@@ -333,7 +550,7 @@ fn logLikelihood(focus: u32, bandwidth: f32, coefficients: ptr<function, array<f
     likelihood += weight * (${props.family === 'poisson' ? 'responseValue * linear - exp(linear)' : 'responseValue * linear - max(linear, 0.0) - log(1.0 + exp(-abs(linear)))'});`)}
   return likelihood;
 }`;
-    const nodes: GPUCommandNode<Parameters>[] = [...gridSetup.nodes];
+    const nodes: GPUCommandNode<Parameters>[] = options.gridSetup ? [] : [...gridSetup.nodes];
     for (let tile = 0; tile < tileCount; tile++) {
       const focalStart = tile * tileRows;
       const focalCount = Math.min(tileRows, rows - focalStart);
@@ -344,6 +561,7 @@ fn logLikelihood(focus: u32, bandwidth: f32, coefficients: ptr<function, array<f
           operation: 'GPUGeneralizedGeographicallyWeightedRegression',
           variant: props.family,
           invocationCount: focalCount,
+          ...(options.gate?.getGate(0) ?? {}),
           bindings: [...bindings, {name: 'fits', view: fits, type: 'f32', access: 'read_write'}],
           declarations: `${common}\nconst FOCAL_START: u32 = ${focalStart}u;`,
           body: `let focus = index + FOCAL_START;
@@ -356,7 +574,7 @@ if (!(bandwidth > 0.0) || !isFiniteBits(bandwidth) || !(tolerance > 0.0) || !isF
 ${
   props.bandwidthMode === 'adaptive'
     ? `
-if (floor(bandwidth) != bandwidth || bandwidth > ${props.maximumNeighborCount ?? 128}.0) { fits[base + ${columns + 1}u] = 4.0; return; }
+if (floor(bandwidth) != bandwidth || bandwidth > ${props.maximumNeighborCount ?? GENERALIZED_GWR_MAXIMUM_NEIGHBOR_COUNT}.0) { fits[base + ${columns + 1}u] = 4.0; return; }
 let neighborCount = u32(bandwidth);
 ${
   hasRingSearch
@@ -367,7 +585,7 @@ var ringList: array<f32, ${maximumNeighborSlots}>;
 selectNeighborDistances(focus, ringCount, &ringList);
 if (ringList[ringCount - 1u] >= SENTINEL) { fits[base + ${columns + 1}u] = 2.0; return; }
 bandwidth = sqrt(ringList[ringCount - 1u]) * 1.00001;`
-    : `var distances: array<f32, ${props.maximumNeighborCount ?? 128}>;
+    : `var distances: array<f32, ${props.maximumNeighborCount ?? GENERALIZED_GWR_MAXIMUM_NEIGHBOR_COUNT}>;
 for (var neighbor = 0u; neighbor < neighborCount; neighbor++) { distances[neighbor] = 3.402823e38; }
 var eligibleCount = 0u;
 for (var row = 0u; row < ${rows}u; row++) {
@@ -389,15 +607,55 @@ if (!isFiniteBits(bandwidth)) { fits[base + ${columns + 1}u] = 4.0; return; }
 `
     : ''
 }
-var positiveCount = 0u; var responseSum = 0.0;
+var positiveCount = 0u; var responseSum = 0.0; var zeroResponseCount = 0u;
+var minimumZeroValues: array<f32, ${columns}>;
+var maximumZeroValues: array<f32, ${columns}>;
+var minimumPositiveValues: array<f32, ${columns}>;
+var maximumPositiveValues: array<f32, ${columns}>;
 let origin = getPosition(focus);
-for (var column = 1u; column < ${columns}u; column++) { centerValues[column] = predictor(focus, column); scaleValues[column] = 0.0; }
+for (var column = 1u; column < ${columns}u; column++) {
+  centerValues[column] = predictor(focus, column); scaleValues[column] = 0.0;
+  minimumZeroValues[column] = bitcast<f32>(0x7f7fffffu);
+  maximumZeroValues[column] = -bitcast<f32>(0x7f7fffffu);
+  minimumPositiveValues[column] = bitcast<f32>(0x7f7fffffu);
+  maximumPositiveValues[column] = -bitcast<f32>(0x7f7fffffu);
+}
 ${loop(`if (!(spatialWeight(focus, row, bandwidth) > 0.0)) { continue; }
-  positiveCount++; responseSum += response[responseOffset + row];
-  for (var column = 1u; column < ${columns}u; column++) { scaleValues[column] = max(scaleValues[column], abs(predictor(row, column) - centerValues[column])); }`)}
+  let observed = response[responseOffset + row];
+  positiveCount++; responseSum += observed;
+  zeroResponseCount += select(0u, 1u, observed == 0.0);
+  for (var column = 1u; column < ${columns}u; column++) {
+    let value = predictor(row, column);
+    scaleValues[column] = max(scaleValues[column], abs(value - centerValues[column]));
+    if (observed == 0.0) {
+      minimumZeroValues[column] = min(minimumZeroValues[column], value);
+      maximumZeroValues[column] = max(maximumZeroValues[column], value);
+    } else {
+      minimumPositiveValues[column] = min(minimumPositiveValues[column], value);
+      maximumPositiveValues[column] = max(maximumPositiveValues[column], value);
+    }
+  }`)}
 for (var column = 1u; column < ${columns}u; column++) { if (!(scaleValues[column] > 0.0) || !isFiniteBits(scaleValues[column])) { scaleValues[column] = 1.0; } }
 if (positiveCount < ${columns}u) { fits[base + ${columns + 1}u] = 2.0; return; }
 if (responseSum == 0.0 ${props.family === 'logistic' ? '|| responseSum == f32(positiveCount)' : ''}) { fits[base + ${columns + 1}u] = 5.0; return; }
+// Raw float32 comparisons certify a single-column threshold without rounded dot products.
+// Logistic: the two class intervals touch or are disjoint, with at least one strict move.
+// Poisson: every positive-count row is on the threshold; zero-count rows move to one side.
+if (zeroResponseCount > 0u) {
+  for (var column = 1u; column < ${columns}u; column++) {
+    let minimumZero = minimumZeroValues[column]; let maximumZero = maximumZeroValues[column];
+    let minimumPositive = minimumPositiveValues[column]; let maximumPositive = maximumPositiveValues[column];
+    let separatesColumn = ${
+      props.family === 'logistic'
+        ? `((maximumZero <= minimumPositive) && (minimumZero < minimumPositive || maximumPositive > maximumZero)) ||
+      ((maximumPositive <= minimumZero) && (minimumPositive < minimumZero || maximumZero > maximumPositive))`
+        : `(minimumPositive == maximumPositive) &&
+      ((minimumZero >= minimumPositive && maximumZero > minimumPositive) ||
+       (maximumZero <= minimumPositive && minimumZero < minimumPositive))`
+    };
+    if (separatesColumn) { fits[base + ${columns + 1}u] = 6.0; return; }
+  }
+}
 var coefficients: array<f32, ${columns}>;
 var state = 3u; var completed = 0u;
 for (var iteration = 0u; iteration < ${iterations}u; iteration++) {
@@ -408,7 +666,7 @@ for (var iteration = 0u; iteration < ${iterations}u; iteration++) {
     let spatial = spatialWeight(focus, row, bandwidth); if (!(spatial > 0.0)) { continue; }
     let linear = linearPredictor(row, &coefficients);
     if (!isFiniteBits(linear) || abs(linear) > ${props.family === 'poisson' ? '30.0' : '80.0'}) { finite = false; continue; }
-    let mean = meanResponse(linear); let variance = ${props.family === 'poisson' ? 'mean' : 'mean * (1.0 - mean)'};
+    let mean = meanResponse(linear); let variance = varianceResponse(linear);
     observations++;
     var design: array<f32, ${columns}>;
     for (var column = 0u; column < ${columns}u; column++) { design[column] = designValue(row, column); }
@@ -420,6 +678,40 @@ for (var iteration = 0u; iteration < ${iterations}u; iteration++) {
   if (!finite) { state = 4u; break; }
   if (observations < ${columns}u || !factorInformation(&information, &equilibration)) { state = 2u; break; }
   solveInformation(&information, &equilibration, &gradient);
+  // Certify only decided moves in the recession cone. A rounding bound rejects ambiguous
+  // signs; it never permits an opposing move. Only structurally zero terms establish zero.
+  var directionScale = 0.0; var finiteDirection = true;
+  for (var column = 0u; column < ${columns}u; column++) {
+    finiteDirection = finiteDirection && isFiniteBits(gradient[column]);
+    directionScale = max(directionScale, abs(gradient[column]));
+  }
+  var separates = finiteDirection && directionScale > 0.0 && isFiniteBits(directionScale);
+  var strictSeparation = false;
+  ${loop(`if (!(spatialWeight(focus, row, bandwidth) > 0.0) || !separates) { continue; }
+    var direction = 0.0; var directionMagnitude = 0.0; var standsStill = true;
+    for (var column = 0u; column < ${columns}u; column++) {
+      let coefficient = gradient[column] / directionScale;
+      let term = coefficient * designValue(row, column);
+      direction += term; directionMagnitude += abs(term);
+      if (coefficient != 0.0) {
+        if (column == 0u) { standsStill = false; }
+        else if (predictor(row, column) != centerValues[column]) { standsStill = false; }
+      }
+    }
+    let errorBound = ${columns + 8}.0 * ${GENERALIZED_GWR_SEPARATION_ERROR_UNIT} * directionMagnitude;
+    let decided = isFiniteBits(direction) && isFiniteBits(directionMagnitude) && directionMagnitude > 0.0;
+    let observed = response[responseOffset + row];
+    ${
+      props.family === 'logistic'
+        ? `let margin = select(-direction, direction, observed == 1.0);
+    let movesRight = decided && margin > errorBound;
+    separates = standsStill || movesRight;
+    strictSeparation = strictSeparation || movesRight;`
+        : `let decreasesZero = decided && direction < -errorBound;
+    separates = standsStill || (observed == 0.0 && decreasesZero);
+    strictSeparation = strictSeparation || (observed == 0.0 && decreasesZero);`
+    }`)}
+  if (separates && strictSeparation) { state = 6u; break; }
   let previousLikelihood = logLikelihood(focus, bandwidth, &coefficients);
   var step = 1.0; var accepted = false; var candidate: array<f32, ${columns}>;
   for (var attempt = 0u; attempt < 16u; attempt++) {
@@ -433,7 +725,8 @@ for (var iteration = 0u; iteration < ${iterations}u; iteration++) {
   for (var column = 0u; column < ${columns}u; column++) { change = max(change, abs(candidate[column] - coefficients[column]) / max(1.0, abs(coefficients[column]))); coefficients[column] = candidate[column]; }
   if (change <= tolerance) { state = 0u; break; }
 }
-if (state == 0u) {
+if (state == 0u || state == 3u) {
+  // Publish the current finite iterate even when the iteration budget is exhausted.
   // Map the centered, scaled coefficients back to the raw predictor basis.
   fits[base + ${columns}u] = ${props.fittedScale === 'link' ? 'linearPredictor(focus, &coefficients)' : 'meanResponse(linearPredictor(focus, &coefficients))'};
   var intercept = coefficients[0];
@@ -448,8 +741,7 @@ if (state == 0u) {
   var finalInformation: array<f32, ${columns * columns}>;
   var finalEquilibration: array<f32, ${columns}>;
   ${loop(`let spatial = spatialWeight(focus, row, bandwidth); if (!(spatial > 0.0)) { continue; }
-    let mean = meanResponse(linearPredictor(row, &coefficients));
-    let variance = ${props.family === 'poisson' ? 'mean' : 'mean * (1.0 - mean)'};
+    let variance = varianceResponse(linearPredictor(row, &coefficients));
     for (var column = 0u; column < ${columns}u; column++) {
       for (var other = 0u; other <= column; other++) { finalInformation[column * ${columns}u + other] += spatial * variance * designValue(row, column) * designValue(row, other); }
     }`)}
@@ -467,8 +759,7 @@ if (state == 0u) {
       solveInformation(&finalInformation, &finalEquilibration, &inverseColumn);
       var coefficientVariance = 0.0;
       ${loop(`let spatial = spatialWeight(focus, row, bandwidth); if (!(spatial > 0.0)) { continue; }
-        let mean = meanResponse(linearPredictor(row, &coefficients));
-        let variance = ${props.family === 'poisson' ? 'mean' : 'mean * (1.0 - mean)'};
+        let variance = varianceResponse(linearPredictor(row, &coefficients));
         var projection = 0.0;
         for (var other = 0u; other < ${columns}u; other++) { projection += inverseColumn[other] * designValue(row, other); }
         coefficientVariance += spatial * spatial * variance * projection * projection;`)}
@@ -478,8 +769,7 @@ if (state == 0u) {
     var focalColumn: array<f32, ${columns}>;
     focalColumn[0] = 1.0;
     solveInformation(&finalInformation, &finalEquilibration, &focalColumn);
-    let focusMean = fits[base + ${columns}u];
-    fits[base + ${2 * columns + 3}u] = focalColumn[0] * spatialWeight(focus, focus, bandwidth) * ${props.family === 'poisson' ? 'focusMean' : 'focusMean * (1.0 - focusMean)'};
+    fits[base + ${2 * columns + 3}u] = focalColumn[0] * spatialWeight(focus, focus, bandwidth) * varianceResponse(linearPredictor(focus, &coefficients));
   }
   `
       : ''
@@ -492,6 +782,7 @@ fits[base + ${columns + 1}u] = f32(state); fits[base + ${columns + 2}u] = f32(co
           operation: 'GPUGeneralizedGeographicallyWeightedRegression',
           variant: 'publish',
           invocationCount: focalCount,
+          ...(options.gate?.getGate(0) ?? {}),
           bindings: [
             {name: 'fits', view: fits, type: 'f32', access: 'read'},
             ...Object.entries(getOutputColumns(props.output)).map(([name, view]) => ({
@@ -623,51 +914,59 @@ export function validateRegressionInputs(
   const maximumRows = props.indexGridSize
     ? GPU_LOCAL_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT
     : GPU_LOCAL_REGRESSION_MAXIMUM_ROW_COUNT;
-  if (
-    rows < 1 ||
-    rows > maximumRows ||
-    !Number.isInteger(props.predictorCount) ||
-    props.predictorCount < 1 ||
-    props.predictorCount > GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
-  )
-    throw new Error(`${id}: invalid bounded regression shape`);
+  validateCapacity(id, 'response rows', rows, 1, maximumRows);
+  validateCapacity(
+    id,
+    'predictorCount',
+    props.predictorCount,
+    1,
+    GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
+  );
   if (props.indexGridSize) {
     const [gridColumns, gridRows] = props.indexGridSize;
-    if (
-      isGreatCircle ||
-      !Number.isInteger(gridColumns) ||
-      !Number.isInteger(gridRows) ||
-      gridColumns < 1 ||
-      gridRows < 1 ||
-      gridColumns * gridRows >= 0xffffffff
-    )
-      // The grid index is planar-only and needs two positive integer dimensions.
-      throw new Error(`${id}: invalid indexGridSize`);
+    validateRequirement(id, !isGreatCircle, 'indexGridSize requires a planar spatialContext');
+    validateCapacity(
+      id,
+      'indexGridSize columns',
+      gridColumns,
+      1,
+      LOCAL_REGRESSION_MAXIMUM_GRID_CELL_COUNT
+    );
+    validateCapacity(
+      id,
+      'indexGridSize rows',
+      gridRows,
+      1,
+      LOCAL_REGRESSION_MAXIMUM_GRID_CELL_COUNT
+    );
+    validateCapacity(
+      id,
+      'indexGridSize cells',
+      gridColumns * gridRows,
+      1,
+      LOCAL_REGRESSION_MAXIMUM_GRID_CELL_COUNT
+    );
   }
   const iterations = props.maximumIterations ?? 32;
-  if (!Number.isInteger(iterations) || iterations < 1 || iterations > 128)
-    throw new Error(`${id}: maximumIterations must be 1 to 128`);
-  if (props.kernel && !['gaussian', 'bisquare'].includes(props.kernel))
-    throw new Error(`${id}: unsupported kernel`);
-  if (
-    props.gaussianCutoff !== undefined &&
-    !(props.gaussianCutoff > 0 && Number.isFinite(props.gaussianCutoff))
-  )
-    // gaussianCutoff is a truncation radius in bandwidths and must be a positive finite number.
-    throw new Error(`${id}: gaussianCutoff must be a positive finite number`);
+  validateCapacity(id, 'maximumIterations', iterations, 1, LOCAL_REGRESSION_MAXIMUM_ITERATIONS);
+  validateRequirement(
+    id,
+    !props.kernel || ['gaussian', 'bisquare'].includes(props.kernel),
+    'kernel must be gaussian or bisquare'
+  );
+  if (props.gaussianCutoff !== undefined) {
+    validateFiniteNumber(id, 'gaussianCutoff', props.gaussianCutoff, Number.MIN_VALUE);
+  }
   validateSinglePackedView(props.positions, ['float32x2'], id);
   validateSinglePackedView(props.predictors, ['float32'], id);
   validateSinglePackedView(props.response, ['float32'], id);
   validateSinglePackedView(props.parameters, ['float32'], id);
-  if (
-    props.positions.length !== rows ||
-    props.predictors.length !== rows * props.predictorCount ||
-    props.parameters.length < 2
-  )
-    throw new Error(`${id}: input shape mismatch`);
+  validateViewLength(id, 'positions', props.positions, rows);
+  validateViewLength(id, 'predictors', props.predictors, rows * props.predictorCount);
+  validateRequirement(id, props.parameters.length >= 2, 'parameters must contain at least 2 rows');
   if (props.mask) {
     validateSinglePackedView(props.mask, ['uint32'], id);
-    if (props.mask.length !== rows) throw new Error(`${id}: mask length mismatch`);
+    validateViewLength(id, 'mask', props.mask, rows);
   }
 }
 export function getRegressionBindings(props: LocalRegressionInputs): WGSLKernelBinding[] {

@@ -57,7 +57,11 @@ for (const scene of ['weighted tied paths, multiple pivots', 'zero cycle', 'nega
         closeness: 'close',
         harmonicCloseness: 'harmonic',
         reachedCounts: 'reached',
-        status: {converged: 'converged', zeroWeightCycle: 'cycle'}
+        status: {
+          converged: 'converged',
+          zeroWeightCycle: 'cycle',
+          iterationLimitReached: 'limitReached'
+        }
       }
     };
     const inputs = {
@@ -74,7 +78,16 @@ for (const scene of ['weighted tied paths, multiple pivots', 'zero cycle', 'nega
       }
     };
     const results: Record<string, Record<string, OperationGraphRows>> = {};
-    const outputs = ['between', 'edges', 'close', 'harmonic', 'reached', 'converged', 'cycle'];
+    const outputs = [
+      'between',
+      'edges',
+      'close',
+      'harmonic',
+      'reached',
+      'converged',
+      'cycle',
+      'limitReached'
+    ];
     for (const location of ['gpu', 'cpu'])
       results[location] = await runOperationGraph(device, {
         inputs,
@@ -87,7 +100,7 @@ for (const scene of ['weighted tied paths, multiple pivots', 'zero cycle', 'nega
       });
     for (const port of outputs) {
       expect(results['gpu'][port].length).toBe(results['cpu'][port].length);
-      if (['reached', 'converged', 'cycle'].includes(port))
+      if (['reached', 'converged', 'cycle', 'limitReached'].includes(port))
         expect(Array.from(results['gpu'][port])).toEqual(Array.from(results['cpu'][port]));
       else
         for (let row = 0; row < results['cpu'][port].length; row++) {
@@ -98,6 +111,7 @@ for (const scene of ['weighted tied paths, multiple pivots', 'zero cycle', 'nega
           );
         }
     }
+    expect(results['cpu']['limitReached'][0]).toBe(0);
     expect(results['cpu']['cycle'][0]).toBe(Number(zeroCycle));
     expect(results['cpu']['converged'][0]).toBe(Number(!zeroCycle));
     expect(results['cpu']['reached'][2]).toBe(0);

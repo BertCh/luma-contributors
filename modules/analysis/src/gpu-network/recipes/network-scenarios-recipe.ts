@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUReduction, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPUNetworkCostMatrix,
   type GPUNetworkCostMatrixProps
@@ -11,11 +11,15 @@ import {GPUNetworkAccessibility} from '../network-accessibility/gpu-network-acce
 import {
   createRecipeKernelNode as createWGSLKernelNode,
   getRecipeView as getOrCreateView
-} from '../../gpu-spatial-analysis/recipes/expansion-recipe-utils';
+} from '../../gpu-spatial-analysis/recipes/recipe-utils';
 import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getGPUNetworkTopologyViews} from '../../analysis-core/network-topology';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {RecipeBuilder, type GPURecipeResult} from '../../gpu-spatial-analysis/recipes/recipe-utils';
+import {
+  addRecipeCountNodes,
+  RecipeBuilder,
+  type GPURecipeResult
+} from '../../gpu-spatial-analysis/recipes/recipe-utils';
 
 export type GPUNetworkDisruptionOutput = {
   baselineCosts: GraphDataView<'float32'>;
@@ -151,7 +155,8 @@ export function addNetworkDisruptionRecipe<Parameters>(
       })
     );
   const weights = getOrCreateView(graph, `${id}-weights`, 'float32', edgeCount);
-  graph.add(
+  builder.addGlue(
+    'closures',
     createWGSLKernelNode(graph, {
       id: `${id}-closures`,
       operation: id,
@@ -193,7 +198,8 @@ export function addNetworkDisruptionRecipe<Parameters>(
         cumulative
       })
     );
-  graph.add(
+  builder.addGlue(
+    'differences',
     createWGSLKernelNode(graph, {
       id: `${id}-differences`,
       operation: id,
@@ -215,7 +221,8 @@ difference[differenceOffset + index] = delta;
 unreachable[unreachableOffset + index] = select(0u, 1u, valid && isFiniteValue(first) && second == bitcast<f32>(0x7f800000u | (index & 0u)));`
     })
   );
-  graph.add(
+  builder.addGlue(
+    'accessibility-delta',
     createWGSLKernelNode(graph, {
       id: `${id}-accessibility-delta`,
       operation: id,
@@ -338,7 +345,8 @@ export function addFacilityScenarioRecipe<Parameters>(
     props.parameters
   ]);
   const supply = getOrCreateView(graph, `${id}-active-supply`, 'float32', facilityCount);
-  graph.add(
+  builder.addGlue(
+    'supply',
     createWGSLKernelNode(graph, {
       id: `${id}-supply`,
       operation: id,
@@ -360,7 +368,8 @@ export function addFacilityScenarioRecipe<Parameters>(
       gravity: outputs.accessibility
     })
   );
-  graph.add(
+  builder.addGlue(
+    'nearest',
     createWGSLKernelNode(graph, {
       id: `${id}-nearest`,
       operation: id,
@@ -380,29 +389,34 @@ for (var candidate = 0u; candidate < ${facilityCount}u; candidate++) {
 nearest[nearestOffset + index] = minimum; facility[facilityOffset + index] = selected;`
     })
   );
-  graph.add(
-    createWGSLKernelNode(graph, {
-      id: `${id}-summary`,
-      operation: id,
-      invocationCount: 1,
-      declarations: IS_FINITE_VALUE_WGSL,
-      bindings: [
-        {name: 'demand', view: props.demand, type: 'f32', access: 'read'},
-        {name: 'nearest', view: outputs.nearestCosts, type: 'f32', access: 'read'},
-        {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
-        {name: 'covered', view: outputs.coveredDemand, type: 'f32', access: 'read_write'},
-        {name: 'uncovered', view: outputs.uncoveredDemand, type: 'f32', access: 'read_write'},
-        {name: 'invalid', view: outputs.invalidDemandCount, type: 'u32', access: 'read_write'}
-      ],
-      body: `var coveredTotal = 0.0; var uncoveredTotal = 0.0; var invalidCount = 0u;
-for (var row = 0u; row < ${demandCount}u; row++) {
-  let weight = demand[demandOffset + row]; let cost = nearest[nearestOffset + row];
-  if (!isFiniteValue(weight) || weight < 0.0) { invalidCount++; continue; }
-  if (isFiniteValue(cost) && cost <= parameters[parametersOffset]) { coveredTotal += weight; } else { uncoveredTotal += weight; }
-}
-covered[coveredOffset] = coveredTotal; uncovered[uncoveredOffset] = uncoveredTotal; invalid[invalidOffset] = invalidCount;`
-    })
-  );
+  const covered = getOrCreateView(graph, `${id}-covered-values`, 'float32', demandCount);
+  const uncovered = getOrCreateView(graph, `${id}-uncovered-values`, 'float32', demandCount);
+  addRecipeCountNodes(builder, {
+    id: `${id}-summary`,
+    operation: id,
+    rowCount: demandCount,
+    declarations: IS_FINITE_VALUE_WGSL,
+    bindings: [
+      {name: 'demand', view: props.demand, type: 'f32', access: 'read'},
+      {name: 'nearest', view: outputs.nearestCosts, type: 'f32', access: 'read'},
+      {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+      {name: 'covered', view: covered, type: 'f32', access: 'read_write'},
+      {name: 'uncovered', view: uncovered, type: 'f32', access: 'read_write'}
+    ],
+    prelude: `let weight = demand[demandOffset + index];
+let cost = nearest[nearestOffset + index];
+let valid = isFiniteValue(weight) && weight >= 0.0;
+let reached = isFiniteValue(cost) && cost <= parameters[parametersOffset];
+covered[coveredOffset + index] = select(0.0, weight, valid && reached);
+uncovered[uncoveredOffset + index] = select(0.0, weight, valid && !reached);`,
+    counts: [{name: 'invalid', output: outputs.invalidDemandCount, value: 'u32(!valid)'}]
+  });
+  for (const [name, input, output] of [
+    ['covered', covered, outputs.coveredDemand],
+    ['uncovered', uncovered, outputs.uncoveredDemand]
+  ] as const) {
+    builder.add(new GPUReduction({id: `${id}-summary-${name}`, input, output, operation: 'sum'}));
+  }
   return {
     contributors: builder.contributors,
     outputs,

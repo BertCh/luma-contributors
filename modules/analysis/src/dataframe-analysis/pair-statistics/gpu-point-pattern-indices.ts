@@ -499,7 +499,8 @@ ${getStudyWindowWGSL(getStudyWindowWGSLOptions(studyWindow))}`
       parameters,
       gridSize,
       mask: props.mask,
-      studyWindow
+      studyWindow,
+      legacyIndex: true
     });
     const nodes = [...(windowParameters?.nodes ?? []), ...inputs.nodes];
     const sharedWGSL = getPairStatisticsSharedWGSL(gridSize);

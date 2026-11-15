@@ -19,6 +19,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -66,11 +67,10 @@ export type GPUMinimumBoundsOutput = {
    * never a variable number of rows.
    */
   status: {
-    /**
-     * One row, a bit set; bit 1 (`GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW`) means some hull exceeded
-     * `maximumHullVertices` and its group's rows are NaN. `0` when every group was computed.
-     */
+    /** One row: 1 when some hull exceeded `maximumHullVertices`, otherwise 0. Its shape rows are NaN. */
     overflow: GraphDataView<'uint32'>;
+    /** Optional one row identifying the per-group hull limit; the same 0/1 value as `overflow`. */
+    groupOverflow?: GraphDataView<'uint32'>;
   };
 };
 
@@ -214,16 +214,19 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
       ['diameters', output.diameters, ['float32'], groups],
       ['bounds', output.bounds, ['float32x4'], groups],
       ['hullSizes', output.hullSizes, ['uint32'], groups],
-      ['overflow', output.status.overflow, ['uint32'], 1]
+      ['status.overflow', output.status.overflow, ['uint32'], 1],
+      ['status.groupOverflow', output.status.groupOverflow, ['uint32'], 1]
     ] as const;
     for (const [name, view, formats, length] of checks) {
       if (!view) {
         continue;
       }
       validateSinglePackedView(view, formats, `${id} output.${name}`);
-      if (view.length < length) {
-        throw new Error(`${id} output.${name} must hold at least ${length} rows`);
-      }
+      validateRequirement(
+        id,
+        view.length >= length,
+        `output.${name} must hold at least ${length} rows`
+      );
     }
     if (
       !output.rectangleCorners &&
@@ -234,6 +237,21 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
       !output.bounds
     ) {
       throw new Error(`${id} needs at least one shape output`);
+    }
+    for (const [name, scalar] of Object.entries(output.status)) {
+      if (!scalar) continue;
+      for (const [otherName, other] of checks) {
+        if (!other || otherName === `status.${name}`) continue;
+        const overlaps =
+          scalar.buffer === other.buffer &&
+          scalar.byteOffset < other.byteOffset + other.length * other.rowByteLength &&
+          other.byteOffset < scalar.byteOffset + scalar.length * scalar.rowByteLength;
+        validateRequirement(
+          id,
+          !overlaps,
+          `output.status.${name} must not overlap output.${otherName}`
+        );
+      }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
@@ -263,7 +281,7 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
       polygons?.featureOffsets,
       props.labels,
       ...Object.values(columns),
-      status.overflow
+      ...Object.values(status)
     ]);
     const rows = positions.length;
     const u32 = (name: string, length: number) =>
@@ -358,7 +376,7 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
           offsets: hullOffsets,
           counts: hullCounts,
           sizes: output.hullSizes,
-          status: {overflow: output.status.overflow}
+          status: {overflow: output.status.overflow, groupOverflow: output.status.groupOverflow}
         }
       }).getCommandNodes(graph)
     );

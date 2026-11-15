@@ -36,7 +36,12 @@ for (const overflow of [false, true])
         offsets: 'outputOffsets',
         targets: 'targets',
         costs: 'costs',
-        status: {overflow: 'overflow', requiredCount: 'requiredCount', converged: 'converged'}
+        status: {
+          overflow: 'overflow',
+          requiredCount: 'requiredCount',
+          converged: 'converged',
+          iterationLimitReached: 'limitReached'
+        }
       }
     };
     const inputs = {
@@ -45,7 +50,15 @@ for (const overflow of [false, true])
       weights: {format: 'float32' as const, values: topology.weights},
       cutoff: {format: 'float32' as const, values: Float32Array.of(5)}
     };
-    const outputs = ['outputOffsets', 'targets', 'costs', 'overflow', 'requiredCount', 'converged'];
+    const outputs = [
+      'outputOffsets',
+      'targets',
+      'costs',
+      'overflow',
+      'requiredCount',
+      'converged',
+      'limitReached'
+    ];
     const gpuRows = await runOperationGraph(device, {
       inputs,
       operations: [new GPUNetworkCostTableOperation(props)],
@@ -60,6 +73,7 @@ for (const overflow of [false, true])
     for (const output of outputs)
       for (let index = 0; index < cpuRows[output].length; index++)
         expect(gpuRows[output][index] === cpuRows[output][index]).toBe(true);
+    expect(cpuRows['limitReached'][0]).toBe(0);
     expect(cpuRows['overflow'][0]).toBe(Number(overflow));
     expect(cpuRows['requiredCount'][0]).toBe(requiredCount);
   });

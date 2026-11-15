@@ -22,8 +22,8 @@ import {
 } from '../spatial-weights/gpu-spatial-weights-algebra';
 import {GPUSpatialWeightsTransform} from '../spatial-weights/gpu-spatial-weights-transform';
 import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
-import {getRecipeView as getOrCreateView, validateRecipeBoundary} from './expansion-recipe-utils';
-import {createRecipeKernelNode} from './expansion-recipe-utils';
+import {getRecipeView as getOrCreateView, validateRecipeBoundary} from './recipe-utils';
+import {createRecipeKernelNode} from './recipe-utils';
 import {RecipeBuilder, createTransientSpatialWeights, type GPURecipeResult} from './recipe-utils';
 
 /** Columns of one order row of `outputs.correlogram`. */
