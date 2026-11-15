@@ -4,6 +4,7 @@
     "label": "@luma-contributors/analysis",
     "items": [
       "api/README",
+      "api/operation-forms-and-cpu-twins",
       "api/analysis-catalog",
       "api/gpu-spatial-analysis-cross-reference",
       {
@@ -12,6 +13,7 @@
         "items": [
           "api/gpu-spatial-analysis/README",
           "api/gpu-spatial-analysis/concepts",
+          "api/gpu-spatial-analysis/analysis-experience",
           "api/gpu-spatial-analysis/temporal-context",
           "api/gpu-spatial-analysis/movement-semantics",
           "api/gpu-spatial-analysis/home-range-and-recursion-mob07",

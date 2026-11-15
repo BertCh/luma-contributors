@@ -4,6 +4,11 @@
 
 First standalone version, split on 2026-11-07 from the luma.gl `map-contributors` branch.
 
+- Analysis workflows in `@luma-contributors/kepler` (`modules/kepler/src/workflows/`): a serialisable
+  step graph over the catalog operations with a planner, a runner whose step status is derived from
+  content keys, table glue operations, templates, JSON and TypeScript export and assistant tools. The
+  Kepler example gains an analysis workbench (node canvas, palette, inspector, side-panel tab) built
+  on it; the example now depends on `@xyflow/react`.
 - New packages: `@luma-contributors/analysis` (published), `@luma-contributors/lenses` and
   `@luma-contributors/kepler` (private until dataset licensing is resolved).
 - Runs on published `@luma.gl/*@10.0.0-alpha.13` through public entry points only. No luma.gl code is
@@ -58,6 +63,15 @@ First standalone version, split on 2026-11-07 from the luma.gl `map-contributors
   methods of `GPUTerrainCurvature` in the one-sided border mode, and the scaled support for
   `GPUTextureShading` with decimated levels. The former values did not cover what the kernels read.
   `GPUCubeLayoutTranspose` copies raw words, so NaN payloads survive.
+- Analysis experience library layer (AX, `dev-docs/roadmap.md`): `@luma-contributors/analysis/gpu-spatial-analysis`
+  exports a host-neutral vocabulary (twelve questions, data kinds, measurement levels, field roles,
+  requirements settled as passed, failed or unknown, spacing statistics, data-derived default rules,
+  class schemes, result sentences and cautions; `docs/api/gpu-spatial-analysis/analysis-experience.md`).
+  `@luma-contributors/kepler` adds a dataset profile, one descriptor per catalog binding (136 written by
+  hand, the rest derived), applicability and suggestions, resolved defaults, result presentation and
+  reports, 27 curated analyses (16 runnable) and six CPU-reference bindings with ids prefixed
+  `curated-`. No host form uses it yet. Defects found in existing catalog bindings, and their status,
+  are in `dev-docs/research/analysis-workflow-ux-2026-11-14/binding-defects.md`.
 - Website (Gridlight): 532 catalog entries, each with a live picture, and thirteen how-it-works
   pages. It can be built for a sub-path (`SITE_BASE_PATH`) and `yarn website-deploy` publishes it to
   GitHub Pages.

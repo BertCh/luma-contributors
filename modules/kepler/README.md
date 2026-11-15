@@ -196,6 +196,44 @@ Analysis recipes serialize field names, source and selection revisions, numerica
 policy. Restoring a recipe checks the referenced dataset, selection and weights revisions. Buffer
 handles, physical row positions and devices never enter serialized recipes.
 
+## Analysis experience: profile, descriptors, suggestions, results
+
+These modules sit beside the catalog bindings and are joined to them by binding id and parameter name.
+They are plain CPU code. The design and its limits are in
+`dev-docs/research/analysis-workflow-ux-2026-11-14/README.md`; the vocabulary they use is documented in
+`docs/api/gpu-spatial-analysis/analysis-experience.md`.
+
+- `profile/`: `profileKeplerFeatureCollection` and `profileKeplerColumnTable` build a
+  `KeplerDatasetProfile` (kind, column statistics, guessed measurement levels, coordinate model, row
+  semantics, extent and spacing). `createKeplerDatasetProfileCache` keeps one per dataset revision and
+  the user's declarations per dataset; `applyKeplerDatasetProfileDeclarations` replaces a guess and
+  recomputes spacing when the coordinate model changes.
+- `descriptors/`: one `KeplerOperationDescriptor` per binding (`getKeplerOperationDescriptor`): the
+  questions it answers, field roles tied to its column parameters, requirements, default policies,
+  basic and advanced parameters, output presentation, interpretation and notes. A binding without a
+  hand-written descriptor (81 of the 217 at landing) gets a conservative derived one and is not
+  suggested.
+  `resolveKeplerOperationParameters` resolves defaults from a profile (data rules, presets, grid caps);
+  `evaluateKeplerOperationApplicability` says whether a binding can run on the loaded datasets and with
+  which columns; `suggestKeplerAnalyses` ranks analyses for the loaded data and returns the questions a
+  host should ask (what rows stand for, the coordinate system, what a column measures) and the analyses
+  that are one step away. `workbench-adapters.ts` exposes the same in the shapes a workflow UI reads.
+- `presentation/`: `planKeplerResultPresentation` chooses a scale, classes, legend entries with counts
+  and colours for an output table; `describeKeplerCatalogResult` returns the sentence, what was chosen
+  and why, notes, cautions and next questions; `formatKeplerResultReport` renders it as text.
+- `curated/`: `KEPLER_CURATED_ANALYSES` is the starting set of question-named analyses, each one
+  binding with typed dataset slots, presets and a synthetic sample (`createKeplerCuratedAnalysisSample`);
+  those without a binding yet say what is missing. `createKeplerCuratedAnalysisMapping` binds an
+  analysis to the user's datasets and columns and `buildKeplerCuratedAnalysisRequest` builds the run.
+  `curated/bindings/` adds six CPU-reference bindings that fuse existing steps (rate cluster map,
+  excess risk, clusters and footprints, regression with diagnostics, kriging with diagnostics,
+  contiguity correlogram).
+
+A status of `ready` means the checks that can be made from a profile passed. `needs-confirmation` and
+`needs-mapping` carry the question or the choice; a guess never blocks and never fills a role unasked.
+When a coordinate system chosen for a run contradicts what a layer was declared as, the choice stands
+and a warning says what it means for the distances.
+
 ## Arrow preparation and precision
 
 The separate `@luma.gl/arrow` package supplies `prepareArrowTableForGPUAnalytics` and the existing

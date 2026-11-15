@@ -29,9 +29,22 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 | NW-CENT | Centrality unrolls rounds and rejects graphs above 32,768 command nodes; the structural fix needs published GPU-gated continuation. |
 | WEB-PIC-12 | Rework the remaining weak pictures and gestures, then re-score the whole site in both themes. |
 | KE-TESTS | Resolve the 131 excluded kepler spec files and the cold-cache DuckDB failure. |
+| AX-01 to AX-05, AX-22 | The 217 catalog bindings cannot read prepared datasets, point forms start with blank coordinate roles, defaults are constants (fixed New York bounds), catalog results publish unstyled. The AX library computes profiles, defaults, applicability, suggestions and presentation; no host form calls it. |
 | STD-04, STD-06, STD-07 | Finish status ports, raster context and published raster-band validity. STD-10 solver adoption remains M priority. |
-| GPU-05, FX-18 | Index MGWR fits; bound island-attachment rescans; fix the leading-padding read in `getSnapOrigin` and finish the padding checks. |
+| GPU-05 | Index large-radius work and snapping candidates; the point-cloud grid stays local by contract mismatch. |
 | LUM-09 | Decide the fill-holes status contract before adopting published connected components. |
+
+## Backlog implementation pass (BL-PASS, 2026-11-14)
+
+Codex gpt-6.1-sol implementor per item in a private staging copy; the lead runs the headless GPU specs; an independent Codex reviewer per stream (up to two rounds); lens and docs coverage streams after each landing; integration in a staging copy before each landing in this checkout, coordinated with the KE-PORT session. Completed rows are deleted from the domain tables and partial ones rewritten to what remains.
+
+| Wave | State |
+| --- | --- |
+| A and C (single items, high-priority new contributors) | Landed in five batches: FX-18, LUM-24 empty-slot votes, GPU-05 island rescan and MGWR default index, ST06 AICc search, NW-SCC, ST01, KG01f, WEIGHTS7, IN04, NW-KSP, NW04, HAND-01, R6.3, R7.4/RS07, LUM-26, CR01, STX-03, STM-06, MOB-06, PP04, ST06b, PC06, PERM-01, JOIN-01, INT-02, INT-05, GEO-DEPR, FX-17, LRN-01, LRN-02, EMB-01 (except Presto), SIM-01, CART-03. Already implemented on inspection: R-FLOW, R7.2 scale, ST07. |
+| B1 (family streams) | Landed: raster band validity (LUM-25), terrain catchment and coregistration tiles, regression tiling, interpolation shared solvers and runtime covariance, network status ports, geometry indexing (GPU-07), point-cloud runtime parameters and shared Jacobi, statistics runtime parameters and LOSH reductions, dataframe group moments, cell measures parity, landscape patch metrics. Remaining parts are in the rewritten STD-04, STD-05, STD-07, STD-10, GPU-01, GPU-05, GPU-08 to GPU-13, DUP-01 and DUP-03 rows. Rename: `GPUNetworkFacilityOptimization` and `GPUNetworkRationalAccess` `output.status` to `output.summary`. |
+| B2 (cross-cutting) | Landed with one continuation round for most streams: LUM-29 scan-total guards, LUM-22 shared stable sorts, STD-02 stricter checker, CPU-07 operation-forms page, GPU-08 parallel depression activation and breach search, and the parts now recorded in STD-04 to STD-08, STD-11, CPU-04, GPU-05, GPU-10, GPU-12, PLAT-03, DUP-03 and FP64-03. Contract changes: group convex hull and minimum bounds `overflow` is boolean (bits in optional `groupOverflow`/`vertexOverflow`); `GPURasterReprojection` needs `destroy()` for same-CRS use; raster patch parameters are eight words; `GPUMarkedPointStatistics` indexes by default (`searchStructure: 'brute-force'` keeps the reference path). |
+
+Not in this pass: Kepler rows (KE-PORT, KE-WF and AX sessions), website rows, decisions, upstream proposals, items blocked on unpublished luma.gl (NW-CENT, DF-DESC, LN-DQ, CPU-08), oracle-blocked validation (STM-07, PLAT-06), consumer-on-demand rows (GAP-*, CPU-03) and LUM-21.
 
 ## Open backlog by domain
 
@@ -45,8 +58,6 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 | UF-10 | Release housekeeping | No contributor or publish guide; analysis is public at 0.1.0-alpha.0, lenses and kepler are private. | L | `modules/*/package.json` |
 | SH-DATA | Large example assets | Consider LFS or a download script for 3–5 MB PNG/bin files; preserve provenance. | L | `examples/deck/spatial-analysis-showcase/public/data`; `THIRD-PARTY-DATA.md` |
 | SH-NAMES | Example package metadata | Names still use `luma.gl-examples-*`; versions are alpha.10. | L | `examples/deck/*/package.json` |
-| INT-02 | Validate operation contracts at construction | Prop-derived zero lengths name internal ports; output formats and input names fail later in luma.gl. | M | `analysis-core/operations/gpu-contributor-operation.ts`: `GPUContributorOperation` |
-| INT-05 | Use or remove unused WGSL helpers | Row-access and sphere-distance modules have specs but no contributor consumers. | L | `analysis-core/kernels/row-access-wgsl.ts`; `analysis-core/kernels/sphere-distance-wgsl.ts` |
 | INT-07 | Resolve split-review leads | Re-check dropped lens/showcase files, unlisted specs, lost tests, EC03 limits/validation and register errors against current code before acting. The fork changes to luma.gl-owned code are mapped separately. | M | [split]; [fork] |
 | INT-08 | Establish CI and Pages build policy | CI execution is unverified; decide whether Pages builds belong in a workflow. | M | `.github/workflows/test.yml`; `website/scripts/deploy-pages.mjs` |
 | INT-09 | Public website repository link | The header points to a private repository. | L | `website/src/components/brand/site-header.tsx` |
@@ -55,21 +66,14 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 
 | ID | Item | Current limit | Priority | Source |
 | --- | --- | --- | --- | --- |
-| ST01 | HC2/HC3 and clustered covariance, positive-semidefinite certification for spatial 2SLS | Not implemented. `GPUSpatialTwoStageLeastSquares` and `GPUInstrumentalVariablesCovariance` give the base covariance | M | [coverage]; `gpu-spatial-analysis/spatial-regression/gpu-spatial-two-stage-least-squares.ts`: `GPUSpatialTwoStageLeastSquares` |
 | ST02 | Spatially robust restriction inference | Not implemented (`GPURestrictedRegimeRegression` exists) | L | [coverage]; `gpu-spatial-analysis/spatial-regression/gpu-restricted-regime-regression.ts`: `GPURestrictedRegimeRegression` |
 | ST03 | Time effects, clustered covariance, dynamic panels | Fixed and random effects panel error and lag ML exist (`gpu-spatial-panel-*-maximum-likelihood.ts`). `gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-regression.ts` rejects other effects | L | [coverage] |
 | ST04 / ST05 | Iterated SUR; latent spatial probit | Single-pass `GPUSeeminglyUnrelatedRegression` and `GPUProbitRegression` only | L | [coverage]; `gpu-spatial-analysis/spatial-regression/gpu-seemingly-unrelated-regression.ts`: `GPUSeeminglyUnrelatedRegression` |
-| ST06 | MGWR: AICc and continuous bandwidth search, full backfit selection uncertainty | Finite-grid LOO selection only. `gpu-spatial-analysis/spatial-regression/gpu-multiscale-geographically-weighted-regression.ts` rejects other variance conventions | M | [coverage] |
-| ST06b | Adaptive or selected bandwidth and separation handling for Poisson and logistic GWR | Fixed bandwidth. `gpu-spatial-analysis/spatial-regression/gpu-generalized-geographically-weighted-regression.ts` (bandwidth mode, family and kernel) | M | [coverage] |
-| ST07 | LOSH and multivariate Geary: joint randomization, more correction families | Descriptive output plus separate inference only | M | [coverage] |
+| ST06 | MGWR: bandwidth confidence intervals (full backfit selection uncertainty) | AICc and golden-section bandwidth search exist (`bandwidthSelection`); selection uncertainty is not reported. `gpu-spatial-analysis/spatial-regression/gpu-multiscale-geographically-weighted-regression.ts` rejects other variance conventions | M | [coverage] |
 | ST08 | Rank Markov: fractional ties, missing-panel interpolation, more than 64 states | Not implemented (`GPURankMarkov`) | L | [coverage]; `gpu-spatial-analysis/distribution-dynamics/gpu-rank-markov.ts`: `GPURankMarkov` |
 | ST09 | Geographic (non-planar) geometry and topology repair for polygon statistics | Planar only. `gpu-spatial-analysis/spatial-weights/gpu-island-attachment.ts` rejects distance output | L | [coverage] |
 | ST10 | blockCV: hierarchical and merge blocks, response balancing, continuous variogram optimizer | Not implemented (`GPUSpatialCrossValidation`) | L | [coverage]; `gpu-spatial-analysis/spatial-validation/gpu-spatial-cross-validation.ts`: `GPUSpatialCrossValidation` |
 | ST11 | Spatial interaction: multiple covariates, other count distributions, coefficient uncertainty in calibrated flow | Not implemented (`GPUSpatialInteraction`) | L | [coverage]; `gpu-spatial-analysis/spatial-interaction/gpu-spatial-interaction.ts`: `GPUSpatialInteraction` |
-| KG01f | Multivariate quantile LISA | Single-variable only (`GPUQuantileLISA`) | M | [coverage]; `gpu-spatial-analysis/recipes/quantile-lisa-recipe.ts`: `GPUQuantileLISA` |
-| WEIGHTS7 | Chunked spatial-weights transpose output | Inputs may be chunked; output remains packed. | M | [coverage]; `gpu-spatial-analysis/spatial-weights/gpu-chunked-spatial-weights-transpose.ts`: `GPUChunkedSpatialWeightsTranspose` |
-| PERM-01 | Permutation batching with early stopping | `gpu-spatial-analysis/permutation-inference/gpu-global-permutation-test.ts` rejects `permutationBatchSize` with `stopAfterExceedances` | L | [coverage] |
-| JOIN-01 | Distance output from predicate join | `gpu-spatial-analysis/spatial-join/gpu-spatial-predicate-join.ts` rejects `output.weights.distances` | L | [coverage] |
 | ROSE-01 | Other circular angle conventions | Radians with positive-x counter-clockwise origin only. | L | [coverage]; `gpu-spatial-analysis/geographic-distribution/gpu-rose-statistic.ts`: `GPURoseStatistic` |
 | KJ-01 | Other key-join operations | Aggregates support count, sum, mean, minimum and maximum. | L | [coverage]; `dataframe-analysis/key-join/gpu-key-join.ts`: `GPUKeyJoin` |
 | KG02 | Dorling cartogram: GeoDa coordinate parity, convergence guarantee | Heuristic by contract; relaxation limited to 256 passes (`gpu-spatial-analysis/dorling-cartogram/gpu-dorling-cartogram.ts`) | L | [coverage] |
@@ -80,14 +84,13 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 | ID | Item | Current limit | Priority | Source |
 | --- | --- | --- | --- | --- |
 | PP01 / PP02 | Study-window corrections and envelope tie breaking | Inhomogeneous K, intensity and smoothed pair correlation exist to 4,096 events; more corrections and extreme-rank-length tie breaking remain. | L | `gpu-spatial-analysis/point-process/`: `GPUInhomogeneousPointPattern` |
-| PP04 | Parallel OPTICS ordering | Indexed frontier supports 65,536 rows; ordering is sequential in one workgroup; xi extraction stops at 4,096. | M | `gpu-spatial-analysis/spatial-clustering/gpu-optics.ts`: `GPUOPTICS` |
 | PP05 | Response-dependent replacement and design variance in GRTS sampling | Not implemented | L | [coverage] |
 
 ### Interpolation and simulation
 
 | ID | Item | Current limit | Priority | Source |
 | --- | --- | --- | --- | --- |
-| IN04 | Fitted linear model of coregionalization (more than 4 variables or structures) | `GPULocalKriging` takes a supplied LMC; `GPUVariogramModelFit` fits one model | M | [coverage]; `gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging.ts`: `GPULocalKriging` |
+| IN04 | Linear model of coregionalization beyond 4 variables or structures | `GPUCoregionalizationFit` and `CPUCoregionalizationFit` fit up to 4 variables and 4 structures (Goulard and Voltz); `GPULocalKriging` takes the same layout | L | [coverage]; `dataframe-analysis/pair-statistics/coregionalization-parameters.ts` |
 | IN05 / IN02 | Degree above 1 or global dense RBF; global indexed kriging | Not implemented (`GPULocalRBF`, `GPULocalKriging` are local) | L | [coverage]; `gpu-spatial-analysis/spatial-interpolation/gpu-local-rbf.ts`: `GPULocalRBF` |
 | IN06 | Joint covariance across separate conditional simulations | Not implemented, by design | L | [coverage] |
 
@@ -96,9 +99,6 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 | ID | Item | Current limit | Priority | Source |
 | --- | --- | --- | --- | --- |
 | NW-CENT | Centrality without compile-time unrolled rounds | `maximumIterations` is 1–1,024 (default 64); `estimatedCommandNodeCount` is capped at 32,768. Use sampled pivots, fewer rounds or more lanes until GPU-gated continuation is public. | H | `gpu-network/network-centrality/gpu-network-centrality.ts`: `GPUNetworkCentrality` |
-| NW-SCC | Large-graph strongly connected components | Exact reachability SCC only: 1,024 vertices, 65,536 CSR slots. The fork has a trim, colour and backward-mark implementation with O(V) scratch, checked against Tarjan to 5,000 vertices; port it as a network contributor. | M | `gpu-network/network-structure/gpu-network-structure.ts`: `GPUNetworkStructure`; [fork] |
-| NW-KSP | Scalable k-shortest and simple route enumeration | `GPUAlternativeRoutes` is bounded to 256 nodes (`gpu-network/alternative-routes/gpu-alternative-routes.ts`) | M | [coverage]; `gpu-network/alternative-routes/gpu-alternative-routes.ts`: `GPUAlternativeRoutes` |
-| NW04 | Sparse scalable Louvain | At most 32 vertices, dense (`gpu-network/network-optimization/gpu-network-louvain.ts`). Published `@luma.gl/graph` has modularity optimization; evaluate it first | M | [coverage] |
 | NW02 | Sparse push-relabel and path decomposition for max flow | At most 128 nodes and 1,024 edges (`gpu-network/network-optimization/gpu-network-flow.ts`) | L | [coverage] |
 | NW03 | Negative-cost circulation and lower-bound constraints | Not implemented | L | [coverage] |
 | NW05 | Mixed-integer or fractional allocation; certified capacitated p-median | Exhaustive and bounded: demand at most 64 (`gpu-network/network-optimization/gpu-network-facility-optimization.ts`) | L | [coverage] |
@@ -109,13 +109,10 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 
 | ID | Item | Current limit | Priority | Source |
 | --- | --- | --- | --- | --- |
-| R6.3 | Seam-safe contour ownership across tiles; external vector overlays | Isolines handle one raster | M | [coverage] |
 | R6.4 | Broader fractional and zonal composition envelopes | Partial: `GPURasterFractionalCoverage` and zonal statistics exist; whole-domain and tiled acceptance cases are not all closed | M | [coverage]; `raster-analysis/gpu-raster-fractional-coverage.ts`: `GPURasterFractionalCoverage` |
-| R7.2 | Watershed at larger scale; other segmentation methods | Complete domain of at most 16,384 cells (`raster-analysis/gpu-raster-watershed-segmentation.ts`) | M | [coverage] |
-| R7.4 / RS07 | Spectral (FFT) raster filtering; registration peak refinement and ambiguity | Not implemented. FFT convolution is deferred | M | [coverage] |
-| R-FLOW | Cross-tile D-infinity and MFD network stitching | Partial: `GPUTerrainTiledFlow`, `GPUTerrainBranchingFlow` exist | M | [coverage]; `gpu-terrain/terrain-processing/gpu-terrain-tiled-flow.ts`: `GPUTerrainTiledFlow` |
+| R7.2 | Other watershed segmentation methods | The forest method lifts the FIFO 16,384-cell cap (`raster-analysis/raster-watershed-forest.ts`); only steepest-descent watershed exists | L | [coverage] |
 | R-RELAX | `settledAt` output with continuation in cost distance | `raster-analysis/cost-distance/raster-relaxation.ts` | L | [coverage] |
-| R7.1 / R7.3 | Adaptive local analysis (CLAHE); volumetric microscopy | Gate-deferred, no code | L | [coverage] |
+| R7.3 | Volumetric microscopy | Gate-deferred, no code. CLAHE (R7.1) exists as `GPURasterContrastEqualization` | L | [coverage] |
 | RS02 | Sparse or string zone IDs | Dense numeric IDs only, up to 65,534 classes | L | [coverage] |
 | RS03 | Curvilinear grids for conservative remapping | Not implemented | L | [coverage] |
 | RS06 | Irregular dates in temporal composites and filters | Not implemented | L | [coverage] |
@@ -123,14 +120,11 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 | RS11 | Multiple break search, calibrated p-values, full BFAST | Single-break seasonal model | L | [coverage] |
 | R-REPROJ | Explicit source-tile routing for reprojection; extra precision and filtering | Not implemented | L | [coverage] |
 | TE06 | Out-of-core and independently filled tiles | Resident full-domain composition only (`GPUTerrainTiledFlow`) | M | [coverage]; `gpu-terrain/terrain-processing/gpu-terrain-tiled-flow.ts`: `GPUTerrainTiledFlow` |
-| HAND-01 | Height above drainage over D-infinity flow | `gpu-terrain/hydrology/gpu-terrain-height-above-drainage.ts` | M | [coverage] |
 | RELIEF-01 | Percentile stretch in relief blending | `gpu-terrain/relief-visualization/gpu-relief-blend.ts` (needs a histogram) | L | [coverage] |
 | TE03 | Parallel depression-hierarchy activation pass | Serial (partial) | L | [coverage] |
 | A-18 | `GPUTerrainSpikeRepair` persistent buffer | Persistent-buffer support needs an upstream change | L | [workarounds]; `gpu-terrain/terrain-decode/gpu-terrain-spike-repair.ts`: `GPUTerrainSpikeRepair` |
 | TE05 | Horizontal, Nuth-Kaab and tilt coregistration models | Not implemented (`GPUTerrainDEMCoregistration`) | L | [coverage]; `gpu-terrain/terrain-processing/gpu-terrain-dem-coregistration.ts`: `GPUTerrainDEMCoregistration` |
-| LUM-24 | Embedding nearest-classifier on similarity search | 4,096 training-vector cap; migration adds `pixelCount × k × 8` transient bytes and a pass. Fix the empty-slot vote defect independently. | M | [usage]; `raster-analysis/raster-embeddings/gpu-raster-embedding-knn-classifier.ts`: `GPURasterEmbeddingKNearestClassifier` |
-| LUM-25 | Reclassify, conditional and stretch on raster-band inputs | Bare value views bypass published band validity; caller prop change overlaps STD-07. | M | [usage] |
-| LUM-26 | Project inside the reprojection sampler | Use `CompiledProjection.getShader()` to remove a pass and two full-raster transients; requires a kernel rewrite. | M | [usage]; `raster-analysis/gpu-raster-reprojection.ts`: `GPURasterReprojection` |
+| LUM-24 | Embedding nearest-classifier on similarity search | 4,096 training-vector cap; migration adds `pixelCount × k × 8` transient bytes and a pass. | M | [usage]; `raster-analysis/raster-embeddings/gpu-raster-embedding-knn-classifier.ts`: `GPURasterEmbeddingKNearestClassifier` |
 
 ### Dataframe, point cloud, projection and geometry
 
@@ -139,14 +133,11 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 | KG06 | SQL: DOUBLE, WKB, arbitrary strings, right-column projections, UNION | Partial. The engine is published `@luma.gl/graph/gpu-sql`; nothing in this repository. Needs upstream work | L | [coverage] |
 | DF-DESC | Public dataframe query description (intent, shader plan, formulas) | Unavailable; needed to rebuild lens scenarios. The fork implementation exists and is a candidate upstream pull request. | M | [coverage]; [fork] |
 | ARROW-01 | More Arrow analytics types | `analysis-core/graph-support/arrow-analytics-normalization.ts` rejects unsupported types | L | [coverage] |
-| GEO-DEPR | Remove deprecated `getRasterSphereRadius` alias | Use `getGPUAuthalicSphereRadius`; retain the other cell-area helpers. | L | [coverage] |
-| PC06 | Automatic normal-scale selection, fitted correlation model; M3C2 binary has never been run | Not implemented | M | [coverage] |
 | PC01 | Globally propagated normal orientation; unlimited support | Viewpoint or up orientation per query | L | [coverage] |
 | PC02 | Distributed global threshold reconciliation | Not implemented. Voxel downsample and radius filter are published | L | [coverage] |
 | PC03 | Ground Delaunay or nearest interpolation; vertical datum | Not implemented | L | [coverage] |
 | PC05 | Global alignment, trimmed objective for ICP | Not implemented | L | [coverage] |
 | CR02 / CR03 | Epoch-aware grid resources, bounded residency | `GPUDatumGridTransform` (`geospatial-analysis/gpu-datum-grid-transform.ts`) applies supplied grids; no epoch handling | M | [coverage]; `geospatial-analysis/gpu-datum-grid-transform.ts`: `GPUDatumGridTransform` |
-| CR01 | Difficult geodesic cases: poles, antipodes, singular inverse | Float32 envelopes are not certified | M | [coverage] |
 | CR04 / CR05 | Exact S2 predicates; S2 covering minimization | Not implemented | L | [coverage] |
 | P.7a | 3D contract, ECEF, static Helmert | In neither this repository nor published luma.gl; belongs in luma.gl `gpu-project` | L | [coverage] |
 | GE01 / GE08 / UR01-UR05 | Capacity limits: nesting above 64; straight skeleton above 1,024 vertices; urban recipe capacities | Bounded by contract | L | [coverage] |
@@ -162,13 +153,128 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 | --- | --- | --- | --- | --- |
 | KE-TESTS | Run excluded specs and expand typecheck coverage | 131/368 spec files excluded; 59 more excluded from typecheck. Resolve package/API dependencies and prebundle DuckDB for the cold-cache Arrow-schema failure. KE-EX controls example-backed coverage. | H | `test/kepler-compute-example-specs.json`: `excludedFromRuns`, `excludedFromTypecheck`; `vitest.config.ts` |
 | KE-EX | Decide the parked compute example’s future | About 750 files, outside workspaces; deck.gl and community GPU-layer imports are undeclared. A published GPU-layers package alone would not restore it: it also imports `OutOfMemoryError` from `@luma.gl/core` and `walkTextGlyphs` from `@luma.gl/engine/text`, neither of which alpha.13 exports. | M | `examples/deck/kepler-compute`; [fork] |
-| KE-UI | Remaining host work: native Group By panel binding, non-point altitude layers, richer labels, micro and nanosecond time admission, multipart timed trips, acceptance on other hardware tiers | Open (mostly example code). Acceptance was measured on one Apple M-class machine | M | [coverage] |
+| KE-UI | Remaining host work: corrected multipart XYZ-pick and expanded polygon column-altitude qualification; grouped vertex-table polygon assembly, richer labels and acceptance on other hardware tiers | Open (mostly example code). Acceptance was measured on one Apple M-class machine | M | [coverage] |
 | KE-DECK | Cluster, flow and globe layer integration | External; track with the deck.gl-community package | L | [coverage] |
 | INT-04 | Reclassify test exclusions | Reasons and skip comments cite alpha.10; nine specs cite missing physical-transient statistics that alpha.12 publishes, while compilationStats remains unavailable. | M | `test/kepler-compute-example-specs.json` |
 | CPU-06 | Replace hand-written CPU fallbacks with twins | Use twins where available in snapping and platform bindings. | M | [cpu]; `modules/kepler/src/analysis/catalog-gpu-snapping.ts` |
 | LUM-31 | Group-by on published dataframe aggregation | Migration loses the null-key group and nonfinite counts; preserve those contracts. | L | [usage] |
 | LUM-13 / LUM-32 | Predicate encode gate | Mask-only filters re-encode each frame; safe gating requires submit confirmation in explorer and scalar-selection contracts. | M | [usage] |
 | LUM-14 / LUM-33 | GPU permutation feeds sorted-page gather | Needs a `KeplerSessionExplorer` pass-through and changes two pinned readback byte lengths. | M | [usage] |
+
+#### Kepler port onto published luma.gl (KE-PORT, in progress 2026-11-14)
+
+Decided 2026-11-14: run `examples/deck/kepler-compute` on published deck.gl 10.0.0-alpha.1, which pins luma.gl 10.0.0-alpha.14 and math.gl/loaders.gl 5.0.0-beta.8, so the whole repository moves to those versions. The 30-file closure of the unpublished `@deck.gl-community/gpu-layers` is copied from the old fork (`e0ed33791:modules/deck-gpu-layers`) into the example. The fork's geometry, polygon-topology and trip preparation moves into the example as Kepler-named domain helpers built on public luma.gl APIs; it is registered in [workarounds] and proposed upstream. Kepler stays on 3.3.0-alpha.18 until the acceptance baseline holds. The evaluation found that `@luma-contributors/*` imports all resolve, that alpha.14 adds nothing to the example's luma.gl surface (31 fork-only symbols), and that only deck.gl patch hunks 4, 5 and 6 are still missing from deck 10 alpha.1.
+
+| ID | Stage | Gate |
+| --- | --- | --- |
+| KE-PORT-0 | Bump repository to luma alpha.14 and math.gl beta.8 (four `@math.gl/arrow` import moves); make the example a workspace on deck 10 alpha.1 and editable-layers 10 alpha.1; rewrite Vite aliases to `@luma.gl/core/webgl(-constants)`; add `scripts/playwright/get-playwright-launch-options.mjs` | `yarn typecheck`, `yarn build`, `yarn test-node`, `yarn check-upstream-first` |
+| KE-PORT-1 | Example-local gpu-layers closure ported to deck 10 (`COORDINATE_SYSTEM` removal, `coordinateFrame`, globe meter offsets) | Example tsc clean for `gpu-layers/`; its node specs |
+| KE-PORT-2 | Geometry, polygon-contiguity and trip preparation re-homed in the example (22 symbols, 17 files) | Example tsc clean for those files; ported specs |
+| KE-PORT-3 | Small luma gaps: Arrow normalisation and `GPUParameterBuffer` from `@luma-contributors/analysis`; domain out-of-memory error; local glyph walker and graph-vector view helpers; `planResources`/`compilationStats` replacements; kriging model type | Example tsc clean |
+| KE-PORT-4 | Deck 10 host: `COORDINATE_SYSTEM` shim for Kepler's deck 9 code, Kepler luma 9 import aliases, a three-hunk deck 10 yarn patch (depth attachment, canvas-leave hover), removal of obsolete deck 9 WGSL patches | `vite build` of app and viewer |
+| KE-PORT-5 | Bring-up in headless WebGPU Chromium | `scripts/smoke.mjs`, then native-layer-management, native-table, native-filter-lifecycle, native-csv, native-sql-gpu, check-native-join, check-native-group-by, layers, native-charts |
+| KE-PORT-6 | Re-enable excluded kepler specs by tier (43 package-only, then gpu-layers and luma-symbol families); typecheck the example-backed specs | `yarn test`, `yarn typecheck-tests`; shrink `test/kepler-compute-example-specs.json` |
+| KE-PORT-7 | Independent review of every stream, fixes, docs (README, workarounds, proposals for deck hunks and the unexported luma helpers) | Full gates |
+| KE-PORT-SAMPLES | Runtime public Kepler Sample maps tab, configs and attribution; earthquakes startup/offline fallback; explicit sparse-vs-dense tree aggregation and wide-integer parcel style limitations with location fallbacks; remote completion awaits native registration, single-descriptor saved-ID binding and streaming render admission; independently probed HTTP service outages have a visible named state; cancellable sample transactions await publication and roll back data/presentation; per-dataset attribution persists; remote recovery explicitly defers without invalidating the healthy checkpoint | `sample-maps.node.spec.ts`, `resident-layers.node.spec.ts`, scoped example tsc, checkers; driver runs `scripts/kepler-demo-data.mjs` for all entries and default/offline startup, plus smoke/acceptance/gallery |
+
+Wave 3 flow/trips/memory parity audit (2026-11-14): all 21 scoped browser scripts passed the driver baseline. Twenty scripts match the old fork exactly; `flow-field.mjs` replaces a stale unsupported-style assertion with successful rendering (the old runtime already implemented speed color/debug grid, and the separate style script checks screenshots). Published alpha.14 `FlowParticleSimulation` has no spawn-region control. The port now crops velocity/altitude textures through public core render passes and calls `setField` with a padded, source-clipped viewport domain, preserving the full zoomed particle budget on CPU and GPU grid paths. Settling takes 150 ms with 2% extent hysteresis. Compared with the fork this resamples the field and reseeds all particles after a domain change; pitched/globe views use bounding rectangles and split maps share a runtime. Node coverage and scoped typecheck pass; the new crop rendering and all 21 scripts need the driver rerun at `http://127.0.0.1:5328/?rows=256`. Trip membership and flow chunk alignment now reuse analysis's `getGraphViewChunks`. The other near matches in the reuse audit have different contracts (flow pair ordering/capacity, sampled UV/elevation fields versus terrain deflection, trajectory ingestion versus analysis, H3/heatmap rendering versus analysis); no equivalent contributor substitution was found. Baseline resident performance (100k rows, 10 iterations): submitted-frame p50 about 36 ms, p95 74 ms; these are reported numbers, not a new measurement.
+Wave-3 reuse: exact-source polygon equality-token preparation and an optional CPU contiguity route
+now live in `analysis/gpu-spatial-analysis`; exact Int64/Decimal128 summaries, CPU references and
+Float32 narrowing diagnostics live in `analysis/dataframe-analysis/column-profile`. Integer maximum
+narrowing error is an exact bigint. Kepler owns the device-wide OOM scope and CPU rate diagnostics.
+The example uses `getGraphViewChunks` and `MeteredCommandGraph` from the packages. Re-enabled mock
+specs reset shared module caches before imports and clean up afterward; H3/icon cold imports run
+outside timed hooks. See [the extracted contracts](../docs/api/reused-analysis-preparation.md).
+
+
+Wave-3 contrib-spacetime adds fourteen GPU-only catalog bindings for the existing density, Hawkes, scan, space-time inference and change-point contributors. Resident Point or numeric coordinate columns and epoch time columns map to bounded tables with source identities; summaries and UI controls expose inference metadata and limits (512 rows, 64 locations, 128 periods, 16,384 density voxels). Node mapping checks and scoped typechecks run in the implementor sandbox; the driver passed all 14 direct-contributor GPU parity specs and catalog discovery. Round 2 connects resident inputs to the existing bounded original-column reader (preserving epoch precision and guarding source revisions), while keeping non-resident inputs; the driver subsequently passed the native-dataset browser workflow. Round 3 reproduces and fixes subsecond density placement, Float32 radius-boundary inclusion and colliding resident derived aliases with node regressions; new subsecond and boundary GPU fixtures await a driver rerun.
+
+Wave 3 raster time series: raster-native bindings in `modules/kepler/src/analysis/catalog-raster-timeseries-bindings.ts` wrap the existing time-series family, with explicit acquisition/band mapping and zonal publication in the raster tools panel. Node stack/refusal specs and driver-run headless specs plus `scripts/raster-timeseries.mjs` qualify the integration; the existing raster-tiles, raster-zonal-panel and raster-terrain-gpu scripts remain regression gates. GPU/browser execution and full-example typechecking are driver gates. Cloud-scored BAP and historical streaming beyond a loaded stack require additional input metadata/routes; see the example README for scope and evidence.
+
+#### Kepler analysis workbench (KE-WF, in progress 2026-11-14)
+
+A node-graph analysis workbench in the Kepler host, over one serialisable workflow document. The design study is [research/kepler-workflows-2026-11-14](./research/kepler-workflows-2026-11-14/README.md); section 9 of that file records the experiments and the decisions below. Built in a staging copy and landed after KE-PORT wave 3.
+
+Provisional decisions taken for this build, not yet confirmed by the maintainer (each is the study's recommendation unless noted; the canvas dependency and the host-only persistence are the two that most need confirming):
+
+- **Canvas and list over one document.** A bottom dock holds a React Flow canvas (`@xyflow/react` 12.12.1, MIT; verified under React 19 in the host), an inspector and a run log, with the conventions of noodles.gl and Houdini (Tab or N adds a step, B disables, D displays, F frames, undo by snapshot). A Workflows tab in the Kepler side panel (`CustomPanelsFactory`) is the narrow step-list view. No Kepler fork.
+- **Every node is a step.** Data enters through source steps (a host dataset, all rows or the current selection, or embedded GeoJSON), not through per-input bindings as in the draft spec. Steps connect output port to input port.
+- **Hand-off by table** on the CPU, within the catalog capacities, checked before a result is passed on. `WorkflowData` is the seam where a GPU-resident form can be added (KE-WF-08, not built).
+- **Catalog bindings are not changed.** Each becomes a workflow operation through an adapter that derives port kinds; glue operations (join attributes, filter, calculate, select, sort, summarise, concatenate) are workflow-only because a catalog input cannot be a table.
+- **Status is derived from content keys**, not stored: a step is done when it holds a result for its current key, stale when it holds one for an older key. Editing a step or a change in a host dataset, filter or selection re-keys exactly the affected steps.
+- **Display publishes to the map.** A displayed output becomes a resident dataset with a layer and is replaced in place on re-run; from there the existing resident analysis panels, filters and charts apply.
+- **Workflow inputs** (parameters promoted to the workflow) are in; step-output parameter binding, expressions on parameters, iterators and branches are out.
+- **Persistence** is the host sandbox extension `settings.extensions.workflows` only. Kepler's own Save Map drops it.
+- **Assistant** tools list and describe operations and propose a draft; nothing runs before the user approves the whole workflow.
+- **Templates** read embedded synthetic geometry only, so no third-party licence applies.
+
+| ID | Work | Where | Gate |
+| --- | --- | --- | --- |
+| KE-WF-A | Contract: types, port kinds, host interface, UI vocabulary | `modules/kepler/src/workflows/workflow-types.ts`, `examples/deck/kepler-compute/src/workflow/workbench-contract.ts` | Scoped typecheck |
+| KE-WF-B | Data hand-off, content hashes, expression language, strict document parser | `workflow-data.ts`, `workflow-expression.ts`, `workflow-document.ts` | Node specs |
+| KE-WF-C | Operations: catalog adapter, registry, search, sources, table glue | `workflow-operations.ts`, `workflow-source-operations.ts`, `workflow-table-operations.ts` | Node specs; every registered binding adapts and its sample chain runs on the CPU engine |
+| KE-WF-D | Plan (order, issues, keys), edit operations, layout, undo history | `workflow-plan.ts`, `workflow-edit.ts`, `workflow-history.ts` | Node specs |
+| KE-WF-E | Runner: derived status, node cache, capacity gate, cancel, publish, run record | `workflow-runner.ts` | Node specs: an upstream edit marks dependents stale and reuses unaffected results |
+| KE-WF-F | Templates, JSON and TypeScript export, history promotion, assistant tools | `workflow-templates.ts`, `workflow-export.ts`, `workflow-assistant.ts` | Every template runs to done on the CPU engine in a node spec |
+| KE-WF-G | Host: store, Kepler host adapter (native and resident datasets in, published datasets out), sandbox extension | `examples/deck/kepler-compute/src/workflow/workbench-store.ts`, `workbench-host.ts`, `workbench-extension.ts` | Node specs with a fake host; headless save and replay round trip |
+| KE-WF-H | Workbench UI: dock, toolbar, canvas, node, palette, inspector, parameter form, result view, run log, side panel, dialogs | `examples/deck/kepler-compute/src/workflow/workbench-*.tsx` | Static-render node specs; headless acceptance scripts |
+| KE-WF-I | Acceptance in headless WebGPU Chromium: build a chain from the palette, run, display on the map, edit and see stale, undo, template, save and replay, keyboard only | `examples/deck/kepler-compute/scripts/workflow-*.mjs` | Scripts pass; screenshots reviewed |
+| KE-WF-J | Independent review of every stream, fixes, docs | all of the above | Full gates |
+
+| KE-WF-K | Second wave: colour-by display style, SQL step on a workbench-owned DuckDB instance, drawn-shapes source, user templates, inlining a workflow into another, copy and paste, suggested fixes, run report and DOT export, saved workflows as assistant tools | `workflow-sql-operation.ts`, `workflow-suggestions.ts`, `workflow-report.ts`, additions across both directories | Node specs; browser probes of each feature |
+| KE-WF-L | Third wave: dataset-aware recommendations, swapping a step's source without rewiring, zoom to a displayed output | `workflow-recommendations.ts`, `replaceWorkflowStepOperation` | Node specs |
+
+Not built, in order of value: a GPU-resident hand-off between adjacent steps with a fusion planner (KE-WF-08 of the study); resident recipes (hot spots, kriging, OLS on resident columns) as step kinds; composition by reference (a workflow used as an operation of another, so edits propagate); share links and the standalone viewer; a map preview of a step that is not displayed.
+
+#### Analysis experience (AX, library layer landed 2026-11-14)
+
+No host surface suggests an analysis from the loaded data yet, and curated chains (41 recipes, 417 lens scenarios, 173 showcase stories) are not available as pre-configured workflows on user data. The library that such a surface needs is in the tree and nothing in `examples/deck/kepler-compute` calls it. The review of the existing state, the research on similar tools, the design, the gate for each row, the measured baseline and eleven maintainer decisions are in [research/analysis-workflow-ux-2026-11-14](./research/analysis-workflow-ux-2026-11-14/README.md).
+
+In the tree (plain CPU TypeScript, no GPU resource):
+
+- `modules/analysis/src/gpu-spatial-analysis/ontology/analysis-experience/`: twelve questions and operator-to-question rules, the data-kind vocabulary with supplements for operators whose kinds are empty, measurement-level guesses and field-role matching, the requirement evaluator (passed, failed or unknown, with its evidence), spacing statistics and default rules, class schemes, result sentences and cautions. Documented in `docs/api/gpu-spatial-analysis/analysis-experience.md`.
+- `modules/kepler/src/profile/`: dataset profile per revision with declarations that replace guesses.
+- `modules/kepler/src/descriptors/`: a descriptor per catalog binding keyed by binding id (136 written by hand; the other 81 of the 217 bindings get a derived one and are not suggested), resolved defaults, applicability, `suggestKeplerAnalyses`, and adapters in the shapes the KE-WF workbench reads.
+- `modules/kepler/src/presentation/`: scale, classes, legend, sentence, chosen-parameter report and cautions for a catalog result.
+- `modules/kepler/src/curated/`: 27 question-named analyses as single-binding presets with synthetic samples (16 runnable, 11 waiting for a binding) and six CPU-reference bindings (`curated-*`) that fuse existing steps.
+- `examples/deck/kepler-compute/scripts/ax-journey-baseline.mjs` and its recorded baseline.
+
+Checked by three independent review rounds with probes (eight reviewers, then seven, then three verifiers) and four fix rounds; 30 spec files, about 2,490 tests. Defects the reviews found in existing catalog bindings are in [binding-defects.md](./research/analysis-workflow-ux-2026-11-14/binding-defects.md); the bindings were fixed on 2026-11-15 and the workarounds that had become wrong were removed with them (its status section lists both).
+
+Known limits of the layer: the rate cluster map recovered a lone planted outlier in 12 of 20 runs; the default clustering radius fragments irregular concentrations and merges uniformly repeated locations; a requirement that depends on an estimated distinct count is always `unknown`; edge and node capacity cannot be exact from a profile; the measurements behind these were made before the binding fixes of 2026-11-15 and have not been repeated.
+
+The KE-WF workbench (workflow document and parser, runner, palette, assistant, result view; `modules/kepler/src/workflows/` and `examples/deck/kepler-compute/src/workflow/`) was built by another session and applied to the tree on 2026-11-15. It does not call the AX layer yet (AX-86). AX-30's document, AX-50, AX-51, AX-60 and AX-61 are its rows.
+
+| ID | Item | Current limit | Priority |
+| --- | --- | --- | --- |
+| AX-01 | Carry publication roles (coordinates, geometry, time, value column) into every analysis form | Each point form starts with blank longitude and latitude; 4 actions per point statistic | H |
+| AX-02 | Catalog reads prepared (resident) datasets and longitude/latitude roles through an adapter; the host builds a `KeplerDatasetProfile` per dataset revision (`createKeplerDatasetProfileCache`); caps shown before Run | The catalog panel receives non-resident datasets only and needs a GeoJSON field (`examples/deck/kepler-compute/src/app.tsx`, `analysis-catalog-input.ts`); no host code builds a profile | H |
+| AX-03 | Forms start from `resolveKeplerOperationParameters` and show where each value came from | The library derives the values; forms still start from constants (IDW and kriging from fixed New York bounds, distance band 1,000 in CRS units) | H |
+| AX-04 | Publish catalog results through `planKeplerResultPresentation`; report view for table-only results | The plan exists; the host publishes a fixed cyan layer and raw summary keys | H |
+| AX-05 | Show `evaluateKeplerOperationApplicability` before Run, with the unmet requirement and the remedy | Geometry and capacity rejections come back from execution | H |
+| AX-22 | "Suggested for this data" on the dataset card from `suggestKeplerAnalyses`, with its questions (what rows stand for, coordinate system, what a column measures); "Browse all that fit" | A 24-option menu and a catalog search | H |
+| AX-30 | Workflow document types and parser (KE-WF-03) and the template format over them: slots, exposed parameters, question, sample, result reading | Saved recipes name concrete columns and datasets; curated analyses are single-binding presets | H |
+| AX-31 | Bindings for the 11 curated analyses that lack one (raster, trajectory and multi-step cases); licence-clean real samples beside the synthetic ones | 16 of 27 curated analyses run; samples are synthetic | H |
+| AX-32 | Field-mapping step (`createKeplerCuratedAnalysisMapping`) and a gallery by question; pair gallery samples with curated analyses | Role mapping exists in the host for 20 dataframe lens scenarios only | H |
+| AX-33 | Website workflows page from the curated records with real chain intermediates; website catalog entries tagged with the questions and the shared data-kind vocabulary | See WEB-HIW-03; the website keeps its own data types | M |
+| AX-40 | Generated analysis sheet with live preview in place of the catalog panel, after revision checks, stale-result rejection, memory reservation and cancel are in place; migrate hand-written forms; merge or label duplicate operations | Two form systems; catalog and panel local Moran and kriging differ without saying so | M |
+| AX-41 | Result card from `describeKeplerCatalogResult`: sentence, chosen-parameter report, cautions, inference controls, next steps | The report exists as data and text; hand-written panels only | M |
+| AX-42 | Sensitivity strip (small multiples across one parameter), labelled exploratory and recorded in provenance | Showcase sweeps only | L |
+| AX-43 | Spatial weights as a named reusable object with an inspector | Two host caches, no user-facing object | M |
+| AX-50 | Analysis stack (status, visibility, reopen, run stale, undo and redo of edits), then KE-WF-01, KE-WF-02 and KE-WF-04 to KE-WF-08 | Flat list of at most 32 catalog invocations, no edges | M |
+| AX-51 | Save a stack as a template; JSON export (TypeScript export stays KE-WF-11) | Not implemented | M |
+| AX-60 | Command palette over questions, curated analyses and operations, scoped to the active dataset | Not implemented | M |
+| AX-61 | Assistant: search, describe and propose tools; plans checked by the template parser and requirement checker; whole-plan approval | Seven named analyses on built-in observations | L |
+| AX-70 | Scripted journeys for the eight gallery samples, actions and time to first result recorded per release | A baseline is recorded (`research/analysis-workflow-ux-2026-11-14/baseline`); nothing re-runs it | H |
+| AX-80 | Hand-written descriptors for the 81 bindings ported by KE-PORT (space-time, trajectory, raster embedding, network categorical and others) | Derived descriptors only: no questions, roles or data-derived defaults, so they are not suggested | H |
+| AX-81 | Error bound on estimated distinct counts in the profile, so capacity requirements can be decided | Such requirements are always `unknown` above the exact-count limit | M |
+| AX-82 | Edge and node counts in the profile of a line dataset | Network capacity is estimated from row and vertex counts | M |
+| AX-83 | `activeWhen` accepts "any of" conditions | A role or requirement active under either of two settings is declared twice or left always active | L |
+| AX-84 | One covering-arc extent helper shared by the profile and the spacing statistics | Two implementations of the antimeridian covering arc | L |
+| AX-85 | Spacing and contiguity statistics on the GPU for large datasets | CPU, exact up to a sample limit and sampled above it | M |
+| AX-86 | Wire `modules/kepler/src/descriptors/workbench-adapters.ts` into the KE-WF workbench (applicability, defaults, presentation, curated analyses) | Adapters are tested against the shapes the workbench session specified, not against its code; the workbench uses its own rules | H |
+| AX-87 | Remove the workarounds that the binding fixes made redundant, re-measuring what each removal changes: canonical row ordering and predictor standardisation in the fused bindings, the profile's own anchors, the local-frame hull area, the 1 percent margin on derived radii and distance bands. Repeat the reviewers' probes against the fixed bindings | Redundant, not wrong; left in place because removing them changes verified numbers | L |
+Source-stream first-round audit: [upload/source parity, script fixes and pending browser qualification](./research/kepler-source-parity-2026-11-14.md). All eight fixture module graphs build; source/resume/rollback Node checks pass. The 17 Playwright workflows and six native demo uploads still need the driver run; this is not an all-Kepler parity claim. Round 2: the driver subsequently confirmed all 17 scripts pass (native-csv retried once after a cold Vite start). Independent review found a globe-label hook ordering defect; the follow-up preserves inherited injection order and runs culling last, verified by final GLSL/WGSL assembly tests in the same audit.
 
 ### Lenses, recording and CPU operation forms
 
@@ -184,9 +290,8 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 | INT-01 / LN-REC2 | Recapture lens records | Lag-ML and ring-assembly values may predate final fixes; published-gather adoption removes local kernel text. Capture with `VITE_CAPTURE_LENS_RECORDS=1`. | M | `modules/lenses/`; [usage] |
 | INT-06 | Fix unpublished analysis subpath import | The local-permutation lens resolves through tsconfig paths rather than package exports. | L | `modules/lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/local-permutation-test.lens.ts` |
 | CPU-03 | Remaining twin-useful contributors and findings | 75 unselected survey rows; additional twins only on consumer demand. Triage the existing-contributor leads before acting; most lack GPU verification. | L | [cpu]; [existing findings](./research/cpu-suitability-2026-11-11/existing-contributor-findings.md), [wave 2](./research/cpu-suitability-2026-11-11/existing-contributor-findings-wave-2.md) |
-| CPU-04 | Recipes as mixed GPUGraph programs | Segregation counterfactual, population support and building tessellation; retire the deprecated dense resistance recipe for the float64 solve. | M | [cpu] |
+| CPU-04 | Recipes as mixed GPUGraph programs | Population support alignment is done. Segregation counterfactual and building tessellation remain; retire the deprecated dense resistance recipe for the float64 solve. | M | [cpu] |
 | CPU-05 / INT-03 | Expose twins in catalog and website | Add cpuTwin metadata; identify operation forms by class rather than filename in inventory extraction. | M | [cpu]; `website/scripts/extract-inventory.ts` |
-| CPU-07 | Document operation forms and twins | Add an API page with the variogram example. | M | [cpu] |
 | CPU-08 | Measured crossover and optional automatic choice | Wait for the packed CPU/GPU boundary fast path, UPS-CPU-1. | L | [cpu] |
 | UPS-CPU-1 | Upstream packed CPU-stage transfer | Row-by-row read/upload costs about 11 ns/byte; propose a packed fast path when stride equals row size. | H (upstream) | [proposals]; [cpu] |
 | UPS-CPU-2 | Upstream textures and state vectors across CPU stages | Needed for raster/terrain operation forms that use those resources. | M (upstream) | [proposals] |
@@ -235,16 +340,13 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 
 | ID | Item | Current limit | Priority | Source |
 | --- | --- | --- | --- | --- |
-| STX-03 | Space-time HDBSCAN | ST-DBSCAN and ST-OPTICS exist; ST-HDBSCAN does not. | M | [spatiotemporal] |
 | STX-08 | Complete exploratory statistics | REDCAP is first-order single linkage; LICD is local composition only; colocation quotient lacks permutation inference. | L | [spatiotemporal] |
-| STM-06 | GTWR/MGTWR bandwidth selection | No golden-section or adaptive bandwidth search. | M | [spatiotemporal] |
 | STM-07 | External Vecchia validation | GpGp GPU comparison/fixtures pending; spatial Fisher scoring exists, space-time fit uses Nelder–Mead. Float32 evidence assumes nugget ≥1e-3 of sill except exponential. | M | [spatiotemporal] |
 | MOB-03 / FX-08 | Point-centred cleaning default | Current speedOutlierMode default is step; point-centred is opt-in. TD-TR word times require the track-relative conversion. | H | [spatiotemporal] |
-| MOB-06 | Flow-field extensions | Utilization volumes lack ridge extraction and longitude/latitude inputs. | M | [spatiotemporal] |
 | MOB-07 | Dynamic Brownian bridge change points | dBBMM change-point step absent. | L | [spatiotemporal] |
 | MOB-10 | Radiation scale and flow-smoothing definition | No scalable radiation variant; smoothing formula needs paper verification; 1,024-zone cap. | L | [spatiotemporal] |
 | RTS-08 | A5 and conformant DGGS-JSON | A5 not started; ~3,100 reference lines need fixed-kernel boundary redesign. Zone IDs are not OGC-conformant. | L | [spatiotemporal] |
-| PLAT-03 | Shared neighbour-index adoption | k reaches 256, HDBSCAN minimumSamples stays 32. Pair grid, k-means and two KDEs still need adoption; DBSCAN/KDE retain separate walks. | M | [spatiotemporal]; GPU-05 |
+| PLAT-03 | Shared neighbour-index adoption | A shared point-neighbour grid builder exists (`analysis-core/kernels/point-neighbor-grid-index.ts`); marked point statistics and cross variograms use it. The two KDEs and the DBSCAN/KDE walks remain separate; k-means scans at most 256 centres and has no private index to replace. HDBSCAN minimumSamples stays 32 (decision row). | M | [spatiotemporal]; GPU-05 |
 | PLAT-04 | Upstream resident iteration | Analysis support exists; luma.gl GPU-gated continuation remains a proposal. | M | [proposals] |
 | PLAT-05 | Adapter-maximum shorthand and buffer_view | Explicit requiredLimits and subgroups are already public; only remaining gaps belong upstream. | L | [proposals] |
 | PLAT-06 | External oracle fixtures | Pending R: gstat, sparr, stpp, stopp, changepoint, scanstatistics, ETAS, GpGp, CAST, phenofit/GRASS, bfast. Also pyxccd, xeofs, scikit-learn, GeoConformal, MobilityDuck and new trajectory/track/Markov fixtures. | M | [spatiotemporal]; `scripts/run-oracle-fixture.mjs` |
@@ -254,30 +356,27 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 
 | ID | Item | Current limit | Priority | Source |
 | --- | --- | --- | --- | --- |
-| STD-02 | Tighten the checker as baselines reach zero | Fail zero-count rules outright; improve loop/producer detection and catch duplicate WGSL declarations. Baseline has 64 findings. | M | [library]; `scripts/contributor-contract-baseline.json` |
-| STD-04 | Named status ports and flag vocabulary | Per-cell codes, fractional-zonal distribution, tiled-flow/catchment, network, geometry overflow and most statistics remain. Decide output.ports.status on three packed-status classes. | H | [library] |
-| STD-05 | Runtime numeric parameters | Point-cloud thresholds/viewpoint, ~20 statistics props and raster affines remain baked; local kriging defaults to baked covariance. Three parameter mechanisms coexist. | M | [library] |
-| STD-06 | Raster context | Reprojection affines, patch-metric steps/area, contour/flow extent and row direction, pixel coordinate declarations and a shared context resolver remain. | H | [library]; `analysis-core/raster-grid.ts` |
-| STD-07 | Published band validity and final vocabulary | Bare raster value views remain; spectral outputValidity and distance-field seedMask need decisions. Preserve Hampel/outlier flags meaning 1=bad. | H | [library] |
-| STD-08 | Remaining geometry layout/provenance | Offset curve and outline use fixed stride; overlay/buffer lack per-feature source rows; line-chunk requiredCount can be a lower bound; hull/bounds overflow needs named bits. | M | [library] |
+| STD-04 | Named status ports and flag vocabulary | Catchment, tiled flow, network facility/flow/time-routing/rational-access/cost-table/service-area, local Moran, hot spot and Local Geary ports exist. Per-cell codes, fractional-zonal distribution, geometry overflow beyond hull/bounds, remaining network and most other statistics remain. Decide output.ports.status on three packed-status classes. | H | [library] |
+| STD-05 | Runtime numeric parameters | Point-cloud ICP thresholds/viewpoint, hot-spot self weights, lattice cell sizes, kernel bandwidths, LOSH powers, spatial-weights summary and transpose tolerances, multivariate Geary seeds/significance and local-kriging covariance are runtime. Point-cloud neighbourhood/height/surface settings, remaining statistics props and raster affines stay baked. Three parameter mechanisms coexist. | M | [library] |
+| STD-06 | Raster context | A shared context resolver, per-frame reprojection affines and patch area/perimeter exist. Contour/flow extent and row direction, and pixel coordinate declarations remain. | H | [library]; `analysis-core/raster-grid.ts` |
+| STD-07 | Published band validity and final vocabulary | Reclassify, conditional, stretch, arithmetic, sampling, profiles, cell statistics, weighted overlay, isolines and isobands accept published bands. Other bare raster value views remain; spectral outputValidity and distance-field seedMask need decisions. Preserve Hampel/outlier flags meaning 1=bad. | H | [library] |
+| STD-08 | Remaining geometry layout/provenance | Line-chunk requiredCount is exact and saturating; hull/bounds overflow is boolean with named diagnostics. Offset curve and outline use fixed stride; overlay/buffer lack per-feature source rows. | M | [library] |
 | STD-09 | Finish core ownership | Move shared utilities/raster iteration gate to core; row tiles and list ranking only when another family needs them. Decide whether validateSinglePackedView is public. | L | [library]; `analysis-core/`; `gpu-spatial-analysis/shared/` |
-| STD-10 | Adopt shared WGSL without moving fixtures | Remaining solvers: local/RBF/space-time kriging, Vecchia, panel-lag determinant/inverse, eigen range, point-cloud Jacobi, Kalman. Also ~140 binary searches, word-order-dependent uint64, masks/accessors, QR, deprecated float tests and kernel wrappers. | M | [library]; `analysis-core/kernels/` |
-| STD-11 | Recipe consistency | Twelve recipes remain kernel-only functions; merge two utility modules, move quantile LISA out of recipes, parallelize interpolation-diagnostic/network-scenario summaries. | M | [library] |
+| STD-10 | Adopt shared WGSL without moving fixtures | Kriging, RBF, space-time kriging and Vecchia use the shared LU solve; point-cloud features and ICP use the shared Jacobi. Remaining: panel-lag determinant/inverse, eigen range, Kalman, ~140 binary searches, word-order-dependent uint64, masks/accessors, QR, deprecated float tests and kernel wrappers. | M | [library]; `analysis-core/kernels/` |
+| STD-11 | Recipe consistency | Utility modules are merged, interpolation-diagnostic and network-scenario summaries are parallel, and population support alignment is a contributor with mixed-graph operations. Eleven recipes remain kernel-only functions. | M | [library] |
 | STD-12 | Source/test/docs layout | Loose roots, multi-class files, old test names and split API pages remain; geospatial entry needs a coherent scope. | L | [library] |
 | STD-13 | Registry consistency | Rename 14 wave-named capability IDs; check coverage/docs/site against registry, correct kepler Dorling limits and group API docs by domain. | M | [library]; `ontology/all-entry-points/`; `gpu-spatial-analysis/ontology/kepler-analysis-catalog.ts` |
 | STD-14 | Packed-input policy and binding limits | 294 class files require packed input, 11 accept chunks; binding-size checks are incomplete. Decide whether joins/aggregation/density need chunking. | M | [library] |
 | STD-15 | Statistic output vocabulary | Decide minimums/minimum, counts/cellCounts and validCount/count. | L | [library] |
-| GPU-01 | Remaining serial data loops | Masked registration means/refinement, fractional tuples, adjacency union-find, structures pack, patch reconciliation, quantile mapping, Ang shell, fold designs and inequality. | M | [library] |
-| GPU-05 | Index by default | MGWR fits need gwr-grid-index; island ties ≥15 trigger an unbounded rescan. Great-circle queries outside bounds return empty. Dense pair-statistics defaults and large-radius work remain; snapping callers lack candidateCapacity. Point-cloud grid migration to published `GPUGridIndex` needs matching cell-size, upper-bound, ordering and raster-mode contracts. | H | [library]; `gpu-spatial-analysis/spatial-regression/gwr-grid-index.ts`; `gpu-spatial-analysis/spatial-weights/gpu-island-attachment.ts`; `pointcloud-analysis/pointcloud-grid-index.ts`:76–86 |
-| GPU-07 | Indexed ring/face operations | Hole-to-shell scans all rings; make-valid scans all noded segments per face. Two orientSign call sites violate the exact-helper rule. | M | [library]; `analysis-core/ring-assembly/`; `gpu-spatial-analysis/geometry-topology/gpu-make-valid.ts` |
-| GPU-08 | Terrain serial designs | Depression activation (TE03), per-pit breach search, per-basin catchment statistics and quadratic coregistration rows remain. | M | [library]; `analysis-core/kernels/parallel-merge-tree.ts` |
-| GPU-09 | Serial regression fits | Panel regression, MGWR global fit, SUR and panel-lag dense determinant remain. Reuse regression-row-tiles. | M | [library]; `gpu-spatial-analysis/spatial-regression/regression-row-tiles.ts` |
-| GPU-10 | Network optimization | Evaluate published Louvain; replace point routing only with same-edge/predecessor support; consolidate facility solvers; rework flow, rational access and time routing. | M | [library] |
-| GPU-11 | Urban/landscape scale | Use raster patches for metrics, avoid patches×cells proximity buffers, lift 64-building/256-point tessellation and visibility limits. | M | [library] |
-| GPU-12 | Geometry algorithms | Default/gate level-synchronous S2 only with budget-exhaustion parity; rework arc overlay, Delaunay flips, offset components, ratio hull, segment snap and shape moments. | M | [library] |
-| GPU-13 | Raster/dataframe scale | Region graph Borůvka rounds, sparse fractional candidates, skewed group moments, float32 counts (2^24 cap) and inequality remain. | M | [library] |
-| DUP-01 | Consolidate overlapping contributors | Kriging, variograms, facility solvers, walking/cost distance, cells, arcs/segmentize, label/MIC, equality/predicates and resistance recipes. | M | [library] |
-| DUP-03 | Cell-family parity | Complete H3/S2/Quadbin parity and one GPUCellFamily type. | M | [library] |
+| GPU-01 | Remaining serial data loops | LOSH means are parallel. Masked registration means/refinement, fractional tuples, adjacency union-find, structures pack, quantile mapping, Ang shell, fold designs and inequality remain. | M | [library] |
+| GPU-05 | Index by default | Marked point statistics and cross variograms index by default and great-circle queries outside bounds are handled. Large-radius work remains; snapping callers lack candidateCapacity. The point-cloud grid stays local: cell-size arithmetic, upper-bound inclusion, ordering and raster mode differ from published `GPUGridIndex` (`pointcloud-analysis/pointcloud-grid-index.ts`). | H | [library] |
+| GPU-09 | Serial regression fits | MGWR global fit, panel means and SUR weight validation are tiled. The panel-lag dense determinant remains. | M | [library]; `gpu-spatial-analysis/spatial-regression/regression-row-tiles.ts` |
+| GPU-10 | Network optimization | Rational access is bounded and parallel. Replace point routing only with same-edge/predecessor support; consolidate facility solvers; redesign flow and time routing. | M | [library] |
+| GPU-11 | Urban/landscape scale | Landscape metrics use raster patches with parallel seam reconciliation. Avoid patches×cells proximity buffers; lift 64-building/256-point tessellation and visibility limits. | M | [library] |
+| GPU-12 | Geometry algorithms | Level-synchronous S2 cannot be the default until budget-exhaustion behaviour matches; rework arc overlay, Delaunay flips, offset components, ratio hull, segment snap and shape moments (parallel enumeration must keep the tested descending-offset order). | M | [library] |
+| GPU-13 | Raster/dataframe scale | Skewed group moments are exact. Region graph Borůvka rounds, sparse fractional candidates, float32 counts (2^24 cap) and inequality remain. | M | [library] |
+| DUP-01 | Consolidate overlapping contributors | GPUCrossVariogram forwards to the shared indexed variogram kernels. Merging GPUKriging into GPULocalKriging needs a compatibility design (duplicates, exact hits, distance models); facility solvers, walking/cost distance, cells, arcs/segmentize, label/MIC, equality/predicates and resistance recipes remain. | M | [library] |
+| DUP-03 | Cell-family parity | Cell measures support H3, S2 and Quadbin (optional fp64); S2 supports parent, children, disk and ring. One GPUCellFamily type, S2 compaction and aggregation/covering/outline/distance parity remain. | M | [library] |
 | UPS-01 | Upstream graph algorithms on command-graph views | Then retire local topology, components and degree. | M | [proposals]; [library] |
 | UPS-02 | Offer generic algorithms upstream | Image morphology/phase correlation/GLCM, graph reachability/Brandes/SCC/flow and exact quantiles. | L | [proposals]; [library] |
 | UPS-03 | Adopt published raster operators where contracts match | Band math, contrast and neighbourhood operators still have registered gaps; state which global operators cannot tile with a halo. | M | [workarounds] |
@@ -286,12 +385,8 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 | GAP-03 | Network capabilities on consumer demand | Edge demand, nearest POIs, street statistics, simplification and angular measures. | M | [library] |
 | GAP-04 | Statistics/dataframe capabilities on consumer demand | Durbin/SLX/SDEM, GWR prediction, multi-attribute clustering, SARAR, windows, group regression and as-of joins. | L | [library] |
 | GAP-05 | Point-cloud/applied capabilities on consumer demand | Voxel-centroid producer (the fork voxel downsample wrote centroids and attribute means), k-nearest >64, cloth ground filter, raster-scale FRAGSTATS, pairwise Circuitscape and least-cost corridors. | L | [library] |
-| FX-17 | Finish atan2 triage | Reconcile remaining variogram, change-detection and rhumb sites with guardedAtan2 adoption. | L | [math]; `analysis-core/kernels/wgsl-common.ts`: `GUARDED_ATAN2_WGSL` |
-| FX-18 | Padding rows outside rings/lines | getSnapOrigin reads row 0 when the first offset is positive. Finish triangulation/standalone segment-intersection checks and reachable grouped-hull/Delaunay padding checks. | M | `gpu-spatial-analysis/polygon-coverage-topology/coverage-topology-kernels.ts`: `getSnapOrigin`; [math] |
 | LUM-21 | Dependency-carrying helpers as shader modules | About 30 kernels and 16 concatenation-order rules; assembly costs 5–17 ms/kernel. Do not convert 140 single-function snippets indiscriminately. | M | [usage] |
-| LUM-22 | Shared stable multi-key sorts | Eight local sorts; some require a gather of the sorted low word. | M | [usage]; `analysis-core/kernels/stable-lexicographic-index-sort.ts`: `createStableLexicographicIndexSortNodes` |
 | LUM-28 | Budgeted execution for long host graphs | createExecution in kepler/lenses is an unmeasured lead. | L | [usage] |
-| LUM-29 | Guard scan totals | About 20 inline totals need a bound or saturated total nodes. | M | [usage]; `analysis-core/kernels/` |
 | LUM-30 | Resource leak checks | No spec checks for leaks. Published `getResourceCounts` (`@luma.gl/core/test-utils`) reads `'Texture2Ds Active'`, which luma.gl 10 never increments, so a check must read `luma.stats.get('GPU Resource Counts')` (`'Textures Active'`, `'Buffers Active'`) directly. | L | [usage]; [proposals] |
 
 ### Precision
@@ -299,7 +394,7 @@ Delete completed rows. Update coverage when coverage changes, and the workaround
 | ID | Item | Current limit | Priority | Source |
 | --- | --- | --- | --- | --- |
 | FP64-02 / LUM-20 | Published fp64 in point-to-cell | Integer variant has equal measured accuracy but is about 3× slower than local double-float; wait for FP64-05 or public vendor helpers. | M | [usage]; `gpu-spatial-analysis/cell-indexing/h3-index-extended-wgsl.ts` |
-| FP64-03 | Optional fp64 for precision-limited parallel work | Cell measures beyond resolution 10, S2 levels 26–30, antipodal geodesics and spherical containment tolerance; CPU twins are oracles. | M | [cpu] |
+| FP64-03 | Optional fp64 for precision-limited parallel work | Cell measures accept `precision: 'fp64'`. S2 levels 26–30 outside measures, antipodal geodesics and spherical containment tolerance remain; CPU twins are oracles. | M | [cpu] |
 | FP64-05 | Measure on a non-Apple GPU | Compare classic double-single with integer-controlled arithmetic before broader adoption. | M | [cpu]; [usage] |
 
 ### New contributors: unexecuted options
@@ -314,8 +409,6 @@ Keep the research’s not-recommended candidates out of implementation; its reas
 
 | ID | Item | Current limit | Priority | Source |
 | --- | --- | --- | --- | --- |
-| LRN-01 | `GPUForestInference`: predictions (and leaf indices) of an imported random forest or boosted model over rows or a raster stack, with a CPU function that reads the scikit-learn, XGBoost and LightGBM model formats into a node array. Oracle: scikit-learn | Not implemented; effort M. | H | [new] |
-| LRN-02 | Shared fitting kernels in `analysis-core/kernels`: row-tiled gradient sums, an Adam step with a budget and a convergence status, a seeded minibatch order, coordinate encoders (Fourier, spherical harmonics) | Not implemented; effort M. | H | [new] |
 | LRN-03 | `GPUNeuralField`: a continuous surface through points or a raster for interpolation at scale, gap filling and compression; Fourier features first, a hash grid with fixed-point scatter-add second; two dimensions and space-time. Documented as not more accurate than kriging and without uncertainty. Oracle: a PyTorch script | Not implemented; effort L. | M | [new] |
 | LRN-04 | `GPUGaussianMixture`: expectation-maximization with full covariances and BIC. Oracle: scikit-learn | Not implemented; effort M. | M | [new] |
 | LRN-05 | `GPUSelfOrganizingMap` with a GeoSOM mode | Not implemented; effort S to M. | M | [new] |
@@ -323,13 +416,12 @@ Keep the research’s not-recommended candidates out of implementation; its reas
 | LRN-07 | `GPUGradientBoostedTrees`: histogram boosting trained in the browser (squared, logistic and quantile loss) | Not implemented; effort L. | L | [new] |
 | LRN-08 | `GPUTreeShap`: contribution maps per covariate | Not implemented; effort M. | L | [new] |
 | LRN-09 | An ensemble option on the fitted networks whose spread feeds the existing conformal classes | Not implemented; effort S. | L | [new] |
-| EMB-01 | Decoders for TESSERA (int8 times a per-pixel scale), Presto (uint16) and float16, and the int8 encoder the docs say is missing. Verify each formula against its source first | Not implemented; effort S. | H | [new] |
+| EMB-01 | Presto (uint16) embedding decoder | TESSERA int8 and float16 decoders and the int8 encoder exist (`GPURasterEmbeddingDequantize`, `GPURasterEmbeddingQuantize`); Presto needs a verified scaling formula (the published documentation states uint16 storage only) | M | [new] |
 | EMB-02 | More than 128 dimensions (192, 256, 384; 1,024 where the binding allows) | Not implemented; effort S. | M | [new] |
 | EMB-03 | `GPURasterEmbeddingTrajectory`: cosine to a base year, year of largest step, cumulative angle across all years | Not implemented; effort S. | M | [new] |
 | EMB-04 | `GPURasterEmbeddingAnomaly`: Mahalanobis distance from `GPURasterEmbeddingCovariance`, or distance to the nearest label | Not implemented; effort S. | M | [new] |
 | EMB-05 | A regression output on the linear probe; mean-of-references similarity | Not implemented; effort S. | M | [new] |
 | EMB-06 | Edge strength between neighbouring embeddings, as input to watershed and sieve (check the overlap with `GPURasterTexture` first) | Not implemented; effort S. | L | [new] |
-| SIM-01 | `GPUGaussianRandomField`: fields from a variogram model by `GPUFFT2D` (to 1024 by 1024, since the padded grid is capped at 2048), by random spectral modes beyond that and for points, and conditioned by kriged residuals. Lifts the 4,096-row cap of `GPUConditionalGaussianSimulation`. Oracle: GSTools | Not implemented; effort S to M. | H | [new] |
 | SIM-02 | Terrain error ensemble recipe: probable viewshed, depression probability and flow-path probability from DEM error realizations | Not implemented; effort M. | M | [new] |
 | SIM-03 | `GPUSensitivityIndices`: Sobol and Morris indices for `GPUWeightedOverlay` and other contributors with per-frame parameters. Oracle: SALib | Not implemented; effort M. | M | [new] |
 | SIM-04 | `GPURandomizedSVD` as a shared primitive; moves the EOF eigen step off the CPU. Decide first whether it belongs in luma.gl | Not implemented; effort M. | M | [new] |
@@ -341,7 +433,6 @@ Keep the research’s not-recommended candidates out of implementation; its reas
 | SIM-10 | `GPUStructuredKernelInterpolation`: the kriging mean of 100,000 to 10 million points on a grid by FFT and `GPUJacobiPCG`, with the model from the Vecchia fit; variance later. Oracle: GPyTorch | Not implemented; effort M. | M | [new] |
 | CART-01 | `GPUFlowCartogram`: contiguous density-equalising cartogram (Gastner, Seguy and More 2018) on `GPUFFT2D`. Reference programs are AGPL or modified MIT: fixtures only | Not implemented; effort M to L. | M | [new] |
 | CART-02 | `GPUPointLabelPlacement`. No public reference code; a CPU twin checked by invariants is the oracle | Not implemented; effort M. | M | [new] |
-| CART-03 | `GPURasterContrastEqualization`: CLAHE and histogram matching. Closes R7.1. Oracle: scikit-image | Not implemented; effort M. | H | [new] |
 | CART-04 | `GPUDisplacementInterpolation`: a raster between two densities at a time fraction, on the Sinkhorn kernel. Oracle: POT | Not implemented; effort M. | M | [new] |
 | CART-05 | `GPUPointClusterHierarchy`: cluster parents, counts and centroids per zoom, and a blue-noise display sample. The parallel algorithm is a design from the research, not a published one, and needs its own review | Not implemented; effort M. | M | [new] |
 | CART-06 | `GPUTravelTimeMap`: map vertices rescaled radially by travel time from an origin. Also a design from the research | Not implemented; effort S. | M | [new] |

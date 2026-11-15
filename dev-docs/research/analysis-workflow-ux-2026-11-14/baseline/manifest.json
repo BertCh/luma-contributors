@@ -1,0 +1,89 @@
+{
+  "date": "2026-11-14T23:47:38.274Z",
+  "commit": {
+    "head": "fbb78ec5dad721b9ff48783142d6f0ed61bbbc46",
+    "reference": "refs/heads/upstream-first"
+  },
+  "commitNote": "Read from .git/HEAD without running git. The measured application is the working tree, which may hold uncommitted changes.",
+  "browser": {
+    "name": "chromium",
+    "version": "151.0.7922.34",
+    "launchOptions": {
+      "channel": "chromium",
+      "args": [
+        "--enable-unsafe-webgpu",
+        "--ignore-gpu-blocklist"
+      ],
+      "headless": true
+    }
+  },
+  "webgpuAdapter": {
+    "vendor": "apple",
+    "architecture": "metal-3",
+    "device": "",
+    "description": "",
+    "isFallbackAdapter": false,
+    "featureCount": 23,
+    "maxBufferSize": 4294967292,
+    "maxStorageBufferBindingSize": 4294967292,
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36"
+  },
+  "machine": {
+    "model": "Mac15,7",
+    "memoryBytes": 38654705664,
+    "cpu": "Apple M3 Pro",
+    "platform": "darwin 23.1.0 arm64",
+    "nodeVersion": "v22.23.4"
+  },
+  "url": "http://127.0.0.1:5391/?rows=256",
+  "parameters": {
+    "rows": 256,
+    "viewport": {
+      "width": 1440,
+      "height": 1000
+    },
+    "timeoutMilliseconds": 30000,
+    "only": null
+  },
+  "script": "examples/deck/kepler-compute/scripts/ax-journey-baseline.mjs",
+  "journeyIds": [
+    "first-result:h3-cells",
+    "first-result:points-time",
+    "first-result:districts",
+    "first-result:connections",
+    "first-result:trips",
+    "first-result:trip-observations",
+    "first-result:numeric-grid",
+    "first-result:directed-network",
+    "point-hotspots:default-field",
+    "point-hotspots:reading-field",
+    "catalog-datasets:after-gallery-sample",
+    "catalog-datasets:after-native-geojson-load",
+    "catalog-builtin-sample:to-published-layer",
+    "catalog-result:published-style",
+    "interpolation-defaults:points-sample"
+  ],
+  "failedJourneys": [],
+  "screenshots": [
+    {
+      "name": "first-result-points-time.jpg",
+      "bytes": 61961
+    },
+    {
+      "name": "point-hotspots-result.jpg",
+      "bytes": 63701
+    },
+    {
+      "name": "catalog-dataset-list-after-native-load.jpg",
+      "bytes": 52445
+    },
+    {
+      "name": "catalog-published-layer-legend.jpg",
+      "bytes": 47070
+    },
+    {
+      "name": "interpolation-default-bounds.jpg",
+      "bytes": 68094
+    }
+  ]
+}

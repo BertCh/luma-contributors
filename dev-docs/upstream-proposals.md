@@ -1,6 +1,6 @@
 # Upstream proposals
 
-Nothing has been filed upstream: no issue and no pull request. Measurements cover one adapter: headless Chromium WebGPU on Apple Metal. Repository pins remain `10.0.0-alpha.13`; alpha.14 changes only colour conversion, the expression operation and SQL files, so it does not change these proposals.
+Nothing has been filed upstream: no issue and no pull request. Measurements cover one adapter: headless Chromium WebGPU on Apple Metal. Repository pins are `10.0.0-alpha.14` (bumped 2026-11-14 for the Kepler port, with deck.gl 10.0.0-alpha.1 and math.gl 5.0.0-beta.8). Between alpha.13 and alpha.14 luma.gl changed only colour conversion, the expression operation and SQL files, so proposals 1 to 14 are unchanged; proposal 15 comes from the Kepler port and was checked against the alpha.14 `dist`.
 
 ## 1. Summary for the maintainer
 
@@ -64,7 +64,7 @@ For most items below a first implementation with tests already exists: the luma.
 
 ## 2. Details and reproductions
 
-Proposal numbers 1–14 below identify the math proposals. Local source paths are under `modules/analysis/src`; published graph paths are under `node_modules/@luma.gl/graph/dist`. `spec` means committed GPU or Node evidence; `replication` means CPU arithmetic from published source, not a GPU run; `reading` means source/declarations only; `measured, not committed` means a reported test-GPU run without a committed reproducing spec. [upstream-workarounds.md](./upstream-workarounds.md) owns the retirement register. Evidence remains limited to the stated adapter and inputs.
+Proposal numbers 1–14 below identify the math proposals; 15 collects the Kepler port items (luma.gl and deck.gl). Local source paths are under `modules/analysis/src`; published graph paths are under `node_modules/@luma.gl/graph/dist`. `spec` means committed GPU or Node evidence; `replication` means CPU arithmetic from published source, not a GPU run; `reading` means source/declarations only; `measured, not committed` means a reported test-GPU run without a committed reproducing spec. [upstream-workarounds.md](./upstream-workarounds.md) owns the retirement register. Evidence remains limited to the stated adapter and inputs.
 
 ### 1. One grid cell-coordinate formula, public as WGSL
 
@@ -230,6 +230,43 @@ All rows are declaration readings. Local paths identify the symbols that could d
 3. Proposal 2: largest retirement here, six local kernels.
 4. Proposals 3, 5, 10 and 11: contained kernel/copy removals.
 5. Remaining features: 4, 7, 8, 9 and 14.
+6. Proposal 15: 15.1, 15.2 and 15.4 are small luma.gl changes; 15.6 and 15.8 go to deck.gl first because the port carries a patch for 15.6 and 15.8 affects every native non-billboard path on a globe.
+
+### 15. Kepler port items (luma.gl alpha.14 and deck.gl 10.0.0-alpha.1)
+
+Found while porting `examples/deck/kepler-compute` onto published packages (KE-PORT in [roadmap.md](./roadmap.md)). Nothing is filed. Paths: luma.gl under `node_modules/@luma.gl/<package>/dist`, deck.gl under `node_modules/@deck.gl/core`. Local code that each item would retire is listed in [upstream-workarounds.md](./upstream-workarounds.md).
+
+**15.1 Export three helpers that exist unexported in alpha.14.** Evidence: `reading` plus a failed import.
+
+- `walkTextGlyphs`, with `TextGlyphWalkOptions`, `TextGlyphVisit` and `TextRowMetrics`, is declared in `engine/dist/text/fonts/atlas/text-glyph-walker.d.ts` and documented as the canonical CPU atlas layout walk. `engine/dist/text/index.d.ts`, `experimental.d.ts` and `text-2d/index.d.ts` do not export it.
+- `alignGraphVectorViews` and `getGraphVectorData` are declared in `graph/dist/gpu-core/graph-vector-view-utils.d.ts`; `graph/dist/gpu-core/index.d.ts` does not export that module.
+- Reproduction (`reading`: the entry-point declarations were read, the import was not compiled separately): `import {walkTextGlyphs} from '@luma.gl/engine/text'` has no exported member to resolve. Likewise `import {alignGraphVectorViews} from '@luma.gl/graph/gpu-core'`. An `_internal` or deep `dist` import is forbidden here ([upstream-first-plan.md](./upstream-first-plan.md)).
+- Request: export the three names from `@luma.gl/engine/text` and `@luma.gl/graph/gpu-core` with their types. Retires `walkKeplerLabelGlyphs` and `alignKeplerGraphVectorViews`; the local copies match the declared behaviour and are used by the label and resident-chart paths.
+
+**15.2 A typed out-of-memory error.** Published `@luma.gl/core` exports no `OutOfMemoryError`, and an asynchronous WebGPU out-of-memory is not thrown. Reproduction (`reading`, plus the example's scope helper): allocate buffers until the device reports out-of-memory; the error arrives through the uncaptured-error path as a plain `Error`, and `Device.pushErrorScope` does nothing outside debug mode. Request: the fork's typed error and scope balancing (`modules/core/src/api/utils/out-of-memory-error.ts` at `e0ed33791`; section 5). Kepler works around it with `KeplerDeviceOutOfMemoryError` and a raw-handle scope in `binding5-device-oom-scope.ts`.
+
+**15.3 Resource planning before compile.** `GPUCommandGraph.planResources()` and `compilationStats` are absent, so Kepler admits after compile (`MeteredCommandGraph`). Request and fork reference are in section 5 ("Resource planning without allocation").
+
+**15.4 Text atlas options the port needed.** Evidence: `spec` for mipmaps (`modules/kepler/test/gpu-layers/gpu-point-label-layer.spec.ts`), `reading` for the cache.
+
+- `GPUTextResourcesProps` has `fontAtlas` and `id` only; the atlas texture is a one-level `2d-array` with `{minFilter: 'linear', magFilter: 'linear'}` and no `mipmapFilter` (`engine/dist/text/text-2d/gpu-text-resources.js`). The fork accepted `mipmaps` and set `mipmapFilter: 'linear'` with `mipLevels: 'auto'`.
+- Reproduction: build a bitmap atlas at the default 64 px, draw labels at 15 to 24 px with `GPUTextResources`, and compare with the deck.gl 10 `TextLayer` on the same text and font. The label paints one pixel narrower (about 290 differing pixels of about 360 painted, maximum channel error 167). Swapping in a `DynamicTexture` with `mipmaps: true`, `mipLevels: 'auto'` and `mipmapFilter: 'linear'` brings the same comparison under the original tolerance (12 differing pixels, error at most 12), in cartesian and geographic views, for three anchor and alignment settings.
+- `BrowserFontAtlasSettings` has no `cache`. `buildBitmapFontAtlas` always caches per font settings (three entries) and extends the shared canvas and mapping in place; the fork's `cache: false` returned a private atlas for explicit ownership (`modules/engine/src/text/fonts/build-bitmap-font-atlas.ts`).
+- Request: `mipmaps` on `GPUTextResourcesProps` (and the mip filter on the sampler when set), and `cache?: boolean` on the bitmap atlas settings.
+
+**15.5 Geometry, polygon-contiguity and trip preparation.** The fork's engine arrow module (`modules/engine/src/arrow/geometry/` at `e0ed33791`) prepared native GeoArrow, WKB and JSON geometry for GPU rendering, globe cutting, timed trips and fp64 residuals. The port re-homed it as 22 Kepler-prefixed symbols in `examples/deck/kepler-compute/src/geometry-preparation/` on public APIs. Request: a public geometry-preparation module in engine or graph/arrow. One finding for `@math.gl/arrow` (evidence: `spec`, `modules/kepler/test/resident-select-geometry.node.spec.ts`; the failing route was probed in the geometry stream): a `FixedSizeList(3, Field('value', Float64))` point vector throws `Ambiguous three-component coordinates` on the default, generic and explicit-dimension routes; unnamed three-wide lists should default to `xyz` or accept a dimension. The local helper `nameKeplerCoordinateDimension` renames the child field and shares the buffers.
+
+**15.6 Three hunks against deck.gl 10.0.0-alpha.1.** Carried as a yarn patch of `@deck.gl/core` (`.yarn/patches/@deck.gl-core-npm-10.0.0-alpha.1-*.patch`; the hunks are in `src/lib/deck-renderer.ts`, `src/lib/deck-picker.ts` and `src/lib/deck.ts`). Evidence: `reading` of deck.gl source and confirmation that the patch is installed; none was exercised in a browser during the port. Reproductions below are the sequences the code paths imply.
+
+1. Depth attachment on the effect input. `DeckRenderer` creates its two render buffers with `colorAttachments` only (`deck-renderer.ts`, around `deck-renderbuffer-${i}`). Reproduction: render two overlapping layers with depth testing (for example extruded `ColumnLayer`s at different distances) with any effect in `effects`; the scene pass runs with no depth attachment, so later layers paint over nearer ones. Fix: `depthStencilAttachment: 'depth24plus'` on the first buffer; the second (swap) buffer only receives fullscreen effects.
+2. Hover clear on canvas leave. `DeckPicker.pickObject` and `pickObjects` return `{result: [], emptyInfo}` early when there are no viewports, without `processPickInfo`, so `lastPickedInfo` keeps the previous object. Reproduction: hover a pickable layer with `onHover` and a highlight, then move the pointer off the canvas; `onHover` is not called with a cleared info and the highlight stays. Fix: run `processPickInfo` with `pickedColor: null, pickedObjectIndex: -1` in that branch and return the infos that carry a layer.
+3. `isHovering` from `info.picked`. `Deck._onPointerMove` sets `cursorState.isHovering = result.length > 0` (`deck.ts`). A result array can hold infos with `picked: false` (a cleared layer), so the cursor keeps its picking style over empty space. Fix: `result.some(info => info.picked)`.
+
+Request: three small pull requests, or one, with these reproductions turned into tests in deck.gl's picking and effects suites.
+
+**15.7 Flow particle spawn region.** `FlowParticleSimulation` in alpha.14 (`graph/dist/experimental/simulation/flow-particle-simulation.d.ts`) has `setField`, `reset` and `step` only. The fork's `setSpawnRegion(region)` (`modules/graph/src/experimental/simulation/flow-particle-simulation.ts`, `flow-particle-shaders.ts` at `e0ed33791`) added a `spawn` rectangle uniform in normalized field coordinates: particles spawn inside it and respawn when they leave it. Reproduction: zoom a Flow Field layer to a tenth of the field; with the published class roughly a hundredth of the particle budget is on screen (area scales with the square of the zoom; not measured), where the fork kept the budget on screen. Evidence: `reading` and the fork shader. Request: a spawn region on the simulation props or as a setter, defaulting to the full field.
+
+**15.8 deck.gl 10 WGSL `PathLayer` on a globe, non-billboard paths.** In `core/src/shaderlib/path/path.wgsl.ts` (lines 149 to 152) the join code writes `deltaA3 = rotationResult.transform * deltaA3` and the same for `deltaB3`. The GLSL path layer (`layers/dist/path-layer/path-layer-vertex.glsl.js`, `deltaA3 = deltaA3 * rotationMatrix`) multiplies from the left, which is the product with the transposed matrix. WGSL `M * v` is the untransposed product, so the tangent-frame rotation of the segment deltas is inverted. Reproduction (measured in the port's headless run by the gpu-layers stream; not committed as a spec): render the same path on a `GlobeView` with `billboard: false` through deck's native WGSL `PathLayer` and through the resident path layer, which applies the transpose; the native layer paints 38 pixels where the resident one paints 254. With `billboard: true` the two agree, because the rotation branch is skipped. Request: use `transpose(rotationResult.transform) * delta` (or multiply from the left) in `path.wgsl.ts`, with a `GlobeView` render test for non-billboard paths.
 
 ## 3. GPU-resident iteration (PLAT-04)
 

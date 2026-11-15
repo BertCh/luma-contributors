@@ -1,0 +1,1552 @@
+[
+  {
+    "id": "first-result:h3-cells",
+    "title": "Gallery sample h3-cells to first analysis result",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('.sample-gallery select') = h3-cells",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-dataset') = {\"label\":\"Exact H3 cells\"}",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-operation') = z-score",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 9,
+    "setupActionCount": 7,
+    "analysisActionCount": 2,
+    "milliseconds": 1076,
+    "setupMilliseconds": 877,
+    "endCondition": "The GPU analysis panel shows a live result block with \"N analyzed · M undefined\" and a transformed value range for the chosen dataset.",
+    "outcome": "result-visible",
+    "observations": {
+      "analysisDatasetSelectedAfterLoad": "Resident observations",
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "Exact H3 cells"
+      ],
+      "sampleRowCount": 6,
+      "numericFieldOptions": [
+        "measurement"
+      ],
+      "defaultNumericField": "measurement",
+      "defaultFieldIsCoordinate": false,
+      "resultSummary": {
+        "analyzedCount": 6,
+        "undefinedCount": 0,
+        "rangeMinimum": "-0.968",
+        "rangeMaximum": "1.614",
+        "text": "6 analyzed · 0 undefined | Transformed value range: -0.968 to 1.614 | Mean: -0 | Source revision 1"
+      }
+    },
+    "probes": [
+      {
+        "probe": "legend panel text after the result (opened by clicking the map legend button; not counted)",
+        "value": "Legend\nExact H3 cells\nFill color\nGPU observations\nFill color"
+      }
+    ],
+    "notes": [],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release.",
+      "Cannot update a component (`%s`) while rendering a different component (`%s`). To locate the bad setState() call inside `%s`, follow the stack trace as described in https://react.dev/link/setstate-in-render MemoryManagerPanel MapContainer MapContainer"
+    ]
+  },
+  {
+    "id": "first-result:points-time",
+    "title": "Gallery sample points-time to first analysis result",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-dataset') = {\"label\":\"Observations through time\"}",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-operation') = z-score",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 8,
+    "setupActionCount": 6,
+    "analysisActionCount": 2,
+    "milliseconds": 947,
+    "setupMilliseconds": 745,
+    "endCondition": "The GPU analysis panel shows a live result block with \"N analyzed · M undefined\" and a transformed value range for the chosen dataset.",
+    "outcome": "result-visible",
+    "observations": {
+      "analysisDatasetSelectedAfterLoad": "Resident observations",
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "Observations through time"
+      ],
+      "sampleRowCount": 256,
+      "numericFieldOptions": [
+        "longitude",
+        "latitude",
+        "reading"
+      ],
+      "defaultNumericField": "longitude",
+      "defaultFieldIsCoordinate": true,
+      "resultSummary": {
+        "analyzedCount": 256,
+        "undefinedCount": 0,
+        "rangeMinimum": "-1.624",
+        "rangeMaximum": "1.624",
+        "text": "256 analyzed · 0 undefined | Transformed value range: -1.624 to 1.624 | Mean: 0 | Source revision 1"
+      }
+    },
+    "probes": [
+      {
+        "probe": "legend panel text after the result (opened by clicking the map legend button; not counted)",
+        "value": "Legend\nObservations through time\nFill color\nGPU observations\nFill color"
+      }
+    ],
+    "notes": [
+      "points-time is the gallery default, so no select action is needed.",
+      "The default numeric field is the coordinate column longitude; analysing a measurement needs one more select action."
+    ],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release."
+    ]
+  },
+  {
+    "id": "first-result:districts",
+    "title": "Gallery sample districts to first analysis result",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('.sample-gallery select') = districts",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-dataset') = {\"label\":\"District counts and populations\"}",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-operation') = z-score",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 9,
+    "setupActionCount": 7,
+    "analysisActionCount": 2,
+    "milliseconds": 1157,
+    "setupMilliseconds": 889,
+    "endCondition": "The GPU analysis panel shows a live result block with \"N analyzed · M undefined\" and a transformed value range for the chosen dataset.",
+    "outcome": "result-visible",
+    "observations": {
+      "analysisDatasetSelectedAfterLoad": "Resident observations",
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "District counts and populations"
+      ],
+      "sampleRowCount": 16,
+      "numericFieldOptions": [
+        "events",
+        "population"
+      ],
+      "defaultNumericField": "events",
+      "defaultFieldIsCoordinate": false,
+      "resultSummary": {
+        "analyzedCount": 16,
+        "undefinedCount": 0,
+        "rangeMinimum": "-1.659",
+        "rangeMaximum": "1.559",
+        "text": "16 analyzed · 0 undefined | Transformed value range: -1.659 to 1.559 | Mean: 0 | Source revision 1"
+      }
+    },
+    "probes": [
+      {
+        "probe": "legend panel text after the result (opened by clicking the map legend button; not counted)",
+        "value": "Legend\nDistrict counts and populations\nFill color\nOutline\nGPU observations\nFill color"
+      }
+    ],
+    "notes": [],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release.",
+      "Cannot update a component (`%s`) while rendering a different component (`%s`). To locate the bad setState() call inside `%s`, follow the stack trace as described in https://react.dev/link/setstate-in-render MemoryManagerPanel MapContainer MapContainer"
+    ]
+  },
+  {
+    "id": "first-result:connections",
+    "title": "Gallery sample connections to first analysis result",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('.sample-gallery select') = connections",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-dataset') = {\"label\":\"Origin and destination flows\"}",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-operation') = z-score",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 9,
+    "setupActionCount": 7,
+    "analysisActionCount": 2,
+    "milliseconds": 1020,
+    "setupMilliseconds": 853,
+    "endCondition": "The GPU analysis panel shows a live result block with \"N analyzed · M undefined\" and a transformed value range for the chosen dataset.",
+    "outcome": "result-visible",
+    "observations": {
+      "analysisDatasetSelectedAfterLoad": "Resident observations",
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "Origin and destination flows"
+      ],
+      "sampleRowCount": 24,
+      "numericFieldOptions": [
+        "longitude",
+        "latitude",
+        "targetLongitude",
+        "targetLatitude",
+        "volume",
+        "duration_minutes"
+      ],
+      "defaultNumericField": "longitude",
+      "defaultFieldIsCoordinate": true,
+      "resultSummary": {
+        "analyzedCount": 24,
+        "undefinedCount": 0,
+        "rangeMinimum": "-1.433",
+        "rangeMaximum": "1.433",
+        "text": "24 analyzed · 0 undefined | Transformed value range: -1.433 to 1.433 | Mean: 0 | Source revision 1"
+      }
+    },
+    "probes": [
+      {
+        "probe": "legend panel text after the result (opened by clicking the map legend button; not counted)",
+        "value": "Legend\nOrigin and destination flows\nFill color\nOutline\nGPU observations\nFill color"
+      }
+    ],
+    "notes": [
+      "The default numeric field is the coordinate column longitude; analysing a measurement needs one more select action."
+    ],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release.",
+      "Cannot update a component (`%s`) while rendering a different component (`%s`). To locate the bad setState() call inside `%s`, follow the stack trace as described in https://react.dev/link/setstate-in-render MemoryManagerPanel MapContainer MapContainer"
+    ]
+  },
+  {
+    "id": "first-result:trips",
+    "title": "Gallery sample trips to first analysis result",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('.sample-gallery select') = trips",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-dataset') = {\"label\":\"Timed routes\"}",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-operation') = z-score",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 9,
+    "setupActionCount": 7,
+    "analysisActionCount": 2,
+    "milliseconds": 1038,
+    "setupMilliseconds": 800,
+    "endCondition": "The GPU analysis panel shows a live result block with \"N analyzed · M undefined\" and a transformed value range for the chosen dataset.",
+    "outcome": "result-visible",
+    "observations": {
+      "analysisDatasetSelectedAfterLoad": "Resident observations",
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "Timed routes"
+      ],
+      "sampleRowCount": 8,
+      "numericFieldOptions": [
+        "duration_seconds",
+        "passengers"
+      ],
+      "defaultNumericField": "duration_seconds",
+      "defaultFieldIsCoordinate": false,
+      "resultSummary": {
+        "analyzedCount": 8,
+        "undefinedCount": 0,
+        "rangeMinimum": "0",
+        "rangeMaximum": "0",
+        "text": "8 analyzed · 0 undefined | Transformed value range: 0 to 0 | Mean: 0 | Source revision 1"
+      }
+    },
+    "probes": [
+      {
+        "probe": "legend panel text after the result (opened by clicking the map legend button; not counted)",
+        "value": "Legend\nTimed routes\nFill color\nGPU observations\nFill color"
+      }
+    ],
+    "notes": [
+      "The result range is a single value, so the first result is degenerate for this sample (the default field is constant)."
+    ],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release.",
+      "Cannot update a component (`%s`) while rendering a different component (`%s`). To locate the bad setState() call inside `%s`, follow the stack trace as described in https://react.dev/link/setstate-in-render MemoryManagerPanel MapContainer MapContainer"
+    ]
+  },
+  {
+    "id": "first-result:trip-observations",
+    "title": "Gallery sample trip-observations to first analysis result",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('.sample-gallery select') = trip-observations",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-dataset') = {\"label\":\"Grouped trip observations\"}",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-operation') = z-score",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 9,
+    "setupActionCount": 7,
+    "analysisActionCount": 2,
+    "milliseconds": 1055,
+    "setupMilliseconds": 858,
+    "endCondition": "The GPU analysis panel shows a live result block with \"N analyzed · M undefined\" and a transformed value range for the chosen dataset.",
+    "outcome": "result-visible",
+    "observations": {
+      "analysisDatasetSelectedAfterLoad": "Resident observations",
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "Grouped trip observations"
+      ],
+      "sampleRowCount": 48,
+      "numericFieldOptions": [
+        "longitude",
+        "latitude",
+        "speed"
+      ],
+      "defaultNumericField": "longitude",
+      "defaultFieldIsCoordinate": true,
+      "resultSummary": {
+        "analyzedCount": 48,
+        "undefinedCount": 0,
+        "rangeMinimum": "-1.449",
+        "rangeMaximum": "1.449",
+        "text": "48 analyzed · 0 undefined | Transformed value range: -1.449 to 1.449 | Mean: 0 | Source revision 1"
+      }
+    },
+    "probes": [
+      {
+        "probe": "legend panel text after the result (opened by clicking the map legend button; not counted)",
+        "value": "Legend\nGrouped trip observations\nFill color\nGPU observations\nFill color"
+      }
+    ],
+    "notes": [
+      "The default numeric field is the coordinate column longitude; analysing a measurement needs one more select action."
+    ],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release.",
+      "Cannot update a component (`%s`) while rendering a different component (`%s`). To locate the bad setState() call inside `%s`, follow the stack trace as described in https://react.dev/link/setstate-in-render MemoryManagerPanel MapContainer MapContainer"
+    ]
+  },
+  {
+    "id": "first-result:numeric-grid",
+    "title": "Gallery sample numeric-grid to first analysis result",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('.sample-gallery select') = numeric-grid",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-dataset') = {\"label\":\"Numeric grid\"}",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-operation') = z-score",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 9,
+    "setupActionCount": 7,
+    "analysisActionCount": 2,
+    "milliseconds": 967,
+    "setupMilliseconds": 796,
+    "endCondition": "The GPU analysis panel shows a live result block with \"N analyzed · M undefined\" and a transformed value range for the chosen dataset.",
+    "outcome": "result-visible",
+    "observations": {
+      "analysisDatasetSelectedAfterLoad": "Resident observations",
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "Numeric grid"
+      ],
+      "sampleRowCount": 256,
+      "numericFieldOptions": [
+        "longitude",
+        "latitude",
+        "value"
+      ],
+      "defaultNumericField": "value",
+      "defaultFieldIsCoordinate": false,
+      "resultSummary": {
+        "analyzedCount": 253,
+        "undefinedCount": 0,
+        "rangeMinimum": "-0.872",
+        "rangeMaximum": "3.416",
+        "text": "253 analyzed · 0 undefined | Transformed value range: -0.872 to 3.416 | Mean: -0 | Source revision 1"
+      }
+    },
+    "probes": [
+      {
+        "probe": "legend panel text after the result (opened by clicking the map legend button; not counted)",
+        "value": "Legend\nNumeric grid\nFill color\nGPU observations\nFill color"
+      }
+    ],
+    "notes": [
+      "253 of 256 rows were analyzed; the rest are undefined (missing values)."
+    ],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release."
+    ]
+  },
+  {
+    "id": "first-result:directed-network",
+    "title": "Gallery sample directed-network to first analysis result",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('.sample-gallery select') = directed-network",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-dataset') = {\"label\":\"Directed network edges\"}",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-operation') = z-score",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 9,
+    "setupActionCount": 7,
+    "analysisActionCount": 2,
+    "milliseconds": 974,
+    "setupMilliseconds": 808,
+    "endCondition": "The GPU analysis panel shows a live result block with \"N analyzed · M undefined\" and a transformed value range for the chosen dataset.",
+    "outcome": "result-visible",
+    "observations": {
+      "analysisDatasetSelectedAfterLoad": "Resident observations",
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "Directed network edges"
+      ],
+      "sampleRowCount": 48,
+      "numericFieldOptions": [
+        "cost_seconds",
+        "length_metres"
+      ],
+      "defaultNumericField": "cost_seconds",
+      "defaultFieldIsCoordinate": false,
+      "resultSummary": {
+        "analyzedCount": 48,
+        "undefinedCount": 0,
+        "rangeMinimum": "-1.449",
+        "rangeMaximum": "1.449",
+        "text": "48 analyzed · 0 undefined | Transformed value range: -1.449 to 1.449 | Mean: -0 | Source revision 1"
+      }
+    },
+    "probes": [
+      {
+        "probe": "legend panel text after the result (opened by clicking the map legend button; not counted)",
+        "value": "Legend\nDirected network edges\nFill color\nOutline\nGPU observations\nFill color"
+      }
+    ],
+    "notes": [],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release.",
+      "Cannot update a component (`%s`) while rendering a different component (`%s`). To locate the bad setState() call inside `%s`, follow the stack trace as described in https://react.dev/link/setstate-in-render MemoryManagerPanel MapContainer MapContainer"
+    ]
+  },
+  {
+    "id": "point-hotspots:default-field",
+    "title": "Point hot spots on the points sample with the default numeric field",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-dataset') = {\"label\":\"Observations through time\"}",
+        "phase": "analysis"
+      },
+      {
+        "action": "click",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('.analysis-point-hotspot-settings > summary')",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-point-hotspot-longitude') = longitude",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-point-hotspot-latitude') = latitude",
+        "phase": "analysis"
+      },
+      {
+        "action": "click",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').getByRole('button', { name: 'Apply neighbors and run point hot spots', exact: true })",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 11,
+    "setupActionCount": 6,
+    "analysisActionCount": 5,
+    "milliseconds": 1081,
+    "setupMilliseconds": 792,
+    "endCondition": "The GPU analysis panel shows \"N analyzed · M undefined\" and a \"Hot-spot z-score range\" line for the points sample.",
+    "outcome": "result-visible",
+    "observations": {
+      "analysisDatasetSelectedAfterLoad": "Resident observations",
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "Observations through time"
+      ],
+      "defaultNumericField": "longitude",
+      "formControlsBeforeEditing": [
+        {
+          "id": "analysis-point-hotspot-coordinate-space",
+          "label": "Hot-spot coordinate system",
+          "value": "longitude-latitude"
+        },
+        {
+          "id": "analysis-point-hotspot-longitude",
+          "label": "Hot-spot longitude field",
+          "value": ""
+        },
+        {
+          "id": "analysis-point-hotspot-latitude",
+          "label": "Hot-spot latitude field",
+          "value": ""
+        },
+        {
+          "id": "analysis-point-hotspot-topology",
+          "label": "Hot-spot topology",
+          "value": "knn"
+        },
+        {
+          "id": "analysis-point-hotspot-neighbors",
+          "label": "Hot-spot nearest neighbors",
+          "value": "8"
+        },
+        {
+          "id": "analysis-point-hotspot-minimum",
+          "label": "Hot-spot minimum neighbors",
+          "value": "8"
+        },
+        {
+          "id": "analysis-point-hotspot-self",
+          "label": "Hot-spot self weight",
+          "value": "1"
+        },
+        {
+          "id": "analysis-point-hotspot-islands",
+          "label": "Isolated points in global statistics",
+          "value": "exclude"
+        },
+        {
+          "id": "analysis-point-hotspot-correction",
+          "label": "Point hot-spot correction",
+          "value": "benjamini-hochberg"
+        }
+      ],
+      "blankFieldsBeforeEditing": [
+        "Hot-spot longitude field",
+        "Hot-spot latitude field"
+      ],
+      "resultSummary": {
+        "analyzedCount": 256,
+        "undefinedCount": 0,
+        "rangeMinimum": "-4.298",
+        "rangeMaximum": "4.298",
+        "text": "256 analyzed · 0 undefined | Hot-spot z-score range: -4.298 to 4.298 | Mean: -0.011 | 2,048 point neighbor links · 0 invalid coordinate rows | Point weights path: single CSR | 2,048 neighbor links · 0 undefined rows |  | Bin −1/−2/−3 indicates cold spots; +1/+2/+3 indicates hot spots at 90/95/99% confidence after the selected correction. Bin 0 is not significant or undefined; inspect its z-score and p-value. |  | Source revision 1"
+      }
+    },
+    "probes": [],
+    "notes": [
+      "points-time is the gallery default, so no select action is needed.",
+      "Action count excluding the dataset selection (the convention of the plan) is analysisActionCount minus one when the dataset select was a counted step."
+    ],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release."
+    ]
+  },
+  {
+    "id": "point-hotspots:reading-field",
+    "title": "Point hot spots on the points sample with the reading field chosen",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-dataset') = {\"label\":\"Observations through time\"}",
+        "phase": "analysis"
+      },
+      {
+        "action": "click",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('.analysis-point-hotspot-settings > summary')",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-column') = reading",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-point-hotspot-longitude') = longitude",
+        "phase": "analysis"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-point-hotspot-latitude') = latitude",
+        "phase": "analysis"
+      },
+      {
+        "action": "click",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').getByRole('button', { name: 'Apply neighbors and run point hot spots', exact: true })",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 12,
+    "setupActionCount": 6,
+    "analysisActionCount": 6,
+    "milliseconds": 1248,
+    "setupMilliseconds": 855,
+    "endCondition": "The GPU analysis panel shows \"N analyzed · M undefined\" and a \"Hot-spot z-score range\" line for the points sample.",
+    "outcome": "result-visible",
+    "observations": {
+      "analysisDatasetSelectedAfterLoad": "Resident observations",
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "Observations through time"
+      ],
+      "defaultNumericField": "longitude",
+      "formControlsBeforeEditing": [
+        {
+          "id": "analysis-point-hotspot-coordinate-space",
+          "label": "Hot-spot coordinate system",
+          "value": "longitude-latitude"
+        },
+        {
+          "id": "analysis-point-hotspot-longitude",
+          "label": "Hot-spot longitude field",
+          "value": ""
+        },
+        {
+          "id": "analysis-point-hotspot-latitude",
+          "label": "Hot-spot latitude field",
+          "value": ""
+        },
+        {
+          "id": "analysis-point-hotspot-topology",
+          "label": "Hot-spot topology",
+          "value": "knn"
+        },
+        {
+          "id": "analysis-point-hotspot-neighbors",
+          "label": "Hot-spot nearest neighbors",
+          "value": "8"
+        },
+        {
+          "id": "analysis-point-hotspot-minimum",
+          "label": "Hot-spot minimum neighbors",
+          "value": "8"
+        },
+        {
+          "id": "analysis-point-hotspot-self",
+          "label": "Hot-spot self weight",
+          "value": "1"
+        },
+        {
+          "id": "analysis-point-hotspot-islands",
+          "label": "Isolated points in global statistics",
+          "value": "exclude"
+        },
+        {
+          "id": "analysis-point-hotspot-correction",
+          "label": "Point hot-spot correction",
+          "value": "benjamini-hochberg"
+        }
+      ],
+      "blankFieldsBeforeEditing": [
+        "Hot-spot longitude field",
+        "Hot-spot latitude field"
+      ],
+      "resultSummary": {
+        "analyzedCount": 195,
+        "undefinedCount": 52,
+        "rangeMinimum": "-5.002",
+        "rangeMaximum": "5.017",
+        "text": "195 analyzed · 52 undefined | Hot-spot z-score range: -5.002 to 5.017 | Mean: 0.098 | 2,048 point neighbor links · 0 invalid coordinate rows | Point weights path: single CSR | 2,048 neighbor links · 52 undefined rows |  | Bin −1/−2/−3 indicates cold spots; +1/+2/+3 indicates hot spots at 90/95/99% confidence after the selected correction. Bin 0 is not significant or undefined; inspect its z-score and p-value. |  | Source revision 1"
+      }
+    },
+    "probes": [],
+    "notes": [
+      "points-time is the gallery default, so no select action is needed.",
+      "Action count excluding the dataset selection (the convention of the plan) is analysisActionCount minus one when the dataset select was a counted step."
+    ],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release."
+    ]
+  },
+  {
+    "id": "catalog-datasets:after-gallery-sample",
+    "title": "Catalog dataset list after the districts sample is prepared through the gallery",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('.sample-gallery select') = districts",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "getByRole('region', { name: 'Analysis catalog', exact: true }).locator('select[aria-label$=\" source\"]').first() = native",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 8,
+    "setupActionCount": 7,
+    "analysisActionCount": 1,
+    "milliseconds": 931,
+    "setupMilliseconds": 915,
+    "endCondition": "The first catalog input is switched to Native dataset and its dataset select options are read.",
+    "outcome": "observed",
+    "observations": {
+      "catalogDatasetOptions": [
+        "Choose dataset"
+      ],
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "District counts and populations"
+      ],
+      "preparedDatasetInCatalog": false
+    },
+    "probes": [],
+    "notes": [],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release.",
+      "Cannot update a component (`%s`) while rendering a different component (`%s`). To locate the bad setState() call inside `%s`, follow the stack trace as described in https://react.dev/link/setstate-in-render MemoryManagerPanel MapContainer MapContainer"
+    ]
+  },
+  {
+    "id": "catalog-datasets:after-native-geojson-load",
+    "title": "Catalog dataset list after a GeoJSON file is added through Add Data and auto-prepared",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-file",
+        "target": "locator('.ReactModal__Content input[type=file]').first() = ax-two-squares.geojson",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "locator('.ReactModal__Content').getByRole('button', { name: 'Add Data', exact: true }).last()",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "getByRole('region', { name: 'Analysis catalog', exact: true }).locator('select[aria-label$=\" source\"]').first() = native",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 4,
+    "setupActionCount": 3,
+    "analysisActionCount": 1,
+    "milliseconds": 1165,
+    "setupMilliseconds": 1094,
+    "endCondition": "The first catalog input is switched to Native dataset and its dataset select options are read after the file was auto-prepared.",
+    "outcome": "observed",
+    "observations": {
+      "autoPrepared": true,
+      "keplerDatasetCountText": "Datasets(2)",
+      "catalogDatasetOptions": [
+        "Choose dataset"
+      ],
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "ax-two-squares.geojson"
+      ],
+      "preparedDatasetInCatalog": false
+    },
+    "probes": [],
+    "notes": [],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release.",
+      "Cannot update a component (`%s`) while rendering a different component (`%s`). To locate the bad setState() call inside `%s`, follow the stack trace as described in https://react.dev/link/setstate-in-render MemoryManagerPanel MapContainer MapContainer"
+    ]
+  },
+  {
+    "id": "catalog-builtin-sample:to-published-layer",
+    "title": "Catalog default operation on its built-in sample to a published layer",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('region', { name: 'Analysis catalog', exact: true }).getByTestId('catalog-run')",
+        "phase": "analysis"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('region', { name: 'Analysis catalog', exact: true }).getByTestId('catalog-publish').first()",
+        "phase": "analysis"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "analysis"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "analysis"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "analysis"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 6,
+    "setupActionCount": 0,
+    "analysisActionCount": 6,
+    "milliseconds": 780,
+    "setupMilliseconds": null,
+    "endCondition": "A new valid native layer for the published catalog table exists in the compute runtime state.",
+    "outcome": "result-visible",
+    "observations": {
+      "defaultOperation": "geometry-validity",
+      "catalogResultText": "Engine: GPU (GPUGeometryValidity)\n\nfeatureCount: 3 · invalidCount: 2 · skippedCount: 0\n\n[warning] invalid-geometry ×2: Features failed validity; none were repaired. Use the topology repair operation.\n[info] gpu-validity-scope ×1: GPU validity checks closure, short rings, repeated vertices, orientation, self-intersection, ring crossings and holes outside shells; zero-area rings are not a separate flag.\nGeometry validity: 3 rows Stage in Sources\nsource_index\tsource_id\tstatus\terror_count\twarning_count\tissues\n0\tpolygon-0\tvalid\t0\t0\t\n1\tpolygon-1\tinvalid\t1\t0\tself-intersection\n2\tpolygon-2\tinvalid\t1\t1\t",
+      "nativeLayers": [
+        {
+          "id": "resident-points",
+          "type": "point",
+          "dataId": "resident-observations",
+          "visible": true
+        },
+        {
+          "id": "resident-published-1-geometry",
+          "type": "geojson",
+          "dataId": "resident-published-1",
+          "visible": true
+        }
+      ]
+    },
+    "probes": [],
+    "notes": [],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release.",
+      "Cannot update a component (`%s`) while rendering a different component (`%s`). To locate the bad setState() call inside `%s`, follow the stack trace as described in https://react.dev/link/setstate-in-render MemoryManagerPanel MapContainer MapContainer"
+    ]
+  },
+  {
+    "id": "catalog-result:published-style",
+    "title": "Look of the published catalog result (same page as catalog-builtin-sample:to-published-layer)",
+    "steps": [
+      {
+        "action": "click",
+        "target": "locator('.map-control-button.show-legend')",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 1,
+    "setupActionCount": 0,
+    "analysisActionCount": 1,
+    "milliseconds": 266,
+    "setupMilliseconds": null,
+    "endCondition": "The map legend panel is open and its text is read; a screenshot is saved.",
+    "outcome": "observed",
+    "observations": {
+      "legendText": "Legend\nGeometry validity\nFill color\nOutline\nGPU observations\nFill color",
+      "legendMentionsColorByField": false,
+      "dominantMapColors": [
+        {
+          "quantizedRgb": [
+            16,
+            16,
+            32
+          ],
+          "pixels": 824467
+        },
+        {
+          "quantizedRgb": [
+            64,
+            160,
+            192
+          ],
+          "pixels": 81906
+        },
+        {
+          "quantizedRgb": [
+            32,
+            32,
+            48
+          ],
+          "pixels": 14214
+        },
+        {
+          "quantizedRgb": [
+            32,
+            48,
+            48
+          ],
+          "pixels": 3515
+        }
+      ],
+      "layerPanelTypes": [
+        "Geojson",
+        "Point"
+      ]
+    },
+    "probes": [],
+    "notes": [],
+    "consoleErrors": []
+  },
+  {
+    "id": "interpolation-defaults:points-sample",
+    "title": "IDW and kriging default bounds on the points sample",
+    "steps": [
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Add Data', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Prepare data', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByText('Try a sample dataset', { exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Prepare sample', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Check schema and precision', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "click",
+        "target": "getByRole('button', { name: 'Publish selected fields', exact: true })",
+        "phase": "setup"
+      },
+      {
+        "action": "select-option",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('#analysis-dataset') = {\"label\":\"Observations through time\"}",
+        "phase": "analysis"
+      },
+      {
+        "action": "click",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('.analysis-interpolation-settings > summary')",
+        "phase": "analysis"
+      },
+      {
+        "action": "click",
+        "target": "locator('section[aria-label=\"GPU analysis\"]').locator('.analysis-kriging-settings > summary')",
+        "phase": "analysis"
+      }
+    ],
+    "actionCount": 9,
+    "setupActionCount": 6,
+    "analysisActionCount": 3,
+    "milliseconds": 940,
+    "setupMilliseconds": 806,
+    "endCondition": "The IDW and kriging forms are open and their default bounds are read.",
+    "outcome": "observed",
+    "observations": {
+      "analysisDatasetSelectedAfterLoad": "Resident observations",
+      "analysisDatasetOptions": [
+        "Resident observations",
+        "Observations through time"
+      ],
+      "idwDefaultBounds": {
+        "west": "-74.1",
+        "south": "40.65",
+        "east": "-73.9",
+        "north": "40.85"
+      },
+      "krigingDefaultBounds": {
+        "west": "-74.1",
+        "south": "40.65",
+        "east": "-73.9",
+        "north": "40.85"
+      },
+      "idwBlankFields": [
+        "Interpolation longitude field",
+        "Interpolation latitude field"
+      ],
+      "krigingBlankFields": [
+        "Kriging longitude field",
+        "Kriging latitude field",
+        "Variogram maximum lag in meters (blank: a third of the data extent)",
+        "Prediction interval level (blank: none, for example 0.95)"
+      ],
+      "idwControls": [
+        {
+          "id": "interpolation-longitudeColumn",
+          "label": "Interpolation longitude field",
+          "value": ""
+        },
+        {
+          "id": "interpolation-latitudeColumn",
+          "label": "Interpolation latitude field",
+          "value": ""
+        },
+        {
+          "id": "interpolation-west",
+          "label": "Interpolation west longitude",
+          "value": "-74.1"
+        },
+        {
+          "id": "interpolation-south",
+          "label": "Interpolation south latitude",
+          "value": "40.65"
+        },
+        {
+          "id": "interpolation-east",
+          "label": "Interpolation east longitude",
+          "value": "-73.9"
+        },
+        {
+          "id": "interpolation-north",
+          "label": "Interpolation north latitude",
+          "value": "40.85"
+        },
+        {
+          "id": "interpolation-width",
+          "label": "Interpolation columns",
+          "value": "32"
+        },
+        {
+          "id": "interpolation-height",
+          "label": "Interpolation rows",
+          "value": "32"
+        },
+        {
+          "id": "interpolation-searchRadius",
+          "label": "Interpolation search radius in meters",
+          "value": "10000"
+        },
+        {
+          "id": "interpolation-power",
+          "label": "Interpolation distance power",
+          "value": "2"
+        },
+        {
+          "id": "interpolation-neighborCount",
+          "label": "Interpolation nearest samples",
+          "value": "8"
+        },
+        {
+          "id": "interpolation-minimumNeighborCount",
+          "label": "Interpolation minimum samples",
+          "value": "3"
+        },
+        {
+          "id": "interpolation-taper",
+          "label": "Interpolation radius taper",
+          "value": "none"
+        }
+      ],
+      "krigingControls": [
+        {
+          "id": "kriging-longitudeColumn",
+          "label": "Kriging longitude field",
+          "value": ""
+        },
+        {
+          "id": "kriging-latitudeColumn",
+          "label": "Kriging latitude field",
+          "value": ""
+        },
+        {
+          "id": "kriging-model",
+          "label": "Kriging variogram model",
+          "value": "spherical"
+        },
+        {
+          "id": "kriging-west",
+          "label": "Kriging west longitude",
+          "value": "-74.1"
+        },
+        {
+          "id": "kriging-south",
+          "label": "Kriging south latitude",
+          "value": "40.65"
+        },
+        {
+          "id": "kriging-east",
+          "label": "Kriging east longitude",
+          "value": "-73.9"
+        },
+        {
+          "id": "kriging-north",
+          "label": "Kriging north latitude",
+          "value": "40.85"
+        },
+        {
+          "id": "kriging-width",
+          "label": "Kriging columns",
+          "value": "32"
+        },
+        {
+          "id": "kriging-height",
+          "label": "Kriging rows",
+          "value": "32"
+        },
+        {
+          "id": "kriging-searchRadiusMeters",
+          "label": "Kriging search radius in meters",
+          "value": "10000"
+        },
+        {
+          "id": "kriging-neighborCount",
+          "label": "Kriging nearest samples",
+          "value": "8"
+        },
+        {
+          "id": "kriging-minimumNeighbors",
+          "label": "Kriging minimum distinct positions",
+          "value": "3"
+        },
+        {
+          "id": "kriging-nugget",
+          "label": "Kriging nugget in squared response units",
+          "value": "0"
+        },
+        {
+          "id": "kriging-sill",
+          "label": "Kriging partial sill in squared response units",
+          "value": "1"
+        },
+        {
+          "id": "kriging-rangeMeters",
+          "label": "Kriging effective range in meters",
+          "value": "10000"
+        },
+        {
+          "id": "kriging-maximumLagMeters",
+          "label": "Variogram maximum lag in meters (blank: a third of the data extent)",
+          "value": ""
+        },
+        {
+          "id": "kriging-confidenceLevel",
+          "label": "Prediction interval level (blank: none, for example 0.95)",
+          "value": ""
+        },
+        {
+          "id": "kriging-crossValidation",
+          "label": "Leave-one-out cross-validation",
+          "value": "false"
+        }
+      ],
+      "sampleExtents": {
+        "points-time": {
+          "west": -74.04000091552734,
+          "south": 40.70000076293945,
+          "east": -73.94999694824219,
+          "north": 40.790000915527344
+        },
+        "connections": {
+          "west": -74.04000091552734,
+          "south": 40.70000076293945,
+          "east": -73.97000122070312,
+          "north": 40.7599983215332
+        },
+        "trip-observations": {
+          "west": -74.04000091552734,
+          "south": 40.69712448120117,
+          "east": -73.97000122070312,
+          "north": 40.772727966308594
+        },
+        "numeric-grid": {
+          "west": -74.04000091552734,
+          "south": 40.70000076293945,
+          "east": -73.94999694824219,
+          "north": 40.790000915527344
+        }
+      },
+      "fixedBoundsContainSampleExtent": true,
+      "fixedBoundsEqualSampleExtent": false
+    },
+    "probes": [],
+    "notes": [
+      "points-time is the gallery default, so no select action is needed."
+    ],
+    "consoleErrors": [
+      "Accessing element.ref was removed in React 19. ref is now a regular prop. It will be removed from the JSX Element type in a future release."
+    ]
+  }
+]
