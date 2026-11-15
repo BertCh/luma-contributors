@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateMaximumCount, validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {makeLocalFrame} from './catalog-local-frame';
 import {
@@ -80,6 +81,12 @@ export function makeProjector(
   return position => frame.forward(position);
 }
 
+/** Read a finite numeric cost without coercing null, blank text or booleans to zero. */
+export function readNetworkCost(value: unknown): number | null {
+  const cost = typeof value === 'string' && value.trim() ? Number(value) : value;
+  return typeof cost === 'number' && Number.isFinite(cost) ? cost : null;
+}
+
 /**
  * Builds the routing graph. Nodes cluster vertices within the snap tolerance greedily in input
  * order (deterministic, order dependent). Every part keeps source feature index and identifier.
@@ -87,9 +94,20 @@ export function makeProjector(
 export function buildNetworkGraph(
   lines: CatalogFeatureCollection,
   parameters: CatalogNetworkParameters,
-  maximumEdges: number
+  maximumEdges: number,
+  bindingId = 'network-build-graph'
 ): NetworkGraph {
   const diagnostics: CatalogDiagnostic[] = [];
+  if (
+    parameters.costMode === 'length' &&
+    (parameters.forwardCostProperty || parameters.reverseCostProperty)
+  )
+    addCatalogDiagnostic(
+      diagnostics,
+      'cost-properties-ignored',
+      'warning',
+      'costMode=length ignores forwardCostProperty and reverseCostProperty; set costMode=property to route using the named cost columns.'
+    );
   const parts: {sourceIndex: number; partIndex: number; coordinates: CatalogPosition[]}[] = [];
   const allPositions: CatalogPosition[] = [];
   lines.features.forEach((feature, sourceIndex) => {
@@ -175,7 +193,23 @@ export function buildNetworkGraph(
     const direction = String(properties[parameters.onewayProperty] ?? '').toLowerCase();
     const forwardAllowed = !REVERSE_TOKENS.has(direction);
     const reverseAllowed = !FORWARD_TOKENS.has(direction);
-    const readCost = (name: string): number => Number(properties[name]);
+    const readCost = (name: string, parameter: string): number | null => {
+      const cost = readNetworkCost(properties[name]);
+      validateRequirement(
+        bindingId,
+        cost === null || cost >= 0,
+        `${parameter} "${name}" cost must be at least 0; correct negative costs before routing`
+      );
+      return cost;
+    };
+    const propertyForwardCost =
+      parameters.costMode === 'property'
+        ? readCost(parameters.forwardCostProperty, 'forwardCostProperty')
+        : null;
+    const propertyReverseCost =
+      parameters.costMode === 'property' && parameters.reverseCostProperty
+        ? readCost(parameters.reverseCostProperty, 'reverseCostProperty')
+        : propertyForwardCost;
     for (let cut = 0; cut + 1 < cutPositions.length; cut++) {
       const coordinates = part.coordinates.slice(cutPositions[cut], cutPositions[cut + 1] + 1);
       const cumulative = [0];
@@ -193,10 +227,8 @@ export function buildNetworkGraph(
         reverseCost = length;
       } else {
         // Property costs apply to the whole source part and are prorated by length share.
-        forwardCost = readCost(parameters.forwardCostProperty) * share;
-        reverseCost = parameters.reverseCostProperty
-          ? readCost(parameters.reverseCostProperty) * share
-          : forwardCost;
+        forwardCost = propertyForwardCost === null ? null : propertyForwardCost * share;
+        reverseCost = propertyReverseCost === null ? null : propertyReverseCost * share;
       }
       const sanitize = (cost: number | null, allowed: boolean): number | null => {
         if (!allowed) return null;
@@ -206,9 +238,12 @@ export function buildNetworkGraph(
         }
         return cost;
       };
-      // Edge capacity exceeded; reduce the line dataset.
-      if (edges.length >= maximumEdges)
-        throw new KeplerAllocationError('capacity', {message: 'Edge capacity exceeded'});
+      validateMaximumCount(
+        bindingId,
+        'edgeCount (reduce lines or shared vertices, or disable splitAtSharedVertices)',
+        edges.length + 1,
+        maximumEdges
+      );
       edges.push({
         edgeId: `${part.sourceIndex}:${part.partIndex}:${cut}`,
         sourceIndex: part.sourceIndex,
@@ -229,7 +264,7 @@ export function buildNetworkGraph(
       diagnostics,
       'invalid-cost-arc-removed',
       'warning',
-      'Arcs with non-finite or negative cost are removed from routing.',
+      'Arcs with missing or non-numeric cost are removed from routing; supply finite non-negative cost values to retain them.',
       invalidCostCount
     );
   const outgoing: NetworkGraph['outgoing'] = nodes.map(() => []);
@@ -477,7 +512,7 @@ export function runNetworkBuild(
   parameters: CatalogNetworkParameters,
   maximumEdges: number
 ): CatalogNetworkResult {
-  const graph = buildNetworkGraph(lines, parameters, maximumEdges);
+  const graph = buildNetworkGraph(lines, parameters, maximumEdges, 'network-build-graph');
   const table = makeCatalogTable(
     'network-edges',
     'Network edges',
@@ -579,7 +614,9 @@ export function runNetworkShortestPaths(
   limits: {maximumEdges: number; maximumDestinations: number},
   options: CatalogNetworkRunOptions = {}
 ): CatalogNetworkResult {
-  const graph = options.graph ?? buildNetworkGraph(lines, parameters, limits.maximumEdges);
+  const graph =
+    options.graph ??
+    buildNetworkGraph(lines, parameters, limits.maximumEdges, 'network-shortest-path');
   const originPosition = getPointPositions(origins.features[0]?.geometry ?? null)[0];
   // Exactly one origin point feature is required.
   if (origins.features.length !== 1 || !originPosition)
@@ -752,7 +789,9 @@ export function runNetworkServiceArea(
   limits: {maximumEdges: number},
   options: CatalogNetworkRunOptions = {}
 ): CatalogNetworkResult {
-  const graph = options.graph ?? buildNetworkGraph(lines, parameters, limits.maximumEdges);
+  const graph =
+    options.graph ??
+    buildNetworkGraph(lines, parameters, limits.maximumEdges, 'network-service-area');
   const originPosition = getPointPositions(origins.features[0]?.geometry ?? null)[0];
   // Exactly one origin point feature is required.
   if (origins.features.length !== 1 || !originPosition)

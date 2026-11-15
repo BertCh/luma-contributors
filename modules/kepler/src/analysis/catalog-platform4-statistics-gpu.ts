@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {
   runEmpiricalBayesRates,
   runMultipleTestingAdjustment,
@@ -22,9 +21,9 @@ import {
   computeLineDensityGpu,
   makeGridRunOutput,
   makeGridTable,
-  preparePointGrid,
-  prepareLineDensity,
-  type KrigingSettings
+  prepareKrigingGrid,
+  resolveKrigingSettings,
+  prepareLineDensity
 } from './catalog-platform3-b-grids';
 import {CatalogGpuUnsupportedError, withCatalogGpuSession} from './catalog-gpu-session';
 import {readNumericProperty, type Inputs, type Values} from './catalog-platform3-b-common';
@@ -58,23 +57,13 @@ async function runGpuKriging(
   inputs: Inputs,
   values: Values
 ): Promise<CatalogRunOutput> {
-  const prepared = preparePointGrid(
+  const prepared = prepareKrigingGrid(
     inputs['points'],
     requireValueProperty(values),
     getCoordinateSystem(values),
     values['cellSize'] as number
   );
-  // Kriging output is capped at 40,000 cells.
-  if (prepared.grid.columns * prepared.grid.rows > 40000)
-    throw new KeplerAllocationError('capacity', {message: 'Grid capacity exceeded'});
-  const settings: KrigingSettings = {
-    model: values['model'] as KrigingSettings['model'],
-    nugget: values['nugget'] as number,
-    sill: values['sill'] as number,
-    range: values['range'] as number,
-    neighborCount: values['neighborCount'] as number,
-    searchRadius: values['searchRadius'] as number
-  };
+  const settings = resolveKrigingSettings(prepared.sample, values);
   const field = await computeKrigingFieldGpu(context, prepared.sample, prepared.grid, settings);
   if (field.singularCount)
     addCatalogDiagnostic(
@@ -156,6 +145,7 @@ async function runGpuEmpiricalBayes(
     numeratorProperty: requireValueProperty(values, 'numeratorProperty'),
     denominatorProperty: requireValueProperty(values, 'denominatorProperty')
   };
+  runEmpiricalBayesRates(inputs['features'], parameters);
   const events: number[] = [];
   const populations: number[] = [];
   for (const feature of inputs['features'].features) {

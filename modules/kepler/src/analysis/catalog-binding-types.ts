@@ -41,7 +41,8 @@ export type CatalogParameterSpec = {
   maximum?: number;
   options?: readonly string[];
   maximumLength?: number;
-  defaultValue: CatalogParameterValue;
+  /** Omitted when the binding derives the default from its input data. */
+  defaultValue?: CatalogParameterValue;
 };
 
 export type CatalogInputSpec = {
@@ -55,7 +56,7 @@ export type CatalogInputSpec = {
 export type CatalogOutputSpec = {
   tableId: string;
   label: string;
-  geometry: 'point' | 'line' | 'polygon' | 'none';
+  geometry: 'point' | 'line' | 'polygon' | 'mixed' | 'none';
   /** Columns that tie each output row to the source feature and to its new identity. */
   identityColumns: readonly string[];
   maximumRows: number;
@@ -183,6 +184,14 @@ export const NETWORK_PARAMETERS: readonly CatalogParameterSpec[] = [
   }
 ];
 
+/** Geometry-only operations do not read costs or one-way restrictions. */
+export const NETWORK_TOPOLOGY_PARAMETERS = NETWORK_PARAMETERS.filter(
+  parameter =>
+    !['costMode', 'forwardCostProperty', 'reverseCostProperty', 'onewayProperty'].includes(
+      parameter.name
+    )
+);
+
 export const SNAP_DISTANCE_PARAMETER: CatalogParameterSpec = {
   name: 'maximumSnapDistance',
   label: 'Maximum snap distance',
@@ -210,16 +219,21 @@ export function getNetworkParameters(
     coordinateSystem: values['coordinateSystem'] as CatalogCoordinateSystem,
     snapTolerance: values['snapTolerance'] as number,
     splitAtSharedVertices: values['splitAtSharedVertices'] as boolean,
-    costMode: values['costMode'] as 'length' | 'property',
-    forwardCostProperty: values['forwardCostProperty'] as string,
-    reverseCostProperty: values['reverseCostProperty'] as string,
-    onewayProperty: values['onewayProperty'] as string
+    costMode: (values['costMode'] ?? 'length') as 'length' | 'property',
+    forwardCostProperty: (values['forwardCostProperty'] ?? '') as string,
+    reverseCostProperty: (values['reverseCostProperty'] ?? '') as string,
+    onewayProperty: (values['onewayProperty'] ?? '') as string
   };
 }
 
-export const NETWORK_BEHAVIOR = [
+export const NETWORK_TOPOLOGY_BEHAVIOR = [
   'Non-line features and lines with fewer than two distinct vertices are skipped and counted.',
-  'Arcs with negative or non-finite cost are removed and counted; one-way values forward/reverse restrict direction.',
   'Lines that cross without a shared vertex are not connected by the CPU engine; crossings=noded cuts them with GPUNetworkNoding when a GPU device is supplied.',
   'More than 50,000 edges throws before any result is produced.'
+];
+
+export const NETWORK_BEHAVIOR = [
+  ...NETWORK_TOPOLOGY_BEHAVIOR,
+  'Missing, blank, non-numeric or non-finite property costs remove the affected arcs and are counted in diagnostics; negative costs throw a named validation error. One-way values forward/reverse restrict direction.',
+  'Length mode ignores named forward/reverse cost columns with a visible warning; choose costMode=property to use those columns.'
 ];

@@ -53,6 +53,19 @@ export type DbscanResult = {
   coreFlags: Uint8Array;
 };
 
+/** Round the coordinate difference once, after compensating only measured translation errors. */
+function getDbscanCoordinateDifference(
+  first: number,
+  second: number,
+  firstError = 0,
+  secondError = 0
+): number {
+  const difference = first - second;
+  const virtualSecond = first - difference;
+  const differenceError = first - (difference + virtualSecond) + (virtualSecond - second);
+  return difference + (differenceError + (firstError - secondError));
+}
+
 /** Canonical DBSCAN labeling, as documented for GPUSpatialClustering. */
 export function computeDbscanLabels(
   sample: Sample,
@@ -60,23 +73,65 @@ export function computeDbscanLabels(
   minimumPoints: number
 ): DbscanResult {
   const n = sample.count;
-  assertPairWork(n);
+  if (n > 20000)
+    throw new Error(
+      'density-clustering: points count exceeds the 20,000 point limit; reduce or partition the input.'
+    );
   const epsilonSquared = epsilon * epsilon;
-  const neighbors: number[][] = Array.from({length: n}, () => []);
-  for (let first = 0; first < n; first++) {
-    neighbors[first].push(first);
-    for (let second = first + 1; second < n; second++)
-      if (
-        (sample.x[first] - sample.x[second]) ** 2 + (sample.y[first] - sample.y[second]) ** 2 <=
-        epsilonSquared
-      ) {
-        neighbors[first].push(second);
-        neighbors[second].push(first);
+  // Widen bucket lookup only; the radius check compensates measured translation errors below.
+  let maximumTranslationError = 0;
+  for (let index = 0; index < n; index++)
+    maximumTranslationError = Math.max(
+      maximumTranslationError,
+      Math.abs(sample.translationErrorX?.[index] ?? 0),
+      Math.abs(sample.translationErrorY?.[index] ?? 0)
+    );
+  const cellSize = epsilon + 2 * maximumTranslationError;
+  const buckets = new Map<string, number[]>();
+  for (let index = 0; index < n; index++) {
+    const key = `${Math.floor(sample.x[index] / cellSize)}:${Math.floor(sample.y[index] / cellSize)}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(index);
+    else buckets.set(key, [index]);
+  }
+  // Query on demand: even a dense neighborhood uses linear memory at the full 20,000 point cap.
+  function* neighbors(index: number): Generator<number> {
+    const column = Math.floor(sample.x[index] / cellSize);
+    const row = Math.floor(sample.y[index] / cellSize);
+    const keys = new Set<string>();
+    for (let columnOffset = -1; columnOffset <= 1; columnOffset++)
+      for (let rowOffset = -1; rowOffset <= 1; rowOffset++)
+        keys.add(`${column + columnOffset}:${row + rowOffset}`);
+    for (const key of keys)
+      for (const other of buckets.get(key) ?? []) {
+        // Residuals are bounded by half an ulp of each translated coordinate, and zero when
+        // translation was exact. No allowance is applied to an untranslated distance.
+        const differenceX = getDbscanCoordinateDifference(
+          sample.x[index],
+          sample.x[other],
+          sample.translationErrorX?.[index],
+          sample.translationErrorX?.[other]
+        );
+        const differenceY = getDbscanCoordinateDifference(
+          sample.y[index],
+          sample.y[other],
+          sample.translationErrorY?.[index],
+          sample.translationErrorY?.[other]
+        );
+        if (differenceX ** 2 + differenceY ** 2 <= epsilonSquared) yield other;
       }
   }
   const coreFlags = new Uint8Array(n);
-  for (let index = 0; index < n; index++)
-    coreFlags[index] = neighbors[index].length >= minimumPoints ? 1 : 0;
+  for (let index = 0; index < n; index++) {
+    let count = 0;
+    for (const _other of neighbors(index)) {
+      count++;
+      if (count >= minimumPoints) {
+        coreFlags[index] = 1;
+        break;
+      }
+    }
+  }
   const parent = Int32Array.from({length: n}, (_, index) => index);
   const find = (index: number): number => {
     while (parent[index] !== index) {
@@ -87,7 +142,7 @@ export function computeDbscanLabels(
   };
   for (let index = 0; index < n; index++)
     if (coreFlags[index])
-      for (const other of neighbors[index])
+      for (const other of neighbors(index))
         if (coreFlags[other]) {
           const a = find(index);
           const b = find(other);
@@ -106,7 +161,7 @@ export function computeDbscanLabels(
     else {
       let best = -1;
       let bestRoot = Infinity;
-      for (const other of neighbors[index])
+      for (const other of neighbors(index))
         if (coreFlags[other]) {
           const root = find(other);
           if (root < bestRoot) {
@@ -486,6 +541,12 @@ export function runHierarchicalDensityClustering(
   }
 ): CatalogRunOutput {
   const {frame, sample, diagnostics} = readClusterSamples(points, parameters.coordinateSystem);
+  addCatalogDiagnostic(
+    diagnostics,
+    'flat-density-cut',
+    'info',
+    'hierarchical-density-clustering: this result is a single cutDistance cut of the mutual-reachability tree, without HDBSCAN stability selection.'
+  );
   const n = sample.count;
   // The core-distance neighbor count must be smaller than the number of points.
   if (n <= parameters.minimumSamples) throw new Error('Too few features');

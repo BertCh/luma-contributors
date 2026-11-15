@@ -45,7 +45,7 @@ export async function runGpuNetworkStructure(
   parameters: CatalogNetworkParameters,
   maximumEdges: number
 ): Promise<CatalogRunOutput> {
-  const graph = buildNetworkGraph(lines, parameters, maximumEdges);
+  const graph = buildNetworkGraph(lines, parameters, maximumEdges, 'network-structure');
   const nodeCount = graph.nodes.length;
   const slotCount = graph.edges.length * 2;
   if (!nodeCount || nodeCount > MAXIMUM_STRUCTURE_NODES || slotCount > MAXIMUM_STRUCTURE_SLOTS)
@@ -138,7 +138,7 @@ export async function runGpuNetworkCentrality(
   parameters: CatalogNetworkParameters,
   limits: {maximumEdges: number; maximumNodes: number}
 ): Promise<CatalogRunOutput> {
-  const graph = buildNetworkGraph(lines, parameters, limits.maximumEdges);
+  const graph = buildNetworkGraph(lines, parameters, limits.maximumEdges, 'network-centrality');
   const nodeCount = graph.nodes.length;
   // The CPU engine raises the allocation error for oversized node counts.
   if (!nodeCount || nodeCount > limits.maximumNodes)

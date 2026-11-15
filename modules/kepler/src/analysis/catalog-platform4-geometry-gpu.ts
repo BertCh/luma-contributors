@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {CatalogCoordinateSystem} from './catalog-geojson';
+import {
+  validateCatalogCoordinateSystem,
+  validatePolygonTriangulationCapacity,
+  type CatalogCoordinateSystem
+} from './catalog-geojson';
+import {validateGeometryOutputCapacity} from './catalog-extra-geometry';
 import type {CatalogGpuRunner} from './catalog-gpu-bindings';
 import {
   runGpuAffineTransform,
@@ -46,7 +51,7 @@ function getCoordinateSystem(values: Readonly<Record<string, unknown>>): Catalog
 }
 
 /** PLATFORM4 GPU runners for geometry, line and network bindings that were CPU-reference only, keyed by binding id. */
-export const PLATFORM4_GEOMETRY_GPU_RUNNERS: Readonly<Record<string, CatalogGpuRunner>> = {
+const GEOMETRY_GPU_RUNNERS: Readonly<Record<string, CatalogGpuRunner>> = {
   'line-simplification': {
     contributorNames: ['GPULineSimplification'],
     run: (context, inputs, values) =>
@@ -219,3 +224,20 @@ export const PLATFORM4_GEOMETRY_GPU_RUNNERS: Readonly<Record<string, CatalogGpuR
       })
   }
 };
+
+export const PLATFORM4_GEOMETRY_GPU_RUNNERS: Readonly<Record<string, CatalogGpuRunner>> =
+  Object.fromEntries(
+    Object.entries(GEOMETRY_GPU_RUNNERS).map(([bindingId, runner]) => [
+      bindingId,
+      {
+        ...runner,
+        run: async (context, inputs, values) => {
+          validateCatalogCoordinateSystem(bindingId, values['coordinateSystem'], inputs);
+          validateGeometryOutputCapacity(bindingId, inputs, values);
+          if (bindingId === 'polygon-triangulation')
+            validatePolygonTriangulationCapacity(inputs['polygons']);
+          return runner.run(context, inputs, values);
+        }
+      } satisfies CatalogGpuRunner
+    ])
+  );

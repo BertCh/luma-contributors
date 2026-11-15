@@ -33,6 +33,7 @@ import type {
 } from './catalog-binding-types';
 import {
   buildNetworkGraph,
+  readNetworkCost,
   makeOriginLegs,
   runNetworkBuild,
   runNetworkServiceArea,
@@ -386,8 +387,12 @@ export function prorateNodedProperties(
     const coordinates = (piece.geometry as {coordinates: CatalogPosition[]}).coordinates;
     const share = whole > 0 ? measure(coordinates) / whole : 1;
     const properties = piece.properties as Record<string, unknown>;
-    for (const name of [parameters.forwardCostProperty, parameters.reverseCostProperty])
-      if (name && name in properties) properties[name] = Number(properties[name]) * share;
+    for (const name of new Set([parameters.forwardCostProperty, parameters.reverseCostProperty])) {
+      if (!name || !(name in properties)) continue;
+      const cost = readNetworkCost(properties[name]);
+      // Preserve missing values and negative costs for graph ingestion to diagnose or reject.
+      properties[name] = cost === null || cost < 0 ? properties[name] : cost * share;
+    }
   });
 }
 
@@ -538,10 +543,11 @@ async function prepareNetwork(
   context: CatalogGpuContext,
   lines: CatalogFeatureCollection,
   parameters: CatalogGpuNetworkParameters,
-  maximumEdges: number
+  maximumEdges: number,
+  bindingId: string
 ): Promise<PreparedNetwork> {
   if (parameters.crossings !== 'noded') {
-    return {lines, graph: buildNetworkGraph(lines, parameters, maximumEdges)};
+    return {lines, graph: buildNetworkGraph(lines, parameters, maximumEdges, bindingId)};
   }
   const noded = await nodeCatalogLines(context, lines, parameters);
   prorateNodedProperties(noded, lines, parameters, getMeasureLine(parameters.coordinateSystem));
@@ -551,7 +557,8 @@ async function prepareNetwork(
     graph: buildNetworkGraph(
       noded.pieces,
       {...parameters, splitAtSharedVertices: true},
-      maximumEdges
+      maximumEdges,
+      bindingId
     )
   };
 }
@@ -596,7 +603,13 @@ export async function runGpuNetworkBuild(
     throw new CatalogGpuUnsupportedError(
       'GPUNetworkNoding always nodes crossings; set crossings to noded for the GPU path'
     );
-  const prepared = await prepareNetwork(context, lines, parameters, maximumEdges);
+  const prepared = await prepareNetwork(
+    context,
+    lines,
+    parameters,
+    maximumEdges,
+    'network-build-graph'
+  );
   const output = runNetworkBuild(
     prepared.lines,
     {...parameters, splitAtSharedVertices: true},
@@ -661,7 +674,13 @@ export async function runGpuNetworkServiceArea(
     CatalogRoutingParameters & {budgets: readonly number[]; includeUnreachable: boolean},
   limits: {maximumEdges: number}
 ): Promise<CatalogRunOutput> {
-  const prepared = await prepareNetwork(context, lines, parameters, limits.maximumEdges);
+  const prepared = await prepareNetwork(
+    context,
+    lines,
+    parameters,
+    limits.maximumEdges,
+    'network-service-area'
+  );
   const {graph} = prepared;
   const {seeds, snapContributors} = await getSeedsOfOrigin(
     context,
@@ -706,7 +725,13 @@ export async function runGpuNetworkShortestPaths(
   parameters: CatalogGpuNetworkParameters & CatalogRoutingParameters,
   limits: {maximumEdges: number; maximumDestinations: number}
 ): Promise<CatalogRunOutput> {
-  const prepared = await prepareNetwork(context, lines, parameters, limits.maximumEdges);
+  const prepared = await prepareNetwork(
+    context,
+    lines,
+    parameters,
+    limits.maximumEdges,
+    'network-shortest-path'
+  );
   const {graph} = prepared;
   const originSeeds = await getSeedsOfOrigin(
     context,
@@ -784,7 +809,13 @@ export async function runGpuNetworkMultiOrigin(
     CatalogRoutingParameters & {budgets: readonly number[]; includeUnreachable: boolean},
   limits: {maximumEdges: number}
 ): Promise<CatalogRunOutput> {
-  const prepared = await prepareNetwork(context, lines, parameters, limits.maximumEdges);
+  const prepared = await prepareNetwork(
+    context,
+    lines,
+    parameters,
+    limits.maximumEdges,
+    'network-multi-origin-service-area'
+  );
   const {graph} = prepared;
   const originFeatures = origins.features.filter(
     feature => getPointPositions(feature.geometry).length
@@ -926,7 +957,13 @@ export async function runGpuNetworkIsochrones(
   parameters: CatalogIsochroneParameters,
   limits: {maximumEdges: number}
 ): Promise<CatalogRunOutput> {
-  const prepared = await prepareNetwork(context, lines, parameters, limits.maximumEdges);
+  const prepared = await prepareNetwork(
+    context,
+    lines,
+    parameters,
+    limits.maximumEdges,
+    'network-isochrone-polygons'
+  );
   const {graph} = prepared;
   const frame = createCatalogFrame(parameters.coordinateSystem, [lines, origins]);
   const budgets = [...parameters.budgets].sort((first, second) => first - second);

@@ -29,7 +29,7 @@ import {
   type Values
 } from './catalog-platform3-b-common';
 import {makeLocalFrame} from './catalog-local-frame';
-import {runKnoxTest} from './catalog-platform3-b-statistics';
+import {runKnoxTest, resolveKnoxThresholds} from './catalog-platform3-b-statistics';
 
 function toCsr(lists: readonly (readonly number[])[]): {
   offsets: Uint32Array;
@@ -136,6 +136,10 @@ async function runGpuKnoxTest(
     y.push(py);
     times.push(time);
   }
+  Object.assign(
+    parameters,
+    resolveKnoxThresholds(x, y, times, parameters.spatialThreshold, parameters.temporalThreshold)
+  );
   const n = times.length;
   // The CPU reference raises the declared error for too few events.
   if (n < 3 || parameters.permutations < 1) throw new CatalogGpuUnsupportedError('Too few events');

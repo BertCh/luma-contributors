@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {
   getNetworkParameters,
+  MAXIMUM_NETWORK_EDGES,
   type CatalogParameterValue,
   type CatalogRunOutput
 } from './catalog-binding-types';
@@ -41,14 +43,15 @@ import {
 } from './catalog-platform3-a-shared';
 import {makeLocalFrame} from './catalog-local-frame';
 
-export const MAXIMUM_ROUTING_EDGES = 20000;
+// Match the catalog's declared edge budget, including edges created at shared vertices.
+export const MAXIMUM_ROUTING_EDGES = MAXIMUM_NETWORK_EDGES;
 
-export function buildRoutingGraph(lines: CatalogFeatureCollection, values: Values): NetworkGraph {
-  return buildNetworkGraph(
-    lines,
-    {...getNetworkParameters(values), splitAtSharedVertices: true},
-    MAXIMUM_ROUTING_EDGES
-  );
+export function buildRoutingGraph(
+  lines: CatalogFeatureCollection,
+  values: Values,
+  bindingId = 'network-build-graph'
+): NetworkGraph {
+  return buildNetworkGraph(lines, getNetworkParameters(values), MAXIMUM_ROUTING_EDGES, bindingId);
 }
 
 type Arrival = {cost: number; viaNode: number; forward: boolean} | {cost: number; direct: true};
@@ -195,7 +198,7 @@ function makeEdgeLineText(graph: NetworkGraph, edgeIndex: number): string {
 // ---------------------------------------------------------------------------------------------
 
 export function runNetworkAccessibility(inputs: Inputs, values: Values): CatalogRunOutput {
-  const graph = buildRoutingGraph(inputs['lines'], values);
+  const graph = buildRoutingGraph(inputs['lines'], values, 'network-accessibility');
   const diagnostics: CatalogDiagnostic[] = [...graph.diagnostics];
   const maximumSnap = values['maximumSnapDistance'] as number;
   const maximumCost = values['maximumCost'] as number;
@@ -209,7 +212,26 @@ export function runNetworkAccessibility(inputs: Inputs, values: Values): Catalog
     if (decay === 'gaussian') return Math.exp(-(cost * cost) / (2 * scale * scale));
     return 1;
   };
+  // Read and validate weights once at ingestion, independently of reachability or origin count.
+  const weights = inputs['opportunities'].features.map(feature => {
+    const weight = weightProperty ? readPropertyNumber(feature, weightProperty) : 1;
+    validateRequirement(
+      'network-accessibility',
+      weight === null || weight >= 0,
+      `weightProperty "${weightProperty}" must be at least 0; correct negative opportunity weights`
+    );
+    return weight;
+  });
   const opportunities = snapFeaturePoints(graph, inputs['opportunities'], maximumSnap);
+  const missingWeights = opportunities.filter(item => weights[item.featureIndex] === null).length;
+  if (missingWeights)
+    addCatalogDiagnostic(
+      diagnostics,
+      'opportunity-weight-missing',
+      'warning',
+      'Opportunities with missing or non-numeric weightProperty values are excluded from reachable_count and accessibility.',
+      missingWeights
+    );
   const unsnappedOpportunities = opportunities.filter(item => !item.snapped).length;
   if (unsnappedOpportunities)
     addCatalogDiagnostic(
@@ -251,15 +273,10 @@ export function runNetworkAccessibility(inputs: Inputs, values: Values): Catalog
     let score = 0;
     let nearest = Infinity;
     for (const opportunity of opportunities) {
-      if (!opportunity.snapped) continue;
+      const weight = weights[opportunity.featureIndex];
+      if (!opportunity.snapped || weight === null) continue;
       const cost = getRouteCost(graph, search, origin.snapped, opportunity.snapped);
       if (cost === null || cost > maximumCost) continue;
-      const weight = weightProperty
-        ? (readPropertyNumber(
-            inputs['opportunities'].features[opportunity.featureIndex],
-            weightProperty
-          ) ?? 0)
-        : 1;
       reachable++;
       score += weight * getDecay(cost);
       nearest = Math.min(nearest, cost);
@@ -294,7 +311,7 @@ export function runNetworkAccessibility(inputs: Inputs, values: Values): Catalog
 // ---------------------------------------------------------------------------------------------
 
 export function runNetworkSubgraphFilter(inputs: Inputs, values: Values): CatalogRunOutput {
-  const graph = buildRoutingGraph(inputs['lines'], values);
+  const graph = buildRoutingGraph(inputs['lines'], values, 'network-subgraph-filter');
   const diagnostics: CatalogDiagnostic[] = [...graph.diagnostics];
   const minimumCost = values['minimumCost'] as number;
   const maximumCost = values['maximumCost'] as number;
@@ -394,7 +411,7 @@ export function runNetworkSubgraphFilter(inputs: Inputs, values: Values): Catalo
 // ---------------------------------------------------------------------------------------------
 
 export function runNetworkCoarsening(inputs: Inputs, values: Values): CatalogRunOutput {
-  const graph = buildRoutingGraph(inputs['lines'], values);
+  const graph = buildRoutingGraph(inputs['lines'], values, 'network-coarsening');
   const diagnostics: CatalogDiagnostic[] = [...graph.diagnostics];
   const incident: number[][] = graph.nodes.map(() => []);
   graph.edges.forEach((edge, edgeIndex) => {
@@ -489,7 +506,7 @@ export function runNetworkCoarsening(inputs: Inputs, values: Values): CatalogRun
 // ---------------------------------------------------------------------------------------------
 
 export function runNetworkFlowAggregation(inputs: Inputs, values: Values): CatalogRunOutput {
-  const graph = buildRoutingGraph(inputs['lines'], values);
+  const graph = buildRoutingGraph(inputs['lines'], values, 'network-flow-aggregation');
   const diagnostics: CatalogDiagnostic[] = [...graph.diagnostics];
   const maximumSnap = values['maximumSnapDistance'] as number;
   const weightProperty = values['weightProperty'] as string;
@@ -612,7 +629,7 @@ export function runNetworkFlowAggregation(inputs: Inputs, values: Values): Catal
 // ---------------------------------------------------------------------------------------------
 
 export function runAlternativeRoutes(inputs: Inputs, values: Values): CatalogRunOutput {
-  const baseGraph = buildRoutingGraph(inputs['lines'], values);
+  const baseGraph = buildRoutingGraph(inputs['lines'], values, 'network-alternative-routes');
   const diagnostics: CatalogDiagnostic[] = [...baseGraph.diagnostics];
   const maximumSnap = values['maximumSnapDistance'] as number;
   const routeCount = values['routeCount'] as number;
@@ -722,7 +739,7 @@ export function runAlternativeRoutes(inputs: Inputs, values: Values): CatalogRun
 type MatchCandidate = {snapped: SnappedPoint; emission: number};
 
 export function runMapMatching(inputs: Inputs, values: Values): CatalogRunOutput {
-  const graph = buildRoutingGraph(inputs['lines'], values);
+  const graph = buildRoutingGraph(inputs['lines'], values, 'network-map-matching');
   const diagnostics: CatalogDiagnostic[] = [...graph.diagnostics];
   const searchRadius = values['searchRadius'] as number;
   const candidateCount = values['candidatesPerPoint'] as number;
@@ -738,7 +755,10 @@ export function runMapMatching(inputs: Inputs, values: Values): CatalogRunOutput
   });
   // Trace point capacity exceeded.
   if (trace.length > 500)
-    throw new KeplerAllocationError('capacity', {message: 'Trace point capacity exceeded'});
+    throw new KeplerAllocationError('capacity', {
+      message:
+        'network-map-matching trace point count must be at most 500; split or reduce the trace'
+    });
   const project = makeProjector(graph.coordinateSystem, graph.nodes);
   const getCandidates = (position: CatalogPosition): MatchCandidate[] => {
     const [x, y] = project(position);
@@ -943,7 +963,12 @@ export function runMapMatching(inputs: Inputs, values: Values): CatalogRunOutput
 // ---------------------------------------------------------------------------------------------
 
 export function runNetworkKFunction(inputs: Inputs, values: Values): CatalogRunOutput {
-  const graph = buildRoutingGraph(inputs['lines'], values);
+  validateRequirement(
+    'network-k-function',
+    values['costMode'] === 'length',
+    'costMode must be length; property-cost radii are unsupported by the length-based K normalization; use length mode'
+  );
+  const graph = buildRoutingGraph(inputs['lines'], values, 'network-k-function');
   const diagnostics: CatalogDiagnostic[] = [...graph.diagnostics];
   const radii = [...(values['radii'] as readonly number[])].sort((first, second) => first - second);
   const snapped = snapFeaturePoints(

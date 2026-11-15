@@ -396,7 +396,11 @@ test('areal-interpolation splits extensive and averages intensive values', () =>
     {ring: box(50, 50, 5), id: 'outside'}
   ]);
   const extensive = table(
-    run('areal-interpolation', {valueProperty: 'population'}, {sources, targets}),
+    run(
+      'areal-interpolation',
+      {valueProperty: 'population', variableType: 'extensive'},
+      {sources, targets}
+    ),
     'targets'
   );
   expect(extensive.columns['target_id']).toEqual(['west', 'east', 'outside']);

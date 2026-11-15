@@ -157,7 +157,7 @@ test('s2-cap-covering GPU selects the same cells as the CPU reference', async ()
     const {gpu, cpu} = await runBoth(
       device,
       's2-cap-covering',
-      {level, radiusMeters, mode, maximumCells: 4096},
+      {level, radiusMeters, mode, maximumCells: Math.min(4096, 6 * 4 ** level)},
       {points: centers}
     );
     expect(column(gpu, 'cell_id'), `${mode} level ${level}`).toEqual(column(cpu, 'cell_id'));

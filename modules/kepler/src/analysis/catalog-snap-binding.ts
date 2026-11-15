@@ -5,7 +5,7 @@
 import {
   LINE_INPUT,
   MAXIMUM_NETWORK_EDGES,
-  NETWORK_PARAMETERS,
+  NETWORK_TOPOLOGY_PARAMETERS,
   SNAP_DISTANCE_PARAMETER,
   getNetworkParameters,
   type CatalogGpuContext,
@@ -66,7 +66,8 @@ function makeSnapOutput(
   const graph = buildNetworkGraph(
     inputs['lines'],
     {...getNetworkParameters(values), splitAtSharedVertices: true},
-    MAXIMUM_NETWORK_EDGES
+    MAXIMUM_NETWORK_EDGES,
+    'network-snap-points'
   );
   const rows: {featureIndex: number; position: CatalogPosition}[] = [];
   inputs['points'].features.forEach((feature, featureIndex) => {
@@ -174,7 +175,7 @@ export const SNAP_POINTS_CPU_BINDING: Omit<CatalogOperationBinding, 'gpuContribu
   contributorNames: ['GPUNetworkSnapping'],
   engine: 'cpu-reference',
   inputs: [LINE_INPUT, POINTS_INPUT],
-  parameters: [...NETWORK_PARAMETERS, SNAP_DISTANCE_PARAMETER],
+  parameters: [...NETWORK_TOPOLOGY_PARAMETERS, SNAP_DISTANCE_PARAMETER],
   outputs: [
     {
       tableId: 'snapped-points',

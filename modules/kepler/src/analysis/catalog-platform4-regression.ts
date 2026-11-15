@@ -74,8 +74,8 @@ function readRegressionSample(
       droppedCount++;
       return;
     }
-    response.push(Math.fround(y));
-    for (const value of row as number[]) predictors.push(Math.fround(value));
+    response.push(y);
+    for (const value of row as number[]) predictors.push(value);
     featureIndex.push(index);
     coordinates.push([position[0], position[1]]);
   });
@@ -106,7 +106,7 @@ type OlsFit = {
   sigmaSquared: number;
 };
 
-/** Centered normal equations in float64 with Gauss-Jordan inversion. */
+/** Centered, scaled normal equations in float64 with Gauss-Jordan inversion. */
 export function fitOrdinaryLeastSquares(sample: RegressionSample): OlsFit {
   const {count, predictorCount: p} = sample;
   const means = new Float64Array(p);
@@ -117,6 +117,17 @@ export function fitOrdinaryLeastSquares(sample: RegressionSample): OlsFit {
   }
   responseMean /= count;
   for (let column = 0; column < p; column++) means[column] /= count;
+  const deviations = new Float64Array(p);
+  for (let column = 0; column < p; column++) {
+    let squares = 0;
+    for (let row = 0; row < count; row++)
+      squares += (sample.predictors[row * p + column] - means[column]) ** 2;
+    deviations[column] = Math.sqrt(squares / count);
+    if (!(deviations[column] > 0))
+      throw new RangeError(
+        'regression-ols: predictorProperties must have nonzero spread; remove constant predictors'
+      );
+  }
   const gram = Array.from({length: p}, () => new Float64Array(2 * p));
   const cross = new Float64Array(p);
   let totalSumOfSquares = 0;
@@ -124,10 +135,10 @@ export function fitOrdinaryLeastSquares(sample: RegressionSample): OlsFit {
     const centeredResponse = sample.response[row] - responseMean;
     totalSumOfSquares += centeredResponse * centeredResponse;
     for (let a = 0; a < p; a++) {
-      const centeredA = sample.predictors[row * p + a] - means[a];
+      const centeredA = (sample.predictors[row * p + a] - means[a]) / deviations[a];
       cross[a] += centeredA * centeredResponse;
       for (let b = 0; b < p; b++)
-        gram[a][b] += centeredA * (sample.predictors[row * p + b] - means[b]);
+        gram[a][b] += centeredA * ((sample.predictors[row * p + b] - means[b]) / deviations[b]);
     }
   }
   const scale = Math.max(...gram.map((row, index) => row[index]), 1e-300);
@@ -138,7 +149,9 @@ export function fitOrdinaryLeastSquares(sample: RegressionSample): OlsFit {
       if (Math.abs(gram[row][pivot]) > Math.abs(gram[best][pivot])) best = row;
     // A vanishing pivot means the predictors are collinear.
     if (Math.abs(gram[best][pivot]) < 1e-12 * scale)
-      throw new RangeError('Predictors are collinear (singular normal equations)');
+      throw new RangeError(
+        'regression-ols: predictorProperties are collinear (singular normal equations); remove dependent predictors'
+      );
     [gram[pivot], gram[best]] = [gram[best], gram[pivot]];
     const divisor = gram[pivot][pivot];
     for (let column = 0; column < 2 * p; column++) gram[pivot][column] /= divisor;
@@ -150,17 +163,20 @@ export function fitOrdinaryLeastSquares(sample: RegressionSample): OlsFit {
           gram[row][column] -= factor * gram[pivot][column];
     }
   }
-  const inverse = gram.map(row => row.slice(p));
+  const inverse = gram.map((row, first) =>
+    row.slice(p).map((value, second) => value / (deviations[first] * deviations[second]))
+  );
   const slopes = new Float64Array(p);
-  for (let a = 0; a < p; a++) for (let b = 0; b < p; b++) slopes[a] += inverse[a][b] * cross[b];
+  for (let a = 0; a < p; a++)
+    for (let b = 0; b < p; b++) slopes[a] += inverse[a][b] * cross[b] * deviations[b];
   let intercept = responseMean;
   for (let a = 0; a < p; a++) intercept -= slopes[a] * means[a];
   const fitted = new Float64Array(count);
   const residuals = new Float64Array(count);
   let residualSumOfSquares = 0;
   for (let row = 0; row < count; row++) {
-    let value = intercept;
-    for (let a = 0; a < p; a++) value += slopes[a] * sample.predictors[row * p + a];
+    let value = responseMean;
+    for (let a = 0; a < p; a++) value += slopes[a] * (sample.predictors[row * p + a] - means[a]);
     fitted[row] = value;
     residuals[row] = sample.response[row] - value;
     residualSumOfSquares += residuals[row] ** 2;
@@ -250,6 +266,20 @@ async function fitOrdinaryLeastSquaresGpu(
   sample: RegressionSample
 ): Promise<OlsFit> {
   const {count, predictorCount: p} = sample;
+  const reference = fitOrdinaryLeastSquares(sample);
+  const means = new Float64Array(p);
+  const deviations = new Float64Array(p);
+  for (let column = 0; column < p; column++) {
+    for (let row = 0; row < count; row++)
+      means[column] += sample.predictors[row * p + column] / count;
+    for (let row = 0; row < count; row++)
+      deviations[column] += (sample.predictors[row * p + column] - means[column]) ** 2 / count;
+    deviations[column] = Math.sqrt(deviations[column]);
+  }
+  const standardized = Float32Array.from(
+    sample.predictors,
+    (value, index) => (value - means[index % p]) / deviations[index % p]
+  );
   return withCatalogGpuSession(device, 'catalog-regression-ols', async session => {
     const coefficients = session.output('coefficients', 'float32', p + 1);
     const standardErrors = session.output('standard-errors', 'float32', p + 1);
@@ -262,7 +292,7 @@ async function fitOrdinaryLeastSquaresGpu(
       new GPUOrdinaryLeastSquares({
         id: 'catalog-regression-ols',
         predictorCount: p,
-        predictors: session.input('predictors', Float32Array.from(sample.predictors), 'float32'),
+        predictors: session.input('predictors', standardized, 'float32'),
         response: session.input('response', Float32Array.from(sample.response), 'float32'),
         output: {
           status: {code: code.view},
@@ -284,10 +314,15 @@ async function fitOrdinaryLeastSquaresGpu(
     const summaryValues = await session.readFloat32(summary);
     const residualSumOfSquares =
       summaryValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_RESIDUAL_SUM_OF_SQUARES];
+    const estimates = Array.from(await session.readFloat32(coefficients));
+    for (let column = 0; column < p; column++) {
+      estimates[column + 1] /= deviations[column];
+      estimates[0] -= estimates[column + 1] * means[column];
+    }
     return {
-      coefficients: Array.from(await session.readFloat32(coefficients)),
-      standardErrors: Array.from(await session.readFloat32(standardErrors)),
-      tStatistics: Array.from(await session.readFloat32(tStatistics)),
+      coefficients: estimates,
+      standardErrors: reference.standardErrors,
+      tStatistics: estimates.map((value, index) => value / reference.standardErrors[index]),
       fitted: Float64Array.from(await session.readFloat32(fitted)),
       residuals: Float64Array.from(await session.readFloat32(residuals)),
       rSquared: summaryValues[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED],
@@ -327,7 +362,7 @@ const OLS_BINDING: CatalogOperationBinding = {
   declaredBehavior: [
     'Complete cases only: points without a position or with a missing, non-numeric or float32-overflowing response or predictor are skipped and counted.',
     'Needs more complete rows than coefficients (n > predictors + 1); collinear predictors throw on the CPU engine, and the GPU engine hands a singular fit to the CPU engine.',
-    'Standard errors use RSS / (n - p) with p counting the intercept; the GPU engine solves float32 centered normal equations, so it matches the CPU float64 fit to float32 tolerance.'
+    'Standard errors use RSS / (n - p) with p counting the intercept; predictors are centered and scaled before the rank test and solve, and coefficients are transformed back to their original units. The GPU solves standardized float32 equations and uses the float64 reference covariance for standard errors.'
   ],
   limitation:
     'Aspatial OLS: no spatial lag or error terms, geographically weighted regression, robust covariance or diagnostics tables (the contributor computes Jarque-Bera, Koenker-Bassett and Breusch-Pagan but they are not published).',

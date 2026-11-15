@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import type {CatalogRunOutput} from './catalog-binding-types';
 import {
@@ -28,17 +29,19 @@ import {isInsideFramePolygonParts, readFramePolygons} from './catalog-platform3-
 
 export type CellStatistic = 'count' | 'sum' | 'mean' | 'min' | 'max';
 
-type Accumulator = {count: number; sum: number; min: number; max: number};
+type Accumulator = {count: number; validCount: number; sum: number; min: number; max: number};
 
-function addToAccumulator(accumulator: Accumulator, value: number): void {
+function addToAccumulator(accumulator: Accumulator, value: number | null): void {
   accumulator.count++;
+  if (value === null) return;
+  accumulator.validCount++;
   accumulator.sum += value;
   accumulator.min = Math.min(accumulator.min, value);
   accumulator.max = Math.max(accumulator.max, value);
 }
 
 function makeAccumulator(): Accumulator {
-  return {count: 0, sum: 0, min: Infinity, max: -Infinity};
+  return {count: 0, validCount: 0, sum: 0, min: Infinity, max: -Infinity};
 }
 
 function getStatisticValue(accumulator: Accumulator | undefined, statistic: CellStatistic) {
@@ -46,7 +49,8 @@ function getStatisticValue(accumulator: Accumulator | undefined, statistic: Cell
     return statistic === 'count' || statistic === 'sum' ? 0 : null;
   if (statistic === 'count') return accumulator.count;
   if (statistic === 'sum') return accumulator.sum;
-  if (statistic === 'mean') return accumulator.sum / accumulator.count;
+  if (!accumulator.validCount) return null;
+  if (statistic === 'mean') return accumulator.sum / accumulator.validCount;
   return statistic === 'min' ? accumulator.min : accumulator.max;
 }
 
@@ -68,20 +72,23 @@ type LatticeSamples = {
   keys: Map<string, {cellX: number; cellY: number; accumulator: Accumulator}>;
   droppedCount: number;
   sampleCount: number;
+  missingValueCount: number;
 };
 
 function accumulateLattice(
   points: CatalogFeatureCollection,
   valueProperty: string,
-  cellSize: number
+  cellSize: number,
+  keepMissingValues = false
 ): LatticeSamples {
   const keys: LatticeSamples['keys'] = new Map();
   let droppedCount = 0;
   let sampleCount = 0;
+  let missingValueCount = 0;
   for (const feature of points.features) {
     const positions = getPointPositions(feature.geometry);
     const value = valueProperty ? readNumericProperty(feature, valueProperty) : 1;
-    if (!positions.length || value === null) {
+    if (!positions.length || (value === null && !keepMissingValues)) {
       droppedCount++;
       continue;
     }
@@ -95,10 +102,11 @@ function accumulateLattice(
         keys.set(key, entry);
       }
       addToAccumulator(entry.accumulator, value);
+      if (value === null) missingValueCount++;
       sampleCount++;
     }
   }
-  return {keys, droppedCount, sampleCount};
+  return {keys, droppedCount, sampleCount, missingValueCount};
 }
 
 /** Square-lattice aggregation: cells are `floor(coordinate / cellSize)` in the input's own units. */
@@ -107,8 +115,16 @@ export function runCellAggregation(
   parameters: {cellSize: number; valueProperty: string}
 ): CatalogRunOutput {
   const diagnostics: CatalogDiagnostic[] = [];
-  const lattice = accumulateLattice(points, parameters.valueProperty, parameters.cellSize);
+  const lattice = accumulateLattice(points, parameters.valueProperty, parameters.cellSize, true);
   addDroppedDiagnostic(diagnostics, lattice.droppedCount);
+  if (lattice.missingValueCount)
+    addCatalogDiagnostic(
+      diagnostics,
+      'missing-value',
+      'warning',
+      'cell-aggregation valueProperty: points without a numeric value are included in count but excluded from sum, mean, min and max.',
+      lattice.missingValueCount
+    );
   const table = makeCatalogTable(
     'cells',
     'Aggregated cells',
@@ -133,15 +149,19 @@ export function runCellAggregation(
       cell_y: cellY,
       count: accumulator.count,
       sum: accumulator.sum,
-      mean: accumulator.sum / accumulator.count,
-      min: accumulator.min,
-      max: accumulator.max,
+      mean: getStatisticValue(accumulator, 'mean'),
+      min: getStatisticValue(accumulator, 'min'),
+      max: getStatisticValue(accumulator, 'max'),
       geometry: makeLatticeRingText(cellX, cellY, parameters.cellSize)
     });
   return {
     tables: [table],
     diagnostics,
-    summary: {cellCount: table.rowCount, sampleCount: lattice.sampleCount}
+    summary: {
+      cellCount: table.rowCount,
+      sampleCount: lattice.sampleCount,
+      missingValueCount: lattice.missingValueCount
+    }
   };
 }
 
@@ -211,6 +231,11 @@ export function runCellCompare(
   after: CatalogFeatureCollection,
   parameters: {cellSize: number; valueProperty: string; statistic: 'count' | 'sum' | 'mean'}
 ): CatalogRunOutput {
+  validateRequirement(
+    'cell-compare',
+    parameters.statistic === 'count' || Boolean(parameters.valueProperty.trim()),
+    'valueProperty must name a numeric value column when statistic is sum or mean; choose count to compare without a value column'
+  );
   const diagnostics: CatalogDiagnostic[] = [];
   const first = accumulateLattice(before, parameters.valueProperty, parameters.cellSize);
   const second = accumulateLattice(after, parameters.valueProperty, parameters.cellSize);
@@ -387,6 +412,11 @@ export function runArealInterpolation(
     coordinateSystem: CatalogCoordinateSystem;
   }
 ): CatalogRunOutput {
+  validateRequirement(
+    'areal-interpolation',
+    parameters.variableType === 'extensive' || parameters.variableType === 'intensive',
+    'variableType must be explicitly selected as extensive (counts) or intensive (rates); no variable type is inferred from valueProperty'
+  );
   const diagnostics: CatalogDiagnostic[] = [];
   const frame = makeLocalFrame(
     parameters.coordinateSystem,

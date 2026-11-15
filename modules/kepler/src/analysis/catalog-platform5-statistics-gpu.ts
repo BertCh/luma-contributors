@@ -108,12 +108,12 @@ function requireLocalStatisticInput(set: AnalysisSet): void {
     throw new CatalogGpuUnsupportedError('Constant values');
 }
 
-function prepare(inputs: Inputs, values: Values, rowStandardize: boolean) {
+function prepare(inputs: Inputs, values: Values, rowStandardize: boolean, canonicalRows = false) {
   const settings = readWeightsSettings(values, rowStandardize);
   guardContiguityInput(inputs, settings);
   const valueProperty = requireValueProperty(values);
   const collection = inputs['features'];
-  const set = buildAnalysisSet(collection, valueProperty, settings);
+  const set = buildAnalysisSet(collection, valueProperty, settings, canonicalRows);
   return {settings, valueProperty, collection, set};
 }
 
@@ -159,7 +159,7 @@ async function runGpuGlobalStatistics(
     variance: 0
   });
   const moran = read(GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran);
-  // Moran's I reports the randomization variance and Geary's C the normality variance, like the CPU.
+  // Both statistics use randomization variance, like the CPU.
   moran.variance =
     summary[
       GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran +
@@ -177,15 +177,15 @@ async function runGpuGlobalStatistics(
   geary.variance =
     summary[
       GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.geary +
-        GPU_GLOBAL_SPATIAL_STATISTIC_FIELD.varianceNormality
+        GPU_GLOBAL_SPATIAL_STATISTIC_FIELD.varianceRandomization
     ];
   geary.zScore =
     summary[
-      GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.geary + GPU_GLOBAL_SPATIAL_STATISTIC_FIELD.zNormality
+      GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.geary + GPU_GLOBAL_SPATIAL_STATISTIC_FIELD.zRandomization
     ];
   geary.pValue =
     summary[
-      GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.geary + GPU_GLOBAL_SPATIAL_STATISTIC_FIELD.pNormality
+      GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.geary + GPU_GLOBAL_SPATIAL_STATISTIC_FIELD.pRandomization
     ];
   // The summary count must agree with the uploaded rows.
   if (summary[GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY.count] !== set.values.length)
@@ -262,7 +262,7 @@ async function runGpuLocalMoran(
   inputs: Inputs,
   values: Values
 ): Promise<CatalogRunOutput> {
-  const {settings, valueProperty, collection, set} = prepare(inputs, values, true);
+  const {settings, valueProperty, collection, set} = prepare(inputs, values, true, true);
   requireLocalStatisticInput(set);
   const permutations = values['permutations'] as number;
   const significance = values['significance'] as number;
@@ -318,7 +318,14 @@ async function runGpuLocalMoran(
   return {
     ...runLocalMoran(
       collection,
-      {valueProperty, permutations, seed: values['seed'] as number, significance, ...settings},
+      {
+        valueProperty,
+        permutations,
+        seed: values['seed'] as number,
+        significance,
+        multipleTesting: values['multipleTesting'] as 'none' | 'benjamini-hochberg' | 'bonferroni',
+        ...settings
+      },
       {set, statistic: localI, spatialLag: lag, pValue}
     ),
     dispatchedContributors:
@@ -331,7 +338,7 @@ async function runGpuLocalGeary(
   inputs: Inputs,
   values: Values
 ): Promise<CatalogRunOutput> {
-  const {settings, valueProperty, collection, set} = prepare(inputs, values, true);
+  const {settings, valueProperty, collection, set} = prepare(inputs, values, true, true);
   requireLocalStatisticInput(set);
   const permutations = values['permutations'] as number;
   const result = await withCatalogGpuSession(

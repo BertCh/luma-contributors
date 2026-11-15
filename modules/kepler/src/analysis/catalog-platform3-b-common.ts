@@ -58,13 +58,21 @@ export function makeOutputSpec(
 export function makeNumberParameter(
   name: string,
   label: string,
-  defaultValue: number,
+  defaultValue: number | undefined,
   minimum: number,
   maximum: number,
   unit?: string,
   kind: 'number' | 'integer' = 'number'
 ): CatalogParameterSpec {
-  return {name, label, kind, minimum, maximum, defaultValue, ...(unit ? {unit} : {})};
+  return {
+    name,
+    label,
+    kind,
+    minimum,
+    maximum,
+    ...(defaultValue === undefined ? {} : {defaultValue}),
+    ...(unit ? {unit} : {})
+  };
 }
 
 export function makeStringParameter(
@@ -135,6 +143,9 @@ export type Sample = {
   /** Frame coordinates in meters (or planar units) from the data minimum. */
   x: Float64Array;
   y: Float64Array;
+  /** Exact subtraction residuals from the local-frame translation, when available. */
+  translationErrorX?: Float64Array;
+  translationErrorY?: Float64Array;
   value: Float64Array;
   sourceIndex: Int32Array;
   partIndex: Int32Array;
@@ -153,6 +164,8 @@ export function readPointSamples(
 ): Sample {
   const x: number[] = [];
   const y: number[] = [];
+  const translationErrorX: number[] = [];
+  const translationErrorY: number[] = [];
   const value: number[] = [];
   const sourceIndex: number[] = [];
   const partIndex: number[] = [];
@@ -165,9 +178,14 @@ export function readPointSamples(
       return;
     }
     positions.forEach((position, index) => {
-      const [px, py] = frame.forward(position);
+      const translationError: [number, number] = [0, 0];
+      const [px, py] = frame.forwardWithTranslationError
+        ? frame.forwardWithTranslationError(position, translationError)
+        : frame.forward(position);
       x.push(px);
       y.push(py);
+      translationErrorX.push(translationError[0]);
+      translationErrorY.push(translationError[1]);
       value.push(numeric);
       sourceIndex.push(featureIndex);
       partIndex.push(index);
@@ -176,6 +194,8 @@ export function readPointSamples(
   return {
     x: Float64Array.from(x),
     y: Float64Array.from(y),
+    translationErrorX: Float64Array.from(translationErrorX),
+    translationErrorY: Float64Array.from(translationErrorY),
     value: Float64Array.from(value),
     sourceIndex: Int32Array.from(sourceIndex),
     partIndex: Int32Array.from(partIndex),
@@ -277,6 +297,22 @@ export function getFeatureGeometryText(feature: CatalogFeature): string | null {
   return feature.geometry ? JSON.stringify(feature.geometry) : null;
 }
 
+/** Compensated accumulation keeps small rings' area and moments beside much larger parts. */
+function makeCentroidSum() {
+  let sum = 0;
+  let correction = 0;
+  return {
+    add(value: number) {
+      const next = sum + value;
+      correction += Math.abs(sum) >= Math.abs(value) ? sum - next + value : value - next + sum;
+      sum = next;
+    },
+    get value() {
+      return sum + correction;
+    }
+  };
+}
+
 /** Representative frame position of any feature: point, mean of line vertices or ring centroid. */
 export function getFeatureAnchor(
   feature: CatalogFeature,
@@ -288,28 +324,57 @@ export function getFeatureAnchor(
   if (points.length) return frame.forward(points[0]);
   const polygons = getPolygonParts(geometry);
   if (polygons.length) {
-    let areaSum = 0;
-    let cx = 0;
-    let cy = 0;
+    const reference = polygons[0][0]?.[0];
+    if (!reference) return null;
+    const [referenceX, referenceY] = frame.forward(reference);
+    const areaSum = makeCentroidSum();
+    const weightedX = makeCentroidSum();
+    const weightedY = makeCentroidSum();
     let fallbackX = 0;
     let fallbackY = 0;
     let fallbackCount = 0;
     for (const polygon of polygons) {
-      const ring = polygon[0].map(position => frame.forward(position));
-      for (const [px, py] of ring) {
-        fallbackX += px;
-        fallbackY += py;
-        fallbackCount++;
-      }
-      for (let index = 0; index < ring.length - 1; index++) {
-        const cross = ring[index][0] * ring[index + 1][1] - ring[index + 1][0] * ring[index][1];
-        areaSum += cross;
-        cx += (ring[index][0] + ring[index + 1][0]) * cross;
-        cy += (ring[index][1] + ring[index + 1][1]) * cross;
-      }
+      polygon.forEach((positions, ringIndex) => {
+        if (!positions.length) return;
+        // Every ring gets its own reference so distant parts and holes retain their areas.
+        const [ringReferenceX, ringReferenceY] = frame.forward(positions[0]);
+        const offsetX = ringReferenceX - referenceX;
+        const offsetY = ringReferenceY - referenceY;
+        const ring = positions.map(position => {
+          const [x, y] = frame.forward(position);
+          return [x - ringReferenceX, y - ringReferenceY];
+        });
+        let signedArea = 0;
+        let momentX = 0;
+        let momentY = 0;
+        ring.forEach(([x, y], index) => {
+          const [nextX, nextY] = ring[(index + 1) % ring.length];
+          const cross = x * nextY - nextX * y;
+          signedArea += cross;
+          momentX += (x + nextX) * cross;
+          momentY += (y + nextY) * cross;
+          if (ringIndex === 0) {
+            fallbackX += offsetX + x;
+            fallbackY += offsetY + y;
+            fallbackCount++;
+          }
+        });
+        if (signedArea !== 0) {
+          const weight = (ringIndex === 0 ? 1 : -1) * Math.abs(signedArea);
+          areaSum.add(weight);
+          weightedX.add((offsetX + momentX / (3 * signedArea)) * weight);
+          weightedY.add((offsetY + momentY / (3 * signedArea)) * weight);
+        }
+      });
     }
-    if (Math.abs(areaSum) > 1e-12) return [cx / (3 * areaSum), cy / (3 * areaSum)];
-    return fallbackCount ? [fallbackX / fallbackCount, fallbackY / fallbackCount] : null;
+    if (areaSum.value > 0)
+      return [
+        referenceX + weightedX.value / areaSum.value,
+        referenceY + weightedY.value / areaSum.value
+      ];
+    return fallbackCount
+      ? [referenceX + fallbackX / fallbackCount, referenceY + fallbackY / fallbackCount]
+      : null;
   }
   const lines = getLineParts(geometry).flat();
   if (!lines.length) return null;

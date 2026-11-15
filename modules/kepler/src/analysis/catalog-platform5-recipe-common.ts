@@ -129,6 +129,31 @@ export function assignRecipePoints(points: RecipePoints, polygons: RecipePolygon
   return assignment;
 }
 
+/** Visits each containing feature once, including every match in overlapping features. */
+export function visitRecipePointMatches(
+  points: RecipePoints,
+  polygons: RecipePolygons,
+  visit?: (point: number, feature: number) => void
+): {unmatchedCount: number; multipleMatchCount: number} {
+  let unmatchedCount = 0;
+  let multipleMatchCount = 0;
+  for (let point = 0; point < points.count; point++) {
+    const position: CatalogPosition = [
+      points.positions[2 * point],
+      points.positions[2 * point + 1]
+    ];
+    let matchCount = 0;
+    polygons.parts.forEach((feature, featureIndex) => {
+      if (!feature.some(rings => isCatalogPointInPolygon(position, rings))) return;
+      matchCount++;
+      visit?.(point, featureIndex);
+    });
+    if (!matchCount) unmatchedCount++;
+    if (matchCount > 1) multipleMatchCount++;
+  }
+  return {unmatchedCount, multipleMatchCount};
+}
+
 /** Candidate pair capacity of the join: every bounding box pair, capped. */
 export function getRecipeCandidateCapacity(pointCount: number, featureCount: number): number {
   return Math.max(1, Math.min(pointCount * featureCount, 4000000));

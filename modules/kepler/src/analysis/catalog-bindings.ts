@@ -12,6 +12,7 @@ import {
   addCatalogDiagnostic,
   countCollectionVertices,
   hashCatalogText,
+  validateCatalogCoordinateSystem,
   type CatalogCoordinateSystem,
   type CatalogFeatureCollection
 } from './catalog-geojson';
@@ -36,12 +37,22 @@ import {
   type CatalogParameterValue,
   type CatalogRunResult
 } from './catalog-binding-types';
+import {validateGeometryOutputCapacity} from './catalog-extra-geometry';
 import {EXTRA_CPU_BINDINGS} from './catalog-extra-bindings';
+import {listPointCloudCatalogEntries} from './catalog-pointcloud-entries';
+import {POINT_CLOUD_BINDINGS} from './catalog-pointcloud-bindings';
 import {PLATFORM3_A_BINDINGS} from './catalog-platform3-a-bindings';
 import {PLATFORM3_B_BINDINGS} from './catalog-platform3-b-bindings';
 import {PLATFORM4_GEOMETRY_GPU_RUNNERS} from './catalog-platform4-geometry-gpu';
+import {RASTER_TIMESERIES_PANEL_OPERATORS} from './catalog-raster-timeseries-bindings';
 import {PLATFORM4_NEW_BINDINGS} from './catalog-platform4-new-bindings';
+import {SPACETIME_BINDINGS} from './catalog-spacetime-bindings';
+import {appendValidationCatalogEntries} from './catalog-validation-bindings';
+import {RASTER_EMBEDDING_BINDINGS} from './catalog-raster-embeddings-bindings';
 import {PLATFORM5_NEW_BINDINGS} from './catalog-platform5-bindings';
+import {NETWORK_CATEGORICAL_BINDINGS} from './catalog-network-categorical-bindings';
+import {KEPLER_CURATED_BINDINGS} from '../curated/bindings/index';
+import {TRAJECTORY_BINDINGS} from './catalog-trajectory-bindings';
 import {PLATFORM5_POINT_STATISTICS_GPU_RUNNERS} from './catalog-platform5-point-statistics-gpu';
 import {PLATFORM5_STATISTICS_GPU_RUNNERS} from './catalog-platform5-statistics-gpu';
 import {PLATFORM4_STATISTICS_GPU_RUNNERS} from './catalog-platform4-statistics-gpu';
@@ -255,7 +266,8 @@ const CPU_BINDINGS: readonly CpuBinding[] = [
       'New vertices are linear in coordinate space; segment length is measured in the declared system.',
       'Non-line features produce no output and are counted.'
     ],
-    limitation: 'Linear interpolation is not a great-circle path.',
+    limitation:
+      'At most 500,000 output vertices, checked before generation. Linear interpolation is not a great-circle path.',
     run: (inputs, parameters) =>
       runLineSegmentize(
         inputs['lines'],
@@ -505,12 +517,21 @@ const BINDINGS: readonly CatalogOperationBinding[] = [
         : {...binding, gpuContributorNames: []};
     }
   ),
+  ...POINT_CLOUD_BINDINGS,
   ...CATALOG_GPU_ONLY_BINDINGS,
+  ...NETWORK_CATEGORICAL_BINDINGS,
   ...PLATFORM3_A_BINDINGS,
   ...PLATFORM3_B_BINDINGS
 ]
   .map(attachPlatform4Runner)
-  .concat([...PLATFORM4_NEW_BINDINGS, ...PLATFORM5_NEW_BINDINGS]);
+  .concat([
+    ...PLATFORM4_NEW_BINDINGS,
+    ...PLATFORM5_NEW_BINDINGS,
+    ...SPACETIME_BINDINGS,
+    ...TRAJECTORY_BINDINGS,
+    ...RASTER_EMBEDDING_BINDINGS,
+    ...KEPLER_CURATED_BINDINGS
+  ]);
 
 /** Registered, executable operations. Anything not here is shown as not runnable. */
 export const KEPLER_CATALOG_BINDINGS: readonly CatalogOperationBinding[] = BINDINGS;
@@ -522,20 +543,34 @@ export function getCatalogBinding(operationId: string): CatalogOperationBinding 
 export function getCatalogDefaultParameters(
   binding: Pick<CatalogOperationBinding, 'parameters'>
 ): Record<string, CatalogParameterValue> {
-  return Object.fromEntries(binding.parameters.map(spec => [spec.name, spec.defaultValue]));
+  return Object.fromEntries(
+    binding.parameters.flatMap(spec =>
+      spec.defaultValue === undefined ? [] : [[spec.name, spec.defaultValue]]
+    )
+  );
 }
 
-/** Coerces and range-checks raw (UI or serialized) values; unknown names are rejected. */
+/** Coerces and range-checks raw values; obsolete topology parameters in saved workflows are ignored. */
 export function normalizeCatalogParameters(
-  binding: Pick<CatalogOperationBinding, 'parameters'>,
+  binding: Pick<CatalogOperationBinding, 'parameters'> &
+    Partial<Pick<CatalogOperationBinding, 'id'>>,
   raw: Readonly<Record<string, unknown>>
 ): Record<string, CatalogParameterValue> {
-  // Parameter name unknown to this operation.
-  for (const name of Object.keys(raw))
-    if (!binding.parameters.some(spec => spec.name === name)) throw new Error('Unknown parameter');
+  for (const name of Object.keys(raw)) {
+    const obsoleteTopologyParameter =
+      ['network-structure', 'network-line-graph', 'network-snap-points'].includes(
+        binding.id ?? ''
+      ) &&
+      ['costMode', 'forwardCostProperty', 'reverseCostProperty', 'onewayProperty'].includes(name);
+    if (!binding.parameters.some(spec => spec.name === name) && !obsoleteTopologyParameter)
+      throw new Error(
+        `${binding.id ?? 'catalog'}: ${name} is an unknown parameter; use a declared parameter.`
+      );
+  }
   const result: Record<string, CatalogParameterValue> = {};
   for (const spec of binding.parameters) {
-    const value = raw[spec.name] ?? spec.defaultValue;
+    const value = raw[spec.name] === undefined ? spec.defaultValue : raw[spec.name];
+    if (value === undefined) continue;
     // Parameter value outside its declared type, range or options.
     const reject = (): never => {
       throw new Error('Parameter out of range');
@@ -654,6 +689,16 @@ export function runCatalogOperation(
 ): CatalogRunResult {
   const parameters = normalizeCatalogParameters(binding, rawParameters);
   validateCatalogInputs(binding, inputs);
+  validateCatalogCoordinateSystem(
+    binding.id,
+    parameters['coordinateSystem'],
+    inputs as Record<string, CatalogFeatureCollection>
+  );
+  validateGeometryOutputCapacity(
+    binding.id,
+    inputs as Record<string, CatalogFeatureCollection>,
+    parameters
+  );
   const result = runCpuEngine(binding, inputs, parameters);
   checkOutputCapacity(binding, result.tables);
   return {
@@ -686,6 +731,16 @@ export async function runCatalogOperationAsync(
 ): Promise<CatalogRunResult> {
   const parameters = normalizeCatalogParameters(binding, rawParameters);
   validateCatalogInputs(binding, inputs);
+  validateCatalogCoordinateSystem(
+    binding.id,
+    parameters['coordinateSystem'],
+    inputs as Record<string, CatalogFeatureCollection>
+  );
+  validateGeometryOutputCapacity(
+    binding.id,
+    inputs as Record<string, CatalogFeatureCollection>,
+    parameters
+  );
   let output: ReturnType<typeof runCpuEngine> | undefined;
   let engine: CatalogEngine = 'cpu-reference';
   let dispatchedContributors: readonly string[] = [];
@@ -823,6 +878,7 @@ export const KEPLER_NETWORK_CONTRIBUTOR_NAMES = [
 
 /** Host panels that already run an operator natively (not through these catalog bindings). */
 const NATIVE_PANEL_OPERATORS: Readonly<Record<string, string>> = {
+  ...RASTER_TIMESERIES_PANEL_OPERATORS,
   GPUVariableStandardization: 'Analysis panel · Standardize',
   GPUClassBreaks: 'Analysis panel · Classify',
   GPUDorlingCartogram: 'Analysis panel · Cartogram'
@@ -921,7 +977,25 @@ export function listCatalogEntries(options: CatalogEntryOptions = {}): CatalogEn
       )
     );
   }
+  // Register domain ontology records before the fallback for newer bound contributors.
+  for (const entry of listPointCloudCatalogEntries(BINDINGS))
+    if (!seen.has(entry.contributorName)) {
+      seen.add(entry.contributorName);
+      entries.push(
+        describe(entry.contributorName, entry.capabilityId, entry.capabilityTitle, entry.domain)
+      );
+    }
+  // Newer bound contributors may be outside the original spatial ontology table.
+  for (const binding of BINDINGS)
+    for (const name of binding.contributorNames)
+      if (!seen.has(name)) {
+        seen.add(name);
+        entries.push(
+          describe(name, binding.capabilityIds[0] ?? binding.domain, binding.title, binding.domain)
+        );
+      }
   for (const name of KEPLER_NETWORK_CONTRIBUTOR_NAMES)
     if (!seen.has(name)) entries.push(describe(name, 'gpu-network', 'GPU network', 'network'));
+  appendValidationCatalogEntries(entries, seen, describe);
   return entries;
 }

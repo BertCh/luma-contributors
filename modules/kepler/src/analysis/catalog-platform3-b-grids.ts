@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {
   GPUInverseDistanceWeighting,
@@ -19,6 +20,7 @@ import type {CatalogGpuContext, CatalogRunOutput} from './catalog-binding-types'
 import {
   addCatalogDiagnostic,
   appendCatalogRow,
+  getFeatureIdentity,
   getLineParts,
   getPolygonParts,
   makeCatalogTable,
@@ -35,6 +37,7 @@ import {
   makeCellPolygonText,
   makeGridSpec,
   readPointSamples,
+  type Values,
   type GridSpec,
   type Sample
 } from './catalog-platform3-b-common';
@@ -445,6 +448,127 @@ export async function computePointDensityFieldGpu(
 // Ordinary kriging with a stated variogram
 // ---------------------------------------------------------------------------------------------
 
+/** Canonical coordinates and stable feature keys also fix GPU distance ties. */
+export function prepareKrigingGrid(
+  points: CatalogFeatureCollection,
+  valueProperty: string,
+  coordinateSystem: CatalogCoordinateSystem,
+  cellSize: number
+): PointGridContext {
+  const diagnostics: CatalogDiagnostic[] = [];
+  const frame = makeLocalFrame(coordinateSystem, collectAllPositions(points), {shift: 'minimum'});
+  const sample = readPointSamples(points, valueProperty, frame);
+  validateRequirement(
+    'kriging-grid',
+    sample.count > 0 && sample.count <= 2000,
+    `points must contain 1 to 2,000 usable samples (received ${sample.count}); reduce or aggregate the points`
+  );
+  const {width, height} = getSampleExtent(sample);
+  const cells = (Math.floor(width / cellSize) + 1) * (Math.floor(height / cellSize) + 1);
+  validateRequirement(
+    'kriging-grid',
+    cells <= 40000,
+    `cellSize produces ${cells} cells, exceeding the 40,000 cell limit; increase cellSize`
+  );
+  const key = (index: number) => {
+    const feature = points.features[sample.sourceIndex[index]];
+    const properties = feature.properties ?? {};
+    return JSON.stringify([
+      getFeatureIdentity(feature),
+      Object.keys(properties)
+        .sort()
+        .map(name => [name, properties[name]]),
+      sample.partIndex[index]
+    ]);
+  };
+  const keys = Array.from({length: sample.count}, (_, index) => key(index));
+  const order = keys
+    .map((_, index) => index)
+    .sort(
+      (first, second) =>
+        sample.x[first] - sample.x[second] ||
+        sample.y[first] - sample.y[second] ||
+        keys[first].localeCompare(keys[second])
+    );
+  const canonical = {
+    ...sample,
+    x: Float64Array.from(order, index => sample.x[index]),
+    y: Float64Array.from(order, index => sample.y[index]),
+    translationErrorX: Float64Array.from(order, index => sample.translationErrorX?.[index] ?? 0),
+    translationErrorY: Float64Array.from(order, index => sample.translationErrorY?.[index] ?? 0),
+    value: Float64Array.from(order, index => sample.value[index]),
+    sourceIndex: Int32Array.from(order, index => sample.sourceIndex[index]),
+    partIndex: Int32Array.from(order, index => sample.partIndex[index])
+  };
+  addDroppedDiagnostic(diagnostics, sample.droppedCount);
+  addLocalFrameDiagnostic(diagnostics, frame);
+  return {frame, sample: canonical, grid: makeGridSpec(width, height, cellSize), diagnostics};
+}
+
+/** Moment estimate: total sill is sample variance; nearest-neighbor semivariance estimates the nugget. */
+export function resolveKrigingSettings(sample: Sample, values: Values): KrigingSettings {
+  const mean = sample.value.reduce((sum, value) => sum + value, 0) / sample.count;
+  const variance =
+    sample.value.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+    Math.max(1, sample.count - 1);
+  let nugget = values['nugget'] as number | undefined;
+  validateRequirement(
+    'kriging-grid',
+    nugget === undefined || nugget >= 0,
+    'nugget must be at least zero; omit nugget for estimation'
+  );
+  if (nugget === undefined) {
+    let sum = 0;
+    let count = 0;
+    for (let first = 0; first < sample.count; first++) {
+      let nearest = Infinity;
+      let semivariance = 0;
+      let ties = 0;
+      for (let second = 0; second < sample.count; second++) {
+        if (first === second) continue;
+        const distance =
+          (sample.x[first] - sample.x[second]) ** 2 + (sample.y[first] - sample.y[second]) ** 2;
+        if (distance < nearest) {
+          nearest = distance;
+          semivariance = 0;
+          ties = 0;
+        }
+        if (distance === nearest) {
+          semivariance += (sample.value[first] - sample.value[second]) ** 2 / 2;
+          ties++;
+        }
+      }
+      if (ties) {
+        sum += semivariance / ties;
+        count++;
+      }
+    }
+    nugget = Math.min(variance, count ? sum / count : variance);
+  }
+  const sill = (values['sill'] as number | undefined) ?? Math.max(0, variance - nugget);
+  validateRequirement(
+    'kriging-grid',
+    sill >= 0 && nugget + sill > 0,
+    'sill must be at least zero and sill plus nugget must exceed zero; provide a positive sill for constant samples'
+  );
+  const {width, height} = getSampleExtent(sample);
+  const range =
+    (values['range'] as number | undefined) ?? Math.max(Math.hypot(width, height) / 3, 1e-6);
+  validateRequirement(
+    'kriging-grid',
+    range > 0,
+    'range must exceed zero; omit range for estimation'
+  );
+  return {
+    model: values['model'] as KrigingSettings['model'],
+    nugget,
+    sill,
+    range,
+    neighborCount: values['neighborCount'] as number,
+    searchRadius: values['searchRadius'] as number
+  };
+}
+
 export type KrigingSettings = {
   model: 'spherical' | 'exponential' | 'gaussian';
   nugget: number;
@@ -480,9 +604,11 @@ export async function computeKrigingFieldGpu(
     throw new CatalogGpuUnsupportedError('GPU kriging keeps at most 16 neighbors');
   const cells = grid.columns * grid.rows;
   const raster = makeRasterMetadata(grid);
+  const varianceScale = settings.nugget + settings.sill;
+  const valueScale = Math.sqrt(varianceScale);
   return withCatalogGpuSession(context.device, 'catalog-kriging-grid', async session => {
     const sampleValues = new Float32Array(sample.count);
-    sample.value.forEach((value, index) => (sampleValues[index] = value));
+    sample.value.forEach((value, index) => (sampleValues[index] = value / valueScale));
     const values = session.output('values', 'float32', cells);
     const variances = session.output('variances', 'float32', cells);
     const uncertain = session.output('uncertain', 'uint32', 1);
@@ -501,8 +627,8 @@ export async function computeKrigingFieldGpu(
               minimumNeighborCount: 1,
               variogram: {
                 model: settings.model,
-                nugget: settings.nugget,
-                sill: settings.sill,
+                nugget: settings.nugget / varianceScale,
+                sill: settings.sill / varianceScale,
                 range: settings.range
               }
             },
@@ -523,8 +649,11 @@ export async function computeKrigingFieldGpu(
     );
     session.run();
     return {
-      values: await session.readFloat32(values),
-      variances: await session.readFloat32(variances),
+      values: Float64Array.from(await session.readFloat32(values), value => value * valueScale),
+      variances: Float64Array.from(
+        await session.readFloat32(variances),
+        value => value * varianceScale
+      ),
       singularCount: await session.readScalar(uncertain)
     };
   });
@@ -542,11 +671,26 @@ export function computeKrigingField(
   settings: KrigingSettings
 ): GridField & {singularCount: number} {
   const cells = grid.columns * grid.rows;
-  assertCpuWork(cells, sample.count);
+  validateRequirement(
+    'kriging-grid',
+    cells <= 40000 && sample.count <= 2000,
+    `cell/point limits are 40,000 cells and 2,000 points (received ${cells} cells and ${sample.count} points); increase cellSize or reduce the points`
+  );
+  if (cells * sample.count > MAXIMUM_CPU_WORK)
+    throw new KeplerAllocationError('capacity', {
+      message: `kriging-grid cell/point work ${cells} * ${sample.count} exceeds the ${MAXIMUM_CPU_WORK.toLocaleString('en-US')} cell-point limit; increase cellSize or reduce the points`
+    });
   const values = new Float64Array(cells).fill(Number.NaN);
   const variances = new Float64Array(cells).fill(Number.NaN);
   const counts = new Uint32Array(cells);
   let singularCount = 0;
+  // Keep variogram entries commensurate with the unit constraint regardless of value units.
+  const varianceScale = settings.nugget + settings.sill;
+  const normalizedSettings = {
+    ...settings,
+    nugget: settings.nugget / varianceScale,
+    sill: settings.sill / varianceScale
+  };
   const radiusSquared = settings.searchRadius > 0 ? settings.searchRadius ** 2 : Infinity;
   for (let row = 0; row < grid.rows; row++)
     for (let column = 0; column < grid.columns; column++) {
@@ -556,7 +700,13 @@ export function computeKrigingField(
         const distanceSquared = (sample.x[index] - cx) ** 2 + (sample.y[index] - cy) ** 2;
         if (distanceSquared <= radiusSquared) candidates.push({distanceSquared, index});
       }
-      candidates.sort((a, b) => a.distanceSquared - b.distanceSquared || a.index - b.index);
+      candidates.sort(
+        (a, b) =>
+          a.distanceSquared - b.distanceSquared ||
+          sample.x[a.index] - sample.x[b.index] ||
+          sample.y[a.index] - sample.y[b.index] ||
+          a.index - b.index
+      );
       const used = candidates.slice(0, settings.neighborCount);
       const cell = row * grid.columns + column;
       counts[cell] = used.length;
@@ -568,7 +718,7 @@ export function computeKrigingField(
         const line = new Array<number>(size).fill(1);
         for (let second = 0; second < used.length; second++)
           line[second] = getSemivariance(
-            settings,
+            normalizedSettings,
             Math.hypot(
               sample.x[used[first].index] - sample.x[used[second].index],
               sample.y[used[first].index] - sample.y[used[second].index]
@@ -576,7 +726,7 @@ export function computeKrigingField(
           );
         line[used.length] = 1;
         matrix.push(line);
-        rhs.push(getSemivariance(settings, Math.sqrt(used[first].distanceSquared)));
+        rhs.push(getSemivariance(normalizedSettings, Math.sqrt(used[first].distanceSquared)));
       }
       const last = new Array<number>(size).fill(1);
       last[used.length] = 0;
@@ -595,7 +745,7 @@ export function computeKrigingField(
         variance += solution[neighbor] * right[neighbor];
       }
       values[cell] = estimate;
-      variances[cell] = Math.max(0, variance);
+      variances[cell] = Math.max(0, variance) * varianceScale;
     }
   return {values, counts, variances, singularCount};
 }

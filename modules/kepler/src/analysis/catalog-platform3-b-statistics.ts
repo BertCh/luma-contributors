@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import type {CatalogRunOutput} from './catalog-binding-types';
 import {
@@ -80,6 +81,17 @@ export type PrecomputedLocalStatistics = {
 /** Pair work that the CPU reference accepts. */
 const MAXIMUM_PAIR_WORK = 4e7;
 
+function getAnalysisFeatureKey(collection: CatalogFeatureCollection, index: number): string {
+  const feature = collection.features[index];
+  const properties = feature.properties ?? {};
+  return JSON.stringify([
+    getFeatureIdentity(feature),
+    Object.keys(properties)
+      .sort()
+      .map(name => [name, properties[name]])
+  ]);
+}
+
 function getVertexKey(position: readonly [number, number] | readonly number[]): string {
   return `${position[0]},${position[1]}`;
 }
@@ -117,7 +129,8 @@ function buildContiguity(
 export function buildAnalysisSet(
   collection: CatalogFeatureCollection,
   valueProperty: string,
-  settings: WeightsSettings
+  settings: WeightsSettings,
+  canonicalRows = false
 ): AnalysisSet {
   const frame = makeLocalFrame(settings.coordinateSystem, collectAllPositions(collection), {
     shift: 'minimum'
@@ -137,6 +150,16 @@ export function buildAnalysisSet(
     values.push(value);
     anchors.push(anchor);
   });
+  const canonicalKeys = sourceIndex.map(index => getAnalysisFeatureKey(collection, index));
+  const canonicalOrder = sourceIndex
+    .map((_, row) => row)
+    .sort(
+      (first, second) =>
+        anchors[first][0] - anchors[second][0] ||
+        anchors[first][1] - anchors[second][1] ||
+        canonicalKeys[first].localeCompare(canonicalKeys[second])
+    );
+  const canonicalRank = new Map(canonicalOrder.map((row, rank) => [row, rank]));
   const count = sourceIndex.length;
   let neighbors: number[][];
   if (settings.neighborhood === 'queen' || settings.neighborhood === 'rook') {
@@ -153,7 +176,10 @@ export function buildAnalysisSet(
         if (settings.neighborhood === 'distance-band' && distance > settings.distanceBand) continue;
         candidates.push({distance, index: other});
       }
-      candidates.sort((a, b) => a.distance - b.distance || a.index - b.index);
+      candidates.sort(
+        (a, b) =>
+          a.distance - b.distance || canonicalRank.get(a.index)! - canonicalRank.get(b.index)!
+      );
       const chosen =
         settings.neighborhood === 'knn' ? candidates.slice(0, settings.neighborCount) : candidates;
       return chosen.map(entry => entry.index);
@@ -167,7 +193,18 @@ export function buildAnalysisSet(
   const weights = neighbors.map(list =>
     list.map(() => (settings.rowStandardize && list.length ? 1 / list.length : 1))
   );
-  return {sourceIndex, values, weights: {neighbors, weights, distances}, droppedCount};
+  if (!canonicalRows)
+    return {sourceIndex, values, weights: {neighbors, weights, distances}, droppedCount};
+  return {
+    sourceIndex: canonicalOrder.map(row => sourceIndex[row]),
+    values: canonicalOrder.map(row => values[row]),
+    weights: {
+      neighbors: canonicalOrder.map(row => neighbors[row].map(other => canonicalRank.get(other)!)),
+      weights: canonicalOrder.map(row => weights[row]),
+      distances: canonicalOrder.map(row => distances[row])
+    },
+    droppedCount
+  };
 }
 
 export function addIslandDiagnostic(
@@ -180,7 +217,7 @@ export function addIslandDiagnostic(
       diagnostics,
       'island-features',
       'warning',
-      'Features without neighbors get a zero spatial lag; their local statistics are not meaningful.',
+      'Features without neighbors are not tested by local statistics (null p-values); their spatial lag is zero.',
       islands
     );
 }
@@ -304,7 +341,11 @@ export function runGlobalSpatialStatistics(
     moranExpected ** 2;
   const geary =
     ((n - 1) * differences) / (2 * s0 * z.reduce((sum, value) => sum + value * value, 0));
-  const gearyVariance = ((2 * s1 + s2) * (n - 1) - 4 * s0 * s0) / (2 * (n + 1) * s0 * s0);
+  const gearyVariance =
+    ((n - 1) * s1 * (n * n - 3 * n + 3 - (n - 1) * kurtosis) -
+      ((n - 1) * s2 * (n * n + 3 * n - 6 - (n * n - n + 2) * kurtosis)) / 4 +
+      s0 * s0 * (n * n - 3 - (n - 1) ** 2 * kurtosis)) /
+    (n * (n - 2) * (n - 3) * s0 * s0);
   const table = makeCatalogTable('global', 'Global spatial statistics', {
     statistic: 'string',
     value: 'float64',
@@ -343,7 +384,7 @@ export function runGlobalSpatialStatistics(
     diagnostics,
     'analytic-inference',
     'info',
-    "Moran's I uses the randomization variance and Geary's C the normality variance; both p-values are normal approximations."
+    "Moran's I and Geary's C both use the randomization variance; p-values are two-sided normal approximations."
   );
   return {tables: [table], diagnostics, summary: {featureCount: n, linkCount: links.size}};
 }
@@ -390,6 +431,28 @@ function makeLocalOutputTable(
   );
 }
 
+export type LocalAdjustment = 'none' | 'benjamini-hochberg' | 'bonferroni';
+
+export function adjustLocalPValues(
+  values: readonly (number | null)[],
+  method: LocalAdjustment
+): (number | null)[] {
+  const adjusted = values.slice();
+  const order = values
+    .flatMap((value, index) => (value === null ? [] : [index]))
+    .sort((first, second) => values[first]! - values[second]!);
+  if (method === 'bonferroni') {
+    for (const index of order) adjusted[index] = Math.min(1, values[index]! * order.length);
+  } else if (method === 'benjamini-hochberg') {
+    let running = 1;
+    for (let rank = order.length - 1; rank >= 0; rank--) {
+      running = Math.min(running, (values[order[rank]]! * order.length) / (rank + 1));
+      adjusted[order[rank]] = running;
+    }
+  }
+  return adjusted;
+}
+
 export function runLocalMoran(
   collection: CatalogFeatureCollection,
   parameters: {
@@ -397,12 +460,13 @@ export function runLocalMoran(
     permutations: number;
     seed: number;
     significance: number;
+    multipleTesting?: LocalAdjustment;
   } & WeightsSettings,
   precomputed?: PrecomputedLocalStatistics
 ): CatalogRunOutput {
   const diagnostics: CatalogDiagnostic[] = [];
   const set =
-    precomputed?.set ?? buildAnalysisSet(collection, parameters.valueProperty, parameters);
+    precomputed?.set ?? buildAnalysisSet(collection, parameters.valueProperty, parameters, true);
   addDroppedDiagnostic(diagnostics, set.droppedCount);
   addIslandDiagnostic(diagnostics, set.weights);
   const n = set.values.length;
@@ -417,16 +481,17 @@ export function runLocalMoran(
     local_i: 'float64',
     spatial_lag: 'float64',
     p_value: 'float64',
+    adjusted_p_value: 'float64',
     cluster: 'string'
   });
-  set.weights.neighbors.forEach((list, row) => {
+  const localResults = set.weights.neighbors.map((list, row) => {
     const weights = set.weights.weights[row];
     const lag = precomputed?.spatialLag
       ? precomputed.spatialLag[row]
       : list.reduce((sum, other, position) => sum + weights[position] * z[other], 0);
     const localI = precomputed ? precomputed.statistic[row] : z[row] * lag;
     let pValue: number | null = null;
-    if (precomputed?.pValue) {
+    if (precomputed?.pValue && list.length) {
       pValue = Number.isFinite(precomputed.pValue[row]) ? precomputed.pValue[row] : null;
     } else if (parameters.permutations > 0 && list.length) {
       let atLeast = 0;
@@ -438,34 +503,47 @@ export function runLocalMoran(
       }
       pValue = (atLeast + 1) / (parameters.permutations + 1);
     }
-    const quadrant = z[row] >= 0 ? (lag >= 0 ? 'HH' : 'HL') : lag >= 0 ? 'LH' : 'LL';
-    appendCatalogRow(table, {
-      source_index: set.sourceIndex[row],
-      source_id: getFeatureIdentity(collection.features[set.sourceIndex[row]]),
-      value: set.values[row],
-      neighbor_count: list.length,
-      local_i: localI,
-      spatial_lag: lag,
-      p_value: pValue,
-      cluster:
-        pValue === null
-          ? 'not-tested'
-          : pValue <= parameters.significance
-            ? quadrant
-            : 'not-significant',
-      geometry: getFeatureGeometryText(collection.features[set.sourceIndex[row]])
-    });
+    return {lag, localI, pValue};
   });
+  const multipleTesting = parameters.multipleTesting ?? 'benjamini-hochberg';
+  const adjusted = adjustLocalPValues(
+    localResults.map(result => result.pValue),
+    multipleTesting
+  );
+  localResults
+    .map((_, row) => row)
+    .sort((first, second) => set.sourceIndex[first] - set.sourceIndex[second])
+    .forEach(row => {
+      const {lag, localI, pValue} = localResults[row];
+      const quadrant = z[row] >= 0 ? (lag >= 0 ? 'HH' : 'HL') : lag >= 0 ? 'LH' : 'LL';
+      appendCatalogRow(table, {
+        source_index: set.sourceIndex[row],
+        source_id: getFeatureIdentity(collection.features[set.sourceIndex[row]]),
+        value: set.values[row],
+        neighbor_count: set.weights.neighbors[row].length,
+        local_i: localI,
+        spatial_lag: lag,
+        p_value: pValue,
+        adjusted_p_value: adjusted[row],
+        cluster:
+          adjusted[row] === null
+            ? 'not-tested'
+            : adjusted[row]! <= parameters.significance
+              ? quadrant
+              : 'not-significant',
+        geometry: getFeatureGeometryText(collection.features[set.sourceIndex[row]])
+      });
+    });
   addCatalogDiagnostic(
     diagnostics,
     'pseudo-p-values',
     'info',
-    'p-values are conditional-permutation pseudo p-values with no multiple-testing correction; see multiple-testing-adjustment.'
+    `p-values are conditional-permutation pseudo p-values; clusters use ${multipleTesting} adjusted p-values across tested rows.`
   );
   return {
     tables: [table],
     diagnostics,
-    summary: {featureCount: n, permutations: parameters.permutations}
+    summary: {featureCount: n, permutations: parameters.permutations, multipleTesting}
   };
 }
 
@@ -480,7 +558,7 @@ export function runLocalGeary(
 ): CatalogRunOutput {
   const diagnostics: CatalogDiagnostic[] = [];
   const set =
-    precomputed?.set ?? buildAnalysisSet(collection, parameters.valueProperty, parameters);
+    precomputed?.set ?? buildAnalysisSet(collection, parameters.valueProperty, parameters, true);
   addDroppedDiagnostic(diagnostics, set.droppedCount);
   addIslandDiagnostic(diagnostics, set.weights);
   const n = set.values.length;
@@ -495,7 +573,9 @@ export function runLocalGeary(
     local_c: 'float64',
     p_value: 'float64'
   });
-  set.weights.neighbors.forEach((list, row) => {
+  // Consume the shared random stream in canonical analysis order, then publish source order.
+  const localResults = set.values.map((_, row) => {
+    const list = set.weights.neighbors[row];
     const weights = set.weights.weights[row];
     const localC = precomputed
       ? precomputed.statistic[row]
@@ -518,16 +598,23 @@ export function runLocalGeary(
       }
       pValue = (atMost + 1) / (parameters.permutations + 1);
     }
-    appendCatalogRow(table, {
-      source_index: set.sourceIndex[row],
-      source_id: getFeatureIdentity(collection.features[set.sourceIndex[row]]),
-      value: set.values[row],
-      neighbor_count: list.length,
-      local_c: localC,
-      p_value: pValue,
-      geometry: getFeatureGeometryText(collection.features[set.sourceIndex[row]])
-    });
+    return {localC, pValue};
   });
+  set.sourceIndex
+    .map((_, row) => row)
+    .sort((first, second) => set.sourceIndex[first] - set.sourceIndex[second])
+    .forEach(row => {
+      const {localC, pValue} = localResults[row];
+      appendCatalogRow(table, {
+        source_index: set.sourceIndex[row],
+        source_id: getFeatureIdentity(collection.features[set.sourceIndex[row]]),
+        value: set.values[row],
+        neighbor_count: set.weights.neighbors[row].length,
+        local_c: localC,
+        p_value: pValue,
+        geometry: getFeatureGeometryText(collection.features[set.sourceIndex[row]])
+      });
+    });
   addCatalogDiagnostic(
     diagnostics,
     'one-sided-pseudo-p',
@@ -571,9 +658,9 @@ export function runHotSpotGiStar(
     const cpuZ =
       (sum - mean * weightSum) /
       (deviation * Math.sqrt((n * weightSum - weightSum * weightSum) / (n - 1)));
-    // Islands keep the CPU formula: the contributor reports no z-score for a row without neighbors.
-    const z =
-      precomputed && list.length && Number.isFinite(precomputed.statistic[row])
+    const z = !list.length
+      ? Number.NaN
+      : precomputed && Number.isFinite(precomputed.statistic[row])
         ? precomputed.statistic[row]
         : cpuZ;
     const magnitude = Math.abs(z);
@@ -586,7 +673,11 @@ export function runHotSpotGiStar(
       neighbor_count: list.length,
       z_score: Number.isFinite(z) ? z : null,
       p_value: Number.isFinite(z) ? getNormalTwoSidedPValue(z) : null,
-      classification: level ? `${z > 0 ? 'hot' : 'cold'}-${level}` : 'not-significant',
+      classification: !list.length
+        ? 'not-tested'
+        : level
+          ? `${z > 0 ? 'hot' : 'cold'}-${level}`
+          : 'not-significant',
       geometry: getFeatureGeometryText(collection.features[set.sourceIndex[row]])
     });
   });
@@ -597,7 +688,14 @@ export function runHotSpotGiStar(
     'Gi* uses binary weights including the feature itself; p-values are normal approximations without multiple-testing correction.'
   );
   addIslandDiagnostic(diagnostics, set.weights);
-  return {tables: [table], diagnostics, summary: {featureCount: n}};
+  return {
+    tables: [table],
+    diagnostics,
+    summary: {
+      featureCount: n,
+      islandCount: set.weights.neighbors.filter(list => !list.length).length
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -625,6 +723,11 @@ export function runEmpiricalBayesRates(
       droppedCount++;
       return;
     }
+    validateRequirement(
+      'empirical-bayes-rates',
+      events <= population,
+      `numeratorProperty "${parameters.numeratorProperty}" at row ${index} (${getFeatureIdentity(feature) ?? 'no id'}) must not exceed denominatorProperty "${parameters.denominatorProperty}" (${events} > ${population}); correct the cases or population`
+    );
     rows.push({index, events, population});
   });
   addDroppedDiagnostic(diagnostics, droppedCount);
@@ -763,12 +866,39 @@ export function runMultipleTestingAdjustment(
   };
 }
 
+/** An omitted threshold selects the lower quartile of pairwise distances/differences. */
+export function resolveKnoxThresholds(
+  x: readonly number[],
+  y: readonly number[],
+  times: readonly number[],
+  spatialThreshold?: number,
+  temporalThreshold?: number
+) {
+  const distances: number[] = [];
+  const differences: number[] = [];
+  if (spatialThreshold === undefined || temporalThreshold === undefined) {
+    for (let first = 0; first < times.length; first++)
+      for (let second = first + 1; second < times.length; second++) {
+        if (spatialThreshold === undefined)
+          distances.push(Math.hypot(x[first] - x[second], y[first] - y[second]));
+        if (temporalThreshold === undefined)
+          differences.push(Math.abs(times[first] - times[second]));
+      }
+  }
+  const quartile = (values: number[]) =>
+    values.sort((first, second) => first - second)[Math.floor((values.length - 1) / 4)] ?? 0;
+  return {
+    spatialThreshold: spatialThreshold ?? quartile(distances),
+    temporalThreshold: temporalThreshold ?? quartile(differences)
+  };
+}
+
 export function runKnoxTest(
   points: CatalogFeatureCollection,
   parameters: {
     timeProperty: string;
-    spatialThreshold: number;
-    temporalThreshold: number;
+    spatialThreshold?: number;
+    temporalThreshold?: number;
     permutations: number;
     seed: number;
     coordinateSystem: CatalogCoordinateSystem;
@@ -800,18 +930,25 @@ export function runKnoxTest(
   const n = times.length;
   // The Knox test needs at least three events.
   if (n < 3) throw new Error('Too few features');
+  const {spatialThreshold, temporalThreshold} = resolveKnoxThresholds(
+    x,
+    y,
+    times,
+    parameters.spatialThreshold,
+    parameters.temporalThreshold
+  );
   const closePairs: [number, number][] = [];
   let temporalClose = 0;
   const spatialClose: [number, number][] = [];
   for (let first = 0; first < n; first++)
     for (let second = first + 1; second < n; second++) {
-      if (Math.abs(times[first] - times[second]) <= parameters.temporalThreshold) temporalClose++;
-      if (Math.hypot(x[first] - x[second], y[first] - y[second]) <= parameters.spatialThreshold)
+      if (Math.abs(times[first] - times[second]) <= temporalThreshold) temporalClose++;
+      if (Math.hypot(x[first] - x[second], y[first] - y[second]) <= spatialThreshold)
         spatialClose.push([first, second]);
     }
   let observed = 0;
   for (const [first, second] of spatialClose)
-    if (Math.abs(times[first] - times[second]) <= parameters.temporalThreshold) {
+    if (Math.abs(times[first] - times[second]) <= temporalThreshold) {
       observed++;
       closePairs.push([first, second]);
     }
@@ -827,7 +964,7 @@ export function runKnoxTest(
     }
     let count = 0;
     for (const [first, second] of spatialClose)
-      if (Math.abs(shuffled[first] - shuffled[second]) <= parameters.temporalThreshold) count++;
+      if (Math.abs(shuffled[first] - shuffled[second]) <= temporalThreshold) count++;
     if (count >= observed) atLeast++;
   }
   const table = makeCatalogTable('knox', 'Knox test', {
@@ -848,5 +985,9 @@ export function runKnoxTest(
     ratio: expected > 0 ? observed / expected : null,
     p_value: precomputed ? precomputed.pValue : (atLeast + 1) / (parameters.permutations + 1)
   });
-  return {tables: [table], diagnostics, summary: {eventCount: n, jointClosePairs: observed}};
+  return {
+    tables: [table],
+    diagnostics,
+    summary: {eventCount: n, jointClosePairs: observed, spatialThreshold, temporalThreshold}
+  };
 }

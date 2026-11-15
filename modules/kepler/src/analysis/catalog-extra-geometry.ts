@@ -443,6 +443,7 @@ export function runLineChunk(
   parameters: {maximumChunkLength: number; coordinateSystem: CatalogCoordinateSystem},
   maximumRows: number
 ): ExtraRunOutput {
+  validateGeometryOutputCapacity('line-chunk', {lines}, parameters);
   const table = makeCatalogTable(
     'line-chunks',
     'Line chunks',
@@ -1391,6 +1392,7 @@ export function runGridGenerator(
   parameters: {cellWidth: number; cellHeight: number},
   maximumCells: number
 ): ExtraRunOutput {
+  validateGeometryOutputCapacity('grid-generator', {extent}, parameters);
   const positions = collectPositions(extent);
   const diagnostics: CatalogDiagnostic[] = [];
   const table = makeCatalogTable(
@@ -1445,6 +1447,7 @@ export function runRandomPointsInPolygon(
   polygons: CatalogFeatureCollection,
   parameters: {pointsPerPolygon: number; seed: number}
 ): ExtraRunOutput {
+  validateGeometryOutputCapacity('random-points-in-polygon', {polygons}, parameters);
   const table = makeCatalogTable(
     'random-points',
     'Random points',
@@ -1507,6 +1510,7 @@ export function runRandomPointsOnLine(
   lines: CatalogFeatureCollection,
   parameters: {pointsPerLine: number; seed: number; coordinateSystem: CatalogCoordinateSystem}
 ): ExtraRunOutput {
+  validateGeometryOutputCapacity('random-points-on-line', {lines}, parameters);
   const table = makeCatalogTable(
     'random-points',
     'Random points',
@@ -1701,4 +1705,83 @@ export function runKMeans(
     diagnostics,
     summary: {clusterCount, iterations, inertia}
   };
+}
+
+/** Validate projected output counts before row generation or GPU allocation. */
+export function validateGeometryOutputCapacity(
+  bindingId: string,
+  inputs: Readonly<Record<string, CatalogFeatureCollection>>,
+  parameters: Readonly<Record<string, unknown>>
+): void {
+  let count = 0;
+  let maximum = 20000;
+  let parameter = '';
+  let remedy = '';
+  if (bindingId === 'grid-generator') {
+    const positions = collectPositions(inputs['extent']);
+    if (!positions.length) return;
+    let minimumX = Infinity;
+    let maximumX = -Infinity;
+    let minimumY = Infinity;
+    let maximumY = -Infinity;
+    for (const [x, y] of positions) {
+      minimumX = Math.min(minimumX, x);
+      maximumX = Math.max(maximumX, x);
+      minimumY = Math.min(minimumY, y);
+      maximumY = Math.max(maximumY, y);
+    }
+    count =
+      Math.max(1, Math.ceil((maximumX - minimumX) / (parameters['cellWidth'] as number) - 1e-9)) *
+      Math.max(1, Math.ceil((maximumY - minimumY) / (parameters['cellHeight'] as number) - 1e-9));
+    parameter = 'cellWidth/cellHeight';
+    remedy = 'increase cellWidth or cellHeight';
+  } else if (bindingId === 'random-points-in-polygon') {
+    count =
+      inputs['polygons'].features.filter(
+        feature => getPolygonParts(feature.geometry).flat(2).length > 0
+      ).length * (parameters['pointsPerPolygon'] as number);
+    parameter = 'pointsPerPolygon';
+    remedy = 'reduce pointsPerPolygon or partition the input';
+  } else if (bindingId === 'random-points-on-line') {
+    count =
+      inputs['lines'].features.filter(feature =>
+        getLineParts(feature.geometry).some(
+          part =>
+            part.length >= 2 &&
+            measurePathLength(part, parameters['coordinateSystem'] as CatalogCoordinateSystem) > 0
+        )
+      ).length * (parameters['pointsPerLine'] as number);
+    parameter = 'pointsPerLine';
+    remedy = 'reduce pointsPerLine or partition the input';
+  } else if (bindingId === 'line-chunk' || bindingId === 'geometry-line-segmentize') {
+    const coordinateSystem = parameters['coordinateSystem'] as CatalogCoordinateSystem;
+    const segmentize = bindingId === 'geometry-line-segmentize';
+    maximum = segmentize ? 500000 : 50000;
+    parameter = segmentize ? 'maximumSegmentLength' : 'maximumChunkLength';
+    const lengthLimit = parameters[parameter] as number;
+    for (const feature of inputs['lines'].features)
+      for (const part of getLineParts(feature.geometry)) {
+        if (!part.length) continue;
+        if (segmentize) {
+          count++;
+          for (let index = 1; index < part.length; index++)
+            count += Math.max(
+              1,
+              Math.ceil(
+                measureDistance(part[index - 1], part[index], coordinateSystem) / lengthLimit
+              )
+            );
+        } else if (part.length >= 2) {
+          count += Math.max(
+            1,
+            Math.ceil(measurePathLength(part, coordinateSystem) / lengthLimit - 1e-9)
+          );
+        }
+      }
+    remedy = `increase ${parameter} or partition the input`;
+  } else return;
+  if (count > maximum)
+    throw new Error(
+      `${bindingId}: ${parameter} projects ${count} output ${bindingId === 'geometry-line-segmentize' ? 'vertices' : 'rows'}, exceeding the ${maximum.toLocaleString('en-US')} limit; ${remedy}.`
+    );
 }

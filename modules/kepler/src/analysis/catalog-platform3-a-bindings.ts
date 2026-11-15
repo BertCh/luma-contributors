@@ -11,7 +11,11 @@ import {
   type CatalogOperationBinding,
   type CatalogParameterSpec
 } from './catalog-binding-types';
-import type {CatalogCoordinateSystem} from './catalog-geojson';
+import {
+  validateCatalogCoordinateSystem,
+  validatePolygonTriangulationCapacity,
+  type CatalogCoordinateSystem
+} from './catalog-geojson';
 import {runGpuHilbertOrder} from './catalog-platform3-a-gpu';
 import {
   runBoundsCandidates,
@@ -78,6 +82,14 @@ type BindingSpec = Omit<
 function defineCpuBinding(spec: BindingSpec, domain: 'geometry' | 'network' = 'geometry') {
   return {
     ...spec,
+    run: spec.run
+      ? (inputs, values) => {
+          validateCatalogCoordinateSystem(spec.id, values['coordinateSystem'], inputs);
+          if (spec.id === 'polygon-triangulation')
+            validatePolygonTriangulationCapacity(inputs['polygons']);
+          return spec.run!(inputs, values);
+        }
+      : undefined,
     domain,
     engine: 'cpu-reference',
     cleanup: CPU_CLEANUP,
@@ -557,9 +569,10 @@ const GEOMETRY_BINDINGS: readonly CatalogOperationBinding[] = [
     ],
     declaredBehavior: [
       'Holes are joined to the shell by visible bridges before ear clipping.',
-      'Parts over 1,500 vertices are skipped; invalid or self-intersecting rings may stall and keep the triangles found so far.'
+      'Each part is limited to 1,500 vertices (excluding closing duplicates); larger parts fail validation before triangulation. Invalid or self-intersecting rings may stall and keep the triangles found so far.'
     ],
-    limitation: 'Cubic worst case; no constrained Delaunay quality and no Steiner points.',
+    limitation:
+      'At most 1,500 vertices per polygon part and 50,000 input vertices in total. Cubic worst case; no constrained Delaunay quality and no Steiner points.',
     run: (inputs, values) =>
       runPolygonTriangulation(
         inputs['polygons'],
@@ -1011,7 +1024,7 @@ const GEOMETRY_BINDINGS: readonly CatalogOperationBinding[] = [
     contributorNames: ['GPUPolygonize'],
     inputs: [makeInputSpec('lines', 'Lines', ['line'], 5000, 20000)],
     parameters: [
-      distanceParameter('snapTolerance', 'Vertex snap tolerance', 0),
+      makeNumberParameter('snapTolerance', 'Vertex snap tolerance', 0, 0, 1e9, 'coordinate units'),
       {
         name: 'nodeCrossings',
         label: 'Node crossing lines first',
@@ -1026,6 +1039,7 @@ const GEOMETRY_BINDINGS: readonly CatalogOperationBinding[] = [
     declaredBehavior: [
       'Faces are traced around a planar graph of the line vertices; dangles are pruned and the unbounded face is dropped.',
       'Islands are attached as holes of the smallest enclosing face.',
+      'snapTolerance uses raw coordinate units: degrees for EPSG:4326 and input units for planar; it is not a meter tolerance.',
       'More than 20,000 segments (after noding) throws.'
     ],
     limitation:
@@ -1079,7 +1093,8 @@ const NETWORK_BINDINGS: readonly CatalogOperationBinding[] = [
       declaredBehavior: [
         ...NETWORK_BEHAVIOR,
         'Origins and opportunities beyond the maximum snap distance are not routed (status origin-not-snapped / counted).',
-        'Score = sum of weight times decay(least network cost); cumulative counts weights within the maximum cost.'
+        'Score = sum of weight times decay(least network cost); cumulative counts weights within the maximum cost.',
+        'When weightProperty is set, missing or non-numeric weights are excluded from reachable counts and scores and counted in diagnostics; negative weights throw a named validation error.'
       ],
       limitation:
         'One Dijkstra per origin on the CPU; partial-edge costs are proportional; no turn penalties; costs are not multi-modal.',
@@ -1272,7 +1287,7 @@ const NETWORK_BINDINGS: readonly CatalogOperationBinding[] = [
         'Emission is Gaussian in the snap distance; transitions penalize the difference between network cost and straight-line distance; the chain restarts where no connected transition exists.'
       ],
       limitation:
-        'At most 500 trace points and 20,000 edges (brute-force candidates and one Dijkstra per candidate); timestamps, headings and speeds are not used.',
+        'At most 500 trace points and 50,000 edges (brute-force candidates and one Dijkstra per candidate); timestamps, headings and speeds are not used.',
       run: (inputs, values) => runMapMatching(inputs, values)
     },
     'network'
@@ -1301,6 +1316,7 @@ const NETWORK_BINDINGS: readonly CatalogOperationBinding[] = [
       declaredBehavior: [
         ...NETWORK_BEHAVIOR,
         'Points beyond the maximum snap distance are ignored; fewer than two snapped points leave K null.',
+        'Only costMode=length is supported; property-cost mode throws because radii and physical network length must share units.',
         'K(r) = L / (n (n - 1)) * ordered pairs within network cost r; expected_k is the 2r reference of an unbounded line.'
       ],
       limitation:

@@ -8,6 +8,8 @@ import {
   MAXIMUM_NETWORK_EDGES,
   NETWORK_BEHAVIOR,
   NETWORK_PARAMETERS,
+  NETWORK_TOPOLOGY_PARAMETERS,
+  NETWORK_TOPOLOGY_BEHAVIOR,
   SNAP_DISTANCE_PARAMETER,
   getNetworkParameters,
   type CatalogInputSpec,
@@ -15,7 +17,8 @@ import {
   type CatalogOutputSpec,
   type CatalogParameterSpec
 } from './catalog-binding-types';
-import type {CatalogCoordinateSystem} from './catalog-geojson';
+import {validateCatalogCoordinateSystem, type CatalogCoordinateSystem} from './catalog-geojson';
+import {buildNetworkGraph} from './catalog-network';
 import {
   runAffineTransform,
   runBufferSelection,
@@ -36,7 +39,8 @@ import {
   runPointInPolygonJoin,
   runRandomPointsInPolygon,
   runRandomPointsOnLine,
-  runVertexSnap
+  runVertexSnap,
+  validateGeometryOutputCapacity
 } from './catalog-extra-geometry';
 import {
   runNetworkCentrality,
@@ -106,7 +110,7 @@ const SEED_PARAMETER: CatalogParameterSpec = {
 
 const MAXIMUM_CENTRALITY_NODES = 1500;
 
-export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
+const EXTRA_BINDING_SPECS: readonly ExtraCpuBinding[] = [
   {
     id: 'line-simplification',
     title: 'Line simplification',
@@ -271,7 +275,8 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
       'Lengths are meters for EPSG:4326 (haversine) and coordinate units for planar; cut points interpolate linearly in coordinates.',
       'More than 50,000 chunks throws before rows are produced.'
     ],
-    limitation: 'Linear interpolation in coordinates, not along a geodesic.',
+    limitation:
+      'At most 50,000 output chunks, checked before generation. Linear interpolation in coordinates, not along a geodesic.',
     run: (inputs, parameters) =>
       runLineChunk(
         inputs['lines'],
@@ -492,7 +497,7 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
       makeOutput(
         'buffer-selection',
         'Selected features',
-        'none',
+        'mixed',
         ['source_index', 'source_id', 'nearest_selector_index'],
         5000
       )
@@ -778,7 +783,7 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
       'More than 20,000 cells throws before any row is produced.'
     ],
     limitation:
-      'Axis-aligned rectangles in coordinate space; cells are not equal-area on geographic data.',
+      'At most 20,000 output cells, checked before generation. Axis-aligned rectangles in coordinate space; cells are not equal-area on geographic data.',
     run: (inputs, parameters) =>
       runGridGenerator(
         inputs['extent'],
@@ -823,9 +828,10 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
       'The same seed and input always give the same points (mulberry32 stream per feature).',
       'Sampling is uniform in coordinate space over the bounding box, so geographic polygons are not area-uniform on the sphere.',
       'At most 200 attempts per requested point; a shortfall is reported in a diagnostic.',
-      'More than 20,000 output rows throws after sampling.'
+      'Requests above 20,000 output rows fail validation before sampling.'
     ],
-    limitation: 'Rejection sampling; very thin polygons may under-fill.',
+    limitation:
+      'At most 20,000 requested output points. Rejection sampling; very thin polygons may under-fill.',
     run: (inputs, parameters) =>
       runRandomPointsInPolygon(inputs['polygons'], {
         pointsPerPolygon: parameters['pointsPerPolygon'] as number,
@@ -866,9 +872,10 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
     declaredBehavior: [
       'The same seed and input always give the same points.',
       'Distance is uniform over the total length of all parts of a feature; zero-length features produce no rows.',
-      'More than 20,000 output rows throws after sampling.'
+      'Requests above 20,000 output rows fail validation before sampling.'
     ],
-    limitation: 'Linear interpolation in coordinates between vertices.',
+    limitation:
+      'At most 20,000 output points. Linear interpolation in coordinates between vertices.',
     run: (inputs, parameters) =>
       runRandomPointsOnLine(inputs['lines'], {
         pointsPerLine: parameters['pointsPerLine'] as number,
@@ -937,7 +944,7 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
     contributorNames: ['GPUNetworkStructure'],
     engine: 'cpu-reference',
     inputs: [LINE_INPUT],
-    parameters: NETWORK_PARAMETERS,
+    parameters: NETWORK_TOPOLOGY_PARAMETERS,
     outputs: [
       makeOutput(
         'network-structure',
@@ -949,7 +956,7 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
     ],
     cleanup: CPU_CLEANUP,
     declaredBehavior: [
-      ...NETWORK_BEHAVIOR,
+      ...NETWORK_TOPOLOGY_BEHAVIOR,
       'Degree counts edge ends at a node regardless of one-way restrictions; self-loops count twice.'
     ],
     limitation: 'Topological summary of the built graph; no betweenness or block analysis.',
@@ -965,7 +972,14 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
     capabilityIds: ['gpu-network'],
     contributorNames: ['GPUNetworkCentrality'],
     engine: 'cpu-reference',
-    inputs: [{...LINE_INPUT, maximumFeatures: 5000, maximumVertices: 50000}],
+    inputs: [
+      {
+        ...LINE_INPUT,
+        label: 'Lines (at most 1,500 built nodes)',
+        maximumFeatures: 5000,
+        maximumVertices: 50000
+      }
+    ],
     parameters: NETWORK_PARAMETERS,
     outputs: [
       makeOutput(
@@ -1091,7 +1105,7 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
     contributorNames: ['GPUNetworkLineGraph'],
     engine: 'cpu-reference',
     inputs: [LINE_INPUT],
-    parameters: NETWORK_PARAMETERS,
+    parameters: NETWORK_TOPOLOGY_PARAMETERS,
     outputs: [
       makeOutput(
         'network-line-graph',
@@ -1103,7 +1117,7 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
     ],
     cleanup: CPU_CLEANUP,
     declaredBehavior: [
-      ...NETWORK_BEHAVIOR,
+      ...NETWORK_TOPOLOGY_BEHAVIOR,
       'Adjacency is undirected and ignores one-way restrictions; each edge pair is listed once per shared node.',
       'More than 100,000 links throws before rows are produced.'
     ],
@@ -1115,3 +1129,23 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
       })
   }
 ];
+
+export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = EXTRA_BINDING_SPECS.map(binding => ({
+  ...binding,
+  run: (inputs, parameters) => {
+    validateCatalogCoordinateSystem(binding.id, parameters['coordinateSystem'], inputs);
+    validateGeometryOutputCapacity(binding.id, inputs, parameters);
+    if (binding.id === 'network-centrality') {
+      const graph = buildNetworkGraph(
+        inputs['lines'],
+        getNetworkParameters(parameters),
+        MAXIMUM_NETWORK_EDGES
+      );
+      if (graph.nodes.length > MAXIMUM_CENTRALITY_NODES)
+        throw new Error(
+          'network-centrality: lines exceed the 1,500 node limit; simplify or partition the network.'
+        );
+    }
+    return binding.run!(inputs, parameters);
+  }
+}));

@@ -52,6 +52,11 @@ export type LocalFrame = {
   readonly shiftY: number;
   /** Projects a position; a position that cannot be projected (see below) gives `[NaN, NaN]`. */
   forward(position: CatalogPosition): [number, number];
+  /** Also records the exact binary64 subtraction residuals of the frame translation. */
+  forwardWithTranslationError?(
+    position: CatalogPosition,
+    translationError: [number, number]
+  ): [number, number];
   /** Number of `forward` calls so far that returned a non-finite coordinate. See {@link addLocalFrameDiagnostic}. */
   getNonFiniteCount(): number;
   inverse(x: number, y: number): [number, number];
@@ -135,19 +140,36 @@ export function makeLocalFrame(
       shiftY = shift === 'minimum' ? minimumY : (minimumY + maximumY) / 2;
     }
   }
+  const forward = (
+    position: CatalogPosition,
+    translationError?: [number, number]
+  ): [number, number] => {
+    const [x, y] = project(position);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) nonFiniteCount++;
+    const translatedX = x - shiftX;
+    const translatedY = y - shiftY;
+    if (translationError) {
+      translationError[0] = getTranslationRoundoff(x, shiftX, translatedX);
+      translationError[1] = getTranslationRoundoff(y, shiftY, translatedY);
+    }
+    return [translatedX, translatedY];
+  };
   return {
     gpuFrame,
     shiftX,
     shiftY,
-    forward: position => {
-      const [x, y] = project(position);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) nonFiniteCount++;
-      return [x - shiftX, y - shiftY];
-    },
+    forward: position => forward(position),
+    forwardWithTranslationError: forward,
     getNonFiniteCount: () => nonFiniteCount,
     inverse: (x, y) =>
       gpuFrame ? gpuFrame.unproject(x + shiftX, y + shiftY) : [x + shiftX, y + shiftY]
   };
+}
+
+/** Error-free TwoDiff residual: translated + residual equals value - shift before rounding. */
+function getTranslationRoundoff(value: number, shift: number, translated: number): number {
+  const virtualShift = value - translated;
+  return value - (translated + virtualShift) + (virtualShift - shift);
 }
 
 /** Longitude wrapped to [-180, 180). */

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import type {Device} from '@luma.gl/core';
 import {
   GPUGeographicallyWeightedRegression,
@@ -357,6 +358,11 @@ function buildGwrOutput(
     });
   const summary = summarizeGwr(fit);
   const singularCount = rows.count - summary.included;
+  validateRequirement(
+    'regression-gwr',
+    singularCount <= rows.count * 0.1,
+    `predictorProperties/bandwidth produced ${singularCount}/${rows.count} singular local fits, exceeding the 10 percent limit; remove collinear predictors or increase bandwidth`
+  );
   if (singularCount)
     addCatalogDiagnostic(
       diagnostics,
@@ -384,7 +390,31 @@ function readGwrArguments(inputs: Inputs, values: Values) {
   const rows = readRegressionRows(inputs['points'], values);
   // Local fits need more locations than coefficients.
   if (rows.count < rows.predictorCount + 3) throw new RangeError('Too few complete rows');
-  return {rows, kernel: values['kernel'] as string, bandwidth: values['bandwidth'] as number};
+  let bandwidth = values['bandwidth'] as number | undefined;
+  if (bandwidth === undefined) {
+    // One fixed bandwidth includes at least half the observations at every location.
+    const neighborCount = Math.min(
+      rows.count - 1,
+      Math.max(rows.predictorCount + 3, Math.ceil(rows.count / 2))
+    );
+    bandwidth = 0;
+    for (let location = 0; location < rows.count; location++) {
+      const distances = Array.from({length: rows.count}, (_, row) =>
+        Math.hypot(
+          rows.positions[2 * row] - rows.positions[2 * location],
+          rows.positions[2 * row + 1] - rows.positions[2 * location + 1]
+        )
+      ).sort((first, second) => first - second);
+      bandwidth = Math.max(bandwidth, distances[neighborCount] * 1.05);
+    }
+    bandwidth = Math.max(bandwidth, 1e-6);
+  }
+  validateRequirement(
+    'regression-gwr',
+    bandwidth > 0,
+    'bandwidth must exceed zero; omit bandwidth for estimation'
+  );
+  return {rows, kernel: values['kernel'] as string, bandwidth};
 }
 
 const GWR_BINDING: CatalogOperationBinding = {
@@ -402,7 +432,14 @@ const GWR_BINDING: CatalogOperationBinding = {
     makeStringParameter('responseProperty', 'Response property'),
     makeStringParameter('predictorProperties', 'Predictor properties (comma separated)'),
     makeRecipeEnumParameter('kernel', 'Kernel', ['gaussian', 'bisquare'], 'bisquare'),
-    makeNumberParameter('bandwidth', 'Fixed bandwidth', 1000, 1e-6, 1e9, 'crs'),
+    makeNumberParameter(
+      'bandwidth',
+      'Fixed bandwidth (default: derive from neighbors)',
+      undefined,
+      1e-9,
+      1e9,
+      'crs'
+    ),
     COORDINATE_SYSTEM_PARAMETER
   ],
   outputs: [
@@ -411,12 +448,12 @@ const GWR_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_GPU_OR_CPU_CLEANUP,
   declaredBehavior: [
     'Complete cases only; positions are mapped to a local meter frame (planar units for planar data) and rounded to float32, so the bandwidth is in meters for EPSG:4326.',
-    'Fixed bandwidth with a Gaussian exp(-0.5 (d/h)^2) or bisquare (1 - (d/h)^2)^2 kernel; every location includes itself with weight 1.',
+    'Omitted bandwidth defaults to 1.05 times the maximum distance to the k-th nearest point, where k=max(predictors+3, ceil(n/2)), capped at n-1; explicit positive bandwidths override this estimate. Fixed bandwidth with a Gaussian exp(-0.5 (d/h)^2) or bisquare (1 - (d/h)^2)^2 kernel; every location includes itself with weight 1.',
     "Standard errors follow mgwr: sqrt(diag(A^-1 X'W^2X A^-1) sigma^2) with sigma^2 = RSS / (n - tr(S)) over the non-singular locations.",
-    'A location with a singular local system gets null coefficients and standard errors and is excluded from the fit statistics; a bandwidth with too few neighbors makes many locations singular.'
+    'A location with a singular local system gets null coefficients and standard errors and is excluded from the fit statistics; more than 10 percent singular local fits throws an error naming predictorProperties/bandwidth and remedies.'
   ],
   limitation:
-    'Fixed bandwidth only: automatic bandwidth selection, adaptive bandwidths, local t values, collinearity diagnostics and the nonstationarity test of the contributor are not published.',
+    'Fixed bandwidth (derived from the data by default): cross-validated bandwidth selection, adaptive bandwidths, local t values, collinearity diagnostics and the nonstationarity test of the contributor are not published.',
   run: (inputs, values) => {
     const {rows, kernel, bandwidth} = readGwrArguments(inputs, values);
     return buildGwrOutput(rows, fitGwrCpu(rows, kernel, bandwidth), bandwidth);

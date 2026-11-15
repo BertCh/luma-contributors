@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {KeplerAllocationError} from '../runtime/dataset-registry';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import type {
   CatalogOperationBinding,
   CatalogParameterSpec,
@@ -54,10 +54,11 @@ import {
   makeGridRunOutput,
   makeGridTable,
   preparePointGrid,
+  prepareKrigingGrid,
+  resolveKrigingSettings,
   type GridField,
   type IdwSettings,
   type KernelDensitySettings,
-  type KrigingSettings,
   type PointDensityStatistic
 } from './catalog-platform3-b-grids';
 import {
@@ -623,9 +624,28 @@ const KRIGING_BINDING: CatalogOperationBinding = {
       options: ['spherical', 'exponential', 'gaussian'],
       defaultValue: 'spherical'
     },
-    makeNumberParameter('nugget', 'Nugget', 0, 0, 1e12),
-    makeNumberParameter('sill', 'Partial sill', 1, 1e-12, 1e12),
-    makeNumberParameter('range', 'Range', 1000, 1e-6, 1e9, 'crs'),
+    makeNumberParameter(
+      'nugget',
+      'Nugget (default: nearest-neighbor estimate)',
+      undefined,
+      0,
+      1e12
+    ),
+    makeNumberParameter(
+      'sill',
+      'Partial sill (default: sample variance minus nugget)',
+      undefined,
+      0,
+      1e12
+    ),
+    makeNumberParameter(
+      'range',
+      'Range (default: extent diagonal / 3)',
+      undefined,
+      1e-9,
+      1e9,
+      'crs'
+    ),
     makeNumberParameter(
       'neighborCount',
       'Nearest samples per cell',
@@ -650,29 +670,19 @@ const KRIGING_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_CPU_CLEANUP,
   declaredBehavior: [
     ...GRID_BEHAVIOR,
-    'The variogram is the one stated by the parameters; nothing is fitted. The kriging variance is only meaningful when the variogram is.',
-    'Cells whose kriging system is singular (for example coincident samples) are nodata and counted in a diagnostic; at most 2,000 samples and 40,000 cells.'
+    'Omitted nugget defaults to the mean nearest-neighbor semivariance, capped at sample variance; omitted sill defaults to sample variance minus nugget, and omitted range uses one third of the extent diagonal. Explicit nonnegative nugget and sill (including zero), and positive range override these estimates.',
+    'Cells whose kriging system is singular (for example coincident samples) are nodata and counted in a diagnostic; at most 2,000 samples, 40,000 cells and 60,000,000 cell-point work on the CPU. Increase cellSize or reduce points when the work limit is exceeded.'
   ],
   limitation:
-    'CPU reference with a local neighborhood and an explicit isotropic variogram; no variogram fitting, trend, anisotropy or cross-validation (the host kriging panel fits variograms).',
+    'Local neighborhood with an isotropic moment-estimated or explicit variogram; no variogram curve fitting, trend, anisotropy or cross-validation. Kriging variance depends on this estimated model.',
   run: (inputs, values) => {
-    const context = preparePointGrid(
+    const context = prepareKrigingGrid(
       inputs['points'],
       requireValueProperty(values),
       COORDINATE(values),
       values['cellSize'] as number
     );
-    // Kriging output is capped at 40,000 cells.
-    if (context.grid.columns * context.grid.rows > 40000)
-      throw new KeplerAllocationError('capacity', {message: 'Grid capacity exceeded'});
-    const settings: KrigingSettings = {
-      model: values['model'] as KrigingSettings['model'],
-      nugget: values['nugget'] as number,
-      sill: values['sill'] as number,
-      range: values['range'] as number,
-      neighborCount: values['neighborCount'] as number,
-      searchRadius: values['searchRadius'] as number
-    };
+    const settings = resolveKrigingSettings(context.sample, values);
     const field = computeKrigingField(context.sample, context.grid, settings);
     if (field.singularCount)
       addCatalogDiagnostic(
@@ -727,7 +737,7 @@ const CELL_AGGREGATION_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_CPU_CLEANUP,
   declaredBehavior: [
     LATTICE_NOTE,
-    'Features without a point position or numeric value are skipped and counted; only occupied cells are published.',
+    'Features without a point position are skipped and counted; only occupied cells are published. Every point counts, including points without a numeric valueProperty; sum, mean, min and max use only numeric values, with null mean/min/max when none are valid. The summary and diagnostic report missingValueCount.',
     'Output over 100,000 cells throws.'
   ],
   limitation:
@@ -824,6 +834,7 @@ const CELL_COMPARE_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_CPU_CLEANUP,
   declaredBehavior: [
     LATTICE_NOTE,
+    'valueProperty is required for sum or mean; choose count to compare without a value column.',
     'Cells present in only one set are published with status appeared or disappeared; a missing mean is null, a missing count or sum is zero.',
     'relative_change is null when the before value is zero.'
   ],
@@ -886,10 +897,10 @@ const AREAL_BINDING: CatalogOperationBinding = {
     makeStringParameter('valueProperty', 'Source value property'),
     {
       name: 'variableType',
-      label: 'Variable type',
+      label: 'Variable type (required: choose extensive or intensive)',
       kind: 'enum',
-      options: ['extensive', 'intensive'],
-      defaultValue: 'extensive'
+      options: ['', 'extensive', 'intensive'],
+      defaultValue: ''
     },
     makeNumberParameter('samplesPerSide', 'Samples per side', 24, 4, 64, undefined, 'integer'),
     CRS
@@ -905,6 +916,7 @@ const AREAL_BINDING: CatalogOperationBinding = {
   ],
   cleanup: PLATFORM3_CPU_CLEANUP,
   declaredBehavior: [
+    'variableType has no selected default: explicitly choose extensive for counts or intensive for rates before running.',
     'Extensive values (counts) are split by overlap fraction of each source; intensive values (rates) are the overlap-weighted mean.',
     'Overlaps are estimated from a regular sample grid inside each source polygon, so small slivers are approximate and sources smaller than one sample are skipped with a warning.',
     'Source area falling outside every target is lost for extensive values; coverage reports the covered fraction of each target.'
@@ -978,7 +990,7 @@ const GLOBAL_STATISTICS_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_CPU_CLEANUP,
   declaredBehavior: [
     ...WEIGHT_BEHAVIOR,
-    "Weights are row-standardized. Moran's I uses the randomization variance and Geary's C the normality variance; p-values are normal approximations with no permutation test."
+    "Weights are row-standardized. Moran's I and Geary's C both use the randomization variance; p-values are two-sided normal approximations with no permutation test."
   ],
   limitation:
     'Two statistics with analytic inference; Getis-Ord G and permutation inference are not bound.',
@@ -1005,8 +1017,15 @@ const LOCAL_MORAN_BINDING: CatalogOperationBinding = {
   inputs: [makeInputSpec('features', 'Features', ['point', 'polygon'], 3000, 200000)],
   parameters: [
     ...VALUE_AND_WEIGHTS,
-    PERMUTATION_PARAMETER_SPEC,
+    {...PERMUTATION_PARAMETER_SPEC, defaultValue: 999},
     SEED_PARAMETER_SPEC,
+    {
+      name: 'multipleTesting',
+      label: 'Multiple testing',
+      kind: 'enum',
+      options: ['none', 'benjamini-hochberg', 'bonferroni'],
+      defaultValue: 'benjamini-hochberg'
+    },
     makeNumberParameter('significance', 'Significance level', 0.05, 1e-6, 1)
   ],
   outputs: [
@@ -1015,8 +1034,8 @@ const LOCAL_MORAN_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_CPU_CLEANUP,
   declaredBehavior: [
     ...WEIGHT_BEHAVIOR,
-    'Weights are row-standardized and values are standardized by the population standard deviation.',
-    'p-values are two-sided conditional-permutation pseudo p-values (seeded, deterministic) with no multiple-testing correction; permutations=0 reports cluster "not-tested".',
+    'Binary neighbor links are row-standardized (each neighbor has weight 1 / neighbor count); values are standardized by the population standard deviation.',
+    'The default is 999 seeded conditional permutations and Benjamini-Hochberg correction across tested rows. p_value reports raw pseudo p-values; adjusted_p_value and clusters use multipleTesting (none, Benjamini-Hochberg or Bonferroni); permutations=0 reports cluster "not-tested".',
     'The geometry column mirrors each source feature.'
   ],
   limitation:
@@ -1029,6 +1048,7 @@ const LOCAL_MORAN_BINDING: CatalogOperationBinding = {
       permutations: values['permutations'] as number,
       seed: values['seed'] as number,
       significance: values['significance'] as number,
+      multipleTesting: values['multipleTesting'] as 'none' | 'benjamini-hochberg' | 'bonferroni',
       ...settings
     });
   }
@@ -1052,7 +1072,7 @@ const GI_STAR_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_CPU_CLEANUP,
   declaredBehavior: [
     ...WEIGHT_BEHAVIOR,
-    'Binary weights including the feature itself; z-scores are normal approximations and classes use fixed two-sided thresholds 1.645, 1.96 and 2.576 with no multiple-testing correction.',
+    'Features without neighbors are not tested (null z/p and classification not-tested), and counted in island-features. Binary weights including the feature itself; z-scores are normal approximations and classes use fixed two-sided thresholds 1.645, 1.96 and 2.576 with no multiple-testing correction.',
     'The geometry column mirrors each source feature.'
   ],
   limitation:
@@ -1121,7 +1141,7 @@ const EB_BINDING: CatalogOperationBinding = {
   ],
   cleanup: PLATFORM3_CPU_CLEANUP,
   declaredBehavior: [
-    'Areas with missing, negative-event or non-positive-population values are skipped and counted; fewer than two usable areas throw.',
+    'Areas with missing, negative-event or non-positive-population values are skipped and counted; events above population are rejected with row and property names; fewer than two usable areas throw.',
     'The prior variance is clamped at zero, which shrinks every rate fully to the overall rate.',
     'The geometry column mirrors each source feature.'
   ],
@@ -1190,8 +1210,21 @@ const KNOX_BINDING: CatalogOperationBinding = {
   inputs: [makeInputSpec('points', 'Events', ['point'], 2000, 2000)],
   parameters: [
     makeStringParameter('timeProperty', 'Time property (numeric)'),
-    makeNumberParameter('spatialThreshold', 'Spatial threshold', 1000, 1e-9, 1e9, 'crs'),
-    makeNumberParameter('temporalThreshold', 'Temporal threshold', 1, 0, 1e12),
+    makeNumberParameter(
+      'spatialThreshold',
+      'Spatial threshold (default: pairwise lower quartile)',
+      undefined,
+      0,
+      1e9,
+      'crs'
+    ),
+    makeNumberParameter(
+      'temporalThreshold',
+      'Temporal threshold (default: pairwise lower quartile)',
+      undefined,
+      0,
+      1e15
+    ),
     {...PERMUTATION_PARAMETER_SPEC, minimum: 1, defaultValue: 199, maximum: 999},
     SEED_PARAMETER_SPEC,
     CRS
@@ -1200,7 +1233,7 @@ const KNOX_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_CPU_CLEANUP,
   declaredBehavior: [
     'Events without a point or numeric time are skipped and counted; fewer than three events throw.',
-    'Pairs closer than or equal to both thresholds are joint close pairs; the p-value is the upper tail of the joint count under seeded time permutations.',
+    'Omitted spatialThreshold and temporalThreshold default to the lower quartile of pairwise distances and absolute time differences; explicit zero tests coincident positions or simultaneous events. Time thresholds use the numeric time column units (including epoch milliseconds); resolved thresholds are in the summary. Pairs closer than or equal to both thresholds are joint close pairs; the p-value is the upper tail of the joint count under seeded time permutations.',
     'Distances are meters for EPSG:4326 (local frame) and coordinate units for planar; at most 2,000 events.'
   ],
   limitation: 'Single pair of thresholds; no multi-threshold scan and no edge correction.',
@@ -1278,7 +1311,7 @@ const DBSCAN_BINDING: CatalogOperationBinding = {
   declaredBehavior: [
     'Neighborhoods include the point itself and use squared distance <= epsilon squared in local meters (EPSG:4326) or coordinate units (planar).',
     'Labels are canonical: clusters are numbered by their smallest core point; border points join the adjacent cluster with the smallest root; noise is cluster -1.',
-    'Features without a point are skipped and counted; the CPU reference accepts up to 6,000 points (pair work), the GPU engine the full input capacity.',
+    'Features without a point are skipped and counted; the CPU reference and GPU engine accept up to 20,000 points.',
     'Points exactly at distance epsilon can differ between engines because the GPU compares in float32.'
   ],
   limitation:
@@ -1467,9 +1500,9 @@ const SIMILAR_BINDING: CatalogOperationBinding = {
     makeStringParameter('properties', 'Attribute properties (comma separated)'),
     makeNumberParameter(
       'referenceIndex',
-      'Reference feature index',
-      0,
-      0,
+      'Reference feature index (required)',
+      -1,
+      -1,
       1e9,
       undefined,
       'integer'
@@ -1489,17 +1522,25 @@ const SIMILAR_BINDING: CatalogOperationBinding = {
   ],
   cleanup: PLATFORM3_CPU_CLEANUP,
   declaredBehavior: [
-    'Features missing any attribute are skipped and counted; a reference that is missing or incomplete throws.',
+    'An explicit referenceIndex is required (default -1 means unselected). Features missing any attribute are skipped and counted; a reference that is missing or incomplete throws.',
     'Attributes are standardized by population mean and standard deviation (constant attributes contribute zero).',
     'The geometry column mirrors each source feature; rank 0 marks the reference.'
   ],
   limitation: 'Attribute similarity only; no spatial constraint and no weighting of attributes.',
-  run: (inputs, values) =>
-    runSimilarLocations(inputs['features'], {
+  run: (inputs, values) => {
+    validateRequirement(
+      'similar-locations',
+      Number.isInteger(values['referenceIndex']) &&
+        (values['referenceIndex'] as number) >= 0 &&
+        (values['referenceIndex'] as number) < inputs['features'].features.length,
+      'referenceIndex must explicitly select a source row between 0 and feature count - 1'
+    );
+    return runSimilarLocations(inputs['features'], {
       properties: values['properties'] as string,
       referenceIndex: values['referenceIndex'] as number,
       resultCount: values['resultCount'] as number
-    })
+    });
+  }
 };
 
 const LOCATION_ALLOCATION_BINDING: CatalogOperationBinding = {

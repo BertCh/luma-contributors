@@ -602,10 +602,18 @@ function buildCapOutput(
   level: number,
   capacity: number,
   droppedCount: number,
+  requestedCapacity: number,
   dispatchedContributors?: readonly string[]
 ): CatalogRunOutput {
   const diagnostics: CatalogDiagnostic[] = [];
   addDroppedDiagnostic(diagnostics, droppedCount);
+  if (requestedCapacity > capacity)
+    addCatalogDiagnostic(
+      diagnostics,
+      's2-maximum-cells-clamped',
+      'info',
+      `maximumCells ${requestedCapacity} was clamped to the ${capacity} cell limit at level ${level}.`
+    );
   const table = makeCatalogTable(
     's2-cap-cover',
     'S2 cap covering',
@@ -646,11 +654,14 @@ function buildCapOutput(
 
 function readCapValues(values: Values) {
   const level = values['level'] as number;
+  const effectiveMaximum = Math.min(6144, 6 * 4 ** level);
+  const requestedCapacity = values['maximumCells'] as number;
   return {
     level,
     mode: values['mode'] as string,
     radius: Math.fround((values['radiusMeters'] as number) / EARTH_RADIUS_METERS),
-    capacity: Math.min(values['maximumCells'] as number, 6 * 4 ** level)
+    capacity: Math.min(requestedCapacity, effectiveMaximum),
+    requestedCapacity
   };
 }
 
@@ -695,8 +706,8 @@ const CAP_BINDING: CatalogOperationBinding = {
       label: 'Maximum cells per cap',
       kind: 'integer',
       minimum: 1,
-      maximum: 6144,
-      defaultValue: 512
+      maximum: Number.MAX_SAFE_INTEGER,
+      defaultValue: 384
     }
   ],
   outputs: [
@@ -711,13 +722,14 @@ const CAP_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_GPU_OR_CPU_CLEANUP,
   declaredBehavior: [
     'The cap radius is meters on a sphere of the mean Earth radius (6371008.8 m); a cell is selected when its closest angular distance to the cap center is within the radius plus 1e-5 radians (exterior) or when its farthest point is inside the radius minus 1e-5 radians (interior).',
+    'maximumCells is clamped to min(6,144, 6 * 4^level), with an s2-maximum-cells-clamped diagnostic when reduced; its default is 384 at the default level 3.',
     'The contributor enumerates all 6 * 4^level cells uniformly (not an adaptive coverer), so the level is limited to 6; when more cells match than maximumCells the first cells in enumeration order are kept and the point is counted as s2-cover-truncated.',
     'Cells whose distance to the cap boundary is within about 1e-6 radians can differ between the float32 GPU and the float64 CPU engine.'
   ],
   limitation:
     'Uniform single-level covers only (levels 0-6 of the contributor range 0-8); no mixed-level region coverer, no minimum/maximum level bracket and no polygon union across several caps.',
   run: (inputs, values) => {
-    const {level, mode, radius, capacity} = readCapValues(values);
+    const {level, mode, radius, capacity, requestedCapacity} = readCapValues(values);
     const {entries, droppedCount} = readCapPoints(inputs['points']);
     const candidates = getCapCandidates(level);
     return buildCapOutput(
@@ -725,11 +737,12 @@ const CAP_BINDING: CatalogOperationBinding = {
       entries.map(entry => computeCapCpu(candidates, entry.center, radius, mode, capacity)),
       level,
       capacity,
-      droppedCount
+      droppedCount,
+      requestedCapacity
     );
   },
   runGpu: async (context, inputs, values) => {
-    const {level, mode, radius, capacity} = readCapValues(values);
+    const {level, mode, radius, capacity, requestedCapacity} = readCapValues(values);
     const {entries, droppedCount} = readCapPoints(inputs['points']);
     if (!entries.length) throw new CatalogGpuUnsupportedError('No cap centers');
     const results = await withCatalogGpuSession(context.device, 'catalog-s2-cap', async session => {
@@ -764,7 +777,9 @@ const CAP_BINDING: CatalogOperationBinding = {
         })
       );
     });
-    return buildCapOutput(entries, results, level, capacity, droppedCount, ['GPUS2CapCovering']);
+    return buildCapOutput(entries, results, level, capacity, droppedCount, requestedCapacity, [
+      'GPUS2CapCovering'
+    ]);
   }
 };
 

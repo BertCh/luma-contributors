@@ -183,7 +183,8 @@ async function runLocalLisaVariants(
   guardContiguityInput(inputs, settings);
   const collection = inputs['features'];
   const valueProperty = requireValueProperty(values);
-  const set = buildAnalysisSet(collection, valueProperty, settings);
+  // Philox permutation streams are keyed by analysis row, so upload canonical rows.
+  const set = buildAnalysisSet(collection, valueProperty, settings, true);
   const rowCount = set.values.length;
   if (rowCount < 4 || getMeanAndDeviation(set.values).deviation === 0)
     throw new CatalogGpuUnsupportedError('Too few or constant values');
@@ -270,7 +271,10 @@ async function runLocalLisaVariants(
     },
     'geometry'
   );
-  for (let row = 0; row < rowCount; row++) {
+  const sourceOrder = set.sourceIndex
+    .map((_, row) => row)
+    .sort((first, second) => set.sourceIndex[first] - set.sourceIndex[second]);
+  for (const row of sourceOrder) {
     const pValue = result.pValues[row];
     appendCatalogRow(table, {
       source_index: set.sourceIndex[row],

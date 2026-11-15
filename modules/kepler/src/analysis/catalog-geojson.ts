@@ -137,16 +137,38 @@ export function measureRingSignedArea(
   ring: readonly CatalogPosition[],
   coordinateSystem: CatalogCoordinateSystem
 ): number {
+  if (!ring.length) return 0;
+  const [referenceX, referenceY] = ring[0];
   let sum = 0;
-  for (let index = 0; index < ring.length - 1; index++) {
+  let previousLongitude = referenceX;
+  let previousOffset = 0;
+  const referenceSine = Math.sin(toRadians(referenceY));
+  for (let index = 0; index < ring.length; index++) {
     const [x1, y1] = ring[index];
-    const [x2, y2] = ring[index + 1];
-    if (coordinateSystem === 'planar') sum += x1 * y2 - x2 * y1;
-    else {
-      sum += toRadians(x2 - x1) * (2 + Math.sin(toRadians(y1)) + Math.sin(toRadians(y2)));
+    const [x2, y2] = ring[(index + 1) % ring.length];
+    if (coordinateSystem === 'planar') {
+      sum += (x1 - referenceX) * (y2 - referenceY) - (x2 - referenceX) * (y1 - referenceY);
+    } else {
+      // Follow the short arc at the date line, accumulating offsets from the first vertex.
+      const difference = x2 - previousLongitude;
+      const nextOffset = previousOffset + difference - 360 * Math.round(difference / 360);
+      sum +=
+        toRadians(nextOffset - previousOffset) *
+        (Math.sin(toRadians(y1)) - referenceSine + Math.sin(toRadians(y2)) - referenceSine);
+      previousLongitude = x2;
+      previousOffset = nextOffset;
     }
   }
-  return coordinateSystem === 'planar' ? sum / 2 : (sum * EARTH_RADIUS_METERS ** 2) / 2;
+  if (coordinateSystem === 'planar') return sum / 2;
+  // A ring winding around a pole ends one revolution from the unwrapped reference longitude.
+  sum += toRadians(previousOffset) * (2 + 2 * referenceSine);
+  const sphereArea = 4 * Math.PI * EARTH_RADIUS_METERS ** 2;
+  const area = (sum * EARTH_RADIUS_METERS ** 2) / 2;
+  return area > sphereArea / 2
+    ? area - sphereArea
+    : area < -sphereArea / 2
+      ? area + sphereArea
+      : area;
 }
 
 export function makeCatalogGeometryText(type: string, coordinates: unknown): string {
@@ -194,4 +216,58 @@ export function appendCatalogRow(
   for (const name of Object.keys(table.columnTypes))
     (table.columns[name] as (string | number | boolean | null)[]).push(row[name] ?? null);
   table.rowCount++;
+}
+
+/** Reject projected coordinates declared as longitude/latitude before geometry work starts. */
+export function validateCatalogCoordinateSystem(
+  bindingId: string,
+  coordinateSystem: unknown,
+  inputs: Readonly<Record<string, CatalogFeatureCollection>>
+): void {
+  if (coordinateSystem !== 'EPSG:4326') return;
+  for (const collection of Object.values(inputs)) {
+    for (const feature of collection.features) {
+      const positions = [
+        ...getPointPositions(feature.geometry),
+        ...getLineParts(feature.geometry).flat(),
+        ...getPolygonParts(feature.geometry).flat(2)
+      ];
+      if (
+        positions.some(
+          ([longitude, latitude]) =>
+            !Number.isFinite(longitude) ||
+            !Number.isFinite(latitude) ||
+            Math.abs(longitude) > 180 ||
+            Math.abs(latitude) > 90
+        )
+      ) {
+        throw new Error(
+          `${bindingId}: coordinateSystem EPSG:4326 requires longitude in [-180, 180] and latitude in [-90, 90]; use coordinateSystem=planar for projected coordinates.`
+        );
+      }
+    }
+  }
+}
+
+/** The CPU and GPU ear-clipping engines share the same per-part vertex budget. */
+export function validatePolygonTriangulationCapacity(polygons: CatalogFeatureCollection): void {
+  for (const feature of polygons.features) {
+    for (const polygon of getPolygonParts(feature.geometry)) {
+      const count = polygon.reduce(
+        (total, ring) =>
+          total +
+          ring.length -
+          (ring.length > 1 &&
+          ring[0][0] === ring[ring.length - 1][0] &&
+          ring[0][1] === ring[ring.length - 1][1]
+            ? 1
+            : 0),
+        0
+      );
+      if (count > 1500)
+        throw new Error(
+          'polygon-triangulation: polygons part vertex count exceeds the 1,500 vertex limit; simplify or split the polygon part.'
+        );
+    }
+  }
 }

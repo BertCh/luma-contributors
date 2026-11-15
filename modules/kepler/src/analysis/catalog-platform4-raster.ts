@@ -139,6 +139,7 @@ type ZoneTotals = {
   boundaryCounts: number[];
   unassignedBoundaryCount: number;
   outsideCount: number;
+  multipleMatchCount: number;
 };
 
 function computeExactJoin(inputs: JoinInputs): ZoneTotals {
@@ -147,21 +148,41 @@ function computeExactJoin(inputs: JoinInputs): ZoneTotals {
     sums: new Array(inputs.featureCount).fill(0),
     boundaryCounts: new Array(inputs.featureCount).fill(0),
     unassignedBoundaryCount: 0,
-    outsideCount: 0
+    outsideCount: 0,
+    multipleMatchCount: 0
   };
   for (let point = 0; point < inputs.pointCount; point++) {
     const x = inputs.pointPositions[2 * point];
     const y = inputs.pointPositions[2 * point + 1];
-    const zone = inputs.edges.findIndex(feature =>
-      feature.some(polygonEdges => isInsideEdges(polygonEdges, x, y))
-    );
-    if (zone < 0) totals.outsideCount++;
-    else {
+    let matchCount = 0;
+    inputs.edges.forEach((feature, zone) => {
+      if (!feature.some(polygonEdges => isInsideEdges(polygonEdges, x, y))) return;
+      matchCount++;
       totals.counts[zone]++;
       totals.sums[zone] += inputs.pointValues[point];
-    }
+    });
+    if (!matchCount) totals.outsideCount++;
+    if (matchCount > 1) totals.multipleMatchCount++;
   }
   return totals;
+}
+
+/** Checks exact positions or raster cell centers before using single-zone GPU contributors. */
+function hasMultipleJoinMatches(inputs: JoinInputs, cellSize?: number): boolean {
+  for (let point = 0; point < inputs.pointCount; point++) {
+    let x = inputs.pointPositions[2 * point];
+    let y = inputs.pointPositions[2 * point + 1];
+    if (cellSize !== undefined) {
+      x = (Math.floor(x / cellSize) + 0.5) * cellSize;
+      y = (Math.floor(y / cellSize) + 0.5) * cellSize;
+    }
+    let matchCount = 0;
+    for (const feature of inputs.edges) {
+      if (feature.some(polygonEdges => isInsideEdges(polygonEdges, x, y))) matchCount++;
+      if (matchCount > 1) return true;
+    }
+  }
+  return false;
 }
 
 function buildJoinOutput(
@@ -181,6 +202,14 @@ function buildJoinOutput(
       'warning',
       'Features without a point position or numeric value are skipped.',
       inputs.droppedCount
+    );
+  if (totals.multipleMatchCount)
+    addCatalogDiagnostic(
+      diagnostics,
+      'points-matched-multiple-polygons',
+      'info',
+      'Points in overlapping polygons contribute once to every containing polygon.',
+      totals.multipleMatchCount
     );
   const table = makeCatalogTable(
     'raster-join',
@@ -212,6 +241,7 @@ function buildJoinOutput(
       polygonCount: polygons.features.length,
       pointCount: inputs.pointCount,
       outsideCount: totals.outsideCount,
+      multipleMatchCount: totals.multipleMatchCount,
       unassignedBoundaryCount: totals.unassignedBoundaryCount,
       isApproximate: isApproximate ? 1 : 0,
       cellSize
@@ -225,7 +255,7 @@ const RASTER_JOIN_BINDING: CatalogOperationBinding = {
   title: 'Raster join: points per polygon',
   domain: 'raster',
   summary:
-    'Counts and sums points per polygon by rasterizing the polygons once and binning each point into its raster cell, with a per-polygon bound on boundary cell points.',
+    'Counts and sums points in every containing polygon using an exact CPU join or a GPU raster join with a per-polygon bound on boundary cell points.',
   capabilityIds: ['spatial-joins'],
   contributorNames: ['GPUPolygonRasterization', 'GPURasterJoin'],
   gpuContributorNames: ['GPUPolygonRasterization', 'GPURasterJoin'],
@@ -236,7 +266,14 @@ const RASTER_JOIN_BINDING: CatalogOperationBinding = {
   ],
   parameters: [
     makeStringParameter('valueProperty', 'Value property to sum (empty = count only)'),
-    makeNumberParameter('cellSize', 'Raster cell size', 10, 1e-6, 1e7, 'crs'),
+    makeNumberParameter(
+      'cellSize',
+      'Raster cell size (GPU only; CPU join is exact)',
+      10,
+      1e-6,
+      1e7,
+      'crs'
+    ),
     COORDINATE_SYSTEM_PARAMETER
   ],
   outputs: [
@@ -244,9 +281,10 @@ const RASTER_JOIN_BINDING: CatalogOperationBinding = {
   ],
   cleanup: PLATFORM3_GPU_OR_CPU_CLEANUP,
   declaredBehavior: [
-    'Polygons are rasterized in a local meter frame (planar units for planar data) on a grid covering their extent, capped at 250,000 cells (a coarser cell size is required beyond that).',
-    'Each point joins the smallest-index polygon feature whose even-odd interior holds its cell center (holes respected); points outside the raster join nothing and are counted.',
-    'The CPU engine is the exact point-in-polygon join. The GPU engine is approximate only for points in boundary cells: boundary_count per polygon bounds how many of its points may differ, and the summary carries unassignedBoundaryCount.',
+    'On the GPU, polygons are rasterized in a local meter frame (planar units for planar data) on a grid covering their extent, capped at 250,000 cells (a coarser cell size is required beyond that).',
+    'Each point joins every containing polygon feature, once per feature (even-odd interior, holes respected); outsideCount counts points with no match and multipleMatchCount counts points matched to more than one polygon.',
+    'The CPU engine is the exact point-in-polygon join and ignores cellSize; cellSize applies only to the GPU raster. The GPU engine is approximate only for points in boundary cells: boundary_count per polygon bounds how many of its points may differ, and the summary carries unassignedBoundaryCount.',
+    'If an exact point or its raster cell center matches multiple polygons, the exact CPU engine is used with a visible GPU fallback warning; the GPU raster supports only one polygon per cell.',
     'Points without a position or (when set) a numeric value are skipped and counted.'
   ],
   limitation:
@@ -277,6 +315,10 @@ const RASTER_JOIN_BINDING: CatalogOperationBinding = {
     const cellSize = values['cellSize'] as number;
     if (!joinInputs.featureCount || !joinInputs.pointCount || joinInputs.positions.length < 2)
       throw new CatalogGpuUnsupportedError('Nothing to join');
+    if (hasMultipleJoinMatches(joinInputs) || hasMultipleJoinMatches(joinInputs, cellSize))
+      throw new CatalogGpuUnsupportedError(
+        'raster-join-points-in-polygons polygons contain multiple matches per point or raster cell; use the exact CPU engine to count every containing polygon'
+      );
     const hasValues = Boolean(values['valueProperty']);
     const grid = makeGridSpec(joinInputs.extentX, joinInputs.extentY, cellSize);
     const raster = makeGPURasterMetadata({
@@ -355,7 +397,8 @@ const RASTER_JOIN_BINDING: CatalogOperationBinding = {
             : new Array<number>(joinInputs.featureCount).fill(0),
           boundaryCounts: Array.from(await session.readUint32(boundaryCounts)),
           unassignedBoundaryCount: await session.readScalar(unassigned),
-          outsideCount: await session.readScalar(outside)
+          outsideCount: await session.readScalar(outside),
+          multipleMatchCount: 0
         };
       }
     );

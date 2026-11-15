@@ -204,7 +204,7 @@ test('cap covering: exterior contains the center cell, interior is a subset, a f
   expect(exteriorCells.has(centerCell)).toBe(true);
   const everything = run(
     's2-cap-covering',
-    {radiusMeters: 20000000, level: 2, mode: 'exterior', maximumCells: 6144},
+    {radiusMeters: 20000000, level: 2, mode: 'exterior', maximumCells: 96},
     inputs
   );
   expect(everything.tables[0].rowCount).toBe(6 * 16);

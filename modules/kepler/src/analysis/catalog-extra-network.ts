@@ -46,7 +46,7 @@ export function runNetworkStructure(
   parameters: CatalogNetworkParameters,
   maximumEdges: number
 ): ExtraRunOutput {
-  const graph = buildNetworkGraph(lines, parameters, maximumEdges);
+  const graph = buildNetworkGraph(lines, parameters, maximumEdges, 'network-structure');
   const degrees = countNodeDegrees(graph);
   const table = makeCatalogTable(
     'network-structure',
@@ -101,7 +101,7 @@ export function runNetworkCentrality(
   parameters: CatalogNetworkParameters,
   limits: {maximumEdges: number; maximumNodes: number}
 ): ExtraRunOutput {
-  const graph = buildNetworkGraph(lines, parameters, limits.maximumEdges);
+  const graph = buildNetworkGraph(lines, parameters, limits.maximumEdges, 'network-centrality');
   // All-sources search is quadratic; the node count is bounded before any search starts.
   if (graph.nodes.length > limits.maximumNodes)
     throw new KeplerAllocationError('capacity', {message: 'Node capacity exceeded'});
@@ -178,7 +178,7 @@ export function runNetworkCostMatrix(
   parameters: CatalogNetworkParameters & {maximumSnapDistance: number},
   limits: {maximumEdges: number}
 ): ExtraRunOutput {
-  const graph = buildNetworkGraph(lines, parameters, limits.maximumEdges);
+  const graph = buildNetworkGraph(lines, parameters, limits.maximumEdges, 'network-cost-matrix');
   const originPoints = collectPoints(origins);
   const destinationPoints = collectPoints(destinations);
   const snappedDestinations = destinationPoints.map(point =>
@@ -249,7 +249,7 @@ export function runNetworkNeighborhood(
   parameters: CatalogNetworkParameters & {maximumSnapDistance: number; maximumCost: number},
   limits: {maximumEdges: number}
 ): ExtraRunOutput {
-  const graph = buildNetworkGraph(lines, parameters, limits.maximumEdges);
+  const graph = buildNetworkGraph(lines, parameters, limits.maximumEdges, 'network-neighborhood');
   const originPosition = collectPoints(origins)[0]?.position;
   // Exactly one origin point feature is required.
   if (origins.features.length !== 1 || !originPosition)
@@ -300,7 +300,7 @@ export function runNetworkLineGraph(
   parameters: CatalogNetworkParameters,
   limits: {maximumEdges: number; maximumRows: number}
 ): ExtraRunOutput {
-  const graph = buildNetworkGraph(lines, parameters, limits.maximumEdges);
+  const graph = buildNetworkGraph(lines, parameters, limits.maximumEdges, 'network-line-graph');
   const incident: number[][] = graph.nodes.map(() => []);
   graph.edges.forEach((edge, edgeIndex) => {
     incident[edge.fromNode].push(edgeIndex);

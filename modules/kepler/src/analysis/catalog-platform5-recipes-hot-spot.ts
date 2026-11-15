@@ -18,7 +18,6 @@ import {
   type CatalogFeatureCollection
 } from './catalog-geojson';
 import {CatalogGpuUnsupportedError, withCatalogGpuSession} from './catalog-gpu-session';
-import {readBufferInt32} from '../runtime/gpu-readback';
 import {
   PLATFORM3_GPU_OR_CPU_CLEANUP,
   getNormalTwoSidedPValue,
@@ -47,6 +46,9 @@ type LatticeInputs = {
   /** Per cell, row-major, point count or value sum. */
   values: Float32Array;
   pointCount: number;
+  countTest: boolean;
+  extentX: number;
+  extentY: number;
   droppedCount: number;
   criterion: 'queen' | 'rook';
   radius: number;
@@ -105,6 +107,9 @@ function readLatticeInputs(
     grid,
     values: lattice,
     pointCount: points.count,
+    countTest: !valueProperty,
+    extentX,
+    extentY,
     droppedCount,
     criterion: values['criterion'] as 'queen' | 'rook',
     radius: values['radius'] as number,
@@ -131,24 +136,26 @@ function assignBins(
   return zScores.map((z, index) => {
     if (!Number.isFinite(z)) return 0;
     const p = adjusted[index];
-    const level =
-      multipleTesting === 'none'
-        ? Math.abs(z) >= 2.576
-          ? 3
-          : Math.abs(z) >= 1.96
-            ? 2
-            : Math.abs(z) >= 1.645
-              ? 1
-              : 0
-        : p <= 0.01
-          ? 3
-          : p <= 0.05
-            ? 2
-            : p <= 0.1
-              ? 1
-              : 0;
+    const level = p <= 0.01 ? 3 : p <= 0.05 ? 2 : p <= 0.1 ? 1 : 0;
     return z < 0 ? -level : level;
   });
+}
+
+/** Conservative two-sided binomial Chernoff tail, conditional on the total point count.
+ * Under a uniform point null a window of m of N equal-area cells has Binomial(total, m/N) count.
+ * Doubling the corresponding one-sided tail bound gives a valid two-sided p-value even for sparse counts.
+ */
+export function getConservativeCountPValue(
+  observed: number,
+  total: number,
+  fraction: number
+): number {
+  if (!total || fraction <= 0 || fraction >= 1) return 1;
+  const share = observed / total;
+  const divergence =
+    (share > 0 ? share * Math.log(share / fraction) : 0) +
+    (share < 1 ? (1 - share) * Math.log((1 - share) / (1 - fraction)) : 0);
+  return Math.min(1, 2 * Math.exp(-total * Math.max(0, divergence)));
 }
 
 function computeHotSpotCpu(lattice: LatticeInputs): HotSpotResult {
@@ -162,10 +169,19 @@ function computeHotSpotCpu(lattice: LatticeInputs): HotSpotResult {
   const deviation = Math.sqrt(variance / n);
   const zScores: number[] = [];
   const neighborCounts: number[] = [];
+  const windowSums: number[] = [];
+  const windowFractions: number[] = [];
+  const width = lattice.extentX || columns * lattice.grid.cellSize;
+  const height = lattice.extentY || rows * lattice.grid.cellSize;
+  const cellArea = (column: number, row: number) =>
+    Math.max(0, Math.min(lattice.grid.cellSize, width - column * lattice.grid.cellSize)) *
+    Math.max(0, Math.min(lattice.grid.cellSize, height - row * lattice.grid.cellSize));
+  const total = lattice.values.reduce((sum, value) => sum + value, 0);
   for (let row = 0; row < rows; row++)
     for (let column = 0; column < columns; column++) {
       let sum = lattice.values[row * columns + column] - mean;
       let neighbors = 0;
+      let area = cellArea(column, row);
       for (let dy = -lattice.radius; dy <= lattice.radius; dy++)
         for (let dx = -lattice.radius; dx <= lattice.radius; dx++) {
           if (!dx && !dy) continue;
@@ -175,17 +191,30 @@ function computeHotSpotCpu(lattice: LatticeInputs): HotSpotResult {
           const y = row + dy;
           if (x < 0 || x >= columns || y < 0 || y >= rows) continue;
           sum += lattice.values[y * columns + x] - mean;
+          area += cellArea(x, y);
           neighbors++;
         }
       neighborCounts.push(neighbors);
       const weightSum = neighbors + 1;
+      const observed = Math.round(sum + mean * weightSum);
+      const fraction = Math.min(1, area / (width * height));
+      windowSums.push(observed);
+      windowFractions.push(fraction);
       zScores.push(
         neighbors < Math.max(1, lattice.minimumNeighbors)
           ? Number.NaN
-          : sum / (deviation * Math.sqrt((n * weightSum - weightSum * weightSum) / (n - 1)))
+          : lattice.countTest
+            ? (observed - total * fraction) / Math.sqrt(total * fraction * (1 - fraction))
+            : sum / (deviation * Math.sqrt((n * weightSum - weightSum * weightSum) / (n - 1)))
       );
     }
-  const pValues = zScores.map(z => (Number.isFinite(z) ? getNormalTwoSidedPValue(z) : Number.NaN));
+  const pValues = zScores.map((z, index) =>
+    !Number.isFinite(z)
+      ? Number.NaN
+      : lattice.countTest
+        ? getConservativeCountPValue(Math.round(windowSums[index]), total, windowFractions[index])
+        : getNormalTwoSidedPValue(z)
+  );
   return {
     zScores,
     pValues,
@@ -238,10 +267,14 @@ async function computeHotSpotGpu(
       // The neighbor list is sized for the full window, so an overflow means the setup is wrong.
       if (await session.readScalar(weightsOverflow))
         throw new CatalogGpuUnsupportedError('The GPU neighbor list overflowed');
+      const countInference = lattice.countTest ? computeHotSpotCpu(lattice) : undefined;
+      const scores = countInference?.zScores ?? Array.from(await session.readFloat32(zScores));
+      const probabilities =
+        countInference?.pValues ?? Array.from(await session.readFloat32(pValues));
       return {
-        zScores: Array.from(await session.readFloat32(zScores)),
-        pValues: Array.from(await session.readFloat32(pValues)),
-        bins: Array.from(await readBufferInt32(bins.buffer, cellCount)),
+        zScores: scores,
+        pValues: probabilities,
+        bins: assignBins(scores, probabilities, lattice.multipleTesting),
         neighborCounts: Array.from(await session.readUint32(neighborCounts))
       };
     });
@@ -339,7 +372,7 @@ const HOT_SPOT_BINDING: CatalogOperationBinding = {
       'multipleTesting',
       'Multiple testing',
       ['none', 'benjamini-hochberg'],
-      'none'
+      'benjamini-hochberg'
     ),
     COORDINATE_SYSTEM_PARAMETER
   ],
@@ -349,12 +382,12 @@ const HOT_SPOT_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_GPU_OR_CPU_CLEANUP,
   declaredBehavior: [
     'Points are binned on a lattice in the local meter frame (at most 40,000 cells); every cell is analysed, empty cells included, with the count or value sum as the analysed value.',
-    'Binary neighbors within the radius (queen: Chebyshev, rook: Manhattan) plus the cell itself; z-scores use population moments over all cells and the Ord-Getis variance for the cell weight sum.',
+    'Binary neighbors within the radius (queen: Chebyshev, rook: Manhattan) plus the cell itself; value-sum Gi* z-scores use population moments over all cells and the Ord-Getis variance for the cell weight sum. Count z-scores are standardized binomial residuals using the neighborhood area clipped to the observed bounding rectangle, so partially covered boundary cells do not become artificial cold spots. Count inference is calculated in float64 on the CPU for both engines.',
     'Cells with fewer neighbors than the minimum get null z-score and p-value and bin 0. A constant lattice throws.',
-    'Bins are 1, 2, 3 for 90, 95 and 99 percent (negative for cold); with Benjamini-Hochberg they use the adjusted p-values of all defined cells.'
+    'The default multipleTesting is Benjamini-Hochberg across all defined cells. Counts use conservative two-sided binomial Chernoff tail bounds conditional on the total count and a uniform point-density null over the observed bounding rectangle; value sums retain approximate normal p-values. Bins are 1, 2, 3 for p <= 0.10, 0.05 and 0.01 (negative for cold), using adjusted p-values when correction is enabled.'
   ],
   limitation:
-    'Lattice source only: the recipe study-area, DGGS cell, distance band, permutation and color stages are not exposed; the existing hotspot-gi-star binding covers feature-based neighbors.',
+    'Count inference assumes uniform exposure in the rectangular sample bounding box (estimated from the points); partial boundary cells use their clipped area. A nonrectangular study window or nonuniform exposure needs a supplied study window/exposure model. Value-sum normal p-values are approximate and may be anticonservative. Lattice source only: the recipe study-area, DGGS cell, distance band, permutation and color stages are not exposed; the existing hotspot-gi-star binding covers feature-based neighbors.',
   run: (inputs, values) => {
     const lattice = readLatticeInputs(inputs, values);
     return buildHotSpotOutput(lattice, computeHotSpotCpu(lattice));

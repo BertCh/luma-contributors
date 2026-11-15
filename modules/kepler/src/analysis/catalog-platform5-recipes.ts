@@ -46,6 +46,7 @@ import {
   makeRecipeFrame,
   readRecipePoints,
   readRecipePolygons,
+  visitRecipePointMatches,
   type RecipePoints,
   type RecipePolygons
 } from './catalog-platform5-recipe-common';
@@ -116,30 +117,28 @@ function uploadPolygons(
 
 const CHOROPLETH_STATISTICS = ['count', 'sum', 'mean', 'minimum', 'maximum'] as const;
 
-type ChoroplethTotals = {counts: number[]; statistic: number[]; unmatchedCount: number};
+type ChoroplethTotals = {
+  counts: number[];
+  statistic: number[];
+  unmatchedCount: number;
+  multipleMatchCount: number;
+};
 
 function computeChoroplethCpu(
   points: RecipePoints,
   polygons: RecipePolygons,
   statistic: string
 ): ChoroplethTotals {
-  const assignment = assignRecipePoints(points, polygons);
   const featureCount = polygons.featureCount;
   const counts = new Array<number>(featureCount).fill(0);
   const sums = new Array<number>(featureCount).fill(0);
   const valid = new Array<number>(featureCount).fill(0);
   const minimums = new Array<number>(featureCount).fill(Number.NaN);
   const maximums = new Array<number>(featureCount).fill(Number.NaN);
-  let unmatchedCount = 0;
-  for (let point = 0; point < points.count; point++) {
-    const feature = assignment[point];
-    if (feature < 0) {
-      unmatchedCount++;
-      continue;
-    }
+  const matches = visitRecipePointMatches(points, polygons, (point, feature) => {
     counts[feature]++;
     const value = points.values[point];
-    if (!Number.isFinite(value)) continue;
+    if (!Number.isFinite(value)) return;
     sums[feature] += value;
     valid[feature]++;
     minimums[feature] = Number.isNaN(minimums[feature])
@@ -148,7 +147,7 @@ function computeChoroplethCpu(
     maximums[feature] = Number.isNaN(maximums[feature])
       ? value
       : Math.max(maximums[feature], value);
-  }
+  });
   const statisticValues = counts.map((count, feature) => {
     switch (statistic) {
       case 'sum':
@@ -163,7 +162,7 @@ function computeChoroplethCpu(
         return count;
     }
   });
-  return {counts, statistic: statisticValues, unmatchedCount};
+  return {counts, statistic: statisticValues, ...matches};
 }
 
 async function computeChoroplethGpu(
@@ -172,6 +171,11 @@ async function computeChoroplethGpu(
   polygons: RecipePolygons,
   statistic: string
 ): Promise<ChoroplethTotals> {
+  const matches = visitRecipePointMatches(points, polygons);
+  if (matches.multipleMatchCount)
+    throw new CatalogGpuUnsupportedError(
+      'recipe-points-in-polygons-choropleth polygons contain multiple matches per point; use the exact CPU engine to count every containing polygon'
+    );
   return withCatalogGpuSession(device, 'catalog-recipe-choropleth', async session => {
     const featureCount = polygons.featureCount;
     const counts = session.output('counts', 'uint32', featureCount);
@@ -203,7 +207,8 @@ async function computeChoroplethGpu(
       counts: countValues,
       statistic:
         statistic === 'count' ? countValues : Array.from(await session.readFloat32(featureValues)),
-      unmatchedCount: points.count - countValues.reduce((sum, count) => sum + count, 0)
+      unmatchedCount: points.count - countValues.reduce((sum, count) => sum + count, 0),
+      multipleMatchCount: 0
     };
   });
 }
@@ -218,6 +223,14 @@ function buildChoroplethOutput(
 ): CatalogRunOutput {
   const diagnostics: CatalogDiagnostic[] = [];
   addDroppedPoints(diagnostics, points.droppedCount);
+  if (totals.multipleMatchCount)
+    addCatalogDiagnostic(
+      diagnostics,
+      'points-matched-multiple-polygons',
+      'info',
+      'Points in overlapping polygons contribute once to every containing polygon.',
+      totals.multipleMatchCount
+    );
   const table = makeCatalogTable(
     'recipe-choropleth',
     'Points per polygon choropleth',
@@ -245,7 +258,8 @@ function buildChoroplethOutput(
     summary: {
       polygonCount: polygons.featureCount,
       pointCount: points.count,
-      unmatchedCount: totals.unmatchedCount
+      unmatchedCount: totals.unmatchedCount,
+      multipleMatchCount: totals.multipleMatchCount
     },
     ...(dispatchedContributors ? {dispatchedContributors} : {})
   };
@@ -293,7 +307,8 @@ const CHOROPLETH_BINDING: CatalogOperationBinding = {
   ],
   cleanup: RECIPE_CLEANUP,
   declaredBehavior: [
-    'Each point joins the smallest-row polygon feature that contains it (even-odd per polygon part, holes respected); points outside every polygon are counted in the summary.',
+    'Each point joins every polygon feature that contains it, once per feature (even-odd per polygon part, holes respected); unmatchedCount counts points outside every polygon and multipleMatchCount counts points matched to more than one polygon.',
+    'Points with multiple polygon matches use the exact CPU engine, with a visible GPU fallback warning when a GPU was requested; the GPU contributor supports only one containing polygon per point.',
     'Points exactly on a polygon edge may differ between the engines (the GPU applies the half-open ownership rule).',
     'Points with a missing or non-numeric value still count toward point_count but do not contribute to sum, mean, minimum or maximum; mean, minimum and maximum of a polygon without valid values are null.',
     'Coordinates are mapped into a local meter frame and rounded to float32 for both engines; sums are float32 on the GPU.'
