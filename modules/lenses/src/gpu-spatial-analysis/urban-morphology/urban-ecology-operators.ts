@@ -410,6 +410,27 @@ export const URBAN_ECOLOGY_OPERATORS: SpatialFamilyOperators = {
     },
     metadata: {execution: 'graph-native', reference: 'explicit-domain-contract'}
   },
+  GPUPopulationSupportAlignment: {
+    family: 'recipes',
+    descriptor: {scope: 'global', reduction: 'count'},
+    variables: {
+      populations: 'count',
+      sourceIds: 'category',
+      targetIds: 'category',
+      validity: 'category',
+      status: 'category'
+    },
+    stages: ['support', 'operator'],
+    datumKinds: [{kind: 'unit', label: 'target support row', indexSpace: '1d'}],
+    guards: [],
+    choices: [],
+    formula: {
+      formula: 'none',
+      reason:
+        'Identifier alignment copies populations through indexed joins and counts missing, ambiguous and excluded rows. The graph and captured validity/status describe this structural operation.'
+    },
+    metadata: {execution: 'graph-native', reference: 'explicit-domain-contract'}
+  },
   addPopulationSupportAlignmentRecipe: {
     family: 'recipes',
     descriptor: {scope: 'global', reduction: 'sum'},

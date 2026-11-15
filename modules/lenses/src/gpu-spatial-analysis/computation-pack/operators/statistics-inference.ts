@@ -115,7 +115,7 @@ export const STATISTICS_INFERENCE_OPERATORS: SpatialFamilyOperators = {
         {id: 'count', role: 'intermediate', label: 'analysis rows', binding: 'wgsl:count'},
         {id: 'squareSum', role: 'intermediate', binding: 'wgsl:squareSum'},
         {id: 'weightSum', role: 'intermediate', binding: 'wgsl:weightSum'},
-        {id: 'selfWeight', role: 'parameter', binding: 'wgsl:SELF_WEIGHT'},
+        {id: 'selfWeight', role: 'parameter', binding: 'wgsl:selfWeight'},
         {id: 'centered', role: 'intermediate', binding: 'wgsl:centered'}
       ]
     }

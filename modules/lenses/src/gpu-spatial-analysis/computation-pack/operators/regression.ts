@@ -284,6 +284,13 @@ export const REGRESSION_OPERATORS: SpatialFamilyOperators = {
     choices: [
       ...WEIGHTS_CHOICES,
       {
+        name: 'robust.method',
+        label: 'Optional covariance estimator',
+        stage: 'inference',
+        alternatives: ['HC0', 'HC1', 'HC2', 'HC3', 'CLUSTER', 'HAC'],
+        sweepable: false
+      },
+      {
         name: 'instrumentOrder',
         label: 'Instrument order',
         stage: 'operator',
@@ -303,7 +310,7 @@ export const REGRESSION_OPERATORS: SpatialFamilyOperators = {
 &\term{anselinKelejian}{\mathrm{AK}}&=\frac{(u^\top Wu/\hat\sigma^2)^2}{\term{traceT}{T}+4\,\term{estimationTerm}{a}/\hat\sigma^2}
 \end{aligned}`,
       ascii:
-        "Z = [1, X, Wy]; H = [1, X, WX] (instrumentOrder 2 adds W^2 X); P = H (H'H)^-1 H'. delta = (Z'PZ)^-1 Z'P y; u = y - Z delta; sigma2 = u'u/n; se_j = sqrt(sigma2 [(Z'PZ)^-1]_jj); z_j = delta_j/se_j with a standard-normal p-value. The constant is centred out; the intercept is ybar - mean(Z) delta. Anselin-Kelejian AK = (u'Wu/sigma2)^2 / (T + 4a/sigma2), with T = tr(W'W + WW) and a the estimation-variance term, tests the residuals for spatial autocorrelation; it equals n I_u^2/phi2 and does not depend on the total weight S0. Moran's I_u = (n/S0) u'Wu/u'u is undefined when S0 = 0. Classical (non-robust) standard errors.",
+        "Z = [1, X, Wy]; H = [1, X, WX] (instrumentOrder 2 adds W^2 X); P = H (H'H)^-1 H'. delta = (Z'PZ)^-1 Z'P y; u = y - Z delta; sigma2 = u'u/n; se_j = sqrt(sigma2 [(Z'PZ)^-1]_jj); z_j = delta_j/se_j with a standard-normal p-value. The constant is centred out; the intercept is ybar - mean(Z) delta. Anselin-Kelejian AK = (u'Wu/sigma2)^2 / (T + 4a/sigma2), with T = tr(W'W + WW) and a the estimation-variance term, tests the residuals for spatial autocorrelation; it equals n I_u^2/phi2 and does not depend on the total weight S0. Moran's I_u = (n/S0) u'Wu/u'u is undefined when S0 = 0. The displayed default scenario uses classical standard errors. Optional robust.method selects HC0, HC1, HC2, HC3, clustered CR1 or spatial HAC covariance, replacing table standard errors, z statistics and normal p-values while retaining classical summary diagnostics; robust covariance includes PSD certification status.",
       symbols: [
         {id: 'delta', role: 'output', label: 'coefficients with rho last', binding: 'wgsl:delta'},
         {id: 'sigmaSquared', role: 'intermediate', binding: 'wgsl:sigmaSquared'},

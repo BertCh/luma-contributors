@@ -99,7 +99,7 @@ export const RASTER_COVERAGE_EXPANSION_OPERATORS: RasterOperatorTable = {
     formula: {
       formula: 'none',
       reason:
-        'Periodic unmasked phase correlation normalizes reference times conjugate moving spectra, finds the inverse-FFT peak and refines it using a separable localized inverse DFT. Masked-linear mode uses six zero-padded FFT correlations for paired normalized correlation, then bounded bilinear refinement with explicit overlap requirements. Flat, unsupported and ambiguous inputs retain failure status.'
+        'Periodic unmasked phase correlation normalizes reference times conjugate moving spectra, rejecting DC and products at or below max(1e-20, 1e-6 * maximumProductMagnitude). Parallel two-pass argmax reductions choose the lowest cell index on ties; a separable localized inverse DFT refines the inverse-FFT peak. Masked-linear mode uses six zero-padded FFT correlations for paired normalized correlation, then bounded bilinear refinement with explicit overlap requirements. Flat, unsupported and ambiguous inputs retain failure status.'
     }
   }),
   GPURasterRegionGraph: entry(['gpu-raster-region-graph', 'raster-region-tiles'], {

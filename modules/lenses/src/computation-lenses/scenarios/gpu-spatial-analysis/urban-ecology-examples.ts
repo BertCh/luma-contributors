@@ -18,6 +18,7 @@ import {runExample as runResistanceConnectivity} from './resistance-connectivity
 import {runExample as runSparseResistanceConnectivity} from './sparse-resistance-connectivity-recipe.example';
 import {runExample as runRasterResistanceConnectivity} from './raster-resistance-connectivity-recipe.example';
 import {runExample as runSegregationDecomposition} from './segregation-decomposition-recipe.example';
+import {runExample as runPopulationSupportAlignment} from './population-support-alignment.example';
 
 import {runExample as runaddSegregationCounterfactualRecipe} from './segregation-counterfactual-recipe.example';
 import {runExample as runaddPopulationSupportAlignmentRecipe} from './population-support-alignment-recipe.example';
@@ -304,6 +305,26 @@ export async function buildUrbanEcologyScenario(
           method: 'composition'
         })
       );
+    case 'GPUPopulationSupportAlignment': {
+      // Unique matches, duplicate sources/targets, a missing target and an excluded source.
+      // The legacy contract also treats 0xffffffff as an ordinary support ID.
+      const targetIds = input('target-ids', 'uint32', [10, 30, 50, 20, 20, 0xffffffff]);
+      const output = await runPopulationSupportAlignment(graph, {
+        populations: input('populations', 'float32x2', [2, 8, 6, 4, 1, 9, 7, 3, 5, 5, 3, 7]),
+        sourceIds: input('source-ids', 'uint32', [20, 10, 30, 30, 40, 0xffffffff]),
+        targetIds,
+        output: {
+          populations: uploads.view(
+            'aligned-populations',
+            new Float32Array(targetIds.length * 2),
+            'float32x2'
+          ),
+          validity: uploads.view('alignment-codes', new Uint32Array(targetIds.length), 'uint32'),
+          status: uploads.view('alignment-status', new Uint32Array(4), 'uint32x4')
+        }
+      });
+      return finish({outputs: output});
+    }
     case 'addPopulationSupportAlignmentRecipe':
       return finish(
         await runaddPopulationSupportAlignmentRecipe(graph, {

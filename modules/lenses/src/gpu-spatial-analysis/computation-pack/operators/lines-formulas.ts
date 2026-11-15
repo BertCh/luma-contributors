@@ -34,7 +34,7 @@ export const LINES_FORMULAS = {
     derivation: 'curated',
     tex: String.raw`\term{position}{p_k}=\term{interpolate}{I_{\mathrm{sphere}}}(\term{source}{a},\term{target}{b},\term{angle}{\theta},\term{index}{k}/\term{segments}{n}),\quad \term{measure}{m_k}=\term{radius}{R}\term{angle}{\theta}\term{index}{k}/\term{segments}{n}`,
     ascii:
-      'p[k] = sphericalInterpolate(a, b, theta, k/n); m[k] = R*theta*k/n, k=0..n. theta is the Vincenty-form spherical central angle. n is the capped maximum of the requested length subdivision and minimumSegments (at least 1). Endpoints are copied exactly, with target longitude unwrapped from a; coincident arcs use the kernel fallback.',
+      'p[k] = sphericalInterpolate(a, b, theta, k/n); m[k] = R*theta*k/n, k=0..n. theta is the Vincenty-form spherical central angle. n is the capped maximum of the requested length subdivision and minimumSegments (at least 1). Endpoints are copied exactly, with target longitude unwrapped from a; coincident arcs use normalized linear blending. The shared interpolator preserves fractions 0 and 1 even for antipodes; interior fractions within 1e-6 radians of an antipode are NaN. No whole-arc rejection is performed: counts and endpoints are still emitted when an interior vertex is NaN. Near-antipodal interpolation outside the 1e-6 guard can still be numerically unstable; split such arcs in the caller.',
     symbols: [
       {id: 'position', role: 'output', binding: 'wgsl:outputPositions'},
       {id: 'measure', role: 'output', binding: 'wgsl:outputMeasures'},

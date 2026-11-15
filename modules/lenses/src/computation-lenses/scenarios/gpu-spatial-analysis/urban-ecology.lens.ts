@@ -83,6 +83,11 @@ registerS2LensScenarios(
       title: 'Explicit population support identifiers reordered with completeness evidence'
     },
     {
+      id: 'gpu-spatial-analysis.population-support-alignment',
+      element: 'GPUPopulationSupportAlignment',
+      title: 'Support-ID alignment with missing, duplicate and excluded rows'
+    },
+    {
       id: 'gpu-spatial-analysis.sparse-resistance-connectivity-recipe',
       element: 'addSparseResistanceConnectivityRecipe',
       title: 'Corner-to-corner current through a 3 x 3 conductance lattice'

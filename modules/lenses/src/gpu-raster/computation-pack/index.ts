@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {RASTER_CONTRAST_EQUALIZATION_OPERATORS} from './operators/contrast-equalization';
+import {RASTER_EMBEDDING_CODEC_OPERATORS} from './operators/embedding-codecs';
+import {RASTER_SPECTRAL_FILTER_OPERATORS} from './operators/spectral-filter';
 import {RASTER_EXPANSION_OPERATORS} from './operators/expansion';
 import {RASTER_COVERAGE_TRANCHE_ONE_OPERATORS} from './operators/coverage-tranche-one';
 import {RASTER_COVERAGE_EXPANSION_OPERATORS} from './operators/coverage-expansion';
@@ -26,6 +29,9 @@ export const RASTER_COMPUTATION_PACK_ID = 'gpu-raster';
 
 /** Every family table, in docs order. Each family file is filled by one implementer batch. */
 export const RASTER_FAMILY_OPERATORS = [
+  RASTER_SPECTRAL_FILTER_OPERATORS,
+  RASTER_CONTRAST_EQUALIZATION_OPERATORS,
+  RASTER_EMBEDDING_CODEC_OPERATORS,
   RASTER_COVERAGE_EXPANSION_OPERATORS,
   RASTER_COVERAGE_TRANCHE_ONE_OPERATORS,
   RASTER_EXPANSION_OPERATORS,

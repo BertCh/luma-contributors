@@ -37,12 +37,13 @@ export const STATISTICS_COVERAGE_OPERATORS: SpatialFamilyOperators = {
     formula: {
       formula: 'none',
       reason:
-        'Centered/scaled instrument projection forms HC0, HC1 or spatial-HAC influence sandwiches; full covariance and invalid-kernel status are explicit.'
+        'Centered/scaled instrument projection forms HC0/HC1/HC2/HC3, one-way clustered CR1 or spatial-HAC influence sandwiches; full covariance, leverage/cluster/kernel failures and returned-covariance PSD certification are explicit.'
     },
     metadata: {
       backlog: 'ST01',
-      supported: 'HC0, HC1, symmetric unit-diagonal nonnegative PSD HAC kernel',
-      excludes: 'HC2/HC3, clustered covariance, automatic PSD certification'
+      supported:
+        'HC0/HC1/HC2/HC3, CLUSTER (one-way CR1), spatial HAC and returned-covariance PSD certification',
+      excludes: 'entire HAC-kernel PSD certification, multi-way clustering'
     }
   },
   GPURestrictedRegimeRegression: {

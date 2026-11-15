@@ -23,6 +23,7 @@ const elements = [
   'addRasterResistanceConnectivityRecipe',
   'addSegregationDecompositionRecipe',
   'addSegregationCounterfactualRecipe',
+  'GPUPopulationSupportAlignment',
   'addPopulationSupportAlignmentRecipe'
 ];
 for (const element of elements)
@@ -50,6 +51,11 @@ for (const element of elements)
       );
     };
     switch (element) {
+      case 'GPUPopulationSupportAlignment':
+        close('output-populations', [6, 4, NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, 3, 7]);
+        expect(read('output-validity')).toEqual([0, 2, 1, 2, 2, 0]);
+        expect(read('output-status')).toEqual([0, 1, 3, 1]);
+        break;
       case 'addSegregationCounterfactualRecipe':
         expect(read('output-decomposition')[0]).toBeCloseTo(-0.8, 4);
         expect(read('output-decomposition')[3]).toBeCloseTo(0, 5);

@@ -30,7 +30,7 @@ export const NETWORK_OPTIMIZATION_PACK: NetworkPackPart = {
     GPUNetworkLouvain: {
       formula: 'none',
       reason:
-        'Ascending or seeded (Philox Fisher-Yates visit order) local moves reevaluate directed/undirected weighted modularity and contract immutable vertex groups; the objective trace documents accepted sweeps.'
+        'Sparse CSR local moves sort/reduce neighbor-community weights, reserve disjoint affected communities with ascending or seed-XOR vertex priority, and aggregate quotient graphs. Dense reference mode uses sequential ascending or Philox Fisher-Yates visitation. Both optimize directed/undirected modularity heuristically and retain objective traces and budget-limited partitions.'
     },
     GPUNetworkFacilityOptimization: {
       formula: 'none',

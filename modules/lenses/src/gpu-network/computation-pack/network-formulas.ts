@@ -61,10 +61,20 @@ export const NETWORK_FORMULAS: NonNullable<ViewPackData['formulas']> = {
     reason:
       'Caller-prepared network distances and edge-length quadrature normalize each event kernel over its reachable support; missing support remains explicit.'
   },
+  GPUNetworkStronglyConnectedComponents: {
+    formula: 'none',
+    reason:
+      'GPU-gated trim, minimum-colour propagation and backward marking publish minimum-ID directed component labels; mandatory convergence status certifies the labels.'
+  },
   GPUNetworkStructure: {
     formula: 'none',
     reason:
       'Connectivity and low-link traversal produce component labels, bridge flags and edge blocks rather than one scalar estimator.'
+  },
+  GPUKShortestPaths: {
+    formula: 'none',
+    reason:
+      'Yen rounds compose parallel CSR spur searches with a persistent candidate pool to rank simple edge paths. Per-query counts retain certified routes; batch convergence, iteration limits and candidate overflow remain separate.'
   },
   GPUAlternativeRoutes: {
     formula: 'none',

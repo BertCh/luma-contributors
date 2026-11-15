@@ -25,6 +25,7 @@ const EXPECTED_ELEMENTS = [
   'GPUScalarScale',
   'GPUBivariateClassification',
   'GPUColumnProfile',
+  'GPUForestInference',
   'GPUTimeWindowFilter',
   'GPUTemporalReduction',
   'GPUCalendarBuckets',
@@ -106,9 +107,9 @@ function readPublicExportSources(path: string, visited = new Set<string>()): str
 }
 
 describe('dataframe curated analysis formulas', () => {
-  it('covers exactly the 22 public analysis contributors without duplicates', () => {
+  it('covers exactly the 23 public analysis contributors without duplicates', () => {
     expect(ENTRIES.map(([name]) => name).sort()).toEqual([...EXPECTED_ELEMENTS].sort());
-    expect(new Set(ENTRIES.map(([name]) => name)).size).toBe(22);
+    expect(new Set(ENTRIES.map(([name]) => name)).size).toBe(23);
     const publicEntry = readPublicExportSources(
       resolve(ROOT, 'modules/analysis/src/dataframe-analysis/index.ts')
     );

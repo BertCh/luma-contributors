@@ -6,6 +6,11 @@ import {defineLensScenario} from '../../define-lens-scenarios';
 
 export const REMOTE_SENSING_SCENARIOS = [
   {
+    element: 'GPURasterSpectralFilter',
+    slug: 'spectral-filter',
+    title: 'Periodic low-pass removes checkerboard noise and retains the mean'
+  },
+  {
     element: 'GPURasterConservativeRemapping',
     slug: 'conservative-remapping',
     title: 'Half-cell conservative remapping with visible support'

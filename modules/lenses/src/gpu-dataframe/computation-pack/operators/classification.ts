@@ -6,6 +6,35 @@ import type {DataFrameFamilyOperators} from '../types';
 
 /** Curated classification formulas; each entry documents its primary output and method. */
 export const CLASSIFICATION_OPERATORS: DataFrameFamilyOperators = {
+  GPUForestInference: {
+    family: 'classification',
+    descriptor: {scope: 'local', reduction: 'sum'},
+    formula: {
+      id: 'gpu-dataframe:GPUForestInference',
+      derivation: 'curated',
+      tex: String.raw`\term{scores}{s_c}=b_c+\sum_t w_t v_{t,c}(x),\quad \term{predictions}{y}=\operatorname{link}(s)`,
+      ascii:
+        'Accumulate weighted leaf values in tree order from base scores; identity for regression, sigmoid/softmax for boosted classification, first-class argmax for classification ties. Random forests average through tree weights.',
+      symbols: [
+        {id: 'scores', role: 'output', binding: 'wgsl:scores'},
+        {id: 'predictions', role: 'output', binding: 'wgsl:predictions'}
+      ]
+    },
+    stages: ['classify', 'derive'],
+    datumKinds: [{kind: 'row', label: 'Feature rows', indexSpace: '1d'}],
+    guards: [],
+    choices: ['featureLayout', 'task', 'transform'],
+    variables: {
+      features: {level: 'ratio', extent: 'intensive'},
+      predictions: {level: 'nominal'},
+      scores: {level: 'ratio', extent: 'intensive'},
+      validity: {level: 'nominal'},
+      leafIndices: {level: 'nominal'}
+    },
+    sourceFiles: [
+      'modules/analysis/src/dataframe-analysis/forest-inference/gpu-forest-inference.ts'
+    ]
+  },
   /**
    * Primary: linear (R-7) quantiles of finite, unmasked rows, with signed zero canonicalized.
    * R denotes a separate f32 rounding, including subtraction and multiplication (no FMA).

@@ -10,6 +10,49 @@ const LINE = {kind: 'line', label: 'streamline', indexSpace: '1d'} as const;
 
 /** Raster pack entries of the `vector-field` family, keyed by exported class name. */
 export const RASTER_VECTOR_FIELD_OPERATORS: RasterOperatorTable = {
+  GPUScalarFieldRidges: {
+    family: 'vector-field',
+    descriptor: {scope: 'focal', reduction: 'select'},
+    variables: {
+      scalarFieldValues: 'score',
+      scalarFieldValidity: 'category',
+      ridgeMask: 'category',
+      ridgeValidity: 'category',
+      ridgeStrength: 'rate'
+    },
+    stages: ['representation', 'support', 'neighbourhood', 'operator'],
+    datumKinds: [CELL],
+    neighbourhood: 'stencil-3x3',
+    guards: [],
+    choices: [
+      {stage: 'operator', name: 'minimumValue', sweepable: true},
+      {stage: 'operator', name: 'minimumCurvature', sweepable: true},
+      {
+        stage: 'support',
+        name: 'cellSizeMode',
+        alternatives: ['uniform', 'geographic', 'web-mercator'],
+        sweepable: false
+      }
+    ],
+    formula: {
+      id: 'gpu-raster.scalar-field-ridges.height-ridge',
+      derivation: 'curated',
+      tex: String.raw`H\term{normal}{n}=\term{eigenvalue}{\lambda}n,\quad \lambda=\lambda_{\min}(H),\quad \term{offset}{q}=-\frac{\term{gradient}{g}^Tn}{\lambda}\,n/\term{spacing}{s},\quad \term{ridge}{r}=\mathbf{1}[\lambda<0,\;-\lambda\ge c_{\min},\;f\ge f_{\min},\;q\in[-\tfrac12,\tfrac12)^2]`,
+      ascii:
+        'Central 3 by 3 differences of the calibrated field give gradient g and Hessian H in the orthogonal pixel basis. The smallest eigenpair (lambda, n) defines q = -(g dot n) / lambda * n / spacing. A valid interior cell is a ridge when lambda < 0, -lambda >= minimumCurvature, center >= minimumValue and each q component is in [-0.5, 0.5). Half-cell ties select the larger column/row; equal eigenvalues choose the column normal. Strength is max(0, -lambda) at every valid stencil. Borders and stencils with missing or nonfinite samples write zero to all outputs. Geographic/Web Mercator ground scales are row-local tangent approximations, not a covariant Hessian or a material-LCS test.',
+      symbols: [
+        {id: 'normal', role: 'intermediate', binding: 'wgsl:normal'},
+        {id: 'eigenvalue', role: 'intermediate', binding: 'wgsl:smallest'},
+        {id: 'offset', role: 'intermediate', binding: 'wgsl:pixelOffset'},
+        {id: 'gradient', role: 'intermediate', binding: 'wgsl:gradient'},
+        {id: 'spacing', role: 'parameter', binding: 'wgsl:spacing'},
+        {id: 'ridge', role: 'output', binding: 'wgsl:ridges'}
+      ]
+    },
+    sources: [
+      'modules/analysis/src/raster-analysis/lagrangian-diagnostics/gpu-scalar-field-ridges.ts'
+    ]
+  },
   GPUParticleAdvection: {
     family: 'vector-field',
     descriptor: {scope: 'focal', reduction: 'none'},

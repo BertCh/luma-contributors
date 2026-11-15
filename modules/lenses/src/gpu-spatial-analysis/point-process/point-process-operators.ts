@@ -120,19 +120,32 @@ export const POINT_PROCESS_OPERATORS: SpatialFamilyOperators = {
       },
       {name: 'xi', stage: 'operator', sweepable: true},
       {name: 'minimumClusterSize', stage: 'operator', sweepable: true},
+      {
+        name: 'neighborIndex',
+        stage: 'neighbourhood',
+        alternatives: ['auto', 'brute-force', 'grid'],
+        sweepable: false
+      },
+      {
+        name: 'orderingMethod',
+        stage: 'operator',
+        alternatives: ['sequential', 'parallel'],
+        sweepable: false
+      },
       {name: 'frontierBatchSize', stage: 'operator', sweepable: false},
       {name: 'maximumIterations', stage: 'operator', sweepable: false}
     ],
     formula: {
       formula: 'none',
       reason:
-        'Cooperative minimum-reachability frontier ordering and DBSCAN/xi hierarchy extraction are procedural; core distances use self-inclusive minimumSamples.'
+        'Sequential cooperative or parallel indexed minimum-reachability frontier ordering and DBSCAN/xi hierarchy extraction are procedural; core distances use self-inclusive minimumSamples.'
     },
     metadata: {
       coordinateModel: 'projected',
       extraction: 'dbscan-or-xi',
       exact: true,
-      maximumEvents: 4096
+      maximumEvents: 65536,
+      maximumBruteForceEvents: 4096
     }
   },
   GPUSpatialBalancedSample: {

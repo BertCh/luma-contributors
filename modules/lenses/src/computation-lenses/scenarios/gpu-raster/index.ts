@@ -16,3 +16,7 @@ import './expansion.scenarios';
 import './coverage-tranche-one.scenarios';
 
 import './remote-sensing.scenarios';
+
+import './raster-contrast-equalization.lens';
+
+import './raster-embedding-quantize.lens';

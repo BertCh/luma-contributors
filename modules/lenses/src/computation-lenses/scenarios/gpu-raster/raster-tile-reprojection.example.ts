@@ -8,13 +8,14 @@ import {
   type GPURasterTileReprojectionProps
 } from '@luma-contributors/analysis/raster-analysis';
 
-/** Adds the public GPURasterTileReprojection contributor with explicit caller-owned inputs and outputs. */
+/** Adds tile reprojection; destroy the returned contributor after its compiled graph. */
 export async function runExample(
   graph: GPUCommandGraph,
   input: GPURasterTileReprojectionProps
-): Promise<void> {
+): Promise<GPURasterTileReprojection> {
   // #region example
   const contributor = new GPURasterTileReprojection(input);
   graph.add(contributor);
   // #endregion example
+  return contributor;
 }

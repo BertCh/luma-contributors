@@ -30,6 +30,23 @@ registerLensScenarios(
       }
     },
     {
+      id: 'gpu-network.k-shortest-paths',
+      element: 'GPUKShortestPaths',
+      title: 'Synthetic directed diamond: two certified Yen routes',
+      dataset: {
+        id: 'synthetic-four-node-directed-diamond-v1',
+        source: 'Deterministic example constructed in expansion.lens.ts',
+        licence: 'MIT'
+      },
+      load: async () => {
+        const module = await import('./expansion.lens');
+        return {
+          run: device => module.runExpansion(device, 'k-shortest-paths'),
+          describeStructure: device => module.describeExpansion(device, 'k-shortest-paths')
+        };
+      }
+    },
+    {
       id: 'gpu-network.alternative-routes',
       element: 'GPUAlternativeRoutes',
       title: 'Synthetic directed diamond: alternative-routes',

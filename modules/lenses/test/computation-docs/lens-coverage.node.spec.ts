@@ -164,6 +164,10 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
     docs: ['docs/api/gpu-dataframe-analysis.md', 'docs/api/variable-standardization.md'],
     loadPack: async () =>
       (await import('../../src/gpu-dataframe/computation-pack/index')).createDataFramePackData(),
+    exempt: {
+      GPUWideNumericScan:
+        'Low-level word-phase executor shared by exact aggregates and narrowing diagnostics; the domain contracts are documented in reused-analysis-preparation.md.'
+    },
     pending: GPU_DATAFRAME_PENDING
   },
   {

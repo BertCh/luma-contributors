@@ -366,8 +366,8 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
       derivation: 'curated',
       tex: String.raw`\term{estimate}{\gamma_h}=\frac{1}{2N_h}\sum_{i<j\in h}(x_i-x_j)(y_i-y_j)`,
       ascii:
-        'Signed cross-semivariance; unordered complete-case pairs, spatial bins with final edge included.',
-      symbols: [{id: 'estimate', role: 'output', binding: 'wgsl:result'}]
+        'Signed cross-semivariance; unordered complete-case pairs, spatial bins with final edge included. Deprecated forwarding class through the shared cell index, retaining raw differences, input-row pair order and floating-point tree sums; zero lags stay in the first legacy bin.',
+      symbols: [{id: 'estimate', role: 'output', binding: 'wgsl:semivariances'}]
     },
     stages: ['filter', 'aggregate', 'summarise'],
     datumKinds: [
@@ -377,7 +377,11 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
     guards: ['coordinate-model'],
     choices: ['lagCount', 'maximumDistance', 'edgeCorrection'],
     variables: {pairCounts: {level: 'ratio', extent: 'extensive'}, status: {level: 'nominal'}},
-    sourceFiles: ['modules/analysis/src/dataframe-analysis/pair-statistics/gpu-cross-variogram.ts']
+    sourceFiles: [
+      'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-cross-variogram.ts',
+      'modules/analysis/src/dataframe-analysis/pair-statistics/empirical-variogram-nodes.ts',
+      'modules/analysis/src/dataframe-analysis/pair-statistics/legacy-variogram-fallback.ts'
+    ]
   },
   /** Space-time semivariance on the indexed pair histogram: spatial-major bins, class 0 of each axis is the exact zero lag, complete-case masking. */
   GPUSpaceTimeVariogram: {
@@ -400,7 +404,8 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
     choices: ['lagCount', 'temporalLagCount', 'maximumDistance', 'maximumTimeLag'],
     variables: {pairCounts: {level: 'ratio', extent: 'extensive'}, status: {level: 'nominal'}},
     sourceFiles: [
-      'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-space-time-variogram.ts'
+      'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-space-time-variogram.ts',
+      'modules/analysis/src/dataframe-analysis/pair-statistics/empirical-variogram-nodes.ts'
     ]
   },
   /** Rectangular translation-corrected K (cross-type n_a n_b, same-type n (n - 1)); supplied intensity uses inverse-intensity normalization. Pair correlation is annular, mark correlation uses product marks. */

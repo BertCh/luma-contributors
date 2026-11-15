@@ -152,7 +152,9 @@ export const LINES_OPERATORS: SpatialFamilyOperators = {
       initialBearings: 'direction',
       finalBearings: 'direction',
       midpoints: 'coordinate',
-      'status.converged': 'category'
+      'status.converged': 'category',
+      'status.approximation': 'category',
+      'status.iterationLimitReached': 'category'
     },
     stages: ['operator'],
     datumKinds: [{kind: 'pair', label: 'Origin and target pair', indexSpace: '1d'}],
@@ -165,12 +167,13 @@ export const LINES_OPERATORS: SpatialFamilyOperators = {
       metricModels: 'great-circle, rhumb, or ellipsoidal',
       earthModels: 'sphere or context ellipsoid (WGS84 default)',
       exactness: 'float32',
-      midpointModel: 'sphere, including ellipsoidal mode'
+      midpointModel: 'sphere, including ellipsoidal mode',
+      inverseAntipodalMarginRadians: 0.02
     },
     formula: {
       formula: 'none',
       reason:
-        'The model-dependent inverse uses capped Vincenty iterations with a spherical fallback, or spherical central-angle/rhumb kernels; no single closed form covers these outputs, and the kernel rung shows the branches and convergence.'
+        'The model-dependent inverse uses capped Vincenty iterations with a spherical fallback for non-convergence or separation within 0.02 radians of an antipode, or spherical central-angle/rhumb kernels; no single closed form covers these outputs, and the kernel rung shows the branches and convergence.'
     }
   },
   GPUGeodesicDestination: {

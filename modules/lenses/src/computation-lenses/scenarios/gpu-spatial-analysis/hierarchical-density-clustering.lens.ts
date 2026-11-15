@@ -8,7 +8,7 @@ import {S2_DATASETS} from './s2-datasets';
 defineLensScenario({
   id: 'gpu-spatial-analysis.hierarchical-density-clustering',
   element: 'GPUHierarchicalDensityClustering',
-  title: 'HDBSCAN clusters of iNaturalist observations, Chicago North Side',
+  title: 'Planar HDBSCAN clusters of iNaturalist observations, Chicago North Side',
   rungs: FORMULA_LENS_RUNGS,
   dataset: S2_DATASETS.nature,
   load: async () => {

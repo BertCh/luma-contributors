@@ -21,6 +21,25 @@ registerLensScenarios(
   },
   [
     {
+      id: 'gpu-network.network-strongly-connected-components',
+      element: 'GPUNetworkStronglyConnectedComponents',
+      title: 'Synthetic directed components with an isolated node',
+      rungs: ['result', 'datum', 'kernel', 'graph'],
+      dataset: {
+        id: 'synthetic-four-node-directed-components-v1',
+        source: 'Deterministic example constructed in expansion.lens.ts',
+        licence: 'MIT'
+      },
+      load: async () => {
+        const module = await import('./expansion.lens');
+        return {
+          run: device => module.runExpansion(device, 'network-strongly-connected-components'),
+          describeStructure: device =>
+            module.describeExpansion(device, 'network-strongly-connected-components')
+        };
+      }
+    },
+    {
       id: 'gpu-network.network-analytics-columns',
       element: 'GPUNetworkAnalyticsColumns',
       title: 'Chicago Loop intersection degrees',

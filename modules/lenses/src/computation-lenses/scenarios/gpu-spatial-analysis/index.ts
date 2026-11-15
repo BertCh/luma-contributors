@@ -51,3 +51,5 @@ import './rate-mapping.lens';
 import './dorling-cartogram.lens';
 
 import './quantile-lisa.lens';
+
+import './gaussian-random-field.lens';

@@ -89,3 +89,48 @@ test('the shared regression model keeps the complete-case tracts with finite cen
     ).size
   ).toBe(788);
 });
+
+test('2SLS metadata exposes the published covariance methods and labels the displayed classical formula', () => {
+  const entry = REGRESSION_OPERATORS['GPUSpatialTwoStageLeastSquares'];
+  expect(entry.choices.find(choice => choice.name === 'robust.method')).toMatchObject({
+    stage: 'inference',
+    alternatives: ['HC0', 'HC1', 'HC2', 'HC3', 'CLUSTER', 'HAC'],
+    sweepable: false
+  });
+  if ('formula' in entry.formula) throw new Error('2SLS must have a curated formula');
+  expect(entry.formula.ascii).toContain(
+    'displayed default scenario uses classical standard errors'
+  );
+  expect(entry.formula.ascii).toContain('PSD certification');
+});
+
+test('MGWR metadata exposes both bandwidth criteria and searches', async () => {
+  const {EXPANSION_OPERATORS} = await import(
+    '../../../src/gpu-spatial-analysis/computation-pack/operators/expansion'
+  );
+  const entry = EXPANSION_OPERATORS['GPUMultiscaleGeographicallyWeightedRegression'];
+  expect(
+    entry.choices.find(choice => choice.name === 'bandwidthSelection.criterion')?.alternatives
+  ).toEqual(['leave-one-out', 'AICc']);
+  expect(
+    entry.choices.find(choice => choice.name === 'bandwidthSelection.searchMethod')?.alternatives
+  ).toEqual(['finite-grid', 'golden-section']);
+});
+
+test('quantile LISA is classified as a statistic after its move out of recipes', async () => {
+  const {KEPLER_ANALYSIS_OPERATORS} = await import(
+    '../../../src/gpu-spatial-analysis/computation-pack/operators/kepler-analysis'
+  );
+  expect(KEPLER_ANALYSIS_OPERATORS['GPUQuantileLISA'].family).toBe('statistics');
+});
+
+test('IV covariance coverage includes the landed robust methods and covariance certificate', async () => {
+  const {STATISTICS_COVERAGE_OPERATORS} = await import(
+    '../../../src/gpu-spatial-analysis/spatial-regression/statistics-coverage-descriptors'
+  );
+  const metadata = STATISTICS_COVERAGE_OPERATORS['GPUInstrumentalVariablesCovariance'].metadata!;
+  expect(metadata['supported']).toContain('HC0/HC1/HC2/HC3');
+  expect(metadata['supported']).toContain('CLUSTER');
+  expect(metadata['supported']).toContain('returned-covariance PSD certification');
+  expect(metadata['excludes']).toBe('entire HAC-kernel PSD certification, multi-way clustering');
+});

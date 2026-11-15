@@ -26,7 +26,14 @@ it.each(
     try {
       submitGraph(device, compiled, undefined);
       const read = (name: string) => harness.read(compiled, name);
-      if (element === 'GPURasterConservativeRemapping') {
+      if (element === 'GPURasterSpectralFilter') {
+        // Hand-derived oracle: only DC survives cutoff zero, so the image is its mean.
+        const values = await read('filteredValues');
+        expect(values).toHaveLength(16);
+        for (const value of values) expect(value).toBeCloseTo(5, 5);
+        expect(await read('filteredValidity')).toEqual(Array(16).fill(1));
+        expect(await read('invalidCount')).toEqual([0]);
+      } else if (element === 'GPURasterConservativeRemapping') {
         expect((await read('remappedValues'))[0]).toBe(2.5);
         expect((await read('coveredArea'))[15]).toBe(0.25);
         expect(await read('status')).toEqual(Array(16).fill(0));

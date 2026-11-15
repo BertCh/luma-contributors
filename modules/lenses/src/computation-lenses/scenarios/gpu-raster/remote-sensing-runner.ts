@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPURasterSpectralFilterParameterValues,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 
 import type {Device} from '@luma.gl/core';
 import '../../../gpu-raster/computation-pack/index';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {runRasterLens, type RasterLensSession} from './raster-lens-harness';
+import {runExample as runSpectralFilter} from './remote-sensing-spectral-filter.example';
 import {runExample as runRemapping} from './remote-sensing-conservative-remapping.example';
 import {runExample as runTexture} from './remote-sensing-texture.example';
 import {runExample as runTemporal} from './remote-sensing-temporal.example';
@@ -34,6 +38,12 @@ export function runRemoteSensingLens(device: Device, element: string, scenarioId
     coordinateModel: 'projected',
     unit: 'm',
     dataset: {id: 'remote-sensing-synthetic', version: '1'},
+    ...(element === 'GPURasterSpectralFilter' && {
+      choices: [
+        {stage: 'operator', name: 'filter', value: 'low-pass', sweepable: false},
+        {stage: 'operator', name: 'cutoff', value: 0, sweepable: true}
+      ]
+    }),
     keySpaces: [
       {id: 'regions', label: 'original source regions', size: 4},
       {id: 'tileCells', label: 'cells in each explicit region tile core', size: 8},
@@ -58,6 +68,53 @@ export async function buildRemoteSensingScenario(
     session.output(name, 'float32', {role: 'output', geometry: 'raster', meaning}, count);
   const rasterStatus = (name: string, meaning: string) =>
     session.output(name, 'uint32', {role: 'context', geometry: 'raster', meaning}, count);
+  if (element === 'GPURasterSpectralFilter') {
+    await runSpectralFilter(session.graph, {
+      grid: REMOTE_SENSING_GRID,
+      input: {
+        id: 'spectral-input',
+        storage: {
+          kind: 'buffer',
+          values: rasterInput(
+            'spectralInput',
+            Array.from(
+              {length: count},
+              (_, index) => 5 + (((index % 4) + Math.floor(index / 4)) % 2 === 0 ? 2 : -2)
+            ),
+            'Mean five plus a Nyquist checkerboard with amplitude two'
+          )
+        },
+        format: 'float32'
+      },
+      filter: 'low-pass',
+      parameters: session.input(
+        'spectralParameters',
+        'float32',
+        getGPURasterSpectralFilterParameterValues({cutoff: 0}),
+        false
+      ),
+      output: {
+        values: rasterFloat('filteredValues', 'DC-only low-pass retains the constant mean five'),
+        validity: rasterStatus(
+          'filteredValidity',
+          'One for every cell of this complete finite domain'
+        ),
+        status: {
+          invalidCount: session.output(
+            'invalidCount',
+            'uint32',
+            {
+              role: 'context',
+              keySpace: 'alignment',
+              meaning: 'Missing input cell count before global invalidation'
+            },
+            1
+          )
+        }
+      }
+    });
+    return;
+  }
   if (element === 'GPURasterConservativeRemapping') {
     await runRemapping(session.graph, {
       source: {width: 4, height: 4, origin: [0, 0], spacing: [1, 1]},

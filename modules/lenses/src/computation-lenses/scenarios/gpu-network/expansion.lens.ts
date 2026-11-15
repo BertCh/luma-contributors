@@ -5,7 +5,9 @@
 import {Buffer, type Device} from '@luma.gl/core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {runExample as runStructure} from './network-structure.example';
+import {runExample as runStrongComponents} from './network-strongly-connected-components.example';
 import {runExample as runRoutes} from './alternative-routes.example';
+import {runExample as runKShortestPaths} from './k-shortest-paths.example';
 import {runExample as runDisruption} from './network-disruption-recipe.example';
 import {runExample as runFacility} from './facility-scenario-recipe.example';
 import {
@@ -16,7 +18,9 @@ import {
 
 export type ExpansionKind =
   | 'network-structure'
+  | 'network-strongly-connected-components'
   | 'alternative-routes'
+  | 'k-shortest-paths'
   | 'network-disruption-recipe'
   | 'facility-scenario-recipe';
 
@@ -27,31 +31,46 @@ function createScenario(kind: ExpansionKind): NetworkElementScenario {
     weights: 'lengthMeters',
     withoutRoads: true,
     roadContext: false,
-    datasetVersion: 'synthetic-four-node-directed-diamond-v1',
+    datasetVersion:
+      kind === 'network-strongly-connected-components'
+        ? 'synthetic-four-node-directed-components-v1'
+        : 'synthetic-four-node-directed-diamond-v1',
     seed: 0,
     retain:
-      kind === 'alternative-routes'
-        ? ['vertices', 'edges', 'lengths', 'costs', 'counts', 'complete']
-        : kind === 'network-disruption-recipe'
-          ? [
-              'network-disruption-recipe-baseline-costs',
-              'network-disruption-recipe-scenario-costs',
-              'network-disruption-recipe-cost-differences',
-              'network-disruption-recipe-newly-unreachable',
-              'network-disruption-recipe-baseline-accessibility',
-              'network-disruption-recipe-scenario-accessibility',
-              'network-disruption-recipe-accessibility-differences'
-            ]
-          : kind === 'facility-scenario-recipe'
+      kind === 'k-shortest-paths'
+        ? [
+            'vertices',
+            'edges',
+            'lengths',
+            'costs',
+            'counts',
+            'converged',
+            'iterationCount',
+            'iterationLimitReached',
+            'candidateOverflow'
+          ]
+        : kind === 'alternative-routes'
+          ? ['vertices', 'edges', 'lengths', 'costs', 'counts', 'complete']
+          : kind === 'network-disruption-recipe'
             ? [
-                'facility-scenario-recipe-accessibility',
-                'facility-scenario-recipe-nearest-costs',
-                'facility-scenario-recipe-nearest-facilities',
-                'facility-scenario-recipe-covered',
-                'facility-scenario-recipe-uncovered',
-                'facility-scenario-recipe-invalid'
+                'network-disruption-recipe-baseline-costs',
+                'network-disruption-recipe-scenario-costs',
+                'network-disruption-recipe-cost-differences',
+                'network-disruption-recipe-newly-unreachable',
+                'network-disruption-recipe-baseline-accessibility',
+                'network-disruption-recipe-scenario-accessibility',
+                'network-disruption-recipe-accessibility-differences'
               ]
-            : [],
+            : kind === 'facility-scenario-recipe'
+              ? [
+                  'facility-scenario-recipe-accessibility',
+                  'facility-scenario-recipe-nearest-costs',
+                  'facility-scenario-recipe-nearest-facilities',
+                  'facility-scenario-recipe-covered',
+                  'facility-scenario-recipe-uncovered',
+                  'facility-scenario-recipe-invalid'
+                ]
+              : [],
     formulas: [],
     keySpaces: [
       {id: 'node', label: 'Synthetic node', size: 4, indexSpace: '1d'},
@@ -87,23 +106,48 @@ function createScenario(kind: ExpansionKind): NetworkElementScenario {
       {
         stage: 'representation',
         name: 'topology',
-        value: 'four-node directed diamond with return edge',
+        value:
+          kind === 'network-strongly-connected-components'
+            ? 'two-node cycle, outgoing singleton with self-loop, isolated node and unused CSR slot'
+            : 'four-node directed diamond with return edge',
         sweepable: false
       }
     ],
     async build(context) {
       const {graph} = context;
       const upload = context.upload;
-      const topology = {
-        offsets: upload('offsets', new Uint32Array([0, 2, 3, 4, 5]), 'uint32'),
-        neighbors: upload('neighbors', new Uint32Array([1, 2, 3, 3, 0]), 'uint32'),
-        weights: upload('weights', new Float32Array([1, 2, 1, 1, 4]), 'float32')
-      };
       const view = <Format extends 'uint32' | 'float32'>(
         name: string,
         format: Format,
         length: number
       ) => createTransientView(graph, name, format, length, Buffer.STORAGE | Buffer.COPY_SRC);
+      if (kind === 'network-strongly-connected-components') {
+        const componentTopology = {
+          offsets: upload('componentOffsets', new Uint32Array([0, 1, 3, 4, 4]), 'uint32'),
+          neighbors: upload(
+            'componentNeighbors',
+            new Uint32Array([1, 0, 2, 2, 0xffffffff]),
+            'uint32'
+          )
+        };
+        const strongComponents = view('strongComponents', 'uint32', 4);
+        const status = {
+          converged: view('converged', 'uint32', 1),
+          iterationCount: view('iterationCount', 'uint32', 1),
+          iterationLimitReached: view('iterationLimitReached', 'uint32', 1)
+        };
+        await runStrongComponents(context.device, graph, {
+          topology: componentTopology,
+          maximumIterations: 32,
+          output: {strongComponents, status}
+        });
+        return {views: {...componentTopology, strongComponents, ...status}};
+      }
+      const topology = {
+        offsets: upload('offsets', new Uint32Array([0, 2, 3, 4, 5]), 'uint32'),
+        neighbors: upload('neighbors', new Uint32Array([1, 2, 3, 3, 0]), 'uint32'),
+        weights: upload('weights', new Float32Array([1, 2, 1, 1, 4]), 'float32')
+      };
       if (kind === 'network-structure') {
         const strongComponents = view('strongComponents', 'uint32', 4);
         await runStructure(context.device, graph, {
@@ -111,6 +155,33 @@ function createScenario(kind: ExpansionKind): NetworkElementScenario {
           output: {strongComponents}
         });
         return {views: {...topology, strongComponents}};
+      }
+      if (kind === 'k-shortest-paths') {
+        const output = {
+          vertices: view('vertices', 'uint32', 8),
+          edges: view('edges', 'uint32', 8),
+          lengths: view('lengths', 'uint32', 2),
+          costs: view('costs', 'float32', 2),
+          counts: view('counts', 'uint32', 1),
+          status: {
+            converged: view('converged', 'uint32', 1),
+            iterationCount: view('iterationCount', 'uint32', 1),
+            iterationLimitReached: view('iterationLimitReached', 'uint32', 1),
+            candidateOverflow: view('candidateOverflow', 'uint32', 1)
+          }
+        };
+        await runKShortestPaths(context.device, graph, {
+          topology,
+          sources: upload('sources', new Uint32Array([0]), 'uint32'),
+          targets: upload('targets', new Uint32Array([3]), 'uint32'),
+          routeCount: 2,
+          maximumPathLength: 4,
+          candidateCapacity: 8,
+          maximumIterations: 4,
+          output
+        });
+        const {status, ...routes} = output;
+        return {views: {...topology, ...routes, ...status}};
       }
       if (kind === 'alternative-routes') {
         const output = {
@@ -159,10 +230,19 @@ function createScenario(kind: ExpansionKind): NetworkElementScenario {
     capture(final, _context, captured) {
       if (kind === 'alternative-routes' && final('complete').values[0] !== 1)
         throw new Error('Synthetic route search was incomplete');
+      if (kind === 'network-strongly-connected-components' && final('converged').values[0] !== 1)
+        throw new Error('Synthetic strong-component search did not converge');
+      if (
+        kind === 'k-shortest-paths' &&
+        (final('converged').values[0] !== 1 ||
+          final('candidateOverflow').values[0] !== 0 ||
+          final('iterationLimitReached').values[0] !== 0)
+      )
+        throw new Error('Synthetic k-shortest path search did not complete');
       return captured.map(capture => ({
         ...capture,
         keySpace:
-          capture.name === 'offsets'
+          capture.name === 'offsets' || capture.name === 'componentOffsets'
             ? 'node-offset'
             : capture.values.length === 5
               ? 'edge'

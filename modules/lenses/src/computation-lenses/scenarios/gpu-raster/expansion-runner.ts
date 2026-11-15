@@ -98,22 +98,26 @@ export async function buildRasterExpansionScenario(
       });
       break;
     case 'GPURasterTileReprojection':
-      await runRasterTileReprojectionExample(session.graph, {
-        sourceGrid: grid,
-        destinationGrid: grid,
-        sources: [{pixelBounds: [0, 0, 3, 3], input: band}],
-        method: 'bilinear',
-        output: {values: values(), validity: validity()}
-      });
+      session.track(
+        await runRasterTileReprojectionExample(session.graph, {
+          sourceGrid: grid,
+          destinationGrid: grid,
+          sources: [{pixelBounds: [0, 0, 3, 3], input: band}],
+          method: 'bilinear',
+          output: {values: values(), validity: validity()}
+        })
+      );
       break;
     case 'GPURasterReprojection':
-      await runRasterReprojectionExample(session.graph, {
-        sourceGrid: grid,
-        destinationGrid: grid,
-        input: band,
-        method: 'nearest',
-        output: {values: values(), validity: validity()}
-      });
+      session.track(
+        await runRasterReprojectionExample(session.graph, {
+          sourceGrid: grid,
+          destinationGrid: grid,
+          input: band,
+          method: 'nearest',
+          output: {values: values(), validity: validity()}
+        })
+      );
       break;
     case 'GPURasterReconstruction':
       // connectivity defaults to 8: the corner marker floods the uniform mask through diagonals,

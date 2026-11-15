@@ -40,7 +40,9 @@ const elements = [
   'GPUEdgeBundling',
   'GPUFlowAggregation',
   'GPUNetworkStructure',
+  'GPUNetworkStronglyConnectedComponents',
   'GPUAlternativeRoutes',
+  'GPUKShortestPaths',
   'addNetworkDisruptionRecipe',
   'addFacilityScenarioRecipe',
   'addTrackQualityRecipe'

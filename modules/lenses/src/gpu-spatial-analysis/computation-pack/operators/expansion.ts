@@ -69,11 +69,24 @@ const expansionOperators: SpatialFamilyOperators = {
     stages: ['operator'],
     datumKinds: [{kind: 'row', label: 'output row', indexSpace: '1d'}],
     guards: [],
-    choices: [],
+    choices: [
+      {
+        stage: 'operator',
+        name: 'bandwidthSelection.criterion',
+        alternatives: ['leave-one-out', 'AICc'],
+        sweepable: false
+      },
+      {
+        stage: 'operator',
+        name: 'bandwidthSelection.searchMethod',
+        alternatives: ['finite-grid', 'golden-section'],
+        sweepable: false
+      }
+    ],
     formula: {
       formula: 'none',
       reason:
-        'Additive multiscale backfitting alternates coefficient updates with explicitly selected bandwidths and bounded convergence checks.'
+        'Additive multiscale backfitting uses fixed bandwidths or per-component finite-grid/golden-section selection with leave-one-out SSE or partial-response AICc; convergence remains bounded.'
     }
   },
   GPUSpatialPanelRegression: {

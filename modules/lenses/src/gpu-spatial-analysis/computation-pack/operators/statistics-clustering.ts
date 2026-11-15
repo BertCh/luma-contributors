@@ -208,12 +208,25 @@ export const STATISTICS_CLUSTERING_OPERATORS: SpatialFamilyOperators = {
       positions: 'coordinate',
       labels: 'category',
       coreDistances: 'measure',
+      times: 'measure',
       clusterCount: 'count'
     },
     stages: ['neighbourhood', 'operator'],
     datumKinds: [{kind: 'point', label: 'observation', indexSpace: '1d'}],
     guards: ['coordinate-model'],
     choices: [
+      {
+        name: 'times',
+        label: 'Optional relative times (scaled ST-HDBSCAN)',
+        stage: 'neighbourhood',
+        sweepable: false
+      },
+      {
+        name: 'timeScale',
+        label: 'Spatial units per temporal unit',
+        stage: 'neighbourhood',
+        sweepable: true
+      },
       {
         name: 'minimumClusterSize',
         label: 'Minimum cluster size',
@@ -232,11 +245,11 @@ export const STATISTICS_CLUSTERING_OPERATORS: SpatialFamilyOperators = {
       derivation: 'curated',
       tex: String.raw`\begin{aligned}
 \term{coreDistance}{d_{\mathrm{core}}(a)}&=\text{distance to the } \term{minimumSamples}{s}\text{-th nearest point, itself counted}\\
-\term{mutual}{d_{\mathrm{mr}}(a,b)}&=\max\bigl(d_{\mathrm{core}}(a),\ d_{\mathrm{core}}(b),\ \lVert x_a-x_b\rVert\bigr)\\
+\term{mutual}{d_{\mathrm{mr}}(a,b)}&=\max\bigl(d_{\mathrm{core}}(a),\ d_{\mathrm{core}}(b),\ d(a,b)\bigr)\\
 \term{stability}{S(C)}&=\sum_{p\in C}\bigl(\lambda_p-\term{birth}{\lambda_{\mathrm{birth}}(C)}\bigr),\qquad \lambda=1/d
 \end{aligned}`,
       ascii:
-        'Pieces of the pipeline, not the whole procedure: core distance = distance to the minimumSamples-th nearest point (the point counts as its own first neighbour); mutual reachability d_mr(a, b) = max(core(a), core(b), |x_a - x_b|); the minimum spanning tree over d_mr gives the single-linkage dendrogram, which is condensed to clusters of at least minimumClusterSize points. Stability S(C) = sum over points p of C of (lambda_p - lambda_birth(C)) with lambda = 1 / distance. Excess-of-mass selection keeps a cluster when its stability exceeds the summed stability of its selected descendants; every other point is noise (0xffffffff).',
+        'Pieces of the pipeline, not the whole procedure: core distance = distance to the minimumSamples-th nearest point (the point counts as its own first neighbour); mutual reachability d_mr(a, b) = max(core(a), core(b), d(a,b)). Without times, d is planar Euclidean distance. With relative times, d(a,b) = sqrt(dx² + dy² + (timeScale * dt)²), with subtraction before scaling and no hard temporal cutoff; nonfinite times are noise. The per-frame scale is nonnegative and converts temporal units to spatial units; temporalContext declares the relative-time encoding without unit conversion; the minimum spanning tree over d_mr gives the single-linkage dendrogram, which is condensed to clusters of at least minimumClusterSize points. Stability S(C) = sum over points p of C of (lambda_p - lambda_birth(C)) with lambda = 1 / distance. Excess-of-mass selection keeps a cluster when its stability exceeds the summed stability of its selected descendants; every other point is noise (0xffffffff).',
       symbols: [
         {id: 'coreDistance', role: 'intermediate', binding: 'wgsl:coreDistances'},
         {id: 'minimumSamples', role: 'parameter', binding: 'wgsl:MINIMUM_SAMPLES'},

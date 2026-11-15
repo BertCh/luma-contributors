@@ -4,7 +4,7 @@
 
 import {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources,
@@ -17,6 +17,47 @@ import type {
 } from '../../../src/computation-lenses/scenarios/gpu-raster/raster-lens-harness';
 import {RASTER_EXPANSION_OPERATORS} from '../../../src/gpu-raster/computation-pack/operators/expansion';
 import {TERRAIN_EXPANSION_OPERATORS} from '../../../src/gpu-terrain/computation-pack/operators/expansion';
+import {createCoverageTrancheOneHarness} from './coverage-tranche-one-harness';
+
+it.each([
+  'GPURasterReprojection',
+  'GPURasterTileReprojection'
+])('%s lens cleanup releases its internally owned affine buffer', async element => {
+  const device = createNullWebGPUDevice();
+  Object.defineProperty(device, 'props', {
+    value: {...device.props, _cacheShaders: false, _cachePipelines: false}
+  });
+  Object.defineProperty(device, 'createComputePipeline', {
+    value: (props: {id?: string}) => ({id: props.id ?? '', hash: '', destroy() {}})
+  });
+  const allocations = vi.spyOn(device, 'createBuffer');
+  const harness = createCoverageTrancheOneHarness(device, element);
+  let harnessDestroyed = false;
+  try {
+    await buildRasterExpansionScenario(harness.session, element, {
+      width: 3,
+      height: 3,
+      affine: [1, 0, 0, 0, 1, 0],
+      pixelInterpretation: 'area'
+    });
+    const affineBuffers = allocations.mock.results
+      .map(result => result.value as Buffer)
+      .filter(buffer => buffer.id.endsWith('-affine-parameters'));
+    expect(affineBuffers).toHaveLength(1);
+    expect(affineBuffers[0].byteLength).toBe(80);
+    const destruction = vi.spyOn(affineBuffers[0], 'destroy');
+    const compiled = harness.graph.compile();
+    compiled.destroy();
+    // Imported parameter buffers are owned by the contributor, not the compiled graph.
+    expect(destruction).not.toHaveBeenCalled();
+    harness.destroy();
+    harnessDestroyed = true;
+    expect(destruction).toHaveBeenCalledTimes(1);
+  } finally {
+    if (!harnessDestroyed) harness.destroy();
+    device.destroy();
+  }
+});
 
 it.each(
   Object.keys({...RASTER_EXPANSION_OPERATORS, ...TERRAIN_EXPANSION_OPERATORS})

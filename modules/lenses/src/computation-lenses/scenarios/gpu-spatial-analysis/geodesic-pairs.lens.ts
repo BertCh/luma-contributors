@@ -68,7 +68,7 @@ defineLensScenario({
                 role: 'intermediate',
                 keySpace: 'pair',
                 meaning:
-                  'WGS84 geodesic distance in m; capped Vincenty inverse (16 iterations), spherical fallback when not converged'
+                  'WGS84 geodesic distance in m; capped Vincenty inverse (16 iterations), spherical fallback for non-convergence or pairs within 0.02 radians of an antipode'
               },
               initialBearings: {
                 view: output.initialBearings,
@@ -80,7 +80,8 @@ defineLensScenario({
                 view: output.converged,
                 role: 'intermediate',
                 keySpace: 'pair',
-                meaning: '1 when Vincenty converged; 0 for near-antipodal pairs (sphere fallback)'
+                meaning:
+                  '1 when Vincenty resolved outside the 0.02-radian antipodal exclusion; 0 for a sphere fallback'
               },
               midpoints: {
                 view: output.midpoints,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGPUNetworkLouvainParameterValues} from '@luma-contributors/analysis/gpu-network';
 import {runExample as runNetworkPointRouting} from './network-point-routing.example';
 import {runExample as runNetworkFlow} from './network-flow.example';
 import {runExample as runNetworkLouvain} from './network-louvain.example';
@@ -20,13 +21,20 @@ export type NetworkOptimizationKind =
   | 'point-routing'
   | 'flow'
   | 'louvain'
+  | 'louvain-sparse'
   | 'facility-optimization'
   | 'time-routing'
   | 'rational-access';
 
-function createScenario(kind: NetworkOptimizationKind): NetworkElementScenario {
+/** Builds the network scenario, including its retained outputs and capture checks. @internal */
+export function createNetworkOptimizationScenario(
+  kind: NetworkOptimizationKind
+): NetworkElementScenario {
   return {
-    id: `gpu-network.network-${kind}`,
+    id:
+      kind === 'louvain-sparse'
+        ? 'gpu-network.network-louvain.sparse'
+        : `gpu-network.network-${kind}`,
     weights: 'lengthMeters',
     withoutRoads: true,
     roadContext: false,
@@ -37,13 +45,13 @@ function createScenario(kind: NetworkOptimizationKind): NetworkElementScenario {
         ? ['flow', 'cut', 'summary']
         : kind === 'point-routing'
           ? ['costs', 'status', 'predecessorEdges']
-          : kind === 'louvain'
+          : kind === 'louvain' || kind === 'louvain-sparse'
             ? ['communities', 'objectiveTrace', 'summary']
             : kind === 'time-routing'
               ? ['arrivals', 'predecessorTransitions', 'summary']
               : kind === 'facility-optimization'
-                ? ['selectedFacilities', 'assignments', 'objective', 'status']
-                : ['assignments', 'scores', 'unservedDemand', 'status'],
+                ? ['selectedFacilities', 'assignments', 'objective', 'summary']
+                : ['assignments', 'scores', 'unservedDemand', 'summary'],
     formulas: [],
     keySpaces: [{id: 'entry', label: 'Scenario input/output row', indexSpace: '1d'}],
     entityKeySpace: 'entry',
@@ -122,13 +130,23 @@ function createScenario(kind: NetworkOptimizationKind): NetworkElementScenario {
             predecessorEdges: output('predecessorEdges', 'uint32', 9)
           }
         });
-      } else if (kind === 'louvain') {
+      } else if (kind === 'louvain' || kind === 'louvain-sparse') {
         await runNetworkLouvain(graph, {
           nodeCount: 4,
           maximumLevels: 4,
           maximumIterations: 4,
-          weights: floats('weights', [0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0]),
-          parameters: floats('parameters', [1, 0]),
+          ...(kind === 'louvain-sparse'
+            ? {
+                topology: {
+                  offsets: integers('offsets', [0, 1, 2, 3, 4]),
+                  neighbors: integers('neighbors', [1, 0, 3, 2]),
+                  weights: floats('weights', [1, 1, 1, 1])
+                }
+              }
+            : {
+                weights: floats('weights', [0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0])
+              }),
+          parameters: floats('parameters', Array.from(getGPUNetworkLouvainParameterValues())),
           output: {
             communities: output('communities', 'uint32', 4),
             objectiveTrace: output('objectiveTrace', 'float32', 17),
@@ -161,7 +179,7 @@ function createScenario(kind: NetworkOptimizationKind): NetworkElementScenario {
             selectedFacilities: output('selectedFacilities', 'uint32', 2),
             assignments: output('assignments', 'uint32', 2),
             objective: output('objective', 'float32', 1),
-            status: output('status', 'uint32', 4)
+            summary: output('summary', 'uint32', 4)
           }
         });
       } else {
@@ -176,7 +194,7 @@ function createScenario(kind: NetworkOptimizationKind): NetworkElementScenario {
             assignments: output('assignments', 'float32', 4),
             scores: output('scores', 'float32', 2),
             unservedDemand: output('unservedDemand', 'float32', 2),
-            status: output('status', 'uint32', 4)
+            summary: output('summary', 'uint32', 4)
           }
         });
       }
@@ -186,10 +204,15 @@ function createScenario(kind: NetworkOptimizationKind): NetworkElementScenario {
       if (kind === 'point-routing') {
         if (Array.from(final('status').values).some(value => value !== 0))
           throw new Error('Point-routing example did not complete');
-      } else if (kind === 'flow' || kind === 'louvain' || kind === 'time-routing') {
+      } else if (
+        kind === 'flow' ||
+        kind === 'louvain' ||
+        kind === 'louvain-sparse' ||
+        kind === 'time-routing'
+      ) {
         if (final('summary').values[0] !== 1 || final('summary').values[1] !== 1)
           throw new Error('Network example did not converge');
-      } else if (final('status').values[0] !== 1 || final('status').values[1] !== 1) {
+      } else if (final('summary').values[0] !== 1 || final('summary').values[1] !== 1) {
         throw new Error('Network allocation example did not produce a valid result');
       }
       return captures.map(capture => ({...capture, keySpace: 'entry'}));
@@ -198,8 +221,8 @@ function createScenario(kind: NetworkOptimizationKind): NetworkElementScenario {
 }
 
 export function runNetworkOptimizationCoverage(device: Device, kind: NetworkOptimizationKind) {
-  return recordNetworkElement(device, createScenario(kind));
+  return recordNetworkElement(device, createNetworkOptimizationScenario(kind));
 }
 export function describeNetworkOptimizationCoverage(device: Device, kind: NetworkOptimizationKind) {
-  return describeNetworkElement(device, createScenario(kind));
+  return describeNetworkElement(device, createNetworkOptimizationScenario(kind));
 }

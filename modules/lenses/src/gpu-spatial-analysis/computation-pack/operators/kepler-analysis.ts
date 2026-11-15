@@ -7,7 +7,7 @@ import type {SpatialFamilyOperators} from '../types';
 /** Explicit bounded contracts for the Kepler/GeoDa analysis compositions. */
 export const KEPLER_ANALYSIS_OPERATORS: SpatialFamilyOperators = {
   GPUQuantileLISA: {
-    family: 'recipes',
+    family: 'statistics',
     descriptor: {scope: 'focal', scopeSecondary: 'global', reduction: 'count'},
     variables: {
       membership: 'category',
@@ -27,7 +27,7 @@ export const KEPLER_ANALYSIS_OPERATORS: SpatialFamilyOperators = {
     formula: {
       formula: 'none',
       reason:
-        'Composes type-5 GPUColumnQuantiles, lower-inclusive selected-class membership and GPULocalPermutationTest join counts.'
+        'The spatial-autocorrelation contributor combines type-5 GPUColumnQuantiles, lower-inclusive selected-class membership and GPULocalPermutationTest join counts.'
     },
     metadata: {
       quantileConvention: 'type-5',

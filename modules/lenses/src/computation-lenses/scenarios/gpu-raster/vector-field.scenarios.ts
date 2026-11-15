@@ -6,3 +6,4 @@
 import './particle-advection.lens';
 import './line-integral-convolution.lens';
 import './streamlines.lens';
+import './scalar-field-ridges.lens';

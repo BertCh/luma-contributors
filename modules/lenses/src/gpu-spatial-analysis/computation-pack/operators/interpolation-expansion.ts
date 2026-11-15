@@ -6,6 +6,39 @@ import type {SpatialFamilyOperators} from '../types';
 
 /** Bounded native GPU interpolation and conditional simulation contracts. */
 export const INTERPOLATION_EXPANSION_OPERATORS: SpatialFamilyOperators = {
+  GPUGaussianRandomField: {
+    family: 'density',
+    descriptor: {scope: 'global', reduction: 'sum'},
+    variables: {
+      values: 'score',
+      validity: 'category',
+      approximation: 'category',
+      clippedEigenvalueMass: 'score'
+    },
+    stages: ['operator', 'inference'],
+    datumKinds: [{kind: 'cell', label: 'field cell', indexSpace: '2d'}],
+    guards: ['coordinate-model'],
+    choices: [
+      {
+        name: 'method',
+        stage: 'operator',
+        alternatives: ['auto', 'fft', 'spectral'],
+        sweepable: false
+      },
+      {name: 'modeCount', stage: 'operator', sweepable: true},
+      {name: 'seed', stage: 'inference', sweepable: true},
+      {name: 'realization', stage: 'inference', sweepable: true}
+    ],
+    formula: {
+      id: 'gpu-spatial-analysis.gaussian-random-field',
+      derivation: 'curated',
+      tex: String.raw`\term{values}{Z(x)}=\mu+\sqrt{s/M}\sum_{j=1}^{M}(a_j\cos(k_j\cdot x)+b_j\sin(k_j\cdot x))+\epsilon_x`,
+      ascii:
+        'Spectral mode sum with Gaussian amplitudes and independent nugget; finite modes set status.approximation. FFT instead inverts a random spectrum from a doubled covariance torus, clipping negative eigenvalues and reporting their mass. Optional local kriged residuals condition the field.',
+      symbols: [{id: 'values', role: 'output', binding: 'wgsl:values'}]
+    },
+    metadata: {coordinateModel: 'planar', maximumFFTSide: 1024, maximumModeCount: 4096}
+  },
   GPULocalKriging: {
     family: 'density',
     descriptor: {scope: 'solver', scopeSecondary: 'focal', reduction: 'solve'},

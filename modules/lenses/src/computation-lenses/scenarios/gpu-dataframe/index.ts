@@ -26,5 +26,8 @@ import './inequality.lens';
 import './expansion.lens';
 
 import './variogram-model-fit.lens';
+import './coregionalization-fit.lens';
 
 import './variable-standardization.lens';
+
+import './forest-inference.lens';

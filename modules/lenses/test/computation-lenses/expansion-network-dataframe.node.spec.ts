@@ -11,6 +11,7 @@ import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
 
 for (const kind of [
   'network-structure',
+  'network-strongly-connected-components',
   'alternative-routes',
   'network-disruption-recipe',
   'facility-scenario-recipe'
