@@ -84,7 +84,7 @@ export const CELLS_FORMULAS = {
         id: 'firstRows',
         role: 'parameter',
         label: 'levelFirstRows',
-        binding: 'wgsl:LEVEL_FIRST_ROWS'
+        binding: 'wgsl:firstRows'
       }
     ]
   },

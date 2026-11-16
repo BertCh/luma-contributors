@@ -13,8 +13,38 @@ import {
 } from '../../src/computation-lenses/scenarios/gpu-network/optimization-coverage.lens';
 import {COVERAGE_NETWORK_MOVEMENT_CASES} from '@luma-contributors/analysis/test/analysis-core/kernel-audit/cases-coverage-network-movement';
 import {auditKernelCase} from '@luma-contributors/analysis/test/analysis-core/kernel-audit/kernel-audit-runner';
+import {GPUNetworkPointRouting} from '@luma-contributors/analysis/gpu-network';
 
-for (const auditCase of COVERAGE_NETWORK_MOVEMENT_CASES) {
+// The maximal 65536 serial relaxations belong to the bounded reference mode. The default
+// scalable route has a frontier-round budget and is exercised by the point-routing lens below.
+const coverageCases = COVERAGE_NETWORK_MOVEMENT_CASES.map(auditCase =>
+  auditCase.exportName === 'GPUNetworkPointRouting'
+    ? {
+        ...auditCase,
+        name: `${auditCase.name},reference mode`,
+        build: (({graph, view, maximumRows}) => {
+          const queryCount = maximumRows(128 * 4);
+          graph.add(
+            new GPUNetworkPointRouting({
+              mode: 'reference',
+              maximumRelaxations: 65536,
+              costs: view('float32', 128),
+              turns: view('uint32x2', 4096),
+              queries: view('uint32x2', queryCount),
+              fractions: view('float32x2', queryCount),
+              output: {
+                costs: view('float32', queryCount),
+                status: view('uint32', queryCount),
+                predecessorEdges: view('uint32', queryCount * 128)
+              }
+            })
+          );
+        }) satisfies (typeof auditCase)['build']
+      }
+    : auditCase
+);
+
+for (const auditCase of coverageCases) {
   it(`bounded coverage maximal shader audit: ${auditCase.exportName} ${auditCase.name}`, () => {
     const result = auditKernelCase(auditCase);
     expect(result.findings).toEqual([]);

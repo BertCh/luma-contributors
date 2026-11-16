@@ -11,6 +11,19 @@ import './register-search';
 import './register-structure';
 import './register-construction';
 
+defineLensScenario({
+  id: 'gpu-network.visibility-graph-recipe',
+  element: 'addVisibilityGraphRecipe',
+  title: 'Three-point CSR visibility with network centrality',
+  dataset: {
+    id: 'synthetic-three-point-visibility-v1',
+    source: 'Repository-authored collinear observers and a nonblocking wall in planar units',
+    licence: 'MIT'
+  },
+  example: {path: 'scenarios/gpu-network/visibility-graph-recipe.example.ts'},
+  load: () => import('./visibility-graph-recipe.lens')
+});
+
 const dataset = {
   id: 'n-chicago-loop-roads',
   licence: 'ODbL 1.0',

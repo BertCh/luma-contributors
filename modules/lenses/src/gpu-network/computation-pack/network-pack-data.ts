@@ -25,6 +25,10 @@ export const GPU_NETWORK_PACK_DATA: ViewPackData = {
   ],
   captureStages: {
     ...NETWORK_OPTIMIZATION_PACK.captureStages,
+    degree: 'summary',
+    betweenness: 'summary',
+    closeness: 'summary',
+    reachedCounts: 'summary',
     intensity: 'summary',
     kernelMass: 'summary',
     ...NETWORK_SEARCH_PACK.captureStages,
@@ -39,6 +43,10 @@ export const GPU_NETWORK_PACK_DATA: ViewPackData = {
   },
   variableKinds: {
     ...NETWORK_OPTIMIZATION_PACK.variableKinds,
+    degree: {level: 'ratio', extent: 'extensive'},
+    betweenness: {level: 'ratio', extent: 'extensive'},
+    closeness: {level: 'ratio', extent: 'intensive'},
+    reachedCounts: {level: 'ratio', extent: 'extensive'},
     intensity: {level: 'ratio', extent: 'intensive'},
     kernelMass: {level: 'ratio', extent: 'extensive'},
     ...NETWORK_SEARCH_PACK.variableKinds,

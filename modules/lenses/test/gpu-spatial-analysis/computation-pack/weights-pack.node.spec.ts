@@ -9,6 +9,10 @@ import {expectFormulaBindingsExist, expectSpatialEntryWellFormed} from './formul
 const SOURCE_DIRECTORY = 'modules/analysis/src/gpu-spatial-analysis';
 
 const kernelSources: Record<string, string[]> = {
+  GPUAnalysisSpacing: [`${SOURCE_DIRECTORY}/analysis-spacing/analysis-spacing-statistics-nodes.ts`],
+  GPUAnalysisContiguityStatistics: [
+    `${SOURCE_DIRECTORY}/spatial-weights/gpu-analysis-contiguity-statistics.ts`
+  ],
   GPUContiguityWeights: [`${SOURCE_DIRECTORY}/spatial-weights/gpu-contiguity-weights.ts`],
   GPULatticeWeights: [`${SOURCE_DIRECTORY}/spatial-weights/gpu-lattice-weights.ts`],
   GPUSpatialWeightsTransform: [
@@ -23,6 +27,8 @@ const kernelSources: Record<string, string[]> = {
 };
 
 const EXPECTED_ELEMENTS = [
+  'GPUAnalysisSpacing',
+  'GPUAnalysisContiguityStatistics',
   'GPUContiguityWeights',
   'GPULatticeWeights',
   'GPUSpatialWeightsTransform',
@@ -35,7 +41,7 @@ const EXPECTED_ELEMENTS = [
   'GPUMapColoring'
 ];
 
-test('the weights pack covers exactly its ten elements', () => {
+test('the weights pack covers exactly its twelve elements', () => {
   expect(Object.keys(WEIGHTS_OPERATORS).sort()).toEqual([...EXPECTED_ELEMENTS].sort());
 });
 

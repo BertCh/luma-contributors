@@ -105,6 +105,7 @@ export const NETWORK_STRUCTURE_PACK: NetworkPackPart = {
   formulas: {
     GPUNetworkAnalyticsColumns: STRUCTURE_FORMULA_REFS['gpu-network.analytics.normalize'],
     GPUNetworkCentrality: STRUCTURE_FORMULA_REFS['gpu-network.centrality.closeness'],
+    GPUNetworkCentralityScheduleStep: STRUCTURE_FORMULA_REFS['gpu-network.centrality.closeness'],
     GPUNetworkStatistics: STRUCTURE_FORMULA_REFS['gpu-network.statistics.degree-histogram'],
     GPUNetworkSubgraphFilter: STRUCTURE_FORMULA_REFS['gpu-network.subgraph-filter.range'],
     GPUNetworkCoarsening: {

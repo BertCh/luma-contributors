@@ -51,6 +51,11 @@ export const NETWORK_FORMULA_REFS: Record<string, GPUComputationFormulaRef> = {
 /** Per-element primary formula; later network tasks append their own element keys. */
 export const NETWORK_FORMULAS: NonNullable<ViewPackData['formulas']> = {
   ...NETWORK_OPTIMIZATION_PACK.formulas,
+  addVisibilityGraphRecipe: {
+    formula: 'none',
+    reason:
+      'Indexed visibility builds symmetric CSR adjacency and degree, then batched pivot searches compute betweenness and closeness. Capacity, invalid-input, approximation and convergence statuses describe distinct stages; the graph rung shows their composition.'
+  },
   GPUNetworkInhomogeneousK: {
     formula: 'none',
     reason:

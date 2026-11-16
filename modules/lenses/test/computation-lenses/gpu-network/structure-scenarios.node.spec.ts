@@ -45,6 +45,13 @@ const CASES: StructureCase[] = [
     outputs: /const \{closeness, reachedCounts\} = centrality\.props\.output;$/
   },
   {
+    kebab: 'network-centrality-schedule-step',
+    element: 'GPUNetworkCentralityScheduleStep',
+    formula: 'gpu-network.centrality.closeness',
+    rungs: ['result', 'datum', 'formula', 'kernel', 'graph'],
+    outputs: /const \{closeness, reachedCounts\} = centrality\.props\.output;$/
+  },
+  {
     kebab: 'network-statistics',
     element: 'GPUNetworkStatistics',
     formula: 'gpu-network.statistics.degree-histogram',
@@ -116,13 +123,24 @@ for (const structureCase of CASES) {
       const kernelNodes = computeNodes.filter(node => node.source?.startsWith('wgsl:'));
       expect(kernelNodes.length).toBeGreaterThan(0);
       for (const node of kernelNodes) expect(node.bindings?.length, node.id).toBeGreaterThan(0);
+      const publishedOperations = [
+        'GPUScan',
+        'GPUGroupAggregation',
+        'GPUGather',
+        'GPUUint32Gather'
+      ];
+      if (structureCase.element === 'GPUNetworkLineGraph') {
+        // Monotone saturated offsets now use the published split-word scan. Its carry node has
+        // an operation label, but no analysis-owned WGSL record, just like the other primitives.
+        publishedOperations.push('GPUScanUint64');
+        expect(
+          computeNodes.filter(node => node.op === 'GPUScanUint64').map(node => node.id)
+        ).toEqual(['network-line-graph-scan-carry-0']);
+      }
       expect(
         computeNodes
           .filter(
-            node =>
-              !node.source &&
-              node.op !== undefined &&
-              !['GPUScan', 'GPUGroupAggregation', 'GPUGather', 'GPUUint32Gather'].includes(node.op)
+            node => !node.source && node.op !== undefined && !publishedOperations.includes(node.op)
           )
           .map(node => node.id)
       ).toEqual([]);

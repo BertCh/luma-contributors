@@ -28,6 +28,19 @@ describe('analysis device profile', () => {
     });
     expect(WEBGPU_ANALYSIS_DEVICE_PROFILE.optionalFeatures).toEqual(['timestamp-query']);
   });
+  test('preserves the recorded Apple buffer maxima through the shared policy', () => {
+    expect(
+      getAnalysisDeviceLimits({
+        maxStorageBuffersPerShaderStage: 10,
+        maxStorageBufferBindingSize: 4294967292,
+        maxBufferSize: 4294967292
+      })
+    ).toEqual({
+      maxStorageBuffersPerShaderStage: 10,
+      maxStorageBufferBindingSize: 4294967292,
+      maxBufferSize: 4294967292
+    });
+  });
   test('memoizes concurrent creation, passing timestamp and raised limits once', async () => {
     resetAnalysisDevice();
     const device = {id: 'device'};

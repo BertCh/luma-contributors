@@ -6,6 +6,48 @@ import type {SpatialFamilyOperators} from '../types';
 
 /** Spatial weights operators, with formulas scoped to the variants demonstrated by their cards. */
 export const WEIGHTS_OPERATORS: SpatialFamilyOperators = {
+  GPUAnalysisSpacing: {
+    family: 'weights',
+    descriptor: {scope: 'global', reduction: 'scan-sort'},
+    variables: {positions: 'coordinate', nearestNeighborMaximum: 'measure'},
+    stages: ['support', 'neighbourhood', 'operator'],
+    datumKinds: [{kind: 'point', label: 'input location', indexSpace: '1d'}],
+    guards: ['coordinate-model'],
+    choices: [{name: 'neighborRank', stage: 'neighbourhood', sweepable: true}],
+    formula: {
+      id: 'analysis-spacing',
+      derivation: 'curated',
+      tex: String.raw`\term{floor}{r}=\max_i\min_{j\ne i}\term{distance}{d(p_i,p_j)}`,
+      ascii:
+        'The connectivity floor is the maximum nearest-other-row distance. Repeated locations have zero nearest distance; a separate distinct-location search preserves nonzero spacing. The bounded summary also retains extent, centre, spread and rank-distance quantiles. This fixture uses all five planar locations, including one duplicate.',
+      symbols: [
+        {id: 'floor', role: 'output', binding: 'wgsl:last'},
+        {id: 'distance', role: 'intermediate', binding: 'wgsl:distance'}
+      ]
+    }
+  },
+  GPUAnalysisContiguityStatistics: {
+    family: 'weights',
+    descriptor: {scope: 'global', reduction: 'scan-sort'},
+    variables: {cardinality: 'count', counts: 'count', median: 'count', validity: 'category'},
+    stages: ['neighbourhood', 'operator'],
+    datumKinds: [{kind: 'region', label: 'synthetic square', indexSpace: '1d'}],
+    guards: ['islands-disclosed'],
+    choices: [
+      {name: 'criterion', stage: 'neighbourhood', sweepable: true, alternatives: ['queen', 'rook']}
+    ],
+    formula: {
+      id: 'analysis-contiguity-statistics',
+      derivation: 'curated',
+      tex: String.raw`\term{median}{m}=\operatorname{median}_i\term{cardinality}{c_i},\quad\term{cardinality}{c_i}=\sum_j\mathbf{1}[w_{ij}>0]`,
+      ascii:
+        'Reduce binary queen or rook cardinalities over every feature, including zero-neighbor islands. The linear median averages the two middle cardinalities for even populations. Candidate or final CSR overflow invalidates the entire profile. This fixture has two edge-adjacent squares and one island: cardinalities [1,1,0], median 1.',
+      symbols: [
+        {id: 'median', role: 'output', binding: 'wgsl:median'},
+        {id: 'cardinality', role: 'intermediate', binding: 'wgsl:cardinality'}
+      ]
+    }
+  },
   GPUContiguityWeights: {
     family: 'weights',
     descriptor: {scope: 'pairwise', reduction: 'scan-sort'},

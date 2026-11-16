@@ -54,6 +54,13 @@ registerLensScenarios(
       load: () => import('./network-centrality.lens')
     },
     {
+      id: 'gpu-network.network-centrality-schedule-step',
+      element: 'GPUNetworkCentralityScheduleStep',
+      title: 'Chicago Loop closeness in a fixed-capacity schedule batch',
+      rungs: ['result', 'datum', 'formula', 'kernel', 'graph'],
+      load: () => import('./network-centrality-schedule-step.lens')
+    },
+    {
       id: 'gpu-network.network-statistics',
       element: 'GPUNetworkStatistics',
       title: 'Chicago Loop network summary statistics',

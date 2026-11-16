@@ -2,12 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  ANALYSIS_TARGET_STORAGE_BUFFERS_PER_SHADER_STAGE,
+  getAnalysisRequiredLimits
+} from '@luma-contributors/analysis/analysis-core';
+
 /** One analysis device per page, with optional timestamps and raised storage limits. */
 export const WEBGPU_ANALYSIS_DEVICE_PROFILE = {
   id: 'webgpu-analysis',
   type: 'webgpu',
   optionalFeatures: ['timestamp-query'],
-  requestedStorageBuffersPerShaderStage: 16
+  requestedStorageBuffersPerShaderStage: ANALYSIS_TARGET_STORAGE_BUFFERS_PER_SHADER_STAGE
 } as const;
 
 /** Adapter limits needed by the analysis device profile. */
@@ -21,14 +26,7 @@ export type AnalysisAdapterLimits = {
 export function getAnalysisDeviceLimits(
   adapterLimits: AnalysisAdapterLimits
 ): Record<string, number> {
-  return {
-    maxStorageBuffersPerShaderStage: Math.min(
-      adapterLimits.maxStorageBuffersPerShaderStage,
-      WEBGPU_ANALYSIS_DEVICE_PROFILE.requestedStorageBuffersPerShaderStage
-    ),
-    maxStorageBufferBindingSize: adapterLimits.maxStorageBufferBindingSize,
-    maxBufferSize: adapterLimits.maxBufferSize
-  };
+  return getAnalysisRequiredLimits(adapterLimits);
 }
 
 let analysisDevice: Promise<unknown> | undefined;

@@ -29,6 +29,11 @@ type SearchCase = {
 
 const CASES: SearchCase[] = [
   {
+    kebab: 'visibility-graph-recipe',
+    element: 'addVisibilityGraphRecipe',
+    outputs: /return visibility;$/
+  },
+  {
     kebab: 'network-service-areas',
     element: 'GPUNetworkServiceAreas',
     formula: 'gpu-network.service-areas.label',
@@ -98,9 +103,9 @@ for (const searchCase of CASES) {
       expect(validateGPUComputationRecord(record).issues).toEqual([]);
       expect(record.graphs[0].nodes.length).toBeGreaterThan(0);
       // Kernels built by createWGSLKernelNode carry a `wgsl:` source and their bindings even on a
-      // null device; the rest are published @luma.gl/graph primitives (GPUScan, GPUScanUint64, GPUGroupAggregation,
-      // the gathers, and GPUSort passes, which name no operation). Formula and loop provenance stay
-      // pack-level.
+      // null device. Published primitives and the runtime chunk kernels of GPUGroupStatistics
+      // and GPUVisibilityGraph do not record WGSL through that helper. Formula and loop
+      // provenance stay pack-level.
       const computeNodes = record.graphs[0].nodes.filter(node => node.kind === 'compute');
       const kernelNodes = computeNodes.filter(node => node.source?.startsWith('wgsl:'));
       expect(kernelNodes.length).toBeGreaterThan(0);
@@ -115,6 +120,8 @@ for (const searchCase of CASES) {
                 'GPUScan',
                 'GPUScanUint64',
                 'GPUGroupAggregation',
+                'GPUGroupStatistics',
+                'GPUVisibilityGraph',
                 'GPUGather',
                 'GPUUint32Gather'
               ].includes(node.op)

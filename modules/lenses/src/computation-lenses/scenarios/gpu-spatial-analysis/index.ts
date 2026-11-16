@@ -53,3 +53,6 @@ import './dorling-cartogram.lens';
 import './quantile-lisa.lens';
 
 import './gaussian-random-field.lens';
+
+import './analysis-spacing.lens';
+import './analysis-contiguity-statistics.lens';

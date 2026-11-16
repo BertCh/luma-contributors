@@ -27,6 +27,7 @@ const elements = [
   'GPUNetworkAccessibility',
   'GPUNetworkCostWeights',
   'GPUNetworkCentrality',
+  'GPUNetworkCentralityScheduleStep',
   'GPUNetworkAnalyticsColumns',
   'GPUNetworkStatistics',
   'GPUNetworkSubgraphFilter',
@@ -45,7 +46,8 @@ const elements = [
   'GPUKShortestPaths',
   'addNetworkDisruptionRecipe',
   'addFacilityScenarioRecipe',
-  'addTrackQualityRecipe'
+  'addTrackQualityRecipe',
+  'addVisibilityGraphRecipe'
 ];
 
 test('all network elements have a lawful scope and reduction', () => {
